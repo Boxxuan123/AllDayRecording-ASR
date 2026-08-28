@@ -54,6 +54,26 @@ state/evaluations/session-000001/
 
 人工标注完成前不能运行最终盲测，也不能用模型预填后再称为盲标。原始 Watch M4A 始终只读；WAV 是可删除、可由 source 时间范围重建的派生文件。
 
+### 3.1 本地盲标网页
+
+为避免手改 JSONL，可以直接启动只绑定回环地址的专用网页：
+
+```powershell
+allday-asr benchmark annotate-blind `
+  state\evaluations\session-000001\watch-blind-30m-v2c1-20260828-blind-v2c1\truth-draft.jsonl
+```
+
+命令默认打开带随机访问令牌的本地页面；需要自行复制地址时加 `--no-open`，端口冲突时用 `--port 8767`。该服务只加载指定的任务文件和六个派生 WAV，不连接项目数据库，也没有读取 hypothesis、prediction 或旧 transcript 的路径。
+
+逐块操作：
+
+1. 播放音频，在语音开始处按 `A`、结束处按 `D`，填写准确听写后按 `Ctrl+Enter` 保存；`Space` 控制播放/暂停。
+2. 有语音但无法可靠听清时勾选“无法可靠听写”，文字留空；静音不需要逐段标注。
+3. 确认本块所有语音都已覆盖后标记“本块已完整检查”。后续编辑该块会自动把它恢复为待检查，防止过期确认。
+4. 六块全部完成后填写标注者代号并确认没有看过该范围的模型输出。最终锁定后网页只读，再运行盲标导入和评测。
+
+网页每次修改都通过临时文件和原子替换保存 `truth-draft.jsonl`，不会修改原始 Watch M4A。音频通过 HTTP Range 按需播放，页面只显示块内时间和连续 session 时间。
+
 ## 4. 同边界纯 ASR
 
 三种 backend 都直接读取同一批人工 transcript 区间。SenseVoice 不运行 FSMN-VAD；Qwen 不运行 FSMN-VAD 和 ForcedAligner；Fun-ASR-Nano 不挂载 VAD wrapper。参考文字不会传给模型。

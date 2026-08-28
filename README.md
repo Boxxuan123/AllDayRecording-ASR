@@ -89,6 +89,10 @@ allday-asr benchmark compare 1
 allday-asr benchmark init-blind 1 --name watch-blind-30m-v2c1-20260828 `
   --duration 30:00 --chunk 5:00 --seed v2c1-primary-20260828
 
+# 启动不读取数据库和模型结果的本地盲标网页；默认自动打开浏览器
+allday-asr benchmark annotate-blind `
+  state\evaluations\session-000001\watch-blind-30m-v2c1-20260828-blind-v2c1\truth-draft.jsonl
+
 # 在同一人工 transcript 边界上比较纯 ASR
 allday-asr benchmark oracle-asr 1 --model sensevoice --name oracle-sensevoice
 allday-asr benchmark oracle-asr 1 --model qwen --name oracle-qwen
@@ -96,7 +100,7 @@ allday-asr benchmark compare-oracle-pair 1 <baseline-set> <candidate-set> `
   --samples 200000 --itn
 ```
 
-盲标导入必须满足完整窗口复核、穷尽式 VAD/转写覆盖、派生音频哈希和 `model_outputs_unseen` 声明。当前真实 30 分钟任务范围为 `01:41:42–02:11:42`，状态保持 `pending`，不能在人工完成前产生最终结果。完整协议、统计口径和当前诊断结果见 [V2-C.1 指南](docs/v2-c1-fair-benchmark.md)。
+网页把 30 分钟拆成六个可独立复核的 5 分钟块，可用播放器当前位置记录语音起止、输入准确听写或标记无法可靠听清。每次保存都会原子更新草稿；只有六块全部复核并完成盲标声明后才会锁定。盲标导入必须满足完整窗口复核、穷尽式 VAD/转写覆盖、派生音频哈希和 `model_outputs_unseen` 声明。当前真实 30 分钟任务范围为 `01:41:42–02:11:42`，状态保持 `pending`，不能在人工完成前产生最终结果。完整协议、统计口径和当前诊断结果见 [V2-C.1 指南](docs/v2-c1-fair-benchmark.md)。
 
 ## 推荐：一键离线日记
 

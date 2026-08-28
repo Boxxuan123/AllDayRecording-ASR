@@ -11,6 +11,7 @@ from rich.table import Table
 from allday_asr.asr.oracle_backends import create_oracle_backend
 from allday_asr.asr.quality_backends import FunAsrNanoBackend, Qwen3AsrBackend
 from allday_asr.audio.tools import extract_clip
+from allday_asr.blind_web import serve_blind_annotation
 from allday_asr.config import load_config
 from allday_asr.doctor import run_checks
 from allday_asr.exporters import export_jsonl, export_markdown
@@ -27,33 +28,33 @@ from allday_asr.services.benchmark import (
     snapshot_v1_predictions,
 )
 from allday_asr.services.daily import run_daily
+from allday_asr.services.diarization import audit_speaker_assignments, diarize_recording
+from allday_asr.services.enrollment import enroll_known_person, enroll_self
 from allday_asr.services.evaluation import (
     create_evaluation_template,
     evaluate_truth,
     parse_offset,
 )
 from allday_asr.services.ingest import ingest_recording
-from allday_asr.services.enrollment import enroll_known_person, enroll_self
-from allday_asr.services.diarization import audit_speaker_assignments, diarize_recording
 from allday_asr.services.processing import process_recording
 from allday_asr.services.quality_asr import (
     QualityAsrSettings,
     run_quality_asr,
     snapshot_quality_asr,
 )
-from allday_asr.services.speakers import (
-    export_speaker_samples,
-    mark_speaker_as_self,
-    unmark_self,
-)
+from allday_asr.services.review import import_self_review
 from allday_asr.services.sources import (
     audit_all_sources,
     audit_source_object,
     plan_logical_windows,
 )
+from allday_asr.services.speakers import (
+    export_speaker_samples,
+    mark_speaker_as_self,
+    unmark_self,
+)
 from allday_asr.services.timeline import build_timeline
 from allday_asr.services.verification import export_self_candidates
-from allday_asr.services.review import import_self_review
 from allday_asr.services.voice_library import (
     accumulate_reviewed_samples,
     get_library_status,
@@ -63,7 +64,6 @@ from allday_asr.services.voice_library import (
 )
 from allday_asr.storage.database import Database
 from allday_asr.web import serve_web
-
 
 app = typer.Typer(
     name="allday-asr",
@@ -605,6 +605,32 @@ def benchmark_init_blind(
     )
     console.print(f"任务：{summary.task_path.resolve()}")
     console.print("标注前不要查看任何模型输出；具体格式见同目录 README.md。")
+
+
+@benchmark_app.command(name="annotate-blind")
+def benchmark_annotate_blind(
+    task: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="V2-C.1 truth-draft.jsonl 路径。",
+    ),
+    port: int = typer.Option(8766, min=1, max=65535, help="本地盲标网页端口。"),
+    open_browser: bool = typer.Option(
+        True,
+        "--open/--no-open",
+        help="启动后是否自动用默认浏览器打开。",
+    ),
+) -> None:
+    """启动隔离的盲标网页；不连接数据库，也不读取任何模型输出。"""
+    serve_blind_annotation(
+        task,
+        host="127.0.0.1",
+        port=port,
+        open_browser=open_browser,
+    )
 
 
 @benchmark_app.command(name="snapshot-v1")
