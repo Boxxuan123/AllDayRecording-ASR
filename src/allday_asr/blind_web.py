@@ -460,6 +460,10 @@ class BlindAnnotationRequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except ConnectionError:
+            # Browsers routinely cancel an outstanding WAV range when the user
+            # seeks, reloads, or switches windows. The response is already gone.
+            return
         except Exception as exc:
             self._send_json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
