@@ -2,16 +2,16 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B 已完成不可变原音、schema v5、逻辑窗口、连续时间真值、不可变预测快照和多 run benchmark。V2 不以实时性或小模型为目标；后续继续使用 `data/` 中现有的 2 小时 44 分 Watch 录音接入 Qwen3-ASR、强制对齐和词级说话人融合，之后再接云端 LLM 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、schema v6、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2 不以实时性或小模型为目标；下一阶段继续用现有 2 小时 44 分 Watch 录音实现允许重叠的说话人时间轴，之后再接云端 LLM 和 Watch 同步。
 
-实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V1 兼容评测见 [人工真值与评测指南](docs/evaluation-guide.md)。
+实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)。
 
 ## 已验证环境
 
 - Windows、Python 3.12。
 - RTX 5070 Laptop GPU，8 GB 显存。
 - PyTorch / torchaudio `2.9.1+cu128`、torchvision `0.24.1+cu128`。
-- FunASR `1.4.4`、ModelScope `1.39.1`。
+- FunASR `1.4.4`、ModelScope `1.39.1`、Qwen-ASR `0.0.6`。
 - FFmpeg / FFprobe 可用。
 
 PyTorch 使用 CUDA 专用 wheel，应根据显卡和 CUDA 环境单独安装，因此不由 `pyproject.toml` 自动解析。
@@ -60,6 +60,27 @@ allday-asr benchmark init-truth 1 --name first-15m-exhaustive --end 15:00
 ```
 
 当前迁移基线包含 277 条连续时间事实和 971 条冻结预测，CER 为 `14.36%`。旧标注不是穷尽式 VAD/说话人真值，因此 VAD-F1、DER/JER 显示 `N/A`，不会把未标时间错误地当成非语音。完整格式与指标定义见 [V2-B 指南](docs/v2-b-continuous-benchmark.md)。
+
+## V2-C：最大模型双假设与逐 token 追溯
+
+schema v6 为每个五分钟窗口不可变保存 Qwen3-ASR-1.7B 主假设、Qwen3-ForcedAligner 时间戳、Fun-ASR-Nano 第二假设和分歧队列。每个 token 同时保存 session 时间与原始 M4A 的 source 时间、对象 ID 和 SHA-256；窗口上下文 token 保留作诊断，冻结视图只取 token 中点位于 core 的内容以避免重复。
+
+当前 8 GB RTX 5070 已完成 2 小时 44 分 35 秒录音的全量 BF16 运行：33 个主假设、33 个第二假设、6,147 个对齐 token 和 16 个分歧窗口，耗时约 8 分 14 秒且未 OOM。全部 token 的源范围覆盖检查为 0 错误。冻结的 token 时间区间快照在现有稀疏真值上 CER 为 `0.3003`，劣于 V1 的 `0.1436`，所以 Qwen 当前只保留为候选与复核证据，不替换 SenseVoice 基线。
+
+```powershell
+# 当前 8 GB 5070：模型精度不变，batch=1 且两套模型顺序加载
+allday-asr asr-v2 run 1 --profile compatible-8gb
+
+# 默认 quality-16gb：BF16、无量化、较高 batch
+allday-asr asr-v2 run 1
+
+# 冻结主假设并与 truth set 1 / V1 基线比较
+allday-asr asr-v2 snapshot <run-id> --name qwen3-asr-1.7b-v2c
+allday-asr benchmark run 1 <prediction-set-id>
+allday-asr benchmark compare 1
+```
+
+完整配置、续跑语义、边界策略和依赖固定原因见 [V2-C 指南](docs/v2-c-quality-asr.md)。
 
 ## 推荐：一键离线日记
 
@@ -227,4 +248,4 @@ allday-asr action-review 3 --status dismissed
 
 ## 当前边界
 
-V2-A/V2-B 的不可变源对象、schema v5、输入指纹、完整性审计、逻辑窗口、连续真值和 benchmark 已经实现；生产 ASR 命令目前仍运行 V1 的 SenseVoiceSmall + FSMN-VAD + CAM++ 管线。Qwen3-ASR、多 ASR 假设、强制对齐和新的重叠说话人模型从 V2-C/V2-D 开始实施。Watch 的 5 分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现。说话人分离在电视、远场、重叠讲话及很短语音上仍不可靠，不能把匿名聚类直接当作人物身份。
+V2-A/V2-B/V2-C 的不可变源对象、schema v6、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现。生产默认仍运行 V1 SenseVoice，因为当前冻结 Watch 真值没有支持 Qwen 晋级；V2-D 的重叠说话人时间轴尚未实施。Watch 五分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现。说话人分离在电视、远场、重叠讲话及很短语音上仍不可靠，不能把匿名聚类直接当作人物身份。

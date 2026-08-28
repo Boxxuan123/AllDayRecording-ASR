@@ -29,7 +29,14 @@ def run_checks() -> list[CheckResult]:
         except Exception as exc:
             results.append(CheckResult(executable, False, str(exc)))
 
-    for package in ("funasr", "modelscope", "soundfile", "typer"):
+    for package in (
+        "funasr",
+        "modelscope",
+        "qwen-asr",
+        "transformers",
+        "soundfile",
+        "typer",
+    ):
         try:
             version = importlib.metadata.version(package)
             results.append(CheckResult(package, True, version))
@@ -63,4 +70,3 @@ def run_checks() -> list[CheckResult]:
         free_gib = shutil.disk_usage(".").free / 1024**3
         results.append(CheckResult("磁盘空间", True, f"可用 {free_gib:.1f} GiB"))
     return results
-

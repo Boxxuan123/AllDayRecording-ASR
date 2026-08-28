@@ -1,6 +1,6 @@
 # AllDayRecording-ASR V2：质量优先架构与实施设计
 
-> 状态：已接受；V2-A/V2-B 已于 2026-08-28 实现并在真实长录音上验收
+> 状态：已接受；V2-A/V2-B/V2-C 已于 2026-08-28 实现并进入真实长录音验收
 > 决策日期：2026-08-28  
 > 当前开发输入：`data/` 中已经入库的 2 小时 44 分 Watch M4A 录音  
 > 未来输入：Watch 每 5 分钟关闭并上传一个原始音频块；自动上传和手动同步共用同一接收协议
@@ -188,7 +188,7 @@ V2 不再长期保存整条录音的 `normalized-16k-mono.wav`。模型读取策
 
 ## 7. 数据模型目标（schema v4 起步）
 
-schema v4 建立不可变 source/session、run 输入快照和派生产物基础；schema v5 增加冻结 truth、prediction snapshot 和 benchmark run。V2-C 及后续实体继续通过只追加的新 migration 引入。完整数据模型采用“不可变 run + 可选当前结果指针”，不得继续用覆盖单行的方式保存所有阶段结果。
+schema v4 建立不可变 source/session、run 输入快照和派生产物基础；schema v5 增加冻结 truth、prediction snapshot 和 benchmark run；schema v6 增加不可变双 ASR 假设、alignment token、逐 token 原音映射和分歧队列。后续实体继续通过只追加的新 migration 引入。完整数据模型采用“不可变 run + 可选当前结果指针”，不得继续用覆盖单行的方式保存所有阶段结果。
 
 ### 7.1 核心实体
 
@@ -201,7 +201,9 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 | `derived_artifacts` | 可重建文件及其内容哈希、类型和来源 run |
 | `acoustic_regions` | speech、overlap、media、noise 等时间区域 |
 | `asr_hypotheses` | 每个模型的文本假设、语言和质量信息 |
-| `alignment_tokens` | 字符/词文本及开始、结束时间 |
+| `asr_alignment_tokens` | 字符/词文本及 analysis/session 开始、结束时间 |
+| `asr_token_sources` | token 到不可变原音对象、SHA-256 和源时间的完整映射 |
+| `asr_disagreements` | 同窗口两份 ASR 假设的差异与复核优先级 |
 | `speaker_turns` | 说话人活动区间，允许重叠 |
 | `speaker_attributions` | token/区间到匿名说话人和身份候选的关联 |
 | `identity_scores` | 声纹模型、分数、校准版本和质量门槛 |
@@ -295,7 +297,7 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 
 验收结果：schema v5 建立冻结真值、源范围引用、预测快照和 benchmark run；合成穷尽真值已验证 VAD Miss/FA、DER/JER、对齐误差和实体指标。现有 15 分钟标注映射为 277 条连续事实，冻结当前 V1 的 971 条预测后 CER 仍为 `0.1436`。旧标注源于 V1 VAD，系统明确将真实 VAD/DER 标为 N/A；完成穷尽式连续标注后即可统计真实漏检，不伪造结果。
 
-### V2-C：高质量 ASR 与对齐
+### V2-C：高质量 ASR 与对齐（已完成，候选未晋级）
 
 1. 接入 Qwen3-ASR-1.7B backend。
 2. 接入 Qwen3-ForcedAligner-0.6B。
@@ -304,6 +306,8 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 5. 在 8 GB 和 16 GB 环境分别记录可行配置，但以 16 GB 质量配置为默认目标。
 
 验收：完整处理当前长录音；新结果可与 V1 同屏比较；所有最终 token 可追溯到原始时间范围。
+
+验收结果：RTX 5070 8 GB 以相同 BF16 模型、batch=1 在约 8 分 14 秒内完成 33 个窗口的双模型处理，保存 66 份不可变假设、6,147 个 token 和 16 个分歧窗口；所有 token 源覆盖检查为 0 错误。修正 snapshot 的 transcript 时间粒度后，Qwen 在当前稀疏 Watch 真值上的 CER 为 `0.3003`，劣于 V1 `0.1436`，因此只作为候选和复核证据保留，不更新生产默认。
 
 ### V2-D：说话人时间轴与身份
 
@@ -352,4 +356,4 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 7. 云端语义接口。
 8. Watch chunk 同步。
 
-前三项已经完成；下一步从 Qwen3-ASR-1.7B 和 ForcedAligner 开始。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，新模型先写入独立快照并在同一冻结真值上比较。
+V2-A/V2-B/V2-C 已完成；下一步进入 V2-D 的 Sortformer/pyannote 候选比较和 token-to-speaker 融合。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在同一冻结真值上比较。

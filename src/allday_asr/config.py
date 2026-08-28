@@ -29,6 +29,15 @@ class IngestConfig:
 @dataclass(frozen=True)
 class AsrConfig:
     language: str = "zh"
+    primary_model: str = "Qwen/Qwen3-ASR-1.7B"
+    forced_aligner_model: str = "Qwen/Qwen3-ForcedAligner-0.6B"
+    secondary_model: str = "FunAudioLLM/Fun-ASR-Nano-2512"
+    vram_profile: str = "quality-16gb"
+    window_seconds: float = 300.0
+    context_seconds: float = 5.0
+    max_new_tokens: int = 4096
+    primary_batch_size_16gb: int = 4
+    primary_batch_size_8gb: int = 1
 
 
 @dataclass(frozen=True)
@@ -117,7 +126,22 @@ def config_from_mapping(payload: dict[str, Any]) -> AppConfig:
 
     runtime_values = _section(payload, "runtime", {"device"})
     ingest_values = _section(payload, "ingest", {"device", "timezone"})
-    asr_values = _section(payload, "asr", {"language"})
+    asr_values = _section(
+        payload,
+        "asr",
+        {
+            "language",
+            "primary_model",
+            "forced_aligner_model",
+            "secondary_model",
+            "vram_profile",
+            "window_seconds",
+            "context_seconds",
+            "max_new_tokens",
+            "primary_batch_size_16gb",
+            "primary_batch_size_8gb",
+        },
+    )
     diarization_values = _section(
         payload,
         "diarization",
@@ -187,6 +211,20 @@ def _validate(config: AppConfig) -> None:
         raise ConfigError(f"未知时区：{config.ingest.timezone}") from exc
     if not config.asr.language.strip():
         raise ConfigError("asr.language 不能为空")
+    asr = config.asr
+    for field in ("primary_model", "forced_aligner_model", "secondary_model"):
+        if not getattr(asr, field).strip():
+            raise ConfigError(f"asr.{field} 不能为空")
+    if asr.vram_profile not in {"quality-16gb", "compatible-8gb"}:
+        raise ConfigError("asr.vram_profile 必须是 quality-16gb 或 compatible-8gb")
+    if asr.window_seconds <= 0:
+        raise ConfigError("asr.window_seconds 必须大于 0")
+    if asr.context_seconds < 0:
+        raise ConfigError("asr.context_seconds 不能小于 0")
+    if asr.max_new_tokens < 256:
+        raise ConfigError("asr.max_new_tokens 不能小于 256")
+    if asr.primary_batch_size_16gb < 1 or asr.primary_batch_size_8gb < 1:
+        raise ConfigError("ASR batch size 必须大于 0")
     diarization = config.diarization
     if diarization.preset_speakers is not None and diarization.preset_speakers < 1:
         raise ConfigError("diarization.preset_speakers 必须大于 0")

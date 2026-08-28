@@ -9,6 +9,15 @@ timezone = "Asia/Singapore"
 
 [asr]
 language = "zh"
+primary_model = "Qwen/Qwen3-ASR-1.7B"
+forced_aligner_model = "Qwen/Qwen3-ForcedAligner-0.6B"
+secondary_model = "FunAudioLLM/Fun-ASR-Nano-2512"
+vram_profile = "quality-16gb"
+window_seconds = 300.0
+context_seconds = 5.0
+max_new_tokens = 4096
+primary_batch_size_16gb = 4
+primary_batch_size_8gb = 1
 
 [diarization]
 enabled = true

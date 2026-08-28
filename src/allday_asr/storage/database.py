@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS conversation_events (
 );
 """
 
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -592,6 +592,133 @@ MIGRATIONS: dict[int, str] = {
         BEFORE DELETE ON benchmark_runs
         BEGIN
             SELECT RAISE(ABORT, 'benchmark run cannot be deleted');
+        END;
+    """,
+    6: """
+        CREATE TABLE IF NOT EXISTS asr_hypotheses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hypothesis_key TEXT NOT NULL UNIQUE,
+            run_id INTEGER NOT NULL,
+            session_id INTEGER NOT NULL,
+            window_index INTEGER NOT NULL,
+            hypothesis_role TEXT NOT NULL CHECK(
+                hypothesis_role IN ('primary', 'secondary')
+            ),
+            core_start_ms INTEGER NOT NULL,
+            core_end_ms INTEGER NOT NULL,
+            analysis_start_ms INTEGER NOT NULL,
+            analysis_end_ms INTEGER NOT NULL,
+            model_id TEXT NOT NULL,
+            model_revision TEXT,
+            backend TEXT NOT NULL,
+            language TEXT,
+            text TEXT NOT NULL,
+            parameters_json TEXT NOT NULL,
+            raw_response_json TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, window_index, hypothesis_role),
+            CHECK(core_end_ms > core_start_ms),
+            CHECK(analysis_end_ms > analysis_start_ms),
+            CHECK(analysis_start_ms <= core_start_ms),
+            CHECK(analysis_end_ms >= core_end_ms),
+            FOREIGN KEY (run_id) REFERENCES processing_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY (session_id) REFERENCES recording_sessions(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_asr_hypotheses_run_window
+        ON asr_hypotheses(run_id, window_index, hypothesis_role);
+
+        CREATE TABLE IF NOT EXISTS asr_alignment_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hypothesis_id INTEGER NOT NULL,
+            token_index INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            session_start_ms INTEGER NOT NULL,
+            session_end_ms INTEGER NOT NULL,
+            analysis_start_ms INTEGER NOT NULL,
+            analysis_end_ms INTEGER NOT NULL,
+            kept_in_core INTEGER NOT NULL CHECK(kept_in_core IN (0, 1)),
+            confidence REAL,
+            alignment_model_id TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            UNIQUE(hypothesis_id, token_index),
+            CHECK(session_end_ms > session_start_ms),
+            CHECK(analysis_end_ms > analysis_start_ms),
+            FOREIGN KEY (hypothesis_id) REFERENCES asr_hypotheses(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_asr_alignment_tokens_time
+        ON asr_alignment_tokens(hypothesis_id, session_start_ms, session_end_ms);
+
+        CREATE TABLE IF NOT EXISTS asr_token_sources (
+            token_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            source_object_id INTEGER NOT NULL,
+            source_sha256 TEXT NOT NULL,
+            source_start_ms INTEGER NOT NULL,
+            source_end_ms INTEGER NOT NULL,
+            PRIMARY KEY (token_id, position),
+            CHECK(source_end_ms > source_start_ms),
+            FOREIGN KEY (token_id) REFERENCES asr_alignment_tokens(id) ON DELETE RESTRICT,
+            FOREIGN KEY (source_object_id) REFERENCES source_objects(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS asr_disagreements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            window_index INTEGER NOT NULL,
+            primary_hypothesis_id INTEGER NOT NULL,
+            secondary_hypothesis_id INTEGER NOT NULL,
+            session_start_ms INTEGER NOT NULL,
+            session_end_ms INTEGER NOT NULL,
+            normalized_distance REAL NOT NULL,
+            priority TEXT NOT NULL CHECK(priority IN ('low', 'medium', 'high')),
+            details_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, window_index),
+            CHECK(session_end_ms > session_start_ms),
+            CHECK(normalized_distance >= 0.0 AND normalized_distance <= 1.0),
+            FOREIGN KEY (run_id) REFERENCES processing_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY (primary_hypothesis_id) REFERENCES asr_hypotheses(id) ON DELETE RESTRICT,
+            FOREIGN KEY (secondary_hypothesis_id) REFERENCES asr_hypotheses(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_asr_disagreements_run_priority
+        ON asr_disagreements(run_id, priority, window_index);
+
+        CREATE TRIGGER IF NOT EXISTS protect_asr_hypotheses_from_update
+        BEFORE UPDATE ON asr_hypotheses BEGIN
+            SELECT RAISE(ABORT, 'ASR hypothesis cannot be changed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_asr_hypotheses_from_delete
+        BEFORE DELETE ON asr_hypotheses BEGIN
+            SELECT RAISE(ABORT, 'ASR hypothesis cannot be deleted');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_asr_tokens_from_update
+        BEFORE UPDATE ON asr_alignment_tokens BEGIN
+            SELECT RAISE(ABORT, 'ASR token cannot be changed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_asr_tokens_from_delete
+        BEFORE DELETE ON asr_alignment_tokens BEGIN
+            SELECT RAISE(ABORT, 'ASR token cannot be deleted');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_asr_token_sources_from_update
+        BEFORE UPDATE ON asr_token_sources BEGIN
+            SELECT RAISE(ABORT, 'ASR token source cannot be changed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_asr_token_sources_from_delete
+        BEFORE DELETE ON asr_token_sources BEGIN
+            SELECT RAISE(ABORT, 'ASR token source cannot be deleted');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_asr_disagreements_from_update
+        BEFORE UPDATE ON asr_disagreements BEGIN
+            SELECT RAISE(ABORT, 'ASR disagreement cannot be changed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_asr_disagreements_from_delete
+        BEFORE DELETE ON asr_disagreements BEGIN
+            SELECT RAISE(ABORT, 'ASR disagreement cannot be deleted');
         END;
     """,
 }
@@ -1403,6 +1530,23 @@ class Database:
             if cursor.rowcount != 1:
                 raise KeyError(f"处理运行 {run_id} 不存在")
 
+    def resume_processing_run(self, run_id: int) -> sqlite3.Row:
+        run = self.get_processing_run(run_id)
+        if str(run["run_kind"]) != "quality_asr_v2c":
+            raise ValueError("only V2-C ASR runs can be resumed by this command")
+        if str(run["status"]) == "completed":
+            return run
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE processing_runs
+                SET status = 'running', completed_at = NULL, error = NULL
+                WHERE id = ?
+                """,
+                (run_id,),
+            )
+        return self.get_processing_run(run_id)
+
     def list_processing_runs(self, recording_id: int) -> list[sqlite3.Row]:
         with self.connect() as connection:
             return list(
@@ -1422,6 +1566,269 @@ class Database:
                     """
                     SELECT * FROM processing_run_inputs
                     WHERE run_id = ? ORDER BY position
+                    """,
+                    (run_id,),
+                )
+            )
+
+    def get_processing_run(self, run_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM processing_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"处理运行 {run_id} 不存在")
+        return row
+
+    def create_asr_hypothesis(
+        self, values: dict[str, Any], tokens: Sequence[dict[str, Any]]
+    ) -> sqlite3.Row:
+        """Append one immutable model hypothesis and its source-traced tokens."""
+        run_id = int(values["run_id"])
+        run = self.get_processing_run(run_id)
+        session_id = int(values["session_id"])
+        if int(run["session_id"]) != session_id:
+            raise ValueError("ASR hypothesis session does not match its processing run")
+        if str(run["status"]) != "running":
+            raise ValueError("ASR hypotheses can only be appended to a running processing run")
+
+        analysis_start = int(values["analysis_start_ms"])
+        analysis_end = int(values["analysis_end_ms"])
+        core_start = int(values["core_start_ms"])
+        core_end = int(values["core_end_ms"])
+        if not (
+            0 <= analysis_start <= core_start < core_end <= analysis_end
+        ):
+            raise ValueError("ASR hypothesis has an invalid window range")
+
+        canonical_payload = {
+            "hypothesis_key": values["hypothesis_key"],
+            "run_id": run_id,
+            "session_id": session_id,
+            "window_index": int(values["window_index"]),
+            "hypothesis_role": values["hypothesis_role"],
+            "core_start_ms": core_start,
+            "core_end_ms": core_end,
+            "analysis_start_ms": analysis_start,
+            "analysis_end_ms": analysis_end,
+            "model_id": values["model_id"],
+            "model_revision": values.get("model_revision"),
+            "backend": values["backend"],
+            "language": values.get("language"),
+            "text": values.get("text", ""),
+            "parameters": values.get("parameters", {}),
+            "raw_response": values.get("raw_response", {}),
+            "tokens": list(tokens),
+        }
+        canonical_json = json.dumps(
+            canonical_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        content_sha256 = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+        now = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO asr_hypotheses (
+                    hypothesis_key, run_id, session_id, window_index,
+                    hypothesis_role, core_start_ms, core_end_ms,
+                    analysis_start_ms, analysis_end_ms, model_id,
+                    model_revision, backend, language, text, parameters_json,
+                    raw_response_json, content_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    values["hypothesis_key"],
+                    run_id,
+                    session_id,
+                    values["window_index"],
+                    values["hypothesis_role"],
+                    core_start,
+                    core_end,
+                    analysis_start,
+                    analysis_end,
+                    values["model_id"],
+                    values.get("model_revision"),
+                    values["backend"],
+                    values.get("language"),
+                    values.get("text", ""),
+                    json.dumps(values.get("parameters", {}), ensure_ascii=False, sort_keys=True),
+                    json.dumps(values.get("raw_response", {}), ensure_ascii=False, sort_keys=True),
+                    content_sha256,
+                    now,
+                ),
+            )
+            hypothesis_id = int(cursor.lastrowid)
+            for token_index, token in enumerate(tokens):
+                token_start = int(token["session_start_ms"])
+                token_end = int(token["session_end_ms"])
+                if token_start < analysis_start or token_end > analysis_end or token_end <= token_start:
+                    raise ValueError(f"ASR token {token_index} falls outside its analysis window")
+                token_cursor = connection.execute(
+                    """
+                    INSERT INTO asr_alignment_tokens (
+                        hypothesis_id, token_index, text, session_start_ms,
+                        session_end_ms, analysis_start_ms, analysis_end_ms,
+                        kept_in_core, confidence, alignment_model_id,
+                        metadata_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        hypothesis_id,
+                        int(token.get("token_index", token_index)),
+                        token["text"],
+                        token_start,
+                        token_end,
+                        int(token["analysis_start_ms"]),
+                        int(token["analysis_end_ms"]),
+                        1 if token.get("kept_in_core", False) else 0,
+                        token.get("confidence"),
+                        token.get("alignment_model_id"),
+                        json.dumps(token.get("metadata", {}), ensure_ascii=False, sort_keys=True),
+                        now,
+                    ),
+                )
+                token_id = int(token_cursor.lastrowid)
+                source_refs = list(token.get("source_refs", []))
+                if not source_refs:
+                    raise ValueError(f"ASR token {token_index} has no immutable source reference")
+                mapped_ms = 0
+                mapped_cursor = token_start
+                for position, source_ref in enumerate(source_refs):
+                    source = connection.execute(
+                        """
+                        SELECT so.sha256, ss.session_start_ms, ss.session_end_ms,
+                               ss.source_start_ms, ss.source_end_ms
+                        FROM source_objects so
+                        JOIN session_sources ss ON ss.source_object_id = so.id
+                        WHERE so.id = ? AND ss.session_id = ?
+                        """,
+                        (source_ref["source_object_id"], session_id),
+                    ).fetchone()
+                    if source is None:
+                        raise ValueError("ASR token references a source outside its session")
+                    if str(source["sha256"]) != str(source_ref["source_sha256"]):
+                        raise ValueError("ASR token source SHA-256 mismatch")
+                    source_start = int(source_ref["source_start_ms"])
+                    source_end = int(source_ref["source_end_ms"])
+                    if (
+                        source_start < int(source["source_start_ms"])
+                        or source_end > int(source["source_end_ms"])
+                        or source_end <= source_start
+                    ):
+                        raise ValueError("ASR token has an invalid source range")
+                    mapped_start = int(source["session_start_ms"]) + (
+                        source_start - int(source["source_start_ms"])
+                    )
+                    mapped_end = mapped_start + (source_end - source_start)
+                    if mapped_start != mapped_cursor or mapped_end > token_end:
+                        raise ValueError("ASR token source references are not continuous")
+                    mapped_cursor = mapped_end
+                    mapped_ms += source_end - source_start
+                    connection.execute(
+                        """
+                        INSERT INTO asr_token_sources (
+                            token_id, position, source_object_id, source_sha256,
+                            source_start_ms, source_end_ms
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            token_id,
+                            position,
+                            source_ref["source_object_id"],
+                            source_ref["source_sha256"],
+                            source_start,
+                            source_end,
+                        ),
+                    )
+                if mapped_ms != token_end - token_start or mapped_cursor != token_end:
+                    raise ValueError(f"ASR token {token_index} source mapping is incomplete")
+        return self.get_asr_hypothesis(hypothesis_id)
+
+    def get_asr_hypothesis(self, hypothesis_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM asr_hypotheses WHERE id = ?", (hypothesis_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"ASR hypothesis {hypothesis_id} does not exist")
+        return row
+
+    def list_asr_hypotheses(
+        self, run_id: int, *, role: str | None = None
+    ) -> list[sqlite3.Row]:
+        self.get_processing_run(run_id)
+        sql = "SELECT * FROM asr_hypotheses WHERE run_id = ?"
+        params: list[Any] = [run_id]
+        if role is not None:
+            sql += " AND hypothesis_role = ?"
+            params.append(role)
+        sql += " ORDER BY window_index, hypothesis_role"
+        with self.connect() as connection:
+            return list(connection.execute(sql, params))
+
+    def list_asr_tokens(
+        self, hypothesis_id: int, *, core_only: bool = False
+    ) -> list[sqlite3.Row]:
+        self.get_asr_hypothesis(hypothesis_id)
+        sql = "SELECT * FROM asr_alignment_tokens WHERE hypothesis_id = ?"
+        params: list[Any] = [hypothesis_id]
+        if core_only:
+            sql += " AND kept_in_core = 1"
+        sql += " ORDER BY token_index"
+        with self.connect() as connection:
+            return list(connection.execute(sql, params))
+
+    def list_asr_token_sources(self, token_id: int) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM asr_token_sources WHERE token_id = ? ORDER BY position",
+                    (token_id,),
+                )
+            )
+
+    def create_asr_disagreement(self, values: dict[str, Any]) -> sqlite3.Row:
+        now = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO asr_disagreements (
+                    run_id, window_index, primary_hypothesis_id,
+                    secondary_hypothesis_id, session_start_ms, session_end_ms,
+                    normalized_distance, priority, details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    values["run_id"],
+                    values["window_index"],
+                    values["primary_hypothesis_id"],
+                    values["secondary_hypothesis_id"],
+                    values["session_start_ms"],
+                    values["session_end_ms"],
+                    values["normalized_distance"],
+                    values["priority"],
+                    json.dumps(values.get("details", {}), ensure_ascii=False, sort_keys=True),
+                    now,
+                ),
+            )
+            disagreement_id = int(cursor.lastrowid)
+            return connection.execute(
+                "SELECT * FROM asr_disagreements WHERE id = ?", (disagreement_id,)
+            ).fetchone()
+
+    def list_asr_disagreements(self, run_id: int) -> list[sqlite3.Row]:
+        self.get_processing_run(run_id)
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM asr_disagreements
+                    WHERE run_id = ?
+                    ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                             window_index
                     """,
                     (run_id,),
                 )

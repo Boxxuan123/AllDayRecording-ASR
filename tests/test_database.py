@@ -239,10 +239,12 @@ class DatabaseTests(unittest.TestCase):
         finally:
             connection.close()
 
-        backup_pattern = f"v2b-migration-{token}.schema-v4-to-v5.*.sqlite3"
+        backup_pattern = (
+            f"v2b-migration-{token}.schema-v4-to-v{LATEST_SCHEMA_VERSION}.*.sqlite3"
+        )
         try:
             database = Database(database_path)
-            self.assertEqual(database.schema_version(), 5)
+            self.assertEqual(database.schema_version(), LATEST_SCHEMA_VERSION)
             with database.connect() as connection:
                 tables = {
                     row[0]
@@ -252,6 +254,7 @@ class DatabaseTests(unittest.TestCase):
                 }
             self.assertIn("truth_sets", tables)
             self.assertIn("benchmark_prediction_sets", tables)
+            self.assertIn("asr_hypotheses", tables)
             backups = list(root.glob(backup_pattern))
             self.assertEqual(len(backups), 1)
             backup = sqlite3.connect(backups[0])
