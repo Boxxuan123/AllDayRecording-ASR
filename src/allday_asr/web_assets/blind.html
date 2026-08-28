@@ -84,6 +84,29 @@
             </label>
           </div>
 
+          <fieldset class="source-field">
+            <legend>声源 <span>不是人物身份；电视对白也属于语音</span></legend>
+            <div class="source-options">
+              <label class="source-option">
+                <input type="radio" name="speech-source" value="live_person" checked>
+                <span><strong>现场人声</strong><small>身边的人正在说话</small></span>
+              </label>
+              <label class="source-option">
+                <input type="radio" name="speech-source" value="media_playback">
+                <span><strong>电视 / 媒体</strong><small>扬声器播放的节目或视频</small></span>
+              </label>
+              <label class="source-option">
+                <input type="radio" name="speech-source" value="mixed_live_media">
+                <span><strong>现场 + 媒体重叠</strong><small>不要求强行拆成两路</small></span>
+              </label>
+              <label class="source-option">
+                <input type="radio" name="speech-source" value="unknown">
+                <span><strong>声源不确定</strong><small>确认是语音，但分不清来源</small></span>
+              </label>
+            </div>
+            <p id="legacy-source-help">载入旧标注声源策略中…</p>
+          </fieldset>
+
           <label class="transcript-field">
             <span>准确听写</span>
             <textarea id="transcript" rows="3" placeholder="只写实际听到的内容，不参考任何旧转写"></textarea>
@@ -107,7 +130,7 @@
             <span id="window-annotation-count" class="count-pill">0 条</span>
           </div>
           <div id="utterance-list" class="utterance-list"></div>
-          <div id="utterance-empty" class="empty-state">本块还没有语音标注。整块确实无语音时可以直接标记完整检查。</div>
+          <div id="utterance-empty" class="empty-state">本块还没有语音标注。整块确实没有现场或媒体语音时，可以直接标记完整检查。</div>
         </section>
 
         <section class="finalize-card">

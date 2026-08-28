@@ -43,6 +43,23 @@ ACOUSTIC_BLIND_KIND = "blind_acoustic_stratified_annotation_v2"
 ACOUSTIC_SELECTION_MANIFEST_FORMAT = (
     "AllDayRecording V2-C.2 acoustic selection manifest v1"
 )
+SPEECH_SOURCE_POLICY_FORMAT = "AllDayRecording audible speech source v1"
+SPEECH_SOURCE_LIVE = "live_person"
+SPEECH_SOURCE_MEDIA = "media_playback"
+SPEECH_SOURCE_MIXED = "mixed_live_media"
+SPEECH_SOURCE_UNKNOWN = "unknown"
+SPEECH_SOURCE_VALUES = frozenset(
+    {
+        SPEECH_SOURCE_LIVE,
+        SPEECH_SOURCE_MEDIA,
+        SPEECH_SOURCE_MIXED,
+        SPEECH_SOURCE_UNKNOWN,
+    }
+)
+# An older task without an explicit policy must not silently turn ambiguous
+# playback speech into an in-person conversation. A task may override this when
+# the annotator has explicitly classified all pre-existing rows.
+LEGACY_SPEECH_SOURCE_DEFAULT = SPEECH_SOURCE_UNKNOWN
 EXHAUSTIVE = "exhaustive"
 
 
@@ -172,6 +189,8 @@ def create_blind_truth_task(
         "provenance": {
             "kind": "blind_continuous_annotation_v1",
             "protocol": BLIND_PROTOCOL_FORMAT,
+            "speech_source_policy": SPEECH_SOURCE_POLICY_FORMAT,
+            "legacy_unlabeled_speech_source": LEGACY_SPEECH_SOURCE_DEFAULT,
             "selection_algorithm": "sha256-uniform-contiguous-second-v1",
             "selection_seed": seed,
             "requested_duration_ms": duration_ms,
@@ -379,6 +398,8 @@ def create_acoustic_blind_truth_task(
         "provenance": {
             "kind": ACOUSTIC_BLIND_KIND,
             "protocol": ACOUSTIC_BLIND_PROTOCOL_FORMAT,
+            "speech_source_policy": SPEECH_SOURCE_POLICY_FORMAT,
+            "legacy_unlabeled_speech_source": LEGACY_SPEECH_SOURCE_DEFAULT,
             "selection_algorithm": "waveform-acoustic-rank-with-gap-v1",
             "selection_seed": seed,
             "requested_review_duration_ms": review_duration_ms,
@@ -2153,6 +2174,50 @@ def _validate_blind_truth(
             for window_start, window_end in temporal_windows
         ):
             raise ValueError(f"盲标标注 {row.get('key')} 不在任何已复核窗口内")
+    _validate_blind_speech_sources(rows, review_regions)
+
+
+def _validate_blind_speech_sources(
+    rows: Sequence[dict[str, Any]],
+    review_regions: Sequence[dict[str, Any]],
+) -> None:
+    grouped_sources: dict[str, set[str]] = {}
+    review_region_ids = {id(row) for row in review_regions}
+    metadata = rows[0] if rows else {}
+    provenance = metadata.get("provenance", {})
+    legacy_default = (
+        str(provenance.get("legacy_unlabeled_speech_source"))
+        if isinstance(provenance, dict)
+        and provenance.get("legacy_unlabeled_speech_source") is not None
+        else LEGACY_SPEECH_SOURCE_DEFAULT
+    )
+    if legacy_default not in SPEECH_SOURCE_VALUES:
+        raise ValueError(
+            "盲标协议的 legacy_unlabeled_speech_source 无效："
+            f"{legacy_default}"
+        )
+    for row in rows:
+        if row.get("type") != "annotation" or id(row) in review_region_ids:
+            continue
+        row_metadata = row.get("metadata", {})
+        if not isinstance(row_metadata, dict):
+            raise ValueError(f"标注 {row.get('key')} 的 metadata 必须是对象")
+        explicit_source = row_metadata.get("speech_source")
+        speech_source = str(explicit_source or legacy_default)
+        if speech_source not in SPEECH_SOURCE_VALUES:
+            raise ValueError(
+                f"盲标标注 {row.get('key')} 的 speech_source 无效：{speech_source}"
+            )
+        utterance_id = str(row_metadata.get("utterance_id") or "").strip()
+        if utterance_id:
+            grouped_sources.setdefault(utterance_id, set()).add(speech_source)
+    inconsistent = sorted(
+        utterance_id
+        for utterance_id, sources in grouped_sources.items()
+        if len(sources) != 1
+    )
+    if inconsistent:
+        raise ValueError(f"以下语音的 speech_source 不一致：{inconsistent}")
 
 
 def _blind_task_readme(
@@ -2174,15 +2239,15 @@ def _blind_task_readme(
 在 `{task_name}` 中完成以下工作：
 
 1. 每段完整听完，把对应 `blind_window.review_status` 改为 `complete`。
-2. 为每段可听语音添加 `speech` annotation，并为所有可听清内容添加 `transcript`；无法可靠听写的语音另加 `uncertain` annotation，label 使用 `unintelligible`，该范围不计 ASR CER。时间是 session 绝对毫秒；key 必须唯一。
-3. 无语音区域不添加 `speech`，这正是穷尽式 VAD 真值的一部分。不要删除 `blind:review-region:*` 行。穷尽真值中的孤立模型 transcript 会作为插入错误计入，不能靠不重叠人工文字逃避处罚。
+2. 为每段可听语音（包括电视/媒体播放声）添加 `speech` annotation，并为所有可听清内容添加 `transcript`；metadata 的 `speech_source` 使用 `live_person`、`media_playback`、`mixed_live_media` 或 `unknown`。无法可靠听写的语音另加 `uncertain` annotation，label 使用 `unintelligible`，该范围不计 ASR CER。时间是 session 绝对毫秒；key 必须唯一。
+3. 现场声和媒体声重叠且难以拆分时直接使用 `mixed_live_media`，不必强行分离；听不清时同时使用 `unintelligible`。无语音区域不添加 `speech`，这正是穷尽式 VAD 真值的一部分。不要删除 `blind:review-region:*` 行。穷尽真值中的孤立模型 transcript 会作为插入错误计入，不能靠不重叠人工文字逃避处罚。
 4. 全部完成后把 `completeness.vad` 和 `completeness.transcript` 改为 `exhaustive`，填写 `blind_attestation`，再运行 `allday-asr benchmark import-truth <path>`。
 
 示例 annotation（仅展示格式，不是答案）：
 
 ```json
-{{"type":"annotation","key":"blind:speech:0001","kind":"speech","session_start_ms":123000,"session_end_ms":124500,"label":"speech","text":null,"metadata":{{"reviewed":true}}}}
-{{"type":"annotation","key":"blind:transcript:0001","kind":"transcript","session_start_ms":123000,"session_end_ms":124500,"label":null,"text":"人工听写内容","metadata":{{"reviewed":true}}}}
+{{"type":"annotation","key":"blind:speech:0001","kind":"speech","session_start_ms":123000,"session_end_ms":124500,"label":"speech","text":null,"metadata":{{"reviewed":true,"speech_source":"live_person"}}}}
+{{"type":"annotation","key":"blind:transcript:0001","kind":"transcript","session_start_ms":123000,"session_end_ms":124500,"label":null,"text":"人工听写内容","metadata":{{"reviewed":true,"speech_source":"live_person"}}}}
 ```
 """
 

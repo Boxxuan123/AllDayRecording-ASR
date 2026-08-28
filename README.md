@@ -112,7 +112,7 @@ allday-asr benchmark compare-oracle-pair 1 <baseline-set> <candidate-set> `
 
 V2-C.1 的均匀连续 30 分钟块经人工抽听和客观音量复核后确认接近全静音：以 `-50 dBFS` 为阈值时每个五分钟块只有约 `1%–2%` 非静音代理。它保留为环境负样本，用于 VAD 误报和 ASR 幻觉率，不再承担主 CER 排名。
 
-V2-C.2 对整段不可变 PCM 只计算 100 ms RMS 活动、持续活动、P90/RMS 音量和 200–4000 Hz 能量比例，不读取候选 VAD、ASR 或旧转写。真实任务选择了 `00:11–00:37` 之间 10 个相隔至少一分钟的一分钟块，独立 `-50 dBFS` 检查的非静音代理为 `86.7%–100%`。数据库仍保存包围范围，但 benchmark 只计算十个明确的 review-region，未抽中的间隙不会被误当作人工确认的静音。网页可记录语音起止、准确听写或无法可靠听清；编辑会撤销对应块的完成状态。导入必须验证 selection manifest、窗口/音频 SHA-256、完整复核和 `model_outputs_unseen` 声明。完整设计见 [V2-C.2 指南](docs/v2-c2-acoustic-blind-benchmark.md)。
+V2-C.2 对整段不可变 PCM 只计算 100 ms RMS 活动、持续活动、P90/RMS 音量和 200–4000 Hz 能量比例，不读取候选 VAD、ASR 或旧转写。真实任务选择了 `00:11–00:37` 之间 10 个相隔至少一分钟的一分钟块，独立 `-50 dBFS` 检查的非静音代理为 `86.7%–100%`。数据库仍保存包围范围，但 benchmark 只计算十个明确的 review-region，未抽中的间隙不会被误当作人工确认的静音。网页可记录语音起止、准确听写或无法可靠听清，并将声源标为现场、电视/媒体、现场与媒体重叠或不确定；重叠声不要求人工强行分离。旧标注按现场人声兼容，编辑会撤销对应块的完成状态。导入必须验证 selection manifest、窗口/音频 SHA-256、声源值、完整复核和 `model_outputs_unseen` 声明。完整设计见 [V2-C.2 指南](docs/v2-c2-acoustic-blind-benchmark.md)。
 
 ## 推荐：一键离线日记
 

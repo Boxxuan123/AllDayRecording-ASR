@@ -17,6 +17,9 @@ from allday_asr.services.benchmark import (
     ACOUSTIC_BLIND_PROTOCOL_FORMAT,
     BLIND_PROTOCOL_FORMAT,
     CONTINUOUS_TRUTH_FORMAT,
+    LEGACY_SPEECH_SOURCE_DEFAULT,
+    SPEECH_SOURCE_LIVE,
+    SPEECH_SOURCE_VALUES,
 )
 
 BLIND_ASSET_ROOT = Path(__file__).parent / "web_assets"
@@ -72,6 +75,7 @@ class BlindAnnotationApplication:
             "coverage_semantics": metadata.get("coverage_semantics", "continuous"),
             "completeness": metadata.get("completeness", {}),
             "blind_attestation": metadata.get("blind_attestation", {}),
+            "speech_source_default": self._legacy_speech_source_default(rows),
             "finalized": (
                 metadata.get("blind_attestation", {}).get("model_outputs_unseen")
                 is True
@@ -99,6 +103,11 @@ class BlindAnnotationApplication:
             raise ValueError("结束时间必须晚于开始时间")
         text = str(payload.get("text") or "").strip()
         unintelligible = payload.get("unintelligible") is True
+        speech_source = str(
+            payload.get("speech_source") or SPEECH_SOURCE_LIVE
+        ).strip()
+        if speech_source not in SPEECH_SOURCE_VALUES:
+            raise ValueError(f"speech_source 无效：{speech_source}")
         if bool(text) == unintelligible:
             raise ValueError("必须填写听写文字，或选择“听不清”且不填写文字")
         if len(text) > 4_000:
@@ -133,6 +142,7 @@ class BlindAnnotationApplication:
                 "utterance_id": utterance_id,
                 "window_index": window_index,
                 "created_by": "blind-web-v1",
+                "speech_source": speech_source,
             }
             rows.append(
                 _annotation_row(
@@ -305,6 +315,7 @@ class BlindAnnotationApplication:
         inspect(rows)
         if not any(row.get("type") == "blind_window" for row in rows):
             raise ValueError("盲标任务没有音频窗口")
+        BlindAnnotationApplication._validate_speech_source_rows(rows)
 
     @staticmethod
     def _ensure_editable(rows: list[dict[str, Any]]) -> None:
@@ -393,6 +404,16 @@ class BlindAnnotationApplication:
             anchor = speech or transcript or uncertain
             if anchor is None:
                 continue
+            explicit_sources = {
+                str(row.get("metadata", {}).get("speech_source"))
+                for row in utterance_annotations
+                if row.get("metadata", {}).get("speech_source") is not None
+            }
+            speech_source = (
+                next(iter(explicit_sources))
+                if explicit_sources
+                else BlindAnnotationApplication._legacy_speech_source_default(rows)
+            )
             window_index = int(anchor.get("metadata", {}).get("window_index"))
             window = windows.get(window_index)
             if window is None:
@@ -407,6 +428,8 @@ class BlindAnnotationApplication:
                     - int(window["session_start_ms"]),
                     "text": str(transcript.get("text") or "") if transcript else "",
                     "unintelligible": uncertain is not None,
+                    "speech_source": speech_source,
+                    "speech_source_inferred": not explicit_sources,
                 }
             )
         return sorted(
@@ -430,6 +453,46 @@ class BlindAnnotationApplication:
         incomplete = sorted(item for item in speech_ids if item and item not in valid_ids)
         if incomplete:
             raise ValueError(f"以下 speech 缺少 transcript/听不清标记：{incomplete}")
+
+    @staticmethod
+    def _validate_speech_source_rows(rows: list[dict[str, Any]]) -> None:
+        grouped: dict[str, set[str]] = {}
+        legacy_default = BlindAnnotationApplication._legacy_speech_source_default(rows)
+        for row in rows:
+            if row.get("type") != "annotation":
+                continue
+            metadata = row.get("metadata", {})
+            if not isinstance(metadata, dict):
+                raise ValueError(f"标注 {row.get('key')} 的 metadata 必须是对象")
+            utterance_id = _row_utterance_id(row)
+            if not utterance_id:
+                continue
+            speech_source = str(
+                metadata.get("speech_source") or legacy_default
+            )
+            if speech_source not in SPEECH_SOURCE_VALUES:
+                raise ValueError(
+                    f"标注 {row.get('key')} 的 speech_source 无效：{speech_source}"
+                )
+            grouped.setdefault(utterance_id, set()).add(speech_source)
+        inconsistent = sorted(
+            utterance_id for utterance_id, sources in grouped.items() if len(sources) != 1
+        )
+        if inconsistent:
+            raise ValueError(f"以下语音的 speech_source 不一致：{inconsistent}")
+
+    @staticmethod
+    def _legacy_speech_source_default(rows: list[dict[str, Any]]) -> str:
+        provenance = rows[0].get("provenance", {}) if rows else {}
+        value = (
+            str(provenance.get("legacy_unlabeled_speech_source"))
+            if isinstance(provenance, dict)
+            and provenance.get("legacy_unlabeled_speech_source") is not None
+            else LEGACY_SPEECH_SOURCE_DEFAULT
+        )
+        if value not in SPEECH_SOURCE_VALUES:
+            raise ValueError(f"legacy_unlabeled_speech_source 无效：{value}")
+        return value
 
     @staticmethod
     def _find_utterance(

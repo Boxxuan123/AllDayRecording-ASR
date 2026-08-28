@@ -19,6 +19,7 @@ from allday_asr.services.benchmark import (
     ACOUSTIC_BLIND_PROTOCOL_FORMAT,
     BLIND_PROTOCOL_FORMAT,
     CONTINUOUS_TRUTH_FORMAT,
+    SPEECH_SOURCE_MEDIA,
     _asr_metrics,
     benchmark_comparison,
     create_acoustic_blind_truth_task,
@@ -326,7 +327,11 @@ class ContinuousBenchmarkTests(unittest.TestCase):
                     "session_end_ms": summary.scope_start_ms + 1_500,
                     "label": "speech",
                     "text": None,
-                    "metadata": {"reviewed": True},
+                    "metadata": {
+                        "reviewed": True,
+                        "utterance_id": "blind-0001",
+                        "speech_source": SPEECH_SOURCE_MEDIA,
+                    },
                 },
                 {
                     "type": "annotation",
@@ -336,7 +341,11 @@ class ContinuousBenchmarkTests(unittest.TestCase):
                     "session_end_ms": summary.scope_start_ms + 1_500,
                     "label": None,
                     "text": "三十五一斤",
-                    "metadata": {"reviewed": True},
+                    "metadata": {
+                        "reviewed": True,
+                        "utterance_id": "blind-0001",
+                        "speech_source": SPEECH_SOURCE_MEDIA,
+                    },
                 },
             ]
         )
@@ -434,7 +443,11 @@ class ContinuousBenchmarkTests(unittest.TestCase):
                     "session_end_ms": speech_end,
                     "label": "speech",
                     "text": None,
-                    "metadata": {"reviewed": True},
+                    "metadata": {
+                        "reviewed": True,
+                        "utterance_id": "v2c2-0001",
+                        "speech_source": SPEECH_SOURCE_MEDIA,
+                    },
                 },
                 {
                     "type": "annotation",
@@ -444,15 +457,35 @@ class ContinuousBenchmarkTests(unittest.TestCase):
                     "session_end_ms": speech_end,
                     "label": None,
                     "text": "吃饭对话",
-                    "metadata": {"reviewed": True},
+                    "metadata": {
+                        "reviewed": True,
+                        "utterance_id": "v2c2-0001",
+                        "speech_source": SPEECH_SOURCE_MEDIA,
+                    },
                 },
             ]
         )
+        rows[-1]["metadata"]["speech_source"] = "telepathy"
+        summary.task_path.write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "speech_source 无效"):
+            import_continuous_truth(self.database, summary.task_path)
+        rows[-1]["metadata"]["speech_source"] = SPEECH_SOURCE_MEDIA
         summary.task_path.write_text(
             "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
             encoding="utf-8",
         )
         truth = import_continuous_truth(self.database, summary.task_path)
+        imported = self.database.list_truth_annotations(truth.truth_set_id)
+        transcript = next(
+            row for row in imported if row["annotation_kind"] == "transcript"
+        )
+        self.assertEqual(
+            json.loads(transcript["metadata_json"])["speech_source"],
+            SPEECH_SOURCE_MEDIA,
+        )
         self.assertEqual(truth.annotation_count, 4)
 
         gap_start = int(first["session_end_ms"])

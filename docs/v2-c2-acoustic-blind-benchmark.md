@@ -95,7 +95,16 @@ allday-asr benchmark annotate-blind `
   state\evaluations\session-000001\watch-speech-enriched-10m-v2c2-20260828-blind-v2c2\truth-draft.jsonl
 ```
 
-页面显示十个一分钟块和总复核时长，不显示声学排名、任何候选 ASR 或旧转写。逐块穷尽标注可听语音；听不清但确认有人说话时使用 `unintelligible`。每次编辑都会将该块恢复为 pending。十块全部 complete、填写 annotator 并确认 `model_outputs_unseen` 后才能锁定和导入。
+页面显示十个一分钟块和总复核时长，不显示声学排名、任何候选 ASR 或旧转写。逐块穷尽标注可听语音，包括电视或其他媒体播放的对白；听不清但确认有人说话时使用 `unintelligible`。每次编辑都会将该块恢复为 pending。十块全部 complete、填写 annotator 并确认 `model_outputs_unseen` 后才能锁定和导入。
+
+每条语音还记录 `speech_source`：
+
+- `live_person`：现场的人正在说话；
+- `media_playback`：电视、视频或其他扬声器播放的语音；
+- `mixed_live_media`：现场人声与媒体声重叠，人工无需强行拆成两个声道；
+- `unknown`：确认是语音，但无法可靠判断来源。
+
+现场与媒体重叠且无法可靠听写时，用 `mixed_live_media + unintelligible` 保留 VAD 事实并排除主 CER。声源选择器加入前已保存的标注按 `live_person` 向后兼容，页面以“现场人声 · 旧标注”提示；新建或编辑后会显式写入 metadata。后续报告必须分别给出全部可听语音、现场语音以及媒体过滤/泄漏结果，不能把正确识别的电视对白算作 ASR 幻觉。
 
 原始 Watch M4A 始终只读；扫描 WAV、十个试听 WAV 和 manifest 都是可审计派生物。
 
@@ -103,7 +112,7 @@ allday-asr benchmark annotate-blind `
 
 完成标注后：
 
-1. 在人工 transcript 边界上运行 SenseVoice/Qwen/Fun-ASR Oracle ASR，报告原始 CER、ITN CER 和 paired bootstrap。
+1. 在人工 transcript 边界上运行 SenseVoice/Qwen/Fun-ASR Oracle ASR，报告原始 CER、ITN CER 和 paired bootstrap，并分列全部可听语音与 `live_person` 子集。
 2. 在十个 review-region 上运行各自完整流水线，报告 VAD miss/false alarm、孤立 transcript insertion 和端到端 CER。
 3. 环境负样本单独报告 false alarm/hallucination，不与富集集简单平均。
 4. V2-C.2 只用于最终比较，不根据结果调整同一批候选后再次宣称是未见测试集；若要调参，必须新建开发集和新的冻结 holdout。

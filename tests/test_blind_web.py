@@ -15,6 +15,8 @@ from allday_asr.blind_web import create_blind_annotation_server
 from allday_asr.services.benchmark import (
     BLIND_PROTOCOL_FORMAT,
     CONTINUOUS_TRUTH_FORMAT,
+    SPEECH_SOURCE_LIVE,
+    SPEECH_SOURCE_MEDIA,
 )
 
 
@@ -46,6 +48,7 @@ class BlindAnnotationWebTests(unittest.TestCase):
                     "kind": "blind_continuous_annotation_v1",
                     "protocol": BLIND_PROTOCOL_FORMAT,
                     "model_outputs_used_for_selection": False,
+                    "legacy_unlabeled_speech_source": SPEECH_SOURCE_LIVE,
                 },
                 "blind_attestation": {
                     "model_outputs_unseen": False,
@@ -72,6 +75,36 @@ class BlindAnnotationWebTests(unittest.TestCase):
                 "label": "review_region_complete_scope",
                 "text": None,
                 "metadata": {"protocol": BLIND_PROTOCOL_FORMAT},
+            },
+            {
+                "type": "annotation",
+                "key": "blind:speech:legacy-live",
+                "kind": "speech",
+                "session_start_ms": 10_100,
+                "session_end_ms": 10_400,
+                "label": "speech",
+                "text": None,
+                "metadata": {
+                    "reviewed": True,
+                    "utterance_id": "legacy-live",
+                    "window_index": 0,
+                    "created_by": "blind-web-v1",
+                },
+            },
+            {
+                "type": "annotation",
+                "key": "blind:transcript:legacy-live",
+                "kind": "transcript",
+                "session_start_ms": 10_100,
+                "session_end_ms": 10_400,
+                "label": None,
+                "text": "旧现场标注",
+                "metadata": {
+                    "reviewed": True,
+                    "utterance_id": "legacy-live",
+                    "window_index": 0,
+                    "created_by": "blind-web-v1",
+                },
             },
         ]
         task_path.write_text(
@@ -103,7 +136,9 @@ class BlindAnnotationWebTests(unittest.TestCase):
             with opener.open(f"{base_url}/api/task", timeout=3) as response:
                 task = json.load(response)
             self.assertFalse(task["finalized"])
-            self.assertEqual(task["windows"][0]["utterance_count"], 0)
+            self.assertEqual(task["windows"][0]["utterance_count"], 1)
+            self.assertEqual(task["utterances"][0]["speech_source"], SPEECH_SOURCE_LIVE)
+            self.assertTrue(task["utterances"][0]["speech_source_inferred"])
 
             range_request = urllib.request.Request(
                 f"{base_url}/audio/0", headers={"Range": "bytes=0-3"}
@@ -120,9 +155,25 @@ class BlindAnnotationWebTests(unittest.TestCase):
                     "end_ms": 1_500,
                     "text": "测试文字",
                     "unintelligible": False,
+                    "speech_source": SPEECH_SOURCE_MEDIA,
                 },
             )["utterance"]
             self.assertEqual(utterance["text"], "测试文字")
+            self.assertEqual(utterance["speech_source"], SPEECH_SOURCE_MEDIA)
+            self.assertFalse(utterance["speech_source_inferred"])
+            with self.assertRaises(urllib.error.HTTPError) as bad_source:
+                self._post(
+                    f"{base_url}/api/utterances",
+                    {
+                        "window_index": 0,
+                        "start_ms": 1_600,
+                        "end_ms": 1_900,
+                        "text": "无效来源",
+                        "unintelligible": False,
+                        "speech_source": "telepathy",
+                    },
+                )
+            self.assertEqual(bad_source.exception.code, 400)
             self._post(
                 f"{base_url}/api/windows/0/status", {"status": "complete"}
             )
@@ -135,6 +186,7 @@ class BlindAnnotationWebTests(unittest.TestCase):
             saved = task_path.read_text(encoding="utf-8")
             self.assertIn('"kind": "speech"', saved)
             self.assertIn('"kind": "transcript"', saved)
+            self.assertIn('"speech_source": "media_playback"', saved)
             self.assertNotIn("hypothesis_text", saved)
 
             with self.assertRaises(urllib.error.HTTPError) as locked:

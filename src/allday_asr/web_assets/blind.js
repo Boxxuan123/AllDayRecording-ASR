@@ -2,6 +2,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const state = { task: null, windowIndex: 0, editingId: null };
   const $ = (id) => document.getElementById(id);
   const player = $("audio-player");
+  const sourceLabels = {
+    live_person: "现场人声",
+    media_playback: "电视 / 媒体",
+    mixed_live_media: "现场 + 媒体重叠",
+    unknown: "声源不确定",
+  };
 
   async function api(path, options = {}) {
     const response = await fetch(path, {
@@ -53,6 +59,9 @@ document.addEventListener("DOMContentLoaded", () => {
     $("progress-label").textContent = `${complete} / ${task.windows.length}`;
     $("progress-bar").style.width = `${(complete / task.windows.length) * 100}%`;
     $("annotation-count").textContent = `${task.utterances.length} 条语音标注`;
+    $("legacy-source-help").textContent = task.speech_source_default === "live_person"
+      ? "本任务现有旧标注按“现场人声”兼容显示；只有电视、重叠或不确定声源需要额外选择。"
+      : `未分类的旧标注按“${sourceLabels[task.speech_source_default] || sourceLabels.unknown}”显示；新标注请明确选择声源。`;
     document.body.classList.toggle("readonly", task.finalized);
     renderWindows();
     renderCurrentWindow();
@@ -114,9 +123,13 @@ document.addEventListener("DOMContentLoaded", () => {
       const card = document.createElement("article");
       card.className = "utterance-card";
       const text = item.unintelligible ? "[有语音，但听不清]" : item.text;
+      const sourceLabel = sourceLabels[item.speech_source] || sourceLabels.unknown;
       card.innerHTML = `
         <button class="utterance-time" title="从这里播放">${formatMs(item.start_ms)} → ${formatMs(item.end_ms)}</button>
-        <div class="utterance-text${item.unintelligible ? " unintelligible" : ""}"></div>
+        <div class="utterance-copy">
+          <span class="source-badge source-${item.speech_source}">${sourceLabel}${item.speech_source_inferred ? " · 旧标注" : ""}</span>
+          <div class="utterance-text${item.unintelligible ? " unintelligible" : ""}"></div>
+        </div>
         <div class="utterance-actions"><button data-action="edit">编辑</button><button class="danger" data-action="delete">删除</button></div>`;
       card.querySelector(".utterance-text").textContent = text;
       card.querySelector(".utterance-time").addEventListener("click", () => {
@@ -137,6 +150,7 @@ document.addEventListener("DOMContentLoaded", () => {
     $("end-seconds").value = (item.end_ms / 1000).toFixed(3);
     $("transcript").value = item.text;
     $("unintelligible").checked = item.unintelligible;
+    setSpeechSource(item.speech_source);
     syncTranscriptMode();
     player.currentTime = item.start_ms / 1000;
     updateBoundarySummary();
@@ -152,6 +166,7 @@ document.addEventListener("DOMContentLoaded", () => {
     $("end-seconds").value = (keepEndAsStart ? previousEnd : player.currentTime).toFixed(3);
     $("transcript").value = "";
     $("unintelligible").checked = false;
+    setSpeechSource("live_person");
     syncTranscriptMode();
     updateBoundarySummary();
   }
@@ -160,6 +175,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const unintelligible = $("unintelligible").checked;
     if (unintelligible) $("transcript").value = "";
     $("transcript").disabled = unintelligible;
+  }
+
+  function setSpeechSource(value) {
+    const option = document.querySelector(`input[name="speech-source"][value="${value}"]`);
+    (option || document.querySelector('input[name="speech-source"][value="live_person"]')).checked = true;
+  }
+
+  function selectedSpeechSource() {
+    return document.querySelector('input[name="speech-source"]:checked').value;
   }
 
   async function saveUtterance() {
@@ -175,6 +199,7 @@ document.addEventListener("DOMContentLoaded", () => {
           end_ms: endMs,
           text: $("transcript").value,
           unintelligible: $("unintelligible").checked,
+          speech_source: selectedSpeechSource(),
         }),
       });
       resetEditor(true);
@@ -204,7 +229,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function finalizeTask() {
-    if (!window.confirm("最终确认后任务会进入只读状态。确定六个音频块都已完整听完并穷尽标注吗？")) return;
+    if (!window.confirm(`最终确认后任务会进入只读状态。确定 ${state.task.windows.length} 个音频块都已完整听完并穷尽标注吗？`)) return;
     try {
       await api("/api/finalize", {
         method: "POST",
