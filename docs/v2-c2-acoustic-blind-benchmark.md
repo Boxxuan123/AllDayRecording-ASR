@@ -116,3 +116,50 @@ allday-asr benchmark annotate-blind `
 2. 在十个 review-region 上运行各自完整流水线，报告 VAD miss/false alarm、孤立 transcript insertion 和端到端 CER。
 3. 环境负样本单独报告 false alarm/hallucination，不与富集集简单平均。
 4. V2-C.2 只用于最终比较，不根据结果调整同一批候选后再次宣称是未见测试集；若要调参，必须新建开发集和新的冻结 holdout。
+
+## 8. 已完成五块的预备结果（V2-C.2a）
+
+人工在第 5 块后停止，后五块仍为 pending。系统没有伪造完整盲测声明，而是用 `freeze-completed` 将模型评测前已经标为 complete 的五块派生为独立预备真值：
+
+```powershell
+allday-asr benchmark freeze-completed `
+  state\evaluations\session-000001\watch-speech-enriched-10m-v2c2-20260828-blind-v2c2\truth-draft.jsonl `
+  --name watch-speech-enriched-5m-v2c2a-preliminary-20260828
+```
+
+- Truth set：`2`；5 个一分钟 review-region；SHA-256：`922addf409244c194fff1c5133c705ad114a9ac635af8a5d386a0a20a467cea6`。
+- 人工真值：19 段、131.993 秒；其中 18 段现场人声、78.858 秒，另有 1 段 53.135 秒的纯净电视节目声音。
+- 这只是 **human-limited preliminary subset**，不是完整十分钟 holdout，结果不能宣称最终泛化性能。
+
+### 8.1 同一人工边界的纯 ASR
+
+| 模型 | 全部 raw / ITN CER | 现场人声 raw / ITN CER | 纯电视 raw CER |
+| --- | ---: | ---: | ---: |
+| SenseVoiceSmall | 44.48% / 43.61% | 49.02% / 47.52% | 38.61% |
+| Qwen3-ASR-1.7B | **27.07%** / **28.33%** | **32.35%** / **34.65%** | 20.25% |
+| Fun-ASR-Nano | 38.12% / 38.61% | 54.41% / 55.45% | **17.09%** |
+
+在 18 段现场人声上，Qwen 相对 SenseVoice 的 raw CER 差值为 `-16.67` 个百分点，20 万次 paired bootstrap 的 95% 区间为 `[-29.61, -8.12]`；ITN 差值为 `-12.87` 个百分点，区间 `[-27.59, -1.30]`。Qwen 相对 Fun-ASR 的现场 raw CER 低 `22.06` 个百分点，区间 `[-39.38, -9.69]`。这些结果支持 Qwen 作为主识别模型。
+
+Fun-ASR 在唯一一条纯净电视节目上最好，但 `n=1` 的 bootstrap 区间必然退化，不能据此选择默认模型；这条样本只说明媒体声应该独立报告。
+
+### 8.2 当前完整流水线
+
+完整 run 7 实际是把每个五分钟逻辑窗口直接交给 Qwen，再做 token 强制对齐；它尚未在 ASR 前实施可靠的语音门控。为避免 token 跨越非连续人工窗口，使用 review-region 裁剪快照：
+
+```powershell
+allday-asr asr-v2 snapshot 7 --truth-set 2 `
+  --name qwen3-asr-1.7b-v2c-full-truth2-scoped
+allday-asr benchmark run 2 10
+```
+
+| 端到端转写 | raw CER | 替换 / 删除 / 插入字符 |
+| --- | ---: | ---: |
+| V1 VAD + SenseVoice | 117.68% | 84 / 111 / 231 |
+| 五分钟窗 Qwen + 对齐 | **109.94%** | 31 / 107 / 260 |
+
+Qwen 总体低 `7.73` 个百分点，但只有五个配对窗口；按窗口穷举 `5^5` 次有放回重采样，95% 区间为 `[-29.97, +53.66]` 个百分点，优势不确定。更重要的是，排除纯电视窗口后，四个现场窗口中 Qwen 为 `154.90%`、V1 为 `148.53%`，Qwen 反而高 `6.37` 个百分点；电视窗口则是 Qwen `51.90%`、V1 `77.85%`。总体的小幅领先被容易识别的长电视样本明显影响。
+
+诊断很明确：Qwen 将替换错误从 84 降到 31，证明正文识别更强；但整段窗口策略把插入错误从 231 增到 260，静音/底噪处的幻觉抵消了收益。Qwen 快照没有显式 `speech` prediction，不能与 V1 的 VAD-F1 `55.45%` 做 VAD 对比，必须保持 N/A。
+
+因此下一步不是退回 SenseVoice，而是建立 V2-C.3：在不修改原音的前提下，先用高召回语音/媒体活动门控和 utterance segmentation 缩小送入 Qwen 的范围；未通过门控的长静音不产生文字；边界加上下文并在强制对齐后裁回核心区。调参应使用这五块作为开发证据，另建新的未见 holdout 做最终确认。

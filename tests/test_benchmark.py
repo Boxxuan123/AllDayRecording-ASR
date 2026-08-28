@@ -18,6 +18,7 @@ from allday_asr.services.benchmark import (
     ACOUSTIC_BLIND_KIND,
     ACOUSTIC_BLIND_PROTOCOL_FORMAT,
     BLIND_PROTOCOL_FORMAT,
+    COMPLETED_SUBSET_KIND,
     CONTINUOUS_TRUTH_FORMAT,
     SPEECH_SOURCE_MEDIA,
     _asr_metrics,
@@ -26,6 +27,7 @@ from allday_asr.services.benchmark import (
     create_blind_truth_task,
     create_continuous_truth_template,
     evaluate_benchmark,
+    freeze_completed_blind_subset,
     import_continuous_truth,
     migrate_legacy_truth,
     normalize_text_itn_equivalent,
@@ -421,6 +423,74 @@ class ContinuousBenchmarkTests(unittest.TestCase):
         )
         self.assertTrue((target / "selection-manifest.json").is_file())
 
+        partial_rows = json.loads(json.dumps(rows))
+        partial_windows = [
+            row for row in partial_rows if row.get("type") == "blind_window"
+        ]
+        partial_windows[0]["review_status"] = "complete"
+        partial_start = int(partial_windows[0]["session_start_ms"]) + 200
+        partial_end = int(partial_windows[0]["session_start_ms"]) + 800
+        partial_rows.extend(
+            [
+                {
+                    "type": "annotation",
+                    "key": "blind:speech:partial-0001",
+                    "kind": "speech",
+                    "session_start_ms": partial_start,
+                    "session_end_ms": partial_end,
+                    "label": "speech",
+                    "text": None,
+                    "metadata": {
+                        "reviewed": True,
+                        "utterance_id": "partial-0001",
+                        "window_index": 0,
+                        "speech_source": SPEECH_SOURCE_MEDIA,
+                    },
+                },
+                {
+                    "type": "annotation",
+                    "key": "blind:transcript:partial-0001",
+                    "kind": "transcript",
+                    "session_start_ms": partial_start,
+                    "session_end_ms": partial_end,
+                    "label": None,
+                    "text": "电视节目",
+                    "metadata": {
+                        "reviewed": True,
+                        "utterance_id": "partial-0001",
+                        "window_index": 0,
+                        "speech_source": SPEECH_SOURCE_MEDIA,
+                    },
+                },
+            ]
+        )
+        partial_task = target / "partial-source.jsonl"
+        partial_task.write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in partial_rows)
+            + "\n",
+            encoding="utf-8",
+        )
+        partial_truth = freeze_completed_blind_subset(
+            self.database,
+            partial_task,
+            name=f"partial-v2c2-{self.token}",
+            output_path=target / "partial-frozen.jsonl",
+        )
+        partial_frozen_rows = [
+            json.loads(line)
+            for line in partial_truth.output_path.read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        self.assertEqual(
+            partial_frozen_rows[0]["provenance"]["kind"], COMPLETED_SUBSET_KIND
+        )
+        self.assertEqual(
+            partial_frozen_rows[0]["provenance"]["completed_window_indices"], [0]
+        )
+        self.assertEqual(partial_frozen_rows[0]["review_duration_ms"], 1_000)
+        self.assertEqual(partial_truth.annotation_count, 3)
+
         metadata["completeness"]["vad"] = "exhaustive"
         metadata["completeness"]["transcript"] = "exhaustive"
         metadata["blind_attestation"] = {
@@ -575,7 +645,10 @@ class ContinuousBenchmarkTests(unittest.TestCase):
             "session_start_ms": 500,
             "session_end_ms": 1_500,
             "text": "35一斤",
-            "metadata": {"reviewed": True},
+            "metadata": {
+                "reviewed": True,
+                "speech_source": SPEECH_SOURCE_MEDIA,
+            },
         }
         path.write_text(
             json.dumps(metadata, ensure_ascii=False)
@@ -645,6 +718,25 @@ class ContinuousBenchmarkTests(unittest.TestCase):
             samples=100,
         )
         self.assertGreater(paired["candidate_minus_baseline_cer"], 0)
+        paired_media = paired_oracle_bootstrap(
+            self.database,
+            truth.truth_set_id,
+            baseline.prediction_set_id,
+            candidate.prediction_set_id,
+            samples=100,
+            speech_source=SPEECH_SOURCE_MEDIA,
+        )
+        self.assertEqual(paired_media["evaluated_intervals"], 1)
+        self.assertEqual(paired_media["speech_source"], SPEECH_SOURCE_MEDIA)
+        with self.assertRaisesRegex(ValueError, "speech_source 无效"):
+            paired_oracle_bootstrap(
+                self.database,
+                truth.truth_set_id,
+                baseline.prediction_set_id,
+                candidate.prediction_set_id,
+                samples=10,
+                speech_source="telepathy",
+            )
         paired_itn = paired_oracle_bootstrap(
             self.database,
             truth.truth_set_id,
@@ -660,6 +752,7 @@ class ContinuousBenchmarkTests(unittest.TestCase):
         self.assertEqual(normalize_text_itn_equivalent("三十五一斤"), "35一斤")
         self.assertEqual(normalize_text_itn_equivalent("十分好"), "十分好")
         self.assertEqual(normalize_text_itn_equivalent("二零二六年"), "二零二六年")
+        self.assertEqual(normalize_text_itn_equivalent("一亿种可能"), "一亿种可能")
 
     def test_exhaustive_asr_counts_orphans_and_respects_unintelligible_masks(self) -> None:
         references = [self._truth("ref", "transcript", 500, 1_500, text="你好")]

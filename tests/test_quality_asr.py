@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import unittest
 from contextlib import contextmanager
@@ -54,6 +55,7 @@ class QualityAsrTests(unittest.TestCase):
         self.database_path = self.root / f"quality-{self.token}.sqlite3"
         self.source_path = self.root / f"quality-{self.token}.m4a"
         self.output_dir = self.root / f"quality-output-{self.token}"
+        self.truth_path = self.root / f"quality-truth-{self.token}.jsonl"
         self.source_path.write_bytes(b"immutable-watch-audio")
         self.database = Database(self.database_path)
         digest = hashlib.sha256(self.source_path.read_bytes()).hexdigest()
@@ -85,6 +87,7 @@ class QualityAsrTests(unittest.TestCase):
                 path.rmdir()
         self.output_dir.rmdir() if self.output_dir.exists() else None
         self.source_path.unlink(missing_ok=True)
+        self.truth_path.unlink(missing_ok=True)
         for suffix in ("", "-shm", "-wal"):
             Path(f"{self.database_path}{suffix}").unlink(missing_ok=True)
         for backup in self.root.glob(f"quality-{self.token}.schema-*.sqlite3"):
@@ -157,6 +160,90 @@ class QualityAsrTests(unittest.TestCase):
                 (row["session_start_ms"], row["session_end_ms"], row["text"])
                 for row in primary_core_tokens
             },
+        )
+
+        session = self.database.get_session_for_recording(self.recording_id)
+        source = self.database.list_session_sources(int(session["id"]))[0]
+        self.truth_path.write_text('{"unit_test":true}\n', encoding="utf-8")
+        source_common = {
+            "source_object_id": int(source["source_object_id"]),
+            "source_sha256": str(source["sha256"]),
+        }
+        truth_set = self.database.create_truth_set(
+            {
+                "truth_key": f"quality-scopes:{self.token}",
+                "name": f"quality-scopes-{self.token}",
+                "session_id": int(session["id"]),
+                "format_version": "unit-test",
+                "scope_start_ms": 0,
+                "scope_end_ms": 1_200,
+                "input_fingerprint": self.database.session_input_fingerprint(
+                    int(session["id"])
+                ),
+                "completeness": {"vad": "exhaustive", "transcript": "exhaustive"},
+                "truth_path": str(self.truth_path),
+                "truth_sha256": hashlib.sha256(
+                    self.truth_path.read_bytes()
+                ).hexdigest(),
+                "provenance": {"kind": "unit-test"},
+            },
+            [
+                {
+                    "annotation_key": "scope-0",
+                    "annotation_kind": "uncertain",
+                    "session_start_ms": 0,
+                    "session_end_ms": 250,
+                    "label": "review_region_complete_scope",
+                    "source_refs": [
+                        {**source_common, "source_start_ms": 0, "source_end_ms": 250}
+                    ],
+                },
+                {
+                    "annotation_key": "scope-1",
+                    "annotation_kind": "uncertain",
+                    "session_start_ms": 1_100,
+                    "session_end_ms": 1_200,
+                    "label": "review_region_complete_scope",
+                    "source_refs": [
+                        {
+                            **source_common,
+                            "source_start_ms": 1_100,
+                            "source_end_ms": 1_200,
+                        }
+                    ],
+                },
+            ],
+        )
+        scoped_snapshot = snapshot_quality_asr(
+            self.database,
+            summary.run_id,
+            name=f"scoped-{self.token}",
+            truth_set_id=int(truth_set["id"]),
+        )
+        scoped_set = self.database.get_benchmark_prediction_set(
+            scoped_snapshot.prediction_set_id
+        )
+        scoped_predictions = self.database.list_benchmark_predictions(
+            scoped_snapshot.prediction_set_id, prediction_kind="transcript"
+        )
+        self.assertEqual(
+            [
+                (row["session_start_ms"], row["session_end_ms"])
+                for row in scoped_predictions
+            ],
+            [(100, 250), (1_100, 1_200)],
+        )
+        self.assertTrue(
+            all(
+                json.loads(row["metadata_json"])["scope_clipped"]
+                for row in scoped_predictions
+            )
+        )
+        self.assertEqual(
+            json.loads(scoped_set["model_manifest_json"])["benchmark_scope"][
+                "truth_set_id"
+            ],
+            int(truth_set["id"]),
         )
 
         with self.assertRaises(sqlite3.IntegrityError):

@@ -180,15 +180,47 @@ def run_quality_asr(
 
 
 def snapshot_quality_asr(
-    database: Database, run_id: int, *, name: str | None = None
+    database: Database,
+    run_id: int,
+    *,
+    name: str | None = None,
+    truth_set_id: int | None = None,
 ) -> QualitySnapshotSummary:
-    adapter = "quality-asr-v2c-primary-aligned-token-transcripts-v2"
     run = database.get_processing_run(run_id)
     if str(run["run_kind"]) != "quality_asr_v2c":
         raise ValueError("processing run is not a V2-C ASR run")
     if str(run["status"]) != "completed":
         raise ValueError("only a completed V2-C run can be frozen as a benchmark snapshot")
     session_id = int(run["session_id"])
+    input_fingerprint = str(run["input_fingerprint"])
+    adapter = "quality-asr-v2c-primary-aligned-token-transcripts-v2"
+    evaluation_scopes: list[tuple[int, int]] | None = None
+    if truth_set_id is not None:
+        truth_set = database.get_truth_set(truth_set_id)
+        if int(truth_set["session_id"]) != session_id:
+            raise ValueError("V2-C run 和真值集不属于同一录音会话")
+        if str(truth_set["input_fingerprint"]) != input_fingerprint:
+            raise ValueError("V2-C run 和真值集的原始输入指纹不一致")
+        review_regions = [
+            row
+            for row in database.list_truth_annotations(truth_set_id)
+            if str(row["label"] or "") == "review_region_complete_scope"
+        ]
+        if review_regions:
+            evaluation_scopes = [
+                (int(row["session_start_ms"]), int(row["session_end_ms"]))
+                for row in review_regions
+            ]
+        else:
+            evaluation_scopes = [
+                (int(truth_set["scope_start_ms"]), int(truth_set["scope_end_ms"]))
+            ]
+        evaluation_scopes.sort()
+        for previous, current in zip(evaluation_scopes, evaluation_scopes[1:]):
+            if current[0] < previous[1]:
+                raise ValueError("真值集的 review-region 相互重叠")
+        adapter = "quality-asr-v2c-primary-aligned-token-transcripts-v3-review-scoped"
+
     predictions: list[dict[str, Any]] = []
     for hypothesis in database.list_asr_hypotheses(run_id, role="primary"):
         hypothesis_id = int(hypothesis["id"])
@@ -196,50 +228,98 @@ def snapshot_quality_asr(
         for token in tokens:
             token_id = int(token["id"])
             source_trace_complete = bool(database.list_asr_token_sources(token_id))
+            token_start = int(token["session_start_ms"])
+            token_end = int(token["session_end_ms"])
+            spans = (
+                [(None, token_start, token_end)]
+                if evaluation_scopes is None
+                else [
+                    (scope_index, max(token_start, start), min(token_end, end))
+                    for scope_index, (start, end) in enumerate(evaluation_scopes)
+                    if token_start < end and token_end > start
+                ]
+            )
             # Transcript predictions must use the aligned token interval.  A whole
             # five-minute window would connect every sparse truth interval it
             # touches and incorrectly charge unrelated speech as ASR insertions.
-            predictions.append(
-                {
-                    "prediction_key": f"v2c:{run_id}:token:{token_id}:transcript",
-                    "prediction_kind": "transcript",
-                    "session_start_ms": int(token["session_start_ms"]),
-                    "session_end_ms": int(token["session_end_ms"]),
-                    "text": str(token["text"]),
-                    "metadata": {
-                        "hypothesis_id": hypothesis_id,
-                        "model_id": hypothesis["model_id"],
-                        "token_id": token_id,
-                        "token_index": int(token["token_index"]),
-                        "source_trace_complete": source_trace_complete,
-                    },
+            for scope_index, start_ms, end_ms in spans:
+                if end_ms <= start_ms:
+                    continue
+                scope_suffix = (
+                    ""
+                    if scope_index is None
+                    else f":truth:{truth_set_id}:scope:{scope_index}"
+                )
+                common_metadata = {
+                    "hypothesis_id": hypothesis_id,
+                    "token_id": token_id,
+                    "token_index": int(token["token_index"]),
+                    "source_trace_complete": source_trace_complete,
+                    "original_session_start_ms": token_start,
+                    "original_session_end_ms": token_end,
+                    "scope_clipped": start_ms != token_start or end_ms != token_end,
                 }
-            )
-            predictions.append(
-                {
-                    "prediction_key": f"v2c:{run_id}:token:{token_id}:alignment",
-                    "prediction_kind": "alignment_token",
-                    "session_start_ms": int(token["session_start_ms"]),
-                    "session_end_ms": int(token["session_end_ms"]),
-                    "text": str(token["text"]),
-                    "metadata": {
-                        "hypothesis_id": hypothesis_id,
-                        "token_id": token_id,
-                        "token_index": int(token["token_index"]),
-                        "source_trace_complete": source_trace_complete,
-                    },
-                }
-            )
+                if truth_set_id is not None:
+                    common_metadata.update(
+                        {
+                            "truth_set_id": truth_set_id,
+                            "review_region_index": scope_index,
+                        }
+                    )
+                predictions.append(
+                    {
+                        "prediction_key": (
+                            f"v2c:{run_id}:token:{token_id}{scope_suffix}:transcript"
+                        ),
+                        "prediction_kind": "transcript",
+                        "session_start_ms": start_ms,
+                        "session_end_ms": end_ms,
+                        "text": str(token["text"]),
+                        "metadata": {
+                            **common_metadata,
+                            "model_id": hypothesis["model_id"],
+                        },
+                    }
+                )
+                predictions.append(
+                    {
+                        "prediction_key": (
+                            f"v2c:{run_id}:token:{token_id}{scope_suffix}:alignment"
+                        ),
+                        "prediction_kind": "alignment_token",
+                        "session_start_ms": start_ms,
+                        "session_end_ms": end_ms,
+                        "text": str(token["text"]),
+                        "metadata": common_metadata,
+                    }
+                )
     if not predictions:
         raise ValueError("V2-C run has no primary predictions to snapshot")
     manifest = json.loads(str(run["model_manifest_json"] or "{}"))
+    if truth_set_id is not None:
+        manifest["benchmark_scope"] = {
+            "truth_set_id": truth_set_id,
+            "review_regions": [
+                {"start_ms": start, "end_ms": end}
+                for start, end in evaluation_scopes or []
+            ],
+            "boundary_policy": "intersect aligned token interval with review region",
+        }
+    prediction_key = f"v2c:{run_id}:primary:{adapter}"
+    if truth_set_id is not None:
+        prediction_key += f":truth:{truth_set_id}"
     row = database.create_benchmark_prediction_set(
         {
-            "prediction_key": f"v2c:{run_id}:primary:{adapter}",
-            "name": name or f"v2-c-run-{run_id}-primary",
+            "prediction_key": prediction_key,
+            "name": name
+            or (
+                f"v2-c-run-{run_id}-primary-truth-{truth_set_id}"
+                if truth_set_id is not None
+                else f"v2-c-run-{run_id}-primary"
+            ),
             "session_id": session_id,
             "processing_run_id": run_id,
-            "input_fingerprint": str(run["input_fingerprint"]),
+            "input_fingerprint": input_fingerprint,
             "adapter": adapter,
             "model_manifest": manifest,
         },

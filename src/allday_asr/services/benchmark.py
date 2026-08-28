@@ -7,6 +7,7 @@ import random
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -40,6 +41,10 @@ ACOUSTIC_BLIND_PROTOCOL_FORMAT = (
     "AllDayRecording V2-C.2 acoustic-stratified blind benchmark v1"
 )
 ACOUSTIC_BLIND_KIND = "blind_acoustic_stratified_annotation_v2"
+COMPLETED_SUBSET_KIND = "human_limited_completed_blind_subset_v1"
+COMPLETED_SUBSET_PROTOCOL_FORMAT = (
+    "AllDayRecording V2-C.2 completed-window preliminary benchmark v1"
+)
 ACOUSTIC_SELECTION_MANIFEST_FORMAT = (
     "AllDayRecording V2-C.2 acoustic selection manifest v1"
 )
@@ -444,6 +449,196 @@ def create_acoustic_blind_truth_task(
         task_path=task_path,
         audio_paths=tuple(audio_paths),
     )
+
+
+def freeze_completed_blind_subset(
+    database: Database,
+    task_path: Path,
+    *,
+    name: str,
+    output_path: Path | None = None,
+) -> ContinuousTruthSummary:
+    """Freeze only human-completed V2-C.2 windows as an explicit preliminary set."""
+    if not NAME_PATTERN.fullmatch(name):
+        raise ValueError("预备真值名称无效")
+    task_path = task_path.resolve(strict=True)
+    rows = _read_jsonl(task_path)
+    if not rows or rows[0].get("type") != "metadata":
+        raise ValueError("V2-C.2 任务第一行必须是 metadata")
+    source_metadata = rows[0]
+    provenance = source_metadata.get("provenance", {})
+    if not isinstance(provenance, dict) or provenance.get(
+        "protocol"
+    ) != ACOUSTIC_BLIND_PROTOCOL_FORMAT:
+        raise ValueError("只支持从 V2-C.2 声学富集盲标任务派生预备真值")
+    if provenance.get("model_outputs_used_for_selection") is not False or provenance.get(
+        "candidate_asr_outputs_used"
+    ) is not False:
+        raise ValueError("源任务的窗口选择不是独立于模型输出的")
+
+    windows = sorted(
+        (deepcopy(row) for row in rows if row.get("type") == "blind_window"),
+        key=lambda row: int(row["window_index"]),
+    )
+    if not windows:
+        raise ValueError("源任务没有 blind_window")
+    for expected_index, window in enumerate(windows):
+        if int(window["window_index"]) != expected_index:
+            raise ValueError("源任务 blind_window index 必须从 0 连续递增")
+        audio_name = str(window.get("audio_file") or "")
+        audio_path = task_path.parent / audio_name
+        if Path(audio_name).name != audio_name or not audio_path.is_file():
+            raise ValueError(f"源任务试听音频不存在：{audio_name}")
+        if _sha256_file(audio_path) != str(window.get("audio_sha256") or ""):
+            raise ValueError(f"源任务试听音频 SHA-256 不一致：{audio_name}")
+
+    temporal_windows = [
+        (int(window["session_start_ms"]), int(window["session_end_ms"]))
+        for window in windows
+    ]
+    review_regions = [
+        row
+        for row in rows
+        if row.get("type") == "annotation"
+        and row.get("kind") == "uncertain"
+        and row.get("label") == "review_region_complete_scope"
+    ]
+    review_intervals = sorted(
+        (int(row["session_start_ms"]), int(row["session_end_ms"]))
+        for row in review_regions
+    )
+    if review_intervals != sorted(temporal_windows):
+        raise ValueError("源任务 review-region 与 blind_window 不一致")
+    _validate_blind_speech_sources(rows, review_regions)
+
+    manifest_name = str(provenance.get("selection_manifest") or "")
+    if Path(manifest_name).name != manifest_name:
+        raise ValueError("源任务 selection manifest 路径无效")
+    manifest_path = task_path.parent / manifest_name
+    if not manifest_path.is_file() or _sha256_file(manifest_path) != str(
+        provenance.get("selection_manifest_sha256") or ""
+    ):
+        raise ValueError("源任务 selection manifest 缺失或 SHA-256 不一致")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or manifest.get(
+        "format"
+    ) != ACOUSTIC_SELECTION_MANIFEST_FORMAT:
+        raise ValueError("源任务 selection manifest 格式无效")
+    if [int(value) for value in manifest.get("selected_starts_ms", [])] != [
+        start for start, _ in temporal_windows
+    ]:
+        raise ValueError("源任务窗口与 selection manifest 不一致")
+
+    completed_windows = [
+        window for window in windows if window.get("review_status") == "complete"
+    ]
+    if not completed_windows:
+        raise ValueError("源任务还没有任何已完整检查的窗口")
+    completed_indexes = [int(window["window_index"]) for window in completed_windows]
+    completed_intervals = [
+        (int(window["session_start_ms"]), int(window["session_end_ms"]))
+        for window in completed_windows
+    ]
+    included_review_regions = [
+        deepcopy(row)
+        for row in review_regions
+        if (int(row["session_start_ms"]), int(row["session_end_ms"]))
+        in completed_intervals
+    ]
+
+    legacy_source = str(
+        provenance.get("legacy_unlabeled_speech_source")
+        or LEGACY_SPEECH_SOURCE_DEFAULT
+    )
+    annotations: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("type") != "annotation" or row in review_regions:
+            continue
+        interval = (int(row["session_start_ms"]), int(row["session_end_ms"]))
+        contained = any(
+            start <= interval[0] < interval[1] <= end
+            for start, end in completed_intervals
+        )
+        overlaps = any(
+            interval[0] < end and interval[1] > start
+            for start, end in completed_intervals
+        )
+        if overlaps and not contained:
+            raise ValueError(f"标注 {row.get('key')} 跨越已完成窗口边界")
+        if not contained:
+            continue
+        annotation = deepcopy(row)
+        annotation_metadata = annotation.setdefault("metadata", {})
+        if annotation_metadata.get("utterance_id") and not annotation_metadata.get(
+            "speech_source"
+        ):
+            annotation_metadata["speech_source"] = legacy_source
+            annotation_metadata["speech_source_inferred_from_task"] = True
+        annotations.append(annotation)
+    source_task_sha256 = _sha256_file(task_path)
+    scope_start = min(start for start, _ in completed_intervals)
+    scope_end = max(end for _, end in completed_intervals)
+    derived_metadata = {
+        "type": "metadata",
+        "format": CONTINUOUS_TRUTH_FORMAT,
+        "name": name,
+        "session_id": int(source_metadata["session_id"]),
+        "scope_start_ms": scope_start,
+        "scope_end_ms": scope_end,
+        "review_duration_ms": sum(end - start for start, end in completed_intervals),
+        "coverage_semantics": "exhaustive_within_review_regions",
+        "input_fingerprint": source_metadata["input_fingerprint"],
+        "completeness": {
+            "vad": EXHAUSTIVE,
+            "transcript": EXHAUSTIVE,
+            "speaker": "none",
+            "alignment": "none",
+            "entities": "none",
+        },
+        "provenance": {
+            "kind": COMPLETED_SUBSET_KIND,
+            "protocol": COMPLETED_SUBSET_PROTOCOL_FORMAT,
+            "preliminary": True,
+            "claim_limit": "completed windows only; not the full V2-C.2 holdout",
+            "subset_rule": "all windows marked complete before any subset model evaluation",
+            "completed_window_indices": completed_indexes,
+            "excluded_window_indices": [
+                int(window["window_index"])
+                for window in windows
+                if int(window["window_index"]) not in completed_indexes
+            ],
+            "source_task_path": str(task_path),
+            "source_task_sha256": source_task_sha256,
+            "source_protocol": provenance["protocol"],
+            "source_selection_manifest": str(manifest_path.resolve()),
+            "source_selection_manifest_sha256": _sha256_file(manifest_path),
+            "model_outputs_used_for_selection": False,
+            "candidate_asr_outputs_used": False,
+            "speech_source_policy": SPEECH_SOURCE_POLICY_FORMAT,
+            "legacy_unlabeled_speech_source": legacy_source,
+            "completed_window_audio": [
+                {
+                    "window_index": int(window["window_index"]),
+                    "session_start_ms": int(window["session_start_ms"]),
+                    "session_end_ms": int(window["session_end_ms"]),
+                    "audio_file": str(window["audio_file"]),
+                    "audio_sha256": str(window["audio_sha256"]),
+                }
+                for window in completed_windows
+            ],
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    target = (
+        output_path.resolve()
+        if output_path is not None
+        else task_path.with_name(f"{name}.jsonl")
+    )
+    _write_jsonl_atomically(
+        target,
+        [derived_metadata, *included_review_regions, *annotations],
+    )
+    return import_continuous_truth(database, target)
 
 
 def create_continuous_truth_template(
@@ -1183,10 +1378,13 @@ def paired_oracle_bootstrap(
     samples: int = 20_000,
     seed: int = 20_260_828,
     itn_equivalent: bool = False,
+    speech_source: str | None = None,
 ) -> dict[str, Any]:
     """Paired bootstrap over human transcript intervals for oracle ASR snapshots."""
     if samples < 1:
         raise ValueError("samples 必须大于 0")
+    if speech_source is not None and speech_source not in SPEECH_SOURCE_VALUES:
+        raise ValueError(f"speech_source 无效：{speech_source}")
     truth = database.get_truth_set(truth_set_id)
     prediction_sets = [
         database.get_benchmark_prediction_set(baseline_prediction_set_id),
@@ -1200,6 +1398,16 @@ def paired_oracle_bootstrap(
     references = database.list_truth_annotations(
         truth_set_id, annotation_kind="transcript"
     )
+    if speech_source is not None:
+        references = [
+            reference
+            for reference in references
+            if str(
+                _metadata(reference).get("speech_source")
+                or LEGACY_SPEECH_SOURCE_DEFAULT
+            )
+            == speech_source
+        ]
     if not references:
         raise ValueError("真值集没有 transcript 标注")
     normalizer = normalize_text_itn_equivalent if itn_equivalent else normalize_text
@@ -1265,6 +1473,7 @@ def paired_oracle_bootstrap(
         "baseline_prediction_set_id": baseline_prediction_set_id,
         "candidate_prediction_set_id": candidate_prediction_set_id,
         "normalization": "itn_equivalent" if itn_equivalent else "raw",
+        "speech_source": speech_source,
         "evaluated_intervals": len(items),
         "reference_chars": reference_chars,
         "baseline": {
@@ -1920,9 +2129,10 @@ def normalize_text_itn_equivalent(value: str) -> str:
                 continue
             try:
                 parsed = _parse_chinese_cardinal(prefix)
+                canonical = _format_chinese_cardinal(parsed)
             except ValueError:
                 continue
-            if _format_chinese_cardinal(parsed) == prefix:
+            if canonical == prefix:
                 suffix = token[split_at:]
                 return str(parsed) + (normalize_token(suffix) if suffix else "")
         return token

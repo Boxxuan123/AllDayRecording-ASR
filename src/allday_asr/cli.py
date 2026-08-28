@@ -22,6 +22,7 @@ from allday_asr.services.benchmark import (
     create_blind_truth_task,
     create_continuous_truth_template,
     evaluate_benchmark,
+    freeze_completed_blind_subset,
     import_continuous_truth,
     migrate_legacy_truth,
     paired_oracle_bootstrap,
@@ -195,10 +196,18 @@ def quality_asr_status(
 def quality_asr_snapshot(
     run_id: int = typer.Argument(..., min=1),
     name: Optional[str] = typer.Option(None, help="不可变 benchmark prediction 名称。"),
+    truth_set_id: Optional[int] = typer.Option(
+        None,
+        "--truth-set",
+        min=1,
+        help="只保留并裁剪到该真值集的 review-region，用于非连续窗口公平评测。",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """将 Qwen 主假设的 core tokens 冻结为可与 V1 比较的预测集。"""
-    summary = snapshot_quality_asr(Database(db), run_id, name=name)
+    summary = snapshot_quality_asr(
+        Database(db), run_id, name=name, truth_set_id=truth_set_id
+    )
     console.print(
         f"[green]V2-C 预测已冻结[/green] prediction_set={summary.prediction_set_id} | "
         f"predictions={summary.prediction_count} | sha256={summary.content_sha256}"
@@ -693,6 +702,35 @@ def benchmark_snapshot_v1(
     console.print(f"内容 SHA-256：{summary.content_sha256}")
 
 
+@benchmark_app.command(name="freeze-completed")
+def benchmark_freeze_completed(
+    task: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="尚未全部完成的 V2-C.2 truth-draft.jsonl。",
+    ),
+    name: str = typer.Option(..., help="明确标记为 preliminary 的预备真值名称。"),
+    output: Optional[Path] = typer.Option(None, help="派生 JSONL 输出路径。"),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """冻结已完整检查的窗口；未检查窗口保持排除，不伪装成完整 V2-C.2。"""
+    summary = freeze_completed_blind_subset(
+        Database(db),
+        task,
+        name=name,
+        output_path=output,
+    )
+    console.print(
+        f"[green]已完成窗口的预备真值已冻结[/green] "
+        f"truth_set={summary.truth_set_id} | annotations={summary.annotation_count}"
+    )
+    console.print(f"真值：{summary.output_path.resolve()}")
+    console.print(f"SHA-256：{summary.truth_sha256}")
+
+
 @benchmark_app.command(name="oracle-asr")
 def benchmark_oracle_asr(
     truth_set_id: int = typer.Argument(..., min=1, help="冻结真值集 ID。"),
@@ -819,6 +857,10 @@ def benchmark_compare_oracle_pair(
     samples: int = typer.Option(20_000, min=1, help="paired bootstrap 重采样次数。"),
     seed: int = typer.Option(20_260_828, help="统计重采样种子。"),
     itn: bool = typer.Option(False, help="使用保守 ITN 等价 CER。"),
+    speech_source: Optional[str] = typer.Option(
+        None,
+        help="只比较 live_person、media_playback、mixed_live_media 或 unknown。",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """对两个同边界 ASR 快照做 paired bootstrap，不只看点估计。"""
@@ -830,9 +872,11 @@ def benchmark_compare_oracle_pair(
         samples=samples,
         seed=seed,
         itn_equivalent=itn,
+        speech_source=speech_source,
     )
     interval = result["paired_bootstrap"]["confidence_interval_95"]
     console.print(
+        f"source={result['speech_source'] or 'all'} | "
         f"baseline CER={result['baseline']['cer']:.4f} | "
         f"candidate CER={result['candidate']['cer']:.4f} | "
         f"delta={result['candidate_minus_baseline_cer']:+.4f} | "
