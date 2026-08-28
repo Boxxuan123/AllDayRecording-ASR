@@ -5,17 +5,23 @@ import json
 import shutil
 import sqlite3
 import unittest
+import wave
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
+import numpy as np
+
 from allday_asr.asr.oracle_backends import OracleTranscript
 from allday_asr.services.benchmark import (
+    ACOUSTIC_BLIND_KIND,
+    ACOUSTIC_BLIND_PROTOCOL_FORMAT,
     BLIND_PROTOCOL_FORMAT,
     CONTINUOUS_TRUTH_FORMAT,
     _asr_metrics,
     benchmark_comparison,
+    create_acoustic_blind_truth_task,
     create_blind_truth_task,
     create_continuous_truth_template,
     evaluate_benchmark,
@@ -340,6 +346,182 @@ class ContinuousBenchmarkTests(unittest.TestCase):
         )
         frozen = import_continuous_truth(self.database, summary.task_path)
         self.assertEqual(frozen.annotation_count, 3)
+
+    def test_v2c2_acoustic_blind_regions_exclude_unreviewed_gaps(self) -> None:
+        target = self.output_dir / "blind-v2c2-task"
+        scan_audio = self.root / f"acoustic-scan-{self.token}.wav"
+        self.paths.append(scan_audio)
+        sample_rate = 16_000
+        seconds = []
+        timeline = np.arange(sample_rate, dtype=np.float32) / sample_rate
+        for index in range(5):
+            if index in {1, 4}:
+                signal = 0.22 * np.sin(2 * np.pi * 440 * timeline)
+            else:
+                signal = np.zeros(sample_rate, dtype=np.float32)
+            seconds.append(np.round(signal * 32767).astype("<i2"))
+        with wave.open(str(scan_audio), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(sample_rate)
+            output.writeframes(np.concatenate(seconds).tobytes())
+
+        @contextmanager
+        def fake_full_window(_window):
+            yield scan_audio
+
+        def fake_materialize(window, destination, **_kwargs):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(f"window:{window.index}".encode())
+            return destination
+
+        with (
+            patch(
+                "allday_asr.services.benchmark.temporary_logical_window",
+                fake_full_window,
+            ),
+            patch(
+                "allday_asr.services.benchmark.materialize_logical_window",
+                fake_materialize,
+            ),
+        ):
+            summary = create_acoustic_blind_truth_task(
+                self.database,
+                int(self.session["id"]),
+                name=f"blind-v2c2-{self.token}",
+                review_duration_ms=2_000,
+                chunk_ms=1_000,
+                minimum_gap_ms=1_000,
+                seed="fixed-acoustic-seed",
+                output_dir=target,
+            )
+        rows = [json.loads(line) for line in summary.task_path.read_text().splitlines()]
+        metadata = rows[0]
+        self.assertEqual(metadata["provenance"]["kind"], ACOUSTIC_BLIND_KIND)
+        self.assertEqual(
+            metadata["provenance"]["protocol"], ACOUSTIC_BLIND_PROTOCOL_FORMAT
+        )
+        self.assertFalse(metadata["provenance"]["candidate_asr_outputs_used"])
+        windows = [row for row in rows if row.get("type") == "blind_window"]
+        self.assertEqual(len(windows), 2)
+        self.assertEqual(
+            [window["session_start_ms"] for window in windows], [1_000, 4_000]
+        )
+        self.assertGreaterEqual(
+            windows[1]["session_start_ms"] - windows[0]["session_end_ms"], 1_000
+        )
+        self.assertTrue((target / "selection-manifest.json").is_file())
+
+        metadata["completeness"]["vad"] = "exhaustive"
+        metadata["completeness"]["transcript"] = "exhaustive"
+        metadata["blind_attestation"] = {
+            "model_outputs_unseen": True,
+            "annotator": "unit-test-human",
+            "completed_at": "2026-08-28T00:00:00Z",
+        }
+        for window in windows:
+            window["review_status"] = "complete"
+        first = windows[0]
+        speech_start = int(first["session_start_ms"]) + 200
+        speech_end = int(first["session_start_ms"]) + 800
+        rows.extend(
+            [
+                {
+                    "type": "annotation",
+                    "key": "blind:speech:v2c2-0001",
+                    "kind": "speech",
+                    "session_start_ms": speech_start,
+                    "session_end_ms": speech_end,
+                    "label": "speech",
+                    "text": None,
+                    "metadata": {"reviewed": True},
+                },
+                {
+                    "type": "annotation",
+                    "key": "blind:transcript:v2c2-0001",
+                    "kind": "transcript",
+                    "session_start_ms": speech_start,
+                    "session_end_ms": speech_end,
+                    "label": None,
+                    "text": "吃饭对话",
+                    "metadata": {"reviewed": True},
+                },
+            ]
+        )
+        summary.task_path.write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        truth = import_continuous_truth(self.database, summary.task_path)
+        self.assertEqual(truth.annotation_count, 4)
+
+        gap_start = int(first["session_end_ms"])
+        gap_end = int(windows[1]["session_start_ms"])
+        predictions = [
+            self._prediction(
+                "inside-speech", "speech", speech_start, speech_end, label="speech"
+            ),
+            self._prediction(
+                "inside-text", "transcript", speech_start, speech_end, text="吃饭对话"
+            ),
+            self._prediction(
+                "gap-speech", "speech", gap_start, gap_end, label="speech"
+            ),
+            self._prediction(
+                "gap-text", "transcript", gap_start, gap_end, text="不应计入"
+            ),
+        ]
+        prediction_set = self.database.create_benchmark_prediction_set(
+            {
+                "prediction_key": f"v2c2-prediction:{self.token}",
+                "name": f"v2c2-prediction-{self.token}",
+                "session_id": self.session["id"],
+                "input_fingerprint": self.database.session_input_fingerprint(
+                    int(self.session["id"])
+                ),
+                "adapter": "unit-test",
+                "model_manifest": {"model": "synthetic"},
+            },
+            predictions,
+        )
+        with patch("allday_asr.services.benchmark.OUTPUT_DIR", self.output_dir):
+            benchmark = evaluate_benchmark(
+                self.database, truth.truth_set_id, int(prediction_set["id"])
+            )
+        self.assertEqual(benchmark.metrics["asr"]["cer"], 0)
+        self.assertEqual(benchmark.metrics["asr"]["orphan_hypotheses"], 0)
+        self.assertEqual(benchmark.metrics["vad"]["false_positive_ms"], 0)
+        self.assertEqual(benchmark.metrics["vad"]["scope_ms"], 2_000)
+        with self.assertRaisesRegex(ValueError, "跨越非连续 review-region"):
+            _asr_metrics(
+                [
+                    self._truth(
+                        "scope-ref",
+                        "transcript",
+                        speech_start,
+                        speech_end,
+                        text="吃饭对话",
+                    )
+                ],
+                [
+                    self._prediction(
+                        "crossing-text",
+                        "transcript",
+                        speech_start,
+                        int(first["session_end_ms"]) + 100,
+                        text="越界内容",
+                    )
+                ],
+                normalizer=normalize_text,
+                scope=[
+                    (
+                        int(window["session_start_ms"]),
+                        int(window["session_end_ms"]),
+                    )
+                    for window in windows
+                ],
+                exhaustive=True,
+            )
 
     def test_oracle_snapshots_dual_cer_and_paired_bootstrap(self) -> None:
         path = self.root / f"oracle-truth-{self.token}.jsonl"

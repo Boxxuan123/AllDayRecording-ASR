@@ -44,7 +44,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function render() {
     const task = state.task;
-    $("task-name").textContent = `${task.name} · ${formatMs(task.scope_start_ms, true)}–${formatMs(task.scope_end_ms, true)}`;
+    const version = task.protocol?.includes("V2-C.2") ? "V2-C.2" : "V2-C.1";
+    $("protocol-label").textContent = `ALLDAY / ${version} / BLIND`;
+    const reviewMinutes = (task.review_duration_ms / 60000).toFixed(1);
+    $("task-name").textContent = `${task.name} · ${task.windows.length} 块 / 共 ${reviewMinutes} 分钟`;
+    $("finalize-help").textContent = `全部 ${task.windows.length} 个音频块都完整听完后填写。最终确认后网页将进入只读状态，再使用 CLI 导入冻结真值。`;
     const complete = task.windows.filter((item) => item.review_status === "complete").length;
     $("progress-label").textContent = `${complete} / ${task.windows.length}`;
     $("progress-bar").style.width = `${(complete / task.windows.length) * 100}%`;

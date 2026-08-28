@@ -309,14 +309,22 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 
 验收结果：RTX 5070 8 GB 以相同 BF16 模型、batch=1 在约 8 分 14 秒内完成 33 个窗口的双模型处理，保存 66 份不可变假设、6,147 个 token 和 16 个分歧窗口；所有 token 源覆盖检查为 0 错误。旧 snapshot 在 V1 条件化稀疏真值上为 `0.3003`，但 V2-C.1 审计确认它混合了切分和对齐误差，不能与 V1 `0.1436` 直接解释为纯模型排名。
 
-### V2-C.1：公平基准重建（已实现，等待人工盲标）
+### V2-C.1：公平基准重建（已实现）
 
 1. 用原音指纹、会话时长和固定 seed 盲选连续 30 分钟，不读取任何模型输出。
 2. 六个 5 分钟派生试听块必须完整复核，语音与文字覆盖声明为 exhaustive 后才能冻结。
 3. SenseVoice、Qwen 和 Fun-ASR 支持同一人工 transcript 边界的 Oracle ASR 快照，隔离 VAD/对齐影响。
 4. 报告同时给出原始 CER、保守 ITN 等价 CER和 paired bootstrap 置信区间。
 
-当前同边界诊断结果为 SenseVoice `0.1593`、Qwen `0.2063`（ITN `0.1984`）、Fun-ASR `0.2585`（ITN `0.2480`）。由于旧真值仍由 V1 segment 产生且可见 V1 hypothesis，这些数值只用于定位组件，不用于最终晋级。独立盲标范围固定为 `01:41:42–02:11:42`，人工完成前保持 pending。
+当前同边界诊断结果为 SenseVoice `0.1593`、Qwen `0.2063`（ITN `0.1984`）、Fun-ASR `0.2585`（ITN `0.2480`）。由于旧真值仍由 V1 segment 产生且可见 V1 hypothesis，这些数值只用于定位组件，不用于最终晋级。均匀连续盲标范围 `01:41:42–02:11:42` 经复核接近全静音，因此保留为环境负样本，不用于主 CER 排名。
+
+### V2-C.2：波形声学富集盲测（已实现，等待人工盲标）
+
+1. 将完整不可变 PCM 划成固定一分钟候选，只计算 RMS 活动、最长持续活动、P90/RMS 音量和语音频带能量比例，不读取任何候选 VAD、ASR、speaker 或旧转写。
+2. 全候选分数、权重、阈值、固定 seed 和最终选择写入不可变 selection manifest；任务 metadata 绑定 manifest SHA-256。
+3. 选择十个相隔至少一分钟的高活动块，总人工复核时长 10 分钟；真实选择集中在 `00:11–00:37`，独立非静音代理为每块 `86.7%–100%`。
+4. schema v6 继续保存首尾包围范围，十个 review-region 才是穷尽评测范围；benchmark 不处罚未抽中间隙中的预测。
+5. V2-C.1 环境负样本与 V2-C.2 语音富集集分轨报告，不能简单平均或互相替代。
 
 ### V2-D：说话人时间轴与身份
 
@@ -362,8 +370,9 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 4. Qwen3-ASR-1.7B 和 ForcedAligner。
 5. Fun-ASR-Nano 第二假设与分歧队列。
 6. V2-C.1 独立盲标、同边界比较与统计不确定性。
-7. Sortformer/pyannote 和词级说话人融合。
-8. 云端语义接口。
-9. Watch chunk 同步。
+7. V2-C.2 环境负样本与波形声学富集盲测。
+8. Sortformer/pyannote 和词级说话人融合。
+9. 云端语义接口。
+10. Watch chunk 同步。
 
-V2-A/V2-B/V2-C 和 V2-C.1 工具链已完成；先完成独立 30 分钟人工盲标并冻结真正公平的连续真值，再进入 V2-D 的 Sortformer/pyannote 候选比较和 token-to-speaker 融合。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在同一冻结真值上比较。
+V2-A/V2-B/V2-C 和 V2-C.1/V2-C.2 工具链已完成；先完成十个一分钟 V2-C.2 富集块的人工盲标并冻结真正公平的 review-region 真值，再进入 V2-D 的 Sortformer/pyannote 候选比较和 token-to-speaker 融合。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在同一冻结真值上比较。

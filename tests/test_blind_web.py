@@ -97,7 +97,7 @@ class BlindAnnotationWebTests(unittest.TestCase):
                 f"{base_url}/?token=blind-test-token", timeout=3
             ) as response:
                 html = response.read().decode("utf-8")
-            self.assertIn("V2-C.1 独立盲标台", html)
+            self.assertIn("V2-C 独立盲标台", html)
             self.assertNotIn("hypothesis", html)
 
             with opener.open(f"{base_url}/api/task", timeout=3) as response:

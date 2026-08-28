@@ -4,14 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>AllDay · V2-C.1 独立盲标台</title>
+    <title>AllDay · V2-C 独立盲标台</title>
     <meta name="description" content="只读取盲标音频、不显示模型输出的连续语音标注工具">
     <link rel="stylesheet" href="/assets/blind.css">
   </head>
   <body>
     <header class="topbar">
       <div>
-        <p class="eyebrow">ALLDAY / V2-C.1 / BLIND</p>
+        <p id="protocol-label" class="eyebrow">ALLDAY / V2-C / BLIND</p>
         <h1>独立盲标台</h1>
         <p id="task-name" class="muted">载入任务中…</p>
       </div>
@@ -25,7 +25,7 @@
         <section class="progress-card">
           <div class="progress-copy">
             <strong id="progress-label">0 / 0</strong>
-            <span>五分钟块已检查</span>
+            <span>音频块已检查</span>
           </div>
           <div class="progress-track"><span id="progress-bar"></span></div>
           <small id="annotation-count">0 条语音标注</small>
@@ -114,7 +114,7 @@
           <div>
             <p class="eyebrow">FINAL ATTESTATION</p>
             <h3>完成整份盲标</h3>
-            <p>六块都完整听完后填写。最终确认后网页将进入只读状态，再使用 CLI 导入冻结真值。</p>
+            <p id="finalize-help">全部音频块都完整听完后填写。最终确认后网页将进入只读状态，再使用 CLI 导入冻结真值。</p>
           </div>
           <label>
             <span>标注者姓名或代号</span>
@@ -122,7 +122,7 @@
           </label>
           <label class="check-row">
             <input id="confirm-unseen" type="checkbox">
-            <span><strong>我没有查看这 30 分钟对应的任何模型输出</strong><small>只确认所选范围；知道其他时间段的历史结果不影响这项声明。</small></span>
+            <span><strong>我没有查看这些音频块对应的任何模型输出</strong><small>只确认所选范围；知道其他时间段的历史结果不影响这项声明。</small></span>
           </label>
           <button id="finalize-button" class="finalize-button">最终确认并锁定任务</button>
         </section>

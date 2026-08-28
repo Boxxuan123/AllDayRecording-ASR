@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from allday_asr.services.benchmark import (
+    ACOUSTIC_BLIND_PROTOCOL_FORMAT,
     BLIND_PROTOCOL_FORMAT,
     CONTINUOUS_TRUTH_FORMAT,
 )
@@ -61,8 +62,14 @@ class BlindAnnotationApplication:
         }
         return {
             "name": metadata["name"],
+            "protocol": metadata.get("provenance", {}).get("protocol"),
             "scope_start_ms": int(metadata["scope_start_ms"]),
             "scope_end_ms": int(metadata["scope_end_ms"]),
+            "review_duration_ms": sum(
+                int(window["session_end_ms"]) - int(window["session_start_ms"])
+                for window in windows
+            ),
+            "coverage_semantics": metadata.get("coverage_semantics", "continuous"),
             "completeness": metadata.get("completeness", {}),
             "blind_attestation": metadata.get("blind_attestation", {}),
             "finalized": (
@@ -267,8 +274,11 @@ class BlindAnnotationApplication:
             provenance, dict
         ):
             raise ValueError("不是受支持的连续真值文件")
-        if provenance.get("protocol") != BLIND_PROTOCOL_FORMAT:
-            raise ValueError("不是 V2-C.1 盲标任务")
+        if provenance.get("protocol") not in {
+            BLIND_PROTOCOL_FORMAT,
+            ACOUSTIC_BLIND_PROTOCOL_FORMAT,
+        }:
+            raise ValueError("不是受支持的 V2-C 盲标任务")
         if provenance.get("model_outputs_used_for_selection") is not False:
             raise ValueError("任务范围不是独立盲选，拒绝打开")
         unsupported = [
@@ -704,7 +714,9 @@ def serve_blind_annotation(
 ) -> None:
     server = create_blind_annotation_server(task_path, host=host, port=port)
     url = f"{server.application.base_url}/?token={server.application.token}"
-    print(f"V2-C.1 独立盲标台：{url}")
+    protocol = server.application.task_payload().get("protocol", "")
+    version = "V2-C.2" if "V2-C.2" in str(protocol) else "V2-C.1"
+    print(f"{version} 独立盲标台：{url}")
     print("页面不会读取数据库或任何模型输出；按 Ctrl+C 停止。")
     if open_browser:
         webbrowser.open(url)

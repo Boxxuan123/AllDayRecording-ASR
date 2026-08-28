@@ -18,6 +18,7 @@ from allday_asr.exporters import export_jsonl, export_markdown
 from allday_asr.paths import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH, recording_output_dir
 from allday_asr.services.benchmark import (
     benchmark_comparison,
+    create_acoustic_blind_truth_task,
     create_blind_truth_task,
     create_continuous_truth_template,
     evaluate_benchmark,
@@ -631,6 +632,42 @@ def benchmark_annotate_blind(
         port=port,
         open_browser=open_browser,
     )
+
+
+@benchmark_app.command(name="init-blind-v2c2")
+def benchmark_init_blind_v2c2(
+    session_id: int = typer.Argument(..., min=1, help="录音会话 ID。"),
+    name: str = typer.Option(..., help="V2-C.2 盲标任务/真值名称。"),
+    review_duration: str = typer.Option("10:00", help="实际需要人工复核的总时长。"),
+    chunk: str = typer.Option("1:00", help="分散声学候选块的长度。"),
+    minimum_gap: str = typer.Option("1:00", help="候选块之间至少留出的间隔。"),
+    seed: str = typer.Option(
+        "v2c2-primary-20260828", help="声学排序同分时使用的固定种子。"
+    ),
+    output_dir: Optional[Path] = typer.Option(None, help="自定义任务目录。"),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """用原始波形声学活动度生成 V2-C.2 语音富集盲标任务。"""
+    try:
+        summary = create_acoustic_blind_truth_task(
+            Database(db),
+            session_id,
+            name=name,
+            review_duration_ms=parse_offset(review_duration),
+            chunk_ms=parse_offset(chunk),
+            minimum_gap_ms=parse_offset(minimum_gap),
+            seed=seed,
+            output_dir=output_dir,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(
+        f"[green]V2-C.2 声学富集盲标任务已创建[/green] "
+        f"bounding-scope={summary.scope_start_ms}–{summary.scope_end_ms} ms | "
+        f"windows={len(summary.audio_paths)}"
+    )
+    console.print(f"任务：{summary.task_path.resolve()}")
+    console.print("选择过程只读取原始波形特征，不读取 VAD/ASR/旧转写。")
 
 
 @benchmark_app.command(name="snapshot-v1")

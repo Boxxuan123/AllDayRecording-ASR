@@ -15,6 +15,10 @@ from typing import Any
 
 from allday_asr.asr.oracle_backends import OracleAsrBackend
 from allday_asr.paths import EVALUATION_DIR, OUTPUT_DIR
+from allday_asr.services.acoustic_selection import (
+    analyze_pcm_wav,
+    select_acoustic_windows,
+)
 from allday_asr.services.evaluation import (
     EVALUATION_FORMAT,
     NAME_PATTERN,
@@ -32,6 +36,13 @@ from allday_asr.storage.database import Database
 CONTINUOUS_TRUTH_FORMAT = "AllDayRecording continuous truth v2"
 BENCHMARK_REPORT_FORMAT = "AllDayRecording continuous benchmark report v1"
 BLIND_PROTOCOL_FORMAT = "AllDayRecording V2-C.1 blind benchmark v1"
+ACOUSTIC_BLIND_PROTOCOL_FORMAT = (
+    "AllDayRecording V2-C.2 acoustic-stratified blind benchmark v1"
+)
+ACOUSTIC_BLIND_KIND = "blind_acoustic_stratified_annotation_v2"
+ACOUSTIC_SELECTION_MANIFEST_FORMAT = (
+    "AllDayRecording V2-C.2 acoustic selection manifest v1"
+)
 EXHAUSTIVE = "exhaustive"
 
 
@@ -194,6 +205,221 @@ def create_blind_truth_task(
         session_id=session_id,
         scope_start_ms=start_ms,
         scope_end_ms=end_ms,
+        task_path=task_path,
+        audio_paths=tuple(audio_paths),
+    )
+
+
+def create_acoustic_blind_truth_task(
+    database: Database,
+    session_id: int,
+    *,
+    name: str,
+    review_duration_ms: int = 600_000,
+    chunk_ms: int = 60_000,
+    minimum_gap_ms: int = 60_000,
+    seed: str = "v2c2-primary-20260828",
+    output_dir: Path | None = None,
+) -> BlindTruthTaskSummary:
+    """Create a speech-enriched blind task using waveform-only acoustic ranks."""
+    if not NAME_PATTERN.fullmatch(name):
+        raise ValueError("name 只能包含字母、数字、点、下划线和连字符，最长 64 字符")
+    if review_duration_ms <= 0 or chunk_ms <= 0:
+        raise ValueError("review_duration_ms 和 chunk_ms 必须大于 0")
+    if review_duration_ms % chunk_ms:
+        raise ValueError("review_duration_ms 必须是 chunk_ms 的整数倍")
+    if minimum_gap_ms < 0:
+        raise ValueError("minimum_gap_ms 不能小于 0")
+    session = database.get_recording_session(session_id)
+    session_duration = int(session["duration_ms"])
+    if chunk_ms > session_duration:
+        raise ValueError("V2-C.2 单个候选窗口不能超过录音会话时长")
+    window_count = review_duration_ms // chunk_ms
+    if window_count * chunk_ms > session_duration:
+        raise ValueError("V2-C.2 总复核时长不能超过录音会话时长")
+    input_fingerprint = database.session_input_fingerprint(session_id)
+    target = (
+        output_dir.resolve()
+        if output_dir is not None
+        else EVALUATION_DIR / f"session-{session_id:06d}" / f"{name}-blind-v2c2"
+    )
+    if target.exists():
+        raise FileExistsError(f"盲标任务已存在，不会覆盖：{target}")
+
+    slices, gaps = resolve_session_slices(database, session_id, 0, session_duration)
+    full_session = LogicalWindow(
+        session_id=session_id,
+        index=0,
+        core_start_ms=0,
+        core_end_ms=session_duration,
+        analysis_start_ms=0,
+        analysis_end_ms=session_duration,
+        slices=slices,
+        uncovered_ranges=gaps,
+    )
+    with temporary_logical_window(full_session) as audio_path:
+        profile = analyze_pcm_wav(
+            audio_path,
+            candidate_window_ms=chunk_ms,
+        )
+    selection = select_acoustic_windows(
+        profile,
+        count=window_count,
+        seed=seed,
+        minimum_gap_ms=minimum_gap_ms,
+    )
+
+    target.mkdir(parents=True)
+    manifest_path = target / "selection-manifest.json"
+    manifest = {
+        "format": ACOUSTIC_SELECTION_MANIFEST_FORMAT,
+        "session_id": session_id,
+        "input_fingerprint": input_fingerprint,
+        "selection_seed": seed,
+        "candidate_window_ms": chunk_ms,
+        "requested_review_duration_ms": review_duration_ms,
+        "requested_minimum_gap_ms": minimum_gap_ms,
+        "effective_minimum_gap_ms": selection.effective_gap_ms,
+        "frame_ms": profile.frame_ms,
+        "sample_rate": profile.sample_rate,
+        "global_noise_floor_dbfs": profile.global_noise_floor_dbfs,
+        "activity_threshold_dbfs": profile.activity_threshold_dbfs,
+        "score_weights": {
+            "active_fraction": 0.50,
+            "longest_active_run_fraction": 0.20,
+            "p90_dbfs": 0.15,
+            "rms_dbfs": 0.10,
+            "voice_band_ratio": 0.05,
+        },
+        "candidate_asr_outputs_used": False,
+        "candidates": [item.as_dict() for item in profile.candidates],
+        "selected_starts_ms": [item.start_ms for item in selection.selected],
+    }
+    _write_json_atomically(manifest_path, manifest)
+
+    windows: list[dict[str, Any]] = []
+    review_regions: list[dict[str, Any]] = []
+    audio_paths: list[Path] = []
+    for position, selected in enumerate(selection.selected):
+        window_slices, window_gaps = resolve_session_slices(
+            database, session_id, selected.start_ms, selected.end_ms
+        )
+        window = LogicalWindow(
+            session_id=session_id,
+            index=position,
+            core_start_ms=selected.start_ms,
+            core_end_ms=selected.end_ms,
+            analysis_start_ms=selected.start_ms,
+            analysis_end_ms=selected.end_ms,
+            slices=window_slices,
+            uncovered_ranges=window_gaps,
+        )
+        audio_path = target / f"window-{position:03d}.wav"
+        materialize_logical_window(window, audio_path)
+        audio_paths.append(audio_path)
+        windows.append(
+            {
+                "type": "blind_window",
+                "window_index": position,
+                "session_start_ms": selected.start_ms,
+                "session_end_ms": selected.end_ms,
+                "audio_file": audio_path.name,
+                "audio_sha256": _sha256_file(audio_path),
+                "review_status": "pending",
+                "notes": "",
+                "selection_track": "speech_enriched_acoustic",
+                "selection_score": selected.score,
+                "selection_rank": selected.score_rank,
+                "acoustic_metrics": {
+                    "rms_dbfs": selected.rms_dbfs,
+                    "p90_dbfs": selected.p90_dbfs,
+                    "active_fraction": selected.active_fraction,
+                    "longest_active_run_fraction": (
+                        selected.longest_active_run_fraction
+                    ),
+                    "voice_band_ratio": selected.voice_band_ratio,
+                },
+            }
+        )
+        review_regions.append(
+            {
+                "type": "annotation",
+                "key": f"blind:review-region:{position:04d}",
+                "kind": "uncertain",
+                "session_start_ms": selected.start_ms,
+                "session_end_ms": selected.end_ms,
+                "label": "review_region_complete_scope",
+                "text": None,
+                "metadata": {
+                    "protocol": ACOUSTIC_BLIND_PROTOCOL_FORMAT,
+                    "window_index": position,
+                },
+            }
+        )
+
+    scope_start = min(item.start_ms for item in selection.selected)
+    scope_end = max(item.end_ms for item in selection.selected)
+    metadata = {
+        "type": "metadata",
+        "format": CONTINUOUS_TRUTH_FORMAT,
+        "name": name,
+        "session_id": session_id,
+        "scope_start_ms": scope_start,
+        "scope_end_ms": scope_end,
+        "review_duration_ms": review_duration_ms,
+        "coverage_semantics": "exhaustive_within_review_regions",
+        "input_fingerprint": input_fingerprint,
+        "completeness": {
+            "vad": "pending",
+            "transcript": "pending",
+            "speaker": "none",
+            "alignment": "none",
+            "entities": "none",
+        },
+        "provenance": {
+            "kind": ACOUSTIC_BLIND_KIND,
+            "protocol": ACOUSTIC_BLIND_PROTOCOL_FORMAT,
+            "selection_algorithm": "waveform-acoustic-rank-with-gap-v1",
+            "selection_seed": seed,
+            "requested_review_duration_ms": review_duration_ms,
+            "candidate_window_ms": chunk_ms,
+            "requested_minimum_gap_ms": minimum_gap_ms,
+            "effective_minimum_gap_ms": selection.effective_gap_ms,
+            "source_selection_inputs": [
+                "immutable PCM waveform",
+                "session duration",
+                "input fingerprint",
+                "seed",
+            ],
+            "acoustic_features": [
+                "100 ms RMS activity fraction",
+                "longest active run",
+                "RMS dBFS",
+                "p90 frame dBFS",
+                "200-4000 Hz energy ratio",
+            ],
+            "selection_manifest": manifest_path.name,
+            "selection_manifest_sha256": _sha256_file(manifest_path),
+            "model_outputs_used_for_selection": False,
+            "candidate_asr_outputs_used": False,
+        },
+        "blind_attestation": {
+            "model_outputs_unseen": False,
+            "annotator": "",
+            "completed_at": None,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    task_path = target / "truth-draft.jsonl"
+    _write_jsonl_atomically(task_path, [metadata, *windows, *review_regions])
+    (target / "README.md").write_text(
+        _blind_task_readme(task_path.name, windows, version="V2-C.2"),
+        encoding="utf-8",
+    )
+    return BlindTruthTaskSummary(
+        session_id=session_id,
+        scope_start_ms=scope_start,
+        scope_end_ms=scope_end,
         task_path=task_path,
         audio_paths=tuple(audio_paths),
     )
@@ -469,7 +695,10 @@ def import_continuous_truth(
     provenance = metadata.get("provenance", {})
     if not isinstance(provenance, dict):
         raise ValueError("provenance 必须是对象")
-    if provenance.get("kind") == "blind_continuous_annotation_v1":
+    if provenance.get("kind") in {
+        "blind_continuous_annotation_v1",
+        ACOUSTIC_BLIND_KIND,
+    }:
         _validate_blind_truth(rows, metadata, scope_start, scope_end, truth_path)
 
     annotations: list[dict[str, Any]] = []
@@ -782,7 +1011,17 @@ def evaluate_benchmark(
     annotations = database.list_truth_annotations(truth_set_id)
     predictions = database.list_benchmark_predictions(prediction_set_id)
     completeness = json.loads(str(truth_set["completeness_json"]))
-    scope = (int(truth_set["scope_start_ms"]), int(truth_set["scope_end_ms"]))
+    bounding_scope = (
+        int(truth_set["scope_start_ms"]),
+        int(truth_set["scope_end_ms"]),
+    )
+    evaluation_scopes = _evaluation_scopes(annotations, bounding_scope)
+    annotations = [
+        row for row in annotations if _overlap_scopes_ms(row, evaluation_scopes) > 0
+    ]
+    predictions = [
+        row for row in predictions if _overlap_scopes_ms(row, evaluation_scopes) > 0
+    ]
     transcript_exhaustive = completeness.get("transcript") == EXHAUSTIVE
 
     metrics = {
@@ -790,25 +1029,25 @@ def evaluate_benchmark(
             annotations,
             predictions,
             normalizer=normalize_text,
-            scope=scope,
+            scope=evaluation_scopes,
             exhaustive=transcript_exhaustive,
         ),
         "asr_itn": _asr_metrics(
             annotations,
             predictions,
             normalizer=normalize_text_itn_equivalent,
-            scope=scope,
+            scope=evaluation_scopes,
             exhaustive=transcript_exhaustive,
         ),
         "vad": (
-            _vad_metrics(annotations, predictions, scope)
+            _vad_metrics(annotations, predictions, evaluation_scopes)
             if completeness.get("vad") == EXHAUSTIVE
             else _unavailable(
                 "truth coverage is not exhaustive; VAD misses and false alarms would be biased"
             )
         ),
         "speaker": (
-            _speaker_metrics(annotations, predictions, scope)
+            _speaker_metrics(annotations, predictions, evaluation_scopes)
             if completeness.get("speaker") == EXHAUSTIVE
             else _unavailable(
                 "speaker activity coverage is not exhaustive; DER/JER would be biased"
@@ -826,6 +1065,11 @@ def evaluate_benchmark(
         "time_unit": "milliseconds",
         "vad_collar_ms": 0,
         "speaker_overlap": "included",
+        "evaluation_scope": "review_regions",
+        "evaluation_regions": [
+            {"start_ms": start, "end_ms": end}
+            for start, end in evaluation_scopes
+        ],
         "asr_normalizations": {
             "raw": "NFKC + lowercase + remove whitespace/punctuation",
             "itn_equivalent": (
@@ -837,6 +1081,8 @@ def evaluate_benchmark(
         "truth_completeness": completeness,
         "truth_annotation_count": len(annotations),
         "prediction_count": len(predictions),
+        "evaluated_duration_ms": sum(end - start for start, end in evaluation_scopes),
+        "evaluation_region_count": len(evaluation_scopes),
     }
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     output_dir = (
@@ -1030,15 +1276,28 @@ def _asr_metrics(
     predictions: Sequence[Any],
     *,
     normalizer: Callable[[str], str],
-    scope: tuple[int, int],
+    scope: tuple[int, int] | Sequence[tuple[int, int]],
     exhaustive: bool,
 ) -> dict[str, Any]:
-    references = _of_kind(annotations, "transcript")
+    scopes = _normalize_scopes(scope)
+    references = [
+        row
+        for row in _of_kind(annotations, "transcript")
+        if _overlap_scopes_ms(row, scopes) > 0
+    ]
     hypotheses = [
         row
         for row in _of_kind(predictions, "transcript")
-        if _overlap_ms(row, scope[0], scope[1]) > 0
+        if _overlap_scopes_ms(row, scopes) > 0
     ]
+    boundary_crossing = [
+        row for row in hypotheses if not _contained_in_scopes(row, scopes)
+    ]
+    if len(scopes) > 1 and boundary_crossing:
+        raise ValueError(
+            "预测 transcript 跨越非连续 review-region 边界；"
+            "必须按 review-region 重跑或使用 token 时间裁剪快照"
+        )
     excluded_ranges = [
         row
         for row in _of_kind(annotations, "uncertain")
@@ -1172,11 +1431,26 @@ def _transcript_components(
 
 
 def _vad_metrics(
-    annotations: Sequence[Any], predictions: Sequence[Any], scope: tuple[int, int]
+    annotations: Sequence[Any],
+    predictions: Sequence[Any],
+    scope: tuple[int, int] | Sequence[tuple[int, int]],
 ) -> dict[str, Any]:
-    references = _of_kind(annotations, "speech")
-    hypotheses = _of_kind(predictions, "speech")
-    atoms = _time_atoms(scope, references, hypotheses)
+    scopes = _normalize_scopes(scope)
+    references = [
+        row
+        for row in _of_kind(annotations, "speech")
+        if _overlap_scopes_ms(row, scopes) > 0
+    ]
+    hypotheses = [
+        row
+        for row in _of_kind(predictions, "speech")
+        if _overlap_scopes_ms(row, scopes) > 0
+    ]
+    atoms = [
+        atom
+        for evaluation_scope in scopes
+        for atom in _time_atoms(evaluation_scope, references, hypotheses)
+    ]
     tp = fp = fn = tn = 0
     for start, end in atoms:
         midpoint = (start + end) / 2
@@ -1194,10 +1468,22 @@ def _vad_metrics(
     precision = _safe_ratio(tp, tp + fp)
     recall = _safe_ratio(tp, tp + fn)
     ref_boundaries = sorted(
-        {_start(row) for row in references} | {_end(row) for row in references}
+        {
+            boundary
+            for row in references
+            for start, end in scopes
+            if _overlap_ms(row, start, end) > 0
+            for boundary in (max(start, _start(row)), min(end, _end(row)))
+        }
     )
     hyp_boundaries = sorted(
-        {_start(row) for row in hypotheses} | {_end(row) for row in hypotheses}
+        {
+            boundary
+            for row in hypotheses
+            for start, end in scopes
+            if _overlap_ms(row, start, end) > 0
+            for boundary in (max(start, _start(row)), min(end, _end(row)))
+        }
     )
     boundary_errors = [
         min(abs(boundary - candidate) for candidate in hyp_boundaries)
@@ -1206,7 +1492,8 @@ def _vad_metrics(
     ]
     return {
         "available": True,
-        "scope_ms": scope[1] - scope[0],
+        "scope_ms": sum(end - start for start, end in scopes),
+        "scope_regions": len(scopes),
         "true_positive_ms": tp,
         "false_positive_ms": fp,
         "false_negative_ms": fn,
@@ -1223,11 +1510,26 @@ def _vad_metrics(
 
 
 def _speaker_metrics(
-    annotations: Sequence[Any], predictions: Sequence[Any], scope: tuple[int, int]
+    annotations: Sequence[Any],
+    predictions: Sequence[Any],
+    scope: tuple[int, int] | Sequence[tuple[int, int]],
 ) -> dict[str, Any]:
-    references = [row for row in _of_kind(annotations, "speaker") if _label(row)]
-    hypotheses = [row for row in _of_kind(predictions, "speaker") if _label(row)]
-    atoms = _time_atoms(scope, references, hypotheses)
+    scopes = _normalize_scopes(scope)
+    references = [
+        row
+        for row in _of_kind(annotations, "speaker")
+        if _label(row) and _overlap_scopes_ms(row, scopes) > 0
+    ]
+    hypotheses = [
+        row
+        for row in _of_kind(predictions, "speaker")
+        if _label(row) and _overlap_scopes_ms(row, scopes) > 0
+    ]
+    atoms = [
+        atom
+        for evaluation_scope in scopes
+        for atom in _time_atoms(evaluation_scope, references, hypotheses)
+    ]
     reference_labels = sorted({_label(row) for row in references})
     hypothesis_labels = sorted({_label(row) for row in hypotheses})
     overlap_weights: dict[tuple[str, str], float] = Counter()
@@ -1472,6 +1774,53 @@ def _time_atoms(
     ]
 
 
+def _evaluation_scopes(
+    annotations: Sequence[Any], fallback: tuple[int, int]
+) -> list[tuple[int, int]]:
+    review_regions = [
+        (_start(row), _end(row))
+        for row in _of_kind(annotations, "uncertain")
+        if _label(row) == "review_region_complete_scope"
+    ]
+    return _normalize_scopes(review_regions or fallback)
+
+
+def _normalize_scopes(
+    scope: tuple[int, int] | Sequence[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    if (
+        isinstance(scope, tuple)
+        and len(scope) == 2
+        and isinstance(scope[0], int)
+        and isinstance(scope[1], int)
+    ):
+        scopes = [scope]
+    else:
+        scopes = [(int(item[0]), int(item[1])) for item in scope]
+    if not scopes:
+        raise ValueError("评测范围不能为空")
+    scopes.sort()
+    previous_end: int | None = None
+    for start, end in scopes:
+        if start < 0 or end <= start:
+            raise ValueError("评测范围无效")
+        if previous_end is not None and start < previous_end:
+            raise ValueError("评测范围不能重叠")
+        previous_end = end
+    return scopes
+
+
+def _overlap_scopes_ms(row: Any, scopes: Sequence[tuple[int, int]]) -> int:
+    return sum(_overlap_ms(row, start, end) for start, end in scopes)
+
+
+def _contained_in_scopes(row: Any, scopes: Sequence[tuple[int, int]]) -> bool:
+    return any(
+        start <= _start(row) < _end(row) <= end
+        for start, end in scopes
+    )
+
+
 def _source_refs(
     database: Database, session_id: int, start_ms: int, end_ms: int
 ) -> list[dict[str, Any]]:
@@ -1640,10 +1989,16 @@ def _validate_blind_truth(
     truth_path: Path,
 ) -> None:
     provenance = metadata.get("provenance")
-    if not isinstance(provenance, dict) or provenance.get("protocol") != BLIND_PROTOCOL_FORMAT:
-        raise ValueError("盲标真值缺少 V2-C.1 协议声明")
+    if not isinstance(provenance, dict):
+        raise ValueError("盲标真值缺少协议声明")
+    protocol = provenance.get("protocol")
+    if protocol not in {BLIND_PROTOCOL_FORMAT, ACOUSTIC_BLIND_PROTOCOL_FORMAT}:
+        raise ValueError("盲标真值缺少受支持的 V2-C 协议声明")
+    acoustic_stratified = protocol == ACOUSTIC_BLIND_PROTOCOL_FORMAT
     if provenance.get("model_outputs_used_for_selection") is not False:
         raise ValueError("盲标范围必须在不使用模型输出的情况下选择")
+    if acoustic_stratified and provenance.get("candidate_asr_outputs_used") is not False:
+        raise ValueError("V2-C.2 选择过程不得使用候选 ASR 输出")
     attestation = metadata.get("blind_attestation")
     if not isinstance(attestation, dict):
         raise ValueError("盲标真值缺少 blind_attestation")
@@ -1691,14 +2046,15 @@ def _validate_blind_truth(
     )
     if not windows:
         raise ValueError("盲标真值没有 blind_window")
-    cursor = scope_start
+    temporal_windows: list[tuple[int, int]] = []
     for expected_index, window in enumerate(windows):
         if int(window["window_index"]) != expected_index:
             raise ValueError("blind_window index 必须从 0 连续递增")
         start_ms = int(window["session_start_ms"])
         end_ms = int(window["session_end_ms"])
-        if start_ms != cursor or end_ms <= start_ms or end_ms > scope_end:
-            raise ValueError("blind_window 必须无缝覆盖完整真值范围")
+        if start_ms < scope_start or end_ms <= start_ms or end_ms > scope_end:
+            raise ValueError("blind_window 超出真值包围范围")
+        temporal_windows.append((start_ms, end_ms))
         if window.get("review_status") != "complete":
             raise ValueError(f"blind_window {expected_index} 尚未标记 complete")
         audio_name = str(window.get("audio_file") or "")
@@ -1709,9 +2065,65 @@ def _validate_blind_truth(
             raise ValueError(f"盲标派生音频不存在：{audio_path}")
         if _sha256_file(audio_path) != str(window.get("audio_sha256") or ""):
             raise ValueError(f"盲标派生音频 SHA-256 不一致：{audio_path}")
-        cursor = end_ms
-    if cursor != scope_end:
-        raise ValueError("blind_window 没有覆盖完整真值范围")
+    temporal_windows.sort()
+    if temporal_windows[0][0] != scope_start or temporal_windows[-1][1] != scope_end:
+        raise ValueError("blind_window 与真值包围范围不一致")
+    for previous, current in zip(temporal_windows, temporal_windows[1:]):
+        if current[0] < previous[1]:
+            raise ValueError("blind_window 不能重叠")
+        if not acoustic_stratified and current[0] != previous[1]:
+            raise ValueError("V2-C.1 blind_window 必须无缝覆盖完整真值范围")
+    if not acoustic_stratified and sum(
+        end - start for start, end in temporal_windows
+    ) != scope_end - scope_start:
+        raise ValueError("V2-C.1 blind_window 没有覆盖完整真值范围")
+
+    if acoustic_stratified:
+        manifest_name = str(provenance.get("selection_manifest") or "")
+        if Path(manifest_name).name != manifest_name:
+            raise ValueError("V2-C.2 selection manifest 路径无效")
+        manifest_path = truth_path.parent / manifest_name
+        if not manifest_path.is_file():
+            raise ValueError("V2-C.2 selection manifest 不存在")
+        if _sha256_file(manifest_path) != str(
+            provenance.get("selection_manifest_sha256") or ""
+        ):
+            raise ValueError("V2-C.2 selection manifest SHA-256 不一致")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("V2-C.2 selection manifest 不是有效 JSON") from exc
+        if not isinstance(manifest, dict) or manifest.get(
+            "format"
+        ) != ACOUSTIC_SELECTION_MANIFEST_FORMAT:
+            raise ValueError("V2-C.2 selection manifest 格式无效")
+        if int(manifest.get("session_id", -1)) != int(metadata["session_id"]):
+            raise ValueError("V2-C.2 selection manifest 会话不一致")
+        if manifest.get("input_fingerprint") != metadata.get("input_fingerprint"):
+            raise ValueError("V2-C.2 selection manifest 原音指纹不一致")
+        if manifest.get("candidate_asr_outputs_used") is not False:
+            raise ValueError("V2-C.2 selection manifest 使用了候选 ASR 输出")
+        selected_starts = [int(value) for value in manifest.get("selected_starts_ms", [])]
+        if selected_starts != [start for start, _ in temporal_windows]:
+            raise ValueError("V2-C.2 窗口不是 selection manifest 预先选定的范围")
+        manifest_candidates = {
+            int(item["start_ms"]): item
+            for item in manifest.get("candidates", [])
+            if isinstance(item, dict) and "start_ms" in item
+        }
+        for window in windows:
+            start_ms = int(window["session_start_ms"])
+            candidate = manifest_candidates.get(start_ms)
+            if candidate is None or int(candidate.get("end_ms", -1)) != int(
+                window["session_end_ms"]
+            ):
+                raise ValueError("V2-C.2 窗口不在 selection manifest 候选中")
+            if float(candidate.get("score", -1)) != float(
+                window.get("selection_score", -2)
+            ) or int(candidate.get("score_rank", -1)) != int(
+                window.get("selection_rank", -2)
+            ):
+                raise ValueError("V2-C.2 窗口声学排名与 selection manifest 不一致")
     review_regions = [
         row
         for row in rows
@@ -1719,19 +2131,41 @@ def _validate_blind_truth(
         and row.get("kind") == "uncertain"
         and row.get("label") == "review_region_complete_scope"
     ]
-    if len(review_regions) != 1 or (
-        int(review_regions[0]["session_start_ms"]) != scope_start
-        or int(review_regions[0]["session_end_ms"]) != scope_end
-    ):
-        raise ValueError("盲标真值必须保留覆盖完整 scope 的 review-region 行")
+    review_intervals = sorted(
+        (
+            int(row["session_start_ms"]),
+            int(row["session_end_ms"]),
+        )
+        for row in review_regions
+    )
+    if acoustic_stratified:
+        if review_intervals != temporal_windows:
+            raise ValueError("V2-C.2 必须为每个窗口保留完全一致的 review-region 行")
+    elif review_intervals != [(scope_start, scope_end)]:
+        raise ValueError("V2-C.1 必须保留覆盖完整 scope 的 review-region 行")
+    for row in rows:
+        if row.get("type") != "annotation" or row in review_regions:
+            continue
+        start_ms = int(row["session_start_ms"])
+        end_ms = int(row["session_end_ms"])
+        if acoustic_stratified and not any(
+            window_start <= start_ms < end_ms <= window_end
+            for window_start, window_end in temporal_windows
+        ):
+            raise ValueError(f"盲标标注 {row.get('key')} 不在任何已复核窗口内")
 
 
-def _blind_task_readme(task_name: str, windows: Sequence[dict[str, Any]]) -> str:
+def _blind_task_readme(
+    task_name: str,
+    windows: Sequence[dict[str, Any]],
+    *,
+    version: str = "V2-C.1",
+) -> str:
     window_lines = "\n".join(
         f"- `{row['audio_file']}`：{row['session_start_ms']}–{row['session_end_ms']} ms"
         for row in windows
     )
-    return f"""# V2-C.1 盲标任务
+    return f"""# {version} 盲标任务
 
 只听本目录 WAV，不打开网页中的 V1/V2 转写。原始 Watch 文件没有被修改；这些 WAV 是可重建的 16 kHz 单声道派生片段。
 
@@ -1741,7 +2175,7 @@ def _blind_task_readme(task_name: str, windows: Sequence[dict[str, Any]]) -> str
 
 1. 每段完整听完，把对应 `blind_window.review_status` 改为 `complete`。
 2. 为每段可听语音添加 `speech` annotation，并为所有可听清内容添加 `transcript`；无法可靠听写的语音另加 `uncertain` annotation，label 使用 `unintelligible`，该范围不计 ASR CER。时间是 session 绝对毫秒；key 必须唯一。
-3. 无语音区域不添加 `speech`，这正是穷尽式 VAD 真值的一部分。不要删除 `blind:review-region:0000` 行。穷尽真值中的孤立模型 transcript 会作为插入错误计入，不能靠不重叠人工文字逃避处罚。
+3. 无语音区域不添加 `speech`，这正是穷尽式 VAD 真值的一部分。不要删除 `blind:review-region:*` 行。穷尽真值中的孤立模型 transcript 会作为插入错误计入，不能靠不重叠人工文字逃避处罚。
 4. 全部完成后把 `completeness.vad` 和 `completeness.transcript` 改为 `exhaustive`，填写 `blind_attestation`，再运行 `allday-asr benchmark import-truth <path>`。
 
 示例 annotation（仅展示格式，不是答案）：
@@ -1777,6 +2211,21 @@ def _write_jsonl_atomically(path: Path, rows: Iterable[dict[str, Any]]) -> None:
         temporary.unlink()
     temporary.write_text(
         "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    if path.exists():
+        temporary.unlink(missing_ok=True)
+        raise FileExistsError(f"不会覆盖已有文件：{path}")
+    temporary.replace(path)
+
+
+def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    if temporary.exists():
+        temporary.unlink()
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     if path.exists():

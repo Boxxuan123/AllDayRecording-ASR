@@ -95,7 +95,7 @@ h3 { margin-bottom: .35rem; }
 .progress-track { height: .45rem; margin: .8rem 0; overflow: hidden; border-radius: 99px; background: #e9edef; }
 .progress-track span { display: block; width: 0; height: 100%; background: var(--accent); transition: width .25s ease; }
 
-.window-list { display: grid; gap: .55rem; margin: 1rem 0; }
+.window-list { display: grid; gap: .55rem; max-height: 52vh; margin: 1rem 0; padding-right: .2rem; overflow-y: auto; }
 .window-button {
   width: 100%;
   display: grid;
