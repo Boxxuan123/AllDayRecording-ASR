@@ -35,6 +35,14 @@ min_segment_seconds = 1.5
 min_cluster_segments = 3
 min_cluster_speech_seconds = 5.0
 
+[quality_diarization]
+backend = "pyannote-community-1"
+model_id = "pyannote/speaker-diarization-community-1"
+token_env = "HF_TOKEN"
+min_primary_overlap_ratio = 0.50
+min_secondary_overlap_ratio = 0.30
+min_primary_margin = 0.15
+
 [identity]
 candidates_enabled = true
 threshold = 0.36

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allday-recording-asr"
-version = "0.5.0"
+version = "0.6.0"
 description = "Local-first daily recording transcription and timeline pipeline"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -17,6 +17,7 @@ dependencies = [
     "tokenizers==0.22.2",
     "gradio==5.49.1",
     "numpy>=2.0",
+    "pyannote.audio==4.0.7",
     "rich>=15,<16",
     "soundfile>=0.14,<0.15",
     "silero-vad==6.2.1",

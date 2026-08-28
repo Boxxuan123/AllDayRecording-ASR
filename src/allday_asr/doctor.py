@@ -33,6 +33,7 @@ def run_checks() -> list[CheckResult]:
         "funasr",
         "modelscope",
         "qwen-asr",
+        "pyannote.audio",
         "transformers",
         "soundfile",
         "typer",

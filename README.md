@@ -2,16 +2,16 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、schema v6、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-C.1 已重建公平评测协议；V2-C.2 将偶然抽中的近静音连续块拆为环境负样本，并生成独立于模型的语音富集盲标任务。V2-C.3 已实现 FSMN proposal、Silero/相对 SNR/时长证据门控和强制对齐后的核心 token 提交；五块开发集上总体 CER 从 `109.94%` 降到 `92.27%`，现场人声从 `154.90%` 降到 `116.18%`。这批数据已用于调参，仍需新的未见 holdout。V2 不以实时性或小模型为目标；之后继续实现允许重叠的说话人时间轴，再接云端 LLM 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-C.3 已实现双 VAD 证据门控和核心 token 提交；V2-D 已增加 schema v7、pyannote Community-1 本地重叠/互斥说话人时间轴、逐 turn 原音追溯和 token-to-speaker 融合。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注并不穷尽电视声，不能直接报告 V2-D 的公平 DER/JER。V2 不以实时性或小模型为目标；之后继续做 V2-D 真实运行/真值验证，再接云端 LLM 和 Watch 同步。
 
-实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现与开发集结果见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)。
+实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)。
 
 ## 已验证环境
 
 - Windows、Python 3.12。
 - RTX 5070 Laptop GPU，8 GB 显存。
 - PyTorch / torchaudio `2.9.1+cu128`、torchvision `0.24.1+cu128`。
-- FunASR `1.4.4`、ModelScope `1.39.1`、Qwen-ASR `0.0.6`、Silero VAD `6.2.1`。
+- FunASR `1.4.4`、ModelScope `1.39.1`、Qwen-ASR `0.0.6`、Silero VAD `6.2.1`、pyannote.audio `4.0.7`。
 - FFmpeg / FFprobe 可用。
 
 PyTorch 使用 CUDA 专用 wheel，应根据显卡和 CUDA 环境单独安装，因此不由 `pyproject.toml` 自动解析。
@@ -83,6 +83,19 @@ allday-asr benchmark compare 1
 ```
 
 完整配置、续跑语义、边界策略和依赖固定原因见 [V2-C 指南](docs/v2-c-quality-asr.md)。
+
+## V2-D：重叠感知说话人时间轴
+
+schema v7 将说话人时间轴与 V1 VAD segments 解耦，同时保存允许重叠的 regular turns 和便于 ASR token 协调的 exclusive turns。所有 turn 都有原始 source SHA-256/时间引用；V2-C committed token 可以保存主说话人、并发说话人、不确定或无归属，不再假设一个 VAD 段只能有一人。
+
+```powershell
+hf auth login  # 首次下载前先在 Community-1 页面接受条款；也可设置 HF_TOKEN
+allday-asr diarization-v2 run 1 --asr-run 10
+allday-asr diarization-v2 status <run-id>
+allday-asr diarization-v2 snapshot <run-id>
+```
+
+音频仍只在本地处理，pyannote telemetry 已关闭；HF token 不进入配置或数据库。完整模型选择、融合阈值和评测边界见 [V2-D 指南](docs/v2-d-speaker-timeline.md)。
 
 ## V2-C.1/V2-C.2：公平基准
 
@@ -292,4 +305,4 @@ allday-asr action-review 3 --status dismissed
 
 ## 当前边界
 
-V2-A/V2-B/V2-C 的不可变源对象、schema v6、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现；V2-C.1/V2-C.2 已加入同边界 Oracle ASR、原始/ITN 双 CER、paired bootstrap、环境负样本和波形声学富集盲测。V2-C.3 的双 VAD 证据门控、padding/core 分离、committed token 快照和显式 VAD prediction 已实现。Qwen 是下一版主模型，但生产默认仍不覆盖 V1：当前五块已被当作开发集使用，还缺新的未见 holdout。V2-D 的重叠说话人时间轴尚未实施；Watch 五分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现。
+V2-A/V2-B/V2-C 的不可变源对象、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现；V2-C.3 的双 VAD 证据门控、committed token 快照和显式 VAD prediction 已实现。V2-D 的 schema v7、Community-1 backend、重叠/互斥 speaker turns、token-to-speaker 融合和 speaker/overlap snapshot 已实现，真实权重运行等待本机提供 gated 模型访问权限。生产默认仍不覆盖 V1。Watch 五分钟分块同步、云端 LLM、V2-D 网页轨道、跨天身份、桌面确认弹窗和真实日历写入尚未实现。

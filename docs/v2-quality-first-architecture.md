@@ -188,7 +188,7 @@ V2 不再长期保存整条录音的 `normalized-16k-mono.wav`。模型读取策
 
 ## 7. 数据模型目标（schema v4 起步）
 
-schema v4 建立不可变 source/session、run 输入快照和派生产物基础；schema v5 增加冻结 truth、prediction snapshot 和 benchmark run；schema v6 增加不可变双 ASR 假设、alignment token、逐 token 原音映射和分歧队列。后续实体继续通过只追加的新 migration 引入。完整数据模型采用“不可变 run + 可选当前结果指针”，不得继续用覆盖单行的方式保存所有阶段结果。
+schema v4 建立不可变 source/session、run 输入快照和派生产物基础；schema v5 增加冻结 truth、prediction snapshot 和 benchmark run；schema v6 增加不可变双 ASR 假设、alignment token、逐 token 原音映射和分歧队列；schema v7 增加重叠/exclusive speaker turns、逐 turn source trace 和 token speaker attribution。后续实体继续通过只追加的新 migration 引入。完整数据模型采用“不可变 run + 可选当前结果指针”，不得继续用覆盖单行的方式保存所有阶段结果。
 
 ### 7.1 核心实体
 
@@ -336,10 +336,11 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 
 ### V2-D：说话人时间轴与身份
 
-1. 接入 Sortformer 和 pyannote 候选 backend。
-2. 保存重叠 speaker turns，不再将整段强制压成单一 speaker。
-3. 实现 token-to-speaker 融合和不确定归属。
-4. 将本人验证从匿名聚类中解耦，完成跨场景阈值校准。
+1. [x] 接入本地 pyannote Community-1 backend；Sortformer 保留为同真值候选。
+2. [x] 保存 regular 重叠 turns 和 exclusive ASR 辅助 turns，不再将整段强制压成单一 speaker。
+3. [x] 实现 token-to-speaker 主/重叠/不确定/无归属融合。
+4. [ ] 在真实长录音运行并建立穷尽 speaker/media/overlap 真值。
+5. [ ] 将本人验证从匿名聚类中解耦，完成跨场景阈值校准。
 
 验收：生成标准 DER 报告；重叠讲话不会被数据结构丢失；本人误接受风险可量化。
 
@@ -384,4 +385,4 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 10. 云端语义接口。
 11. Watch chunk 同步。
 
-V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；先用未参与 V2-C.3 阈值选择的新录音或 review-region 做留出验证，再进入 V2-D 的 Sortformer/pyannote 候选比较和 token-to-speaker 融合。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。
+V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；V2-D 已完成 schema v7、Community-1 backend 和 token-to-speaker 融合，真实运行等待 gated 权重权限。之后在新的穷尽 speaker/media/overlap 真值上决定是否增加 Sortformer 候选。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。

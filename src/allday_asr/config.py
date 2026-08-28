@@ -60,6 +60,20 @@ class DiarizationConfig:
 
 
 @dataclass(frozen=True)
+class QualityDiarizationConfig:
+    backend: str = "pyannote-community-1"
+    model_id: str = "pyannote/speaker-diarization-community-1"
+    model_path: str | None = None
+    token_env: str = "HF_TOKEN"
+    num_speakers: int | None = None
+    min_speakers: int | None = None
+    max_speakers: int | None = None
+    min_primary_overlap_ratio: float = 0.50
+    min_secondary_overlap_ratio: float = 0.30
+    min_primary_margin: float = 0.15
+
+
+@dataclass(frozen=True)
 class IdentityConfig:
     candidates_enabled: bool = True
     threshold: float = 0.36
@@ -87,6 +101,7 @@ class AppConfig:
     ingest: IngestConfig = IngestConfig()
     asr: AsrConfig = AsrConfig()
     diarization: DiarizationConfig = DiarizationConfig()
+    quality_diarization: QualityDiarizationConfig = QualityDiarizationConfig()
     identity: IdentityConfig = IdentityConfig()
     timeline: TimelineConfig = TimelineConfig()
     actions: ActionConfig = ActionConfig()
@@ -124,6 +139,7 @@ def config_from_mapping(payload: dict[str, Any]) -> AppConfig:
             "ingest",
             "asr",
             "diarization",
+            "quality_diarization",
             "identity",
             "timeline",
             "actions",
@@ -173,6 +189,22 @@ def config_from_mapping(payload: dict[str, Any]) -> AppConfig:
             "min_cluster_speech_seconds",
         },
     )
+    quality_diarization_values = _section(
+        payload,
+        "quality_diarization",
+        {
+            "backend",
+            "model_id",
+            "model_path",
+            "token_env",
+            "num_speakers",
+            "min_speakers",
+            "max_speakers",
+            "min_primary_overlap_ratio",
+            "min_secondary_overlap_ratio",
+            "min_primary_margin",
+        },
+    )
     identity_values = _section(
         payload,
         "identity",
@@ -196,6 +228,7 @@ def config_from_mapping(payload: dict[str, Any]) -> AppConfig:
         ingest=IngestConfig(**ingest_values),
         asr=AsrConfig(**asr_values),
         diarization=DiarizationConfig(**diarization_values),
+        quality_diarization=QualityDiarizationConfig(**quality_diarization_values),
         identity=IdentityConfig(**identity_values),
         timeline=TimelineConfig(**timeline_values),
         actions=ActionConfig(**action_values),
@@ -273,6 +306,32 @@ def _validate(config: AppConfig) -> None:
         raise ConfigError("diarization.min_cluster_segments 必须大于 0")
     if diarization.min_cluster_speech_seconds < 0:
         raise ConfigError("diarization.min_cluster_speech_seconds 不能小于 0")
+    quality_diarization = config.quality_diarization
+    if quality_diarization.backend != "pyannote-community-1":
+        raise ConfigError("quality_diarization.backend 目前必须是 pyannote-community-1")
+    if not quality_diarization.model_id.strip():
+        raise ConfigError("quality_diarization.model_id 不能为空")
+    if not quality_diarization.token_env.strip():
+        raise ConfigError("quality_diarization.token_env 不能为空")
+    for field in ("num_speakers", "min_speakers", "max_speakers"):
+        value = getattr(quality_diarization, field)
+        if value is not None and value < 1:
+            raise ConfigError(f"quality_diarization.{field} 必须大于 0")
+    if (
+        quality_diarization.num_speakers is None
+        and quality_diarization.min_speakers is not None
+        and quality_diarization.max_speakers is not None
+        and quality_diarization.min_speakers > quality_diarization.max_speakers
+    ):
+        raise ConfigError("quality_diarization.min_speakers 不能大于 max_speakers")
+    for field in (
+        "min_primary_overlap_ratio",
+        "min_secondary_overlap_ratio",
+        "min_primary_margin",
+    ):
+        value = getattr(quality_diarization, field)
+        if not 0 <= value <= 1:
+            raise ConfigError(f"quality_diarization.{field} 必须在 0 到 1 之间")
     identity = config.identity
     if not 0 < identity.threshold <= 1:
         raise ConfigError("identity.threshold 必须在 0 到 1 之间")

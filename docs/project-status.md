@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-28  
-> 当前阶段：V1 基线和本地操作台可用；V2-A/V2-B/V2-C.3 已实现。V2-C.1 的近静音连续块保留为环境负样本；V2-C.2 前 5 块已冻结为明确标注“预备”的开发真值，后 5 块保持待检查。Qwen 主模型和双 VAD 证据门控已完成，下一质量验证需要新的未见 holdout。
+> 当前阶段：V1 基线和本地操作台可用；V2-A/V2-B/V2-C.3 已实现，V2-D 的 schema/backend/融合链路已实现，真实 Community-1 长录音运行等待 gated 模型访问权限。V2-C.2 前 5 块是开发真值且未穷尽电视说话人，不能冒充 V2-D DER/JER 真值。
 
 ## 1. 结论
 
@@ -19,12 +19,13 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 | 录音入库 | V2-A 已完成 | 不可变 source/session、SHA-256 去重、证据字段防修改/删除、完整性审计 |
 | 音频处理 | V2-A 基础完成 | V1 标准化/VAD/断点续跑；V2 逻辑窗口临时解码且不新增长期整段 PCM |
 | ASR | V2-C.3 已实现 | Qwen3-ASR-1.7B、0.6B ForcedAligner、Fun-ASR-Nano、FSMN+Silero 证据门控、padding/core 分离、逐 token 原音追溯；等待新 holdout |
+| 说话人时间轴 | V2-D 工程完成、实跑待权限 | pyannote Community-1 本地 regular/exclusive turns、重叠区间、逐 turn 原音追溯、token 主/重叠/不确定归属 |
 | 匿名说话人 | 原型完成 | CAM++ 聚类、短片段/弱聚类质量门槛、允许 `unknown` |
 | 本人身份 | 原型完成 | 独立多录音登记、片段候选、人工导入、阈值校准 |
 | 人物样本库 | 已完成 V1 | `accepted`、`holdout`、`negative`、会话隔离、清单 |
 | 固定人物登记 | 基础完成 | 经同意可建立 `known_person` 档案；尚无跨天自动匹配 |
 | 时间线 | 原型完成 | 规则聚合事件、Markdown/JSON、原音区间追溯 |
-| 数据库迁移 | V2-C 已完成 | schema v6；升级前自动备份，冻结 truth/prediction/run/ASR hypothesis/token/source trace 且 V1 历史计数不变 |
+| 数据库迁移 | V2-D 已完成 | schema v7；新增不可变 diarization turn/source 与 token speaker attribution，升级前自动备份且不覆盖 V1 |
 | 统一配置 | 已完成 V1 | TOML 校验、配置哈希、每次运行完整快照 |
 | 一键日处理 | 已完成 V1 | 幂等 `daily-run`、人工审核保护、运行清单 |
 | 人工评测 | V2-B 已完成 | 连续 session/source 真值、预测快照、CER、VAD、DER/JER、对齐、实体和多 run 对比；保留 V1 兼容入口 |
@@ -87,18 +88,18 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 ## 5. 已知技术债和风险
 
 1. 首个 15 分钟标注已迁移为连续时间事实，但 46/46 文字边界都来自 V1 segment，模板可见 V1 hypothesis，且不是穷尽式 VAD/说话人真值；它只允许作 V1 条件化诊断。V2-C.1 均匀连续盲块又偶然落在近静音场景，只用于环境误报轨道。V2-C.2a 的五个已完成窗口足以把 Qwen 选为下一版主模型，但属于人工受限的预备开发证据；V2-C.3 调参后必须新建未见 holdout，不能把这五块再次宣称为最终测试集。
-2. 当前 diarization 先按模型说话人区间映射到 VAD 片段；一个 VAD 片段内的换人、重叠讲话和电视声仍可能混在一起。
+2. V1 diarization 仍把说话人映射到整条 VAD 片段；V2-D 已用独立重叠时间轴修复数据表达，但现有人工标注刻意漏标电视声且 speaker 身份不穷尽，真实 DER/JER 暂时必须为 N/A。
 3. `daily-run` 已能安全编排现有阶段，但还缺少一份可公开提交、不含隐私的小音频集成样本。
 4. 时间线仍然只是时间间隔规则聚合，还没有“我今天做了什么”的日级摘要；行动候选目前只覆盖明确日期、时间和本人承诺的严格格式。
 5. 固定人物可以登记，但尚无通用的跨天人物候选匹配和人工确认流程。
-6. schema v6 已建立 source/session、连续 truth、预测快照、benchmark、双 ASR 假设和逐 token 源映射；V2-D 及后续结构变化必须新增 migration，不能修改既有版本。
+6. schema v7 已新增 diarization turns/source trace/token attribution；后续结构变化必须继续新增 migration，不能修改既有版本。
 7. `daily-run` 已使用统一配置；旧的分步命令仍保留各自参数，后续可逐步接入同一配置层。
 8. 已建立 Git 基线提交 `d9e9377` 和一键日记提交 `57cbe2e`；后续能力继续按可验证功能独立提交。
 
 ## 6. 本次盘点验证
 
-- `doctor` 全部通过：Python 3.12.10、FFmpeg/FFprobe、FunASR 1.4.4、ModelScope 1.39.1、PyTorch/torchaudio 2.9.1+cu128 和 RTX 5070 CUDA 实算正常。
-- 全量单元测试包含 schema v4→v6 自动备份、冻结 ASR/token/source 防篡改、跨源逐 token 引用、V2-C.1/V2-C.2 盲标约束、非连续 review-region、Oracle 快照、双 CER、paired bootstrap、VAD/DER/JER，以及 V2-C.3 门控接受/拒绝、无重叠 padding 和拒绝 token 不进入预测的回归检查。
+- `doctor` 全部通过：Python 3.12.10、FFmpeg/FFprobe、FunASR 1.4.4、ModelScope 1.39.1、pyannote.audio 4.0.7、PyTorch/torchaudio 2.9.1+cu128 和 RTX 5070 CUDA 实算正常。
+- 全量 45 个单元测试通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution 防篡改、跨源引用、V2-C.1/V2-C.2 盲标约束、非连续 review-region、Oracle 快照、双 CER、paired bootstrap、VAD/DER/JER、V2-C.3 门控，以及 V2-D 同时说话判定和 token 多说话人归属。
 - 真实库已从 schema v3 升级到 v4，升级前自动保存一份 schema v3 SQLite 备份。迁移前后 V1 各表计数一致：423 个语音段、17 条人工身份标注、26 条声纹样本、10 个事件和 3 个历史 run 均保留。
 - 当前 79,826,205 字节 Watch M4A 完整性状态为 `verified`；迁移和真实逻辑窗口解码前后 SHA-256 均为 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`。
 - 当前长录音可规划为 33 个无空洞的 5 分钟核心窗口并带 5 秒边界上下文；真实 10 秒核心窗口临时解码为 11 秒 WAV，退出后缓存已删除。
@@ -106,6 +107,8 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 - 已将现有前 15 分钟标注冻结为 277 条连续时间事实，并冻结当前 V1 的 971 条预测；新 benchmark CER 为 `0.1436`，与历史 `14.36%` 一致。
 - 当前旧真值的 VAD/DER/JER/对齐指标明确为 N/A；合成穷尽真值测试已验证对应指标计算，待人工完成连续覆盖后才报告真实数值。
 - schema v5→v6 升级前已自动备份真实 SQLite；升级后原音再次审计为 `verified`，79,826,205 字节和 SHA-256 均未变化。
+- schema v6→v7 升级前已自动备份真实 SQLite；迁移前后 423 个 V1 片段、17 条身份标注、26 条声纹样本、10 个事件、165 个 ASR hypothesis 和 20,967 个 ASR token 全部不变，原音 SHA-256 仍为 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`。
+- Community-1 未缓存且 `HF_TOKEN` 缺失时会在联网/解码/创建 run 前立即终止；真实库仍为 0 个 V2-D run，没有空结果污染审计记录。
 - Qwen3-ASR-1.7B + Qwen3-ForcedAligner-0.6B 已在当前 8 GB 5070 上以 BF16、batch=1 运行真实 40 秒片段并返回 71 个对齐 token；Fun-ASR-Nano 对同一片段返回独立假设和 90 个 CTC token。
 - 首个完整五分钟 V2-C VAD-utterance 窗口已端到端完成：1 份主假设、1 份第二假设、236 个不可变对齐 token、1 条分歧记录、0 个低覆盖假设；每个 token 均有原始对象 SHA-256 和完整源时间覆盖。
 - 当前 2 小时 44 分 35 秒录音已完成全量 V2-C run 7：33 份 Qwen 主假设、33 份 Fun-ASR 第二假设、6,147 个 token、16 个分歧窗口和 3 个低于 85% 对齐覆盖的非空假设；8 GB BF16 全程未 OOM，端到端耗时约 8 分 14 秒。
@@ -140,7 +143,7 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 ### P1：连续时间评测（V2-B 核心已完成）
 
 1. 将真值从 `segment_id` 解耦，锚定原始音频 SHA-256 和绝对时间范围。
-2. 已增加 VAD Miss/FA、DER/JER、对齐误差和关键实体指标；speaker-attributed CER 等待 V2-D 的 token-to-speaker 输出，避免用整段单人标签伪造。
+2. 已增加 VAD Miss/FA、DER/JER、对齐误差和关键实体指标；V2-D 已提供 token-to-speaker 输出，speaker-attributed CER 还需穷尽 speaker 真值和对应 benchmark adapter，不能用整段单人标签伪造。
 3. 保留 V1 SenseVoice 结果，建立同一输入的多 run 对比报告。
 
 ### P2：质量优先音频模型
@@ -148,8 +151,8 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 1. Qwen3-ASR-1.7B 作为主 ASR 候选。
 2. Qwen3-ForcedAligner-0.6B 输出字符/词级时间戳。
 3. Fun-ASR-Nano-2512 生成第二假设和关键字段分歧队列。
-4. Sortformer 和 pyannote 分别生成允许重叠的 speaker turns。
-5. 将 token 与说话人时间轴融合，再独立执行本人声纹验证。
+4. Community-1 已生成可保存的重叠/exclusive speaker turns；Sortformer 因 4 人上限和非英语风险保留为待同真值比较的可插拔候选。
+5. token 与说话人时间轴融合已实现；下一步是独立本人/媒体来源验证。
 
 ### P3：云端语义和 Watch 同步
 
@@ -174,4 +177,4 @@ V2-B 已完成 schema v5、连续时间真值格式、旧标注迁移、不可�
 
 V2-C 已完成 schema v6、Qwen3-ASR-1.7B、Qwen3-ForcedAligner-0.6B、Fun-ASR-Nano 第二假设、边界 token 去重、分歧队列、失败续跑和 token 时间 benchmark snapshot。V2-C.3 已增加 FSMN proposal、Silero/相对 SNR/时长证据门控、推理 padding 与提交 core 分离，以及同时含 speech 和 committed token 的 v4 snapshot。默认 `quality-16gb` 使用 BF16 且不量化；当前 8 GB 环境仍以同模型 batch=1 顺序运行，不牺牲模型精度。
 
-当前 V2-C.3 在五块开发集上达到总体 CER `92.27%`、现场 CER `116.18%` 和 VAD-F1 `61.42%`，相对 run 7 有实质改善，但这五块已经参与阈值选择。下一步先用新的未见录音或 review-region 验证，不能把开发集重复包装成最终测试；随后进入 **V2-D：允许重叠的说话人时间轴**，比较 Sortformer 与 pyannote，并将 V2-C token 按时间关联到 speaker turns。
+当前 V2-C.3 在五块开发集上达到总体 CER `92.27%`、现场 CER `116.18%` 和 VAD-F1 `61.42%`，但这五块已经参与阈值选择。V2-D 已完成数据结构、Community-1 backend、token 融合、CLI 和 snapshot；下一步先取得 gated 权重并完成真实长录音 run，再建立包含现场人物、电视/媒体声和重叠的穷尽小型真值，不能把现有五条人工 speaker 标记包装成 DER/JER。

@@ -18,6 +18,10 @@ from allday_asr.asr.quality_backends import (
 from allday_asr.audio.tools import extract_clip
 from allday_asr.blind_web import serve_blind_annotation
 from allday_asr.config import load_config
+from allday_asr.diarization.quality_backends import (
+    PyannoteCommunityBackend,
+    SpeakerTurn,
+)
 from allday_asr.doctor import run_checks
 from allday_asr.exporters import export_jsonl, export_markdown
 from allday_asr.paths import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH, recording_output_dir
@@ -48,6 +52,12 @@ from allday_asr.services.quality_asr import (
     QualityAsrSettings,
     run_quality_asr,
     snapshot_quality_asr,
+)
+from allday_asr.services.quality_diarization import (
+    QualityDiarizationSettings,
+    compute_overlap_regions,
+    run_quality_diarization,
+    snapshot_quality_diarization,
 )
 from allday_asr.services.review import import_self_review
 from allday_asr.services.sources import (
@@ -92,6 +102,177 @@ quality_asr_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(quality_asr_app, name="asr-v2")
+quality_diarization_app = typer.Typer(
+    help="V2-D 重叠感知说话人时间轴和 ASR token 归属。",
+    no_args_is_help=True,
+)
+app.add_typer(quality_diarization_app, name="diarization-v2")
+
+
+@quality_diarization_app.command(name="run")
+def quality_diarization_run(
+    recording_id: int = typer.Argument(..., min=1),
+    asr_run_id: Optional[int] = typer.Option(
+        None,
+        "--asr-run",
+        min=1,
+        help="用于 token 归属的已完成 V2-C run；默认选择该录音最新一次。",
+    ),
+    model_path: Optional[Path] = typer.Option(
+        None,
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
+        help="已经下载好的 Community-1 本地 snapshot；默认使用项目缓存/HF_TOKEN。",
+    ),
+    num_speakers: Optional[int] = typer.Option(
+        None, min=1, help="已知说话人数；会覆盖 min/max。"
+    ),
+    min_speakers: Optional[int] = typer.Option(None, min=1, help="最少说话人数。"),
+    max_speakers: Optional[int] = typer.Option(None, min=1, help="最多说话人数。"),
+    config: Path = typer.Option(
+        DEFAULT_CONFIG_PATH,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="TOML 配置文件。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """在整段原始会话派生的临时 PCM 上运行本地 Community-1。"""
+    resolved = load_config(config)
+    database = Database(db)
+    if asr_run_id is None:
+        candidates = [
+            row
+            for row in database.list_processing_runs(recording_id)
+            if str(row["run_kind"]) == "quality_asr_v2c"
+            and str(row["status"]) == "completed"
+        ]
+        if not candidates:
+            raise typer.BadParameter("该录音没有已完成的 V2-C ASR run")
+        asr_run_id = int(candidates[-1]["id"])
+    quality = resolved.quality_diarization
+    settings = QualityDiarizationSettings(
+        num_speakers=num_speakers if num_speakers is not None else quality.num_speakers,
+        min_speakers=min_speakers if min_speakers is not None else quality.min_speakers,
+        max_speakers=max_speakers if max_speakers is not None else quality.max_speakers,
+        min_primary_overlap_ratio=quality.min_primary_overlap_ratio,
+        min_secondary_overlap_ratio=quality.min_secondary_overlap_ratio,
+        min_primary_margin=quality.min_primary_margin,
+    )
+    selected_model_path = model_path or (
+        Path(quality.model_path).resolve() if quality.model_path else None
+    )
+    try:
+        summary = run_quality_diarization(
+            database,
+            recording_id,
+            asr_run_id=asr_run_id,
+            settings=settings,
+            backend_factory=lambda: PyannoteCommunityBackend(
+                model_id=quality.model_id,
+                model_path=selected_model_path,
+                device=resolved.runtime.device,
+                token_env=quality.token_env,
+            ),
+        )
+    except RuntimeError as exc:
+        console.print(f"[red]V2-D 未完成[/red]：{exc}")
+        raise typer.Exit(code=2) from exc
+    console.print(
+        f"[green]V2-D 完成[/green] run={summary.run_id} | "
+        f"speakers={summary.speakers} | regular={summary.regular_turns} | "
+        f"exclusive={summary.exclusive_turns} | overlap="
+        f"{summary.overlap_regions}/{summary.overlap_ms / 1000:.1f}s | "
+        f"tokens={summary.attributed_tokens} primary={summary.primary_tokens} "
+        f"overlap={summary.overlap_tokens} uncertain={summary.uncertain_tokens} "
+        f"none={summary.unassigned_tokens}"
+    )
+    console.print(f"运行清单：{summary.manifest_path.resolve()}")
+
+
+@quality_diarization_app.command(name="status")
+def quality_diarization_status(
+    run_id: int = typer.Argument(..., min=1),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """查看说话人时长、重叠区间和 token 归属统计。"""
+    database = Database(db)
+    run = database.get_processing_run(run_id)
+    if str(run["run_kind"]) != "quality_diarization_v2d":
+        raise typer.BadParameter("run 不是 V2-D 说话人时间轴运行")
+    regular = database.list_diarization_turns(run_id, turn_kind="regular")
+    exclusive = database.list_diarization_turns(run_id, turn_kind="exclusive")
+    attributions = database.list_token_speaker_attributions(run_id)
+    durations: dict[str, int] = {}
+    for row in regular:
+        label = str(row["speaker_label"])
+        durations[label] = durations.get(label, 0) + (
+            int(row["session_end_ms"]) - int(row["session_start_ms"])
+        )
+    table = Table("说话人", "累计时长", "regular turns", "primary tokens", "overlap tokens")
+    for label in sorted(durations):
+        table.add_row(
+            label,
+            f"{durations[label] / 1000:.1f}s",
+            str(sum(str(row["speaker_label"]) == label for row in regular)),
+            str(
+                sum(
+                    str(row["speaker_label"] or "") == label
+                    and str(row["attribution_kind"]) == "primary"
+                    for row in attributions
+                )
+            ),
+            str(
+                sum(
+                    str(row["speaker_label"] or "") == label
+                    and str(row["attribution_kind"]) == "overlap"
+                    for row in attributions
+                )
+            ),
+        )
+    turn_objects = [
+        SpeakerTurn(
+            start_ms=int(row["session_start_ms"]),
+            end_ms=int(row["session_end_ms"]),
+            speaker_label=str(row["speaker_label"]),
+        )
+        for row in regular
+    ]
+    overlap = compute_overlap_regions(turn_objects)
+    console.print(
+        f"run={run_id} status={run['status']} regular={len(regular)} "
+        f"exclusive={len(exclusive)} overlap={len(overlap)}/"
+        f"{sum(end - start for start, end, _ in overlap) / 1000:.1f}s "
+        f"attributions={len(attributions)}"
+    )
+    console.print(table)
+
+
+@quality_diarization_app.command(name="snapshot")
+def quality_diarization_snapshot(
+    run_id: int = typer.Argument(..., min=1),
+    name: Optional[str] = typer.Option(None, help="不可变 benchmark prediction 名称。"),
+    truth_set_id: Optional[int] = typer.Option(
+        None,
+        "--truth-set",
+        min=1,
+        help="只冻结该真值 review-region 内的说话人/重叠预测。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """把 V2-D regular turns 和真实重叠区冻结为公平评测快照。"""
+    summary = snapshot_quality_diarization(
+        Database(db), run_id, name=name, truth_set_id=truth_set_id
+    )
+    console.print(
+        f"[green]V2-D 预测已冻结[/green] prediction_set="
+        f"{summary.prediction_set_id} | speakers={summary.speaker_predictions} | "
+        f"overlap={summary.overlap_predictions} | sha256={summary.content_sha256}"
+    )
 
 
 @quality_asr_app.command(name="run")
