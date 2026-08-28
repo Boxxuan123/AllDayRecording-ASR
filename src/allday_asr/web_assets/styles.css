@@ -580,9 +580,24 @@ audio {
 
 .audio-note {
   display: block;
-  margin-top: 6px;
+  margin-bottom: 5px;
   color: var(--muted);
   font-size: 10px;
+  font-weight: 700;
+}
+
+.audio-player + .audio-player {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(31, 40, 49, 0.16);
+}
+
+.audio-player.exact .audio-note {
+  color: #3d584b;
+}
+
+.audio-player.context .audio-note {
+  color: #86651f;
 }
 
 .segment-form {

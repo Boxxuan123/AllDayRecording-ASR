@@ -119,6 +119,9 @@ class WebApplication:
                 {
                     **row,
                     "audio_url": f"/api/audio/{int(row['segment_id'])}?v=3",
+                    "context_audio_url": (
+                        f"/api/audio/{int(row['segment_id'])}?mode=context&v=1"
+                    ),
                 }
                 for row in rows
             ],
@@ -238,22 +241,38 @@ class WebApplication:
         with self.jobs_lock:
             self.jobs[job_id].update(values)
 
-    def audio_clip(self, segment_id: int) -> Path:
+    def audio_clip(self, segment_id: int, *, mode: str = "segment") -> Path:
+        if mode not in {"segment", "context"}:
+            raise ValueError("音频试听模式无效")
         database = self.database()
         segment = database.get_segment(segment_id)
         recording = database.get_recording(int(segment["recording_id"]))
+        if mode == "context":
+            context_ms = 3_000
+            start_ms = max(0, int(segment["start_ms"]) - context_ms)
+            end_ms = min(
+                int(recording["duration_ms"]),
+                int(segment["end_ms"]) + context_ms,
+            )
+            directory = "web-audio-context-v1"
+            filename = f"segment-{segment_id}-context.wav"
+        else:
+            start_ms = int(segment["start_ms"])
+            end_ms = int(segment["end_ms"])
+            directory = "web-audio-v3"
+            filename = f"segment-{segment_id}-listening.wav"
         destination = (
             recording_output_dir(int(recording["id"]))
-            / "web-audio-v3"
-            / f"segment-{segment_id}-listening.wav"
+            / directory
+            / filename
         )
         with self.audio_lock:
             if not destination.is_file():
                 extract_clip(
                     Path(recording["source_path"]),
                     destination,
-                    int(segment["start_ms"]),
-                    int(segment["end_ms"]),
+                    start_ms,
+                    end_ms,
                     audio_filter="loudnorm=I=-18:LRA=7:TP=-2",
                 )
         return destination
@@ -350,8 +369,12 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
             return
         audio_match = _match_path(parsed.path, r"/api/audio/(?P<segment_id>\d+)")
         if audio_match:
+            mode = parse_qs(parsed.query).get("mode", ["segment"])[0]
             self._send_file(
-                self.application.audio_clip(int(audio_match["segment_id"])), "audio/wav"
+                self.application.audio_clip(
+                    int(audio_match["segment_id"]), mode=mode
+                ),
+                "audio/wav",
             )
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "页面不存在"})

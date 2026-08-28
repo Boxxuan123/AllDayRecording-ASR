@@ -273,13 +273,22 @@ function renderSegmentCard(segment) {
   meta.append(node("span", "time-chip", `${formatOffset(segment.start_ms)}–${formatOffset(segment.end_ms)}`));
   evidence.append(meta);
 
-  const audio = node("audio");
-  audio.controls = true;
-  audio.preload = "none";
-  audio.src = segment.audio_url;
-  audio.setAttribute("aria-label", `播放片段 ${segment.segment_id}`);
-  evidence.append(audio);
-  evidence.append(node("small", "audio-note", "试听增强：严格原片段边界 · 自动提升音量"));
+  evidence.append(
+    renderAudioPlayer(
+      "评测片段 · 准确文字只抄这里",
+      segment.audio_url,
+      `播放严格片段 ${segment.segment_id}`,
+      "exact",
+    ),
+  );
+  evidence.append(
+    renderAudioPlayer(
+      "辅助上下文 · 前后各 3 秒，不抄片段外文字",
+      segment.context_audio_url,
+      `播放片段 ${segment.segment_id} 的上下文`,
+      "context",
+    ),
+  );
   evidence.append(node("div", "speaker-chip", segment.hypothesis_speaker_at_export || "unknown"));
   evidence.append(node("p", "hypothesis-label", "系统当前识别"));
   evidence.append(node("p", "hypothesis-text", segment.hypothesis_text_at_export || "（没有识别文字）"));
@@ -349,6 +358,18 @@ function renderSegmentCard(segment) {
 
   card.append(evidence, form);
   return card;
+}
+
+function renderAudioPlayer(label, source, ariaLabel, variant) {
+  const wrapper = node("div", `audio-player ${variant}`);
+  wrapper.append(node("small", "audio-note", label));
+  const audio = node("audio");
+  audio.controls = true;
+  audio.preload = "none";
+  audio.src = source;
+  audio.setAttribute("aria-label", ariaLabel);
+  wrapper.append(audio);
+  return wrapper;
 }
 
 function field(label, kind, value, placeholder) {

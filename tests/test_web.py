@@ -74,13 +74,20 @@ class WebConsoleTests(unittest.TestCase):
                     patch("allday_asr.web.extract_clip") as extract_clip,
                 ):
                     listening_clip = server.application.audio_clip(segment_id)
+                    context_clip = server.application.audio_clip(
+                        segment_id, mode="context"
+                    )
                 self.assertEqual(
                     listening_clip.name, f"segment-{segment_id}-listening.wav"
                 )
-                extract_clip.assert_called_once()
-                self.assertEqual(extract_clip.call_args.args[2:4], (500, 2_500))
                 self.assertEqual(
-                    extract_clip.call_args.kwargs["audio_filter"],
+                    context_clip.name, f"segment-{segment_id}-context.wav"
+                )
+                self.assertEqual(extract_clip.call_count, 2)
+                self.assertEqual(extract_clip.call_args_list[0].args[2:4], (500, 2_500))
+                self.assertEqual(extract_clip.call_args_list[1].args[2:4], (0, 5_000))
+                self.assertEqual(
+                    extract_clip.call_args_list[0].kwargs["audio_filter"],
                     "loudnorm=I=-18:LRA=7:TP=-2",
                 )
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -118,6 +125,10 @@ class WebConsoleTests(unittest.TestCase):
                 self.assertEqual(
                     evaluation["segments"][0]["audio_url"],
                     f"/api/audio/{segment_id}?v=3",
+                )
+                self.assertEqual(
+                    evaluation["segments"][0]["context_audio_url"],
+                    f"/api/audio/{segment_id}?mode=context&v=1",
                 )
 
                 request = urllib.request.Request(
