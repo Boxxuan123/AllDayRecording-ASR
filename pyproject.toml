@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allday-recording-asr"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first daily recording transcription and timeline pipeline"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -23,3 +23,6 @@ allday-asr = "allday_asr.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+allday_asr = ["web_assets/*.html", "web_assets/*.css", "web_assets/*.js"]

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>AllDay · 本地日记工作台</title>
+    <meta name="description" content="本地全天录音、人工真值与行动候选工作台">
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">AD</div>
+          <div>
+            <p class="eyebrow">DAYTRACE / LOCAL</p>
+            <h1>日记工作台</h1>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <button class="nav-item active" data-view="evaluation">
+            <span class="nav-index">01</span>
+            <span>评测标注</span>
+          </button>
+          <button class="nav-item" data-view="actions">
+            <span class="nav-index">02</span>
+            <span>行动候选</span>
+            <span id="pending-action-badge" class="badge hidden">0</span>
+          </button>
+          <button class="nav-item" data-view="runs">
+            <span class="nav-index">03</span>
+            <span>运行记录</span>
+          </button>
+        </nav>
+
+        <div class="privacy-card">
+          <span class="status-dot"></span>
+          <div>
+            <strong>仅本机访问</strong>
+            <p>录音、真值与声纹不会上传。</p>
+          </div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">ALL DAY RECORDING / ASR</p>
+            <h2 id="page-title">评测标注</h2>
+          </div>
+          <div class="topbar-actions">
+            <label class="select-field">
+              <span>录音</span>
+              <select id="recording-select" aria-label="选择录音"></select>
+            </label>
+            <button id="run-daily-button" class="primary-button">重新生成日记</button>
+          </div>
+        </header>
+
+        <section class="metric-grid" aria-label="录音概览">
+          <article class="metric-card accent-cyan">
+            <span>转写片段</span>
+            <strong id="metric-segments">—</strong>
+            <small id="metric-segments-detail">读取中</small>
+          </article>
+          <article class="metric-card accent-violet">
+            <span>身份标注</span>
+            <strong id="metric-annotations">—</strong>
+            <small>人工确认片段</small>
+          </article>
+          <article class="metric-card accent-amber">
+            <span>评测进度</span>
+            <strong id="metric-evaluation">—</strong>
+            <small id="metric-evaluation-detail">尚未选择模板</small>
+          </article>
+          <article class="metric-card accent-red">
+            <span>待确认行动</span>
+            <strong id="metric-actions">—</strong>
+            <small>不会自动写入日历</small>
+          </article>
+        </section>
+
+        <div id="job-banner" class="job-banner hidden" role="status">
+          <span class="pulse-dot"></span>
+          <div>
+            <strong id="job-title">正在运行</strong>
+            <p id="job-detail"></p>
+          </div>
+        </div>
+
+        <section id="view-evaluation" class="view active-view">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">GROUND TRUTH</p>
+              <h3>逐段听写与身份标注</h3>
+              <p>先播放原音，再填写准确文字。每次保存只修改当前片段。</p>
+            </div>
+            <div class="section-actions">
+              <label class="select-field compact">
+                <span>评测模板</span>
+                <select id="evaluation-select" aria-label="选择评测模板"></select>
+              </label>
+              <button id="run-evaluation-button" class="secondary-button">生成评测报告</button>
+            </div>
+          </div>
+
+          <div class="review-toolbar">
+            <div class="progress-copy">
+              <strong id="review-progress-label">0 / 0</strong>
+              <span>已填写准确文字</span>
+            </div>
+            <div class="progress-track" aria-hidden="true">
+              <span id="review-progress-bar"></span>
+            </div>
+            <div class="filter-group" role="group" aria-label="标注筛选">
+              <button class="filter-button active" data-filter="all">全部</button>
+              <button class="filter-button" data-filter="unlabeled">未标注</button>
+              <button class="filter-button" data-filter="labeled">已标注</button>
+            </div>
+          </div>
+
+          <div id="evaluation-empty" class="empty-state hidden">
+            <strong>还没有评测模板</strong>
+            <p>请先在终端运行 evaluation init，或选择其他录音。</p>
+          </div>
+          <div id="segment-list" class="segment-list"></div>
+          <div id="pagination" class="pagination"></div>
+        </section>
+
+        <section id="view-actions" class="view">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">REVIEW QUEUE</p>
+              <h3>日程与待办候选</h3>
+              <p>每个候选都有原文、确认语和原音证据；确认后仍不会写入外部日历。</p>
+            </div>
+          </div>
+          <div id="action-list" class="action-list"></div>
+          <div id="action-empty" class="empty-state hidden">
+            <strong>没有行动候选</strong>
+            <p>当前严格规则没有找到同时具备时间、行动和本人承诺的内容。</p>
+          </div>
+        </section>
+
+        <section id="view-runs" class="view">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">PROCESS HISTORY</p>
+              <h3>一键日记运行记录</h3>
+              <p>每次运行保留配置哈希、阶段状态与待确认项。</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Run</th>
+                  <th>状态</th>
+                  <th>开始时间</th>
+                  <th>配置</th>
+                  <th>待确认</th>
+                </tr>
+              </thead>
+              <tbody id="run-table-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

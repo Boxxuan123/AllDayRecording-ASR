@@ -290,6 +290,107 @@ def evaluate_truth(database: Database, truth_path: Path) -> EvaluationSummary:
     )
 
 
+def evaluation_truth_path(recording_id: int, name: str) -> Path:
+    if recording_id < 1:
+        raise ValueError("recording_id 必须大于 0")
+    if not NAME_PATTERN.fullmatch(name):
+        raise ValueError("评测集名称无效")
+    return EVALUATION_DIR / f"recording-{recording_id:06d}" / f"{name}.jsonl"
+
+
+def load_evaluation_truth(recording_id: int, name: str) -> tuple[dict, list[dict]]:
+    path = evaluation_truth_path(recording_id, name)
+    if not path.is_file():
+        raise FileNotFoundError(f"评测真值不存在：{path}")
+    return _load_truth(path)
+
+
+def list_evaluation_templates(recording_id: int) -> list[dict]:
+    root = EVALUATION_DIR / f"recording-{recording_id:06d}"
+    if not root.is_dir():
+        return []
+    templates: list[dict] = []
+    for path in sorted(root.glob("*.jsonl")):
+        try:
+            metadata, rows = _load_truth(path)
+        except (ValueError, KeyError):
+            continue
+        included = [row for row in rows if row.get("include", True)]
+        text_labeled = sum(bool(str(row.get("reference_text", "")).strip()) for row in included)
+        identity_labeled = sum(
+            str(row.get("reference_identity", "")).strip() in {"self", "not_self"}
+            for row in included
+        )
+        templates.append(
+            {
+                "name": metadata.get("name") or path.stem,
+                "recording_id": recording_id,
+                "start_ms": metadata.get("start_ms"),
+                "end_ms": metadata.get("end_ms"),
+                "segments": len(included),
+                "text_labeled": text_labeled,
+                "identity_labeled": identity_labeled,
+                "path": str(path.resolve()),
+            }
+        )
+    return templates
+
+
+def update_evaluation_truth_segment(
+    recording_id: int,
+    name: str,
+    segment_id: int,
+    values: dict,
+) -> dict:
+    allowed = {
+        "include",
+        "reference_text",
+        "reference_speaker",
+        "reference_identity",
+        "key_facts",
+        "notes",
+    }
+    unknown = set(values) - allowed
+    if unknown:
+        raise ValueError(f"不允许更新字段：{', '.join(sorted(unknown))}")
+    identity = str(values.get("reference_identity", "")).strip()
+    if identity not in {"", "self", "not_self"}:
+        raise ValueError("reference_identity 只能为空、self 或 not_self")
+    for field in ("reference_text", "reference_speaker", "notes"):
+        if field in values and not isinstance(values[field], str):
+            raise ValueError(f"{field} 必须是字符串")
+        if len(values.get(field, "")) > 4000:
+            raise ValueError(f"{field} 内容过长")
+    if "include" in values and not isinstance(values["include"], bool):
+        raise ValueError("include 必须是布尔值")
+    key_facts = values.get("key_facts", [])
+    if not isinstance(key_facts, list) or any(not isinstance(item, str) for item in key_facts):
+        raise ValueError("key_facts 必须是字符串列表")
+    if len(key_facts) > 50:
+        raise ValueError("key_facts 最多 50 项")
+
+    path = evaluation_truth_path(recording_id, name)
+    metadata, rows = _load_truth(path)
+    updated: dict | None = None
+    for row in rows:
+        if int(row["segment_id"]) != segment_id:
+            continue
+        for key, value in values.items():
+            row[key] = value
+        updated = row
+        break
+    if updated is None:
+        raise KeyError(f"评测集中没有片段 {segment_id}")
+    serialized = "\n".join(
+        [json.dumps(metadata, ensure_ascii=False)]
+        + [json.dumps(row, ensure_ascii=False) for row in rows]
+    ) + "\n"
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(serialized, encoding="utf-8")
+    temporary.replace(path)
+    return updated
+
+
 def parse_offset(value: str) -> int:
     text = value.strip()
     if not text:

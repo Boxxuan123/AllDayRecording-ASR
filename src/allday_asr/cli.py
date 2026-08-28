@@ -39,6 +39,7 @@ from allday_asr.services.voice_library import (
     write_library_manifests,
 )
 from allday_asr.storage.database import Database
+from allday_asr.web import serve_web
 
 
 app = typer.Typer(
@@ -51,6 +52,34 @@ library_app = typer.Typer(help="管理本地人物声纹样本库。", no_args_i
 app.add_typer(library_app, name="voice-library")
 evaluation_app = typer.Typer(help="建立人工真值并评测离线结果。", no_args_is_help=True)
 app.add_typer(evaluation_app, name="evaluation")
+
+
+@app.command(name="web")
+def web_command(
+    port: int = typer.Option(8765, min=1, max=65535, help="本地网页端口。"),
+    open_browser: bool = typer.Option(
+        True,
+        "--open/--no-open",
+        help="启动后是否自动用默认浏览器打开。",
+    ),
+    config: Path = typer.Option(
+        DEFAULT_CONFIG_PATH,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="TOML 配置文件。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """启动仅限本机访问的评测、日记和候选操作台。"""
+    serve_web(
+        database_path=db,
+        config_path=config,
+        host="127.0.0.1",
+        port=port,
+        open_browser=open_browser,
+    )
 
 
 @app.command(name="config-show")
