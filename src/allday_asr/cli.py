@@ -28,6 +28,11 @@ from allday_asr.services.speakers import (
     mark_speaker_as_self,
     unmark_self,
 )
+from allday_asr.services.sources import (
+    audit_all_sources,
+    audit_source_object,
+    plan_logical_windows,
+)
 from allday_asr.services.timeline import build_timeline
 from allday_asr.services.verification import export_self_candidates
 from allday_asr.services.review import import_self_review
@@ -100,6 +105,98 @@ def config_show(
     console.print_json(data=resolved.to_dict())
     console.print(f"config_sha256={resolved.sha256()}")
     console.print(f"database_schema_version={database.schema_version()}")
+
+
+@app.command(name="sources")
+def source_objects(
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """列出永久保存的不可变原始音频对象及其 V2 会话。"""
+    database = Database(db)
+    sessions_by_recording = {
+        int(session["legacy_recording_id"]): session
+        for session in database.list_recording_sessions()
+        if session["legacy_recording_id"] is not None
+    }
+    recordings_by_hash = {
+        str(recording["sha256"]): recording for recording in database.list_recordings()
+    }
+    table = Table("Source", "Session", "File", "Bytes", "Integrity", "SHA-256")
+    for source in database.list_source_objects():
+        recording = recordings_by_hash.get(str(source["sha256"]))
+        session = (
+            sessions_by_recording.get(int(recording["id"])) if recording is not None else None
+        )
+        table.add_row(
+            str(source["id"]),
+            str(session["id"]) if session is not None else "-",
+            str(source["original_filename"]),
+            str(source["byte_size"] or "unknown"),
+            str(source["integrity_status"]),
+            str(source["sha256"])[:16],
+        )
+    console.print(table)
+
+
+@app.command(name="source-audit")
+def source_audit(
+    source_id: Optional[int] = typer.Argument(
+        None, min=1, help="原始音频对象 ID；省略时审计全部对象。"
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """只读校验原始音频的 SHA-256、大小和媒体元数据。"""
+    database = Database(db)
+    results = (
+        [audit_source_object(database, source_id)]
+        if source_id is not None
+        else audit_all_sources(database)
+    )
+    table = Table("Source", "Status", "Bytes", "SHA-256", "Path")
+    failed = False
+    for result in results:
+        failed = failed or result.status != "verified"
+        table.add_row(
+            str(result.source_object_id),
+            result.status,
+            str(result.actual_byte_size or "-"),
+            (result.actual_sha256 or "-")[:16],
+            str(result.path),
+        )
+        if result.mismatches:
+            console.print_json(data=result.mismatches)
+        if result.error:
+            console.print(f"[red]{result.error}[/red]")
+    console.print(table)
+    if failed:
+        raise typer.Exit(code=1)
+
+
+@app.command(name="session-windows")
+def session_windows(
+    session_id: int = typer.Argument(..., min=1, help="V2 录音会话 ID。"),
+    window_seconds: float = typer.Option(300.0, min=1.0, help="核心窗口秒数。"),
+    context_seconds: float = typer.Option(5.0, min=0.0, help="两侧上下文秒数。"),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """规划不会修改原音、也不会生成整段 PCM 的逻辑处理窗口。"""
+    database = Database(db)
+    windows = plan_logical_windows(
+        database,
+        session_id,
+        window_ms=round(window_seconds * 1000),
+        context_ms=round(context_seconds * 1000),
+    )
+    table = Table("Index", "Core ms", "Analysis ms", "Sources", "Coverage")
+    for window in windows:
+        table.add_row(
+            str(window.index),
+            f"{window.core_start_ms}-{window.core_end_ms}",
+            f"{window.analysis_start_ms}-{window.analysis_end_ms}",
+            ",".join(str(item.source_object_id) for item in window.slices),
+            "complete" if window.coverage_complete else f"gaps={window.uncovered_ranges}",
+        )
+    console.print(table)
 
 
 @app.command(name="daily-run")

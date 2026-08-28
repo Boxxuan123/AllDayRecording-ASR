@@ -2,7 +2,7 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；下一阶段已经冻结为质量优先的 V2 架构，不以实时性或小模型为目标。V2 将继续使用 `data/` 中现有的 2 小时 44 分 Watch 录音开发，先建立不可变原音、多模型 run、连续时间真值、Qwen3-ASR/强制对齐和词级说话人融合，之后再接云端 LLM 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行，V2-A 已完成不可变原音、schema v4、可追溯 run 输入和逻辑窗口基础。V2 不以实时性或小模型为目标；后续继续使用 `data/` 中现有的 2 小时 44 分 Watch 录音建立连续时间真值、Qwen3-ASR/强制对齐和词级说话人融合，之后再接云端 LLM 和 Watch 同步。
 
 实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V1 评测操作见 [人工真值与评测指南](docs/evaluation-guide.md)。
 
@@ -23,6 +23,23 @@ python -m pip install -e . --no-deps
 # 检查 Python、FFmpeg、模型依赖和真实 CUDA 运算
 allday-asr doctor
 ```
+
+## V2-A：不可变原音与逻辑窗口
+
+schema v4 会把既有长录音无损映射为 `source_object`、`recording_session` 和 `session_source`。从 schema v3 首次升级前会自动创建 SQLite 备份；原始音频不移动、不改名、不重编码。不可变证据字段受到数据库触发器保护，完整性审计只记录新结果，不会用当前文件状态覆盖首次入库的 SHA-256。
+
+```powershell
+# 查看永久原始对象和对应会话
+allday-asr sources
+
+# 只读校验 SHA-256、字节数、时长、编码、采样率和声道
+allday-asr source-audit
+
+# 为会话 1 规划 5 分钟核心窗口和两侧 5 秒上下文；只规划，不落盘 PCM
+allday-asr session-windows 1 --window-seconds 300 --context-seconds 5
+```
+
+逻辑窗口可以跨越多个未来 Watch 5 分钟块；只有模型真正运行时才临时解码当前窗口，退出后立即删除。当前 V1 已有的整段标准化 WAV 保留用于兼容和复现，但 V2-A 不再创建新的长期整段 PCM。
 
 ## 推荐：一键离线日记
 
@@ -183,11 +200,11 @@ allday-asr action-review 3 --status dismissed
 - 模型缓存：`models/`。
 - SQLite、原音、转写、试听片段和声纹均不提交 Git。
 - 原始录音是永久保存的不可变证据，只能读取；所有派生音频写入独立缓存或 `outputs/`。
-- 当前 V1 会保存整段标准化 WAV；V2 将改为按逻辑窗口临时解码，不再新增长期整段 PCM。
+- 当前 V1 已有的整段标准化 WAV 继续保留；V2-A 已支持按逻辑窗口临时解码，不再新增长期整段 PCM。
 - 任意片段可用 `allday-asr clip <segment-id>` 导出 WAV 回听。
 
 在持续录制他人前，应遵守当地法律，并在适当场景中完成告知和同意。
 
 ## 当前边界
 
-V2 目前只有设计文档，schema v4、新模型和多时间轴尚未实现；当前命令仍运行 V1 的 SenseVoiceSmall + FSMN-VAD + CAM++ 管线。Watch 的 5 分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现，不阻塞当前长录音上的 V2 开发。说话人分离在电视、远场、重叠讲话及很短语音上仍不可靠，不能把匿名聚类直接当作人物身份。
+V2-A 的不可变源对象、schema v4、输入指纹、完整性审计和逻辑窗口已经实现；生产 ASR 命令目前仍运行 V1 的 SenseVoiceSmall + FSMN-VAD + CAM++ 管线。连续时间真值、多 ASR 假设、强制对齐和重叠说话人时间轴从 V2-B 开始实施。Watch 的 5 分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现，不阻塞当前长录音上的 V2 开发。说话人分离在电视、远场、重叠讲话及很短语音上仍不可靠，不能把匿名聚类直接当作人物身份。

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
@@ -149,7 +150,7 @@ CREATE TABLE IF NOT EXISTS conversation_events (
 );
 """
 
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -212,11 +213,334 @@ MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_action_candidates_recording_status
         ON action_candidates(recording_id, status, start_ms);
     """,
+    4: """
+        CREATE TABLE IF NOT EXISTS source_objects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sha256 TEXT NOT NULL UNIQUE,
+            source_path TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            byte_size INTEGER,
+            container TEXT,
+            codec TEXT,
+            sample_rate INTEGER,
+            channels INTEGER,
+            bit_rate INTEGER,
+            encoder TEXT,
+            device TEXT,
+            recorded_at TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            ingest_method TEXT NOT NULL CHECK(
+                ingest_method IN ('manual_file', 'watch_auto', 'watch_manual_sync')
+            ),
+            storage_class TEXT NOT NULL DEFAULT 'original_permanent' CHECK(
+                storage_class = 'original_permanent'
+            ),
+            integrity_status TEXT NOT NULL DEFAULT 'unverified' CHECK(
+                integrity_status IN ('unverified', 'verified', 'missing', 'mismatch', 'error')
+            ),
+            last_verified_at TEXT,
+            backup_status TEXT NOT NULL DEFAULT 'not_configured' CHECK(
+                backup_status IN ('not_configured', 'pending', 'verified', 'failed')
+            ),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_source_objects_integrity
+        ON source_objects(integrity_status, id);
+
+        CREATE TRIGGER IF NOT EXISTS protect_source_objects_immutable_fields
+        BEFORE UPDATE OF
+            sha256, source_path, original_filename, byte_size, container, codec,
+            sample_rate, channels, bit_rate, encoder, device, recorded_at,
+            timezone, duration_ms, ingest_method, storage_class, created_at
+        ON source_objects
+        BEGIN
+            SELECT RAISE(ABORT, 'immutable source metadata cannot be changed');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS protect_source_objects_from_delete
+        BEFORE DELETE ON source_objects
+        BEGIN
+            SELECT RAISE(ABORT, 'immutable source object cannot be deleted');
+        END;
+
+        CREATE TABLE IF NOT EXISTS recording_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_key TEXT NOT NULL UNIQUE,
+            legacy_recording_id INTEGER UNIQUE,
+            device TEXT,
+            recorded_at TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'closed')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (legacy_recording_id) REFERENCES recordings(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS session_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            source_object_id INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            session_start_ms INTEGER NOT NULL,
+            session_end_ms INTEGER NOT NULL,
+            source_start_ms INTEGER NOT NULL DEFAULT 0,
+            source_end_ms INTEGER NOT NULL,
+            continuity_status TEXT NOT NULL DEFAULT 'unchecked' CHECK(
+                continuity_status IN ('single', 'unchecked', 'continuous', 'gap', 'overlap')
+            ),
+            created_at TEXT NOT NULL,
+            UNIQUE(session_id, chunk_index),
+            UNIQUE(session_id, source_object_id),
+            CHECK(session_end_ms > session_start_ms),
+            CHECK(source_end_ms > source_start_ms),
+            FOREIGN KEY (session_id) REFERENCES recording_sessions(id) ON DELETE RESTRICT,
+            FOREIGN KEY (source_object_id) REFERENCES source_objects(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_session_sources_time
+        ON session_sources(session_id, session_start_ms, session_end_ms);
+
+        CREATE TABLE IF NOT EXISTS source_integrity_audits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_object_id INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('verified', 'missing', 'mismatch', 'error')),
+            expected_sha256 TEXT NOT NULL,
+            actual_sha256 TEXT,
+            expected_byte_size INTEGER,
+            actual_byte_size INTEGER,
+            details_json TEXT NOT NULL,
+            checked_at TEXT NOT NULL,
+            FOREIGN KEY (source_object_id) REFERENCES source_objects(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_source_integrity_audits_source
+        ON source_integrity_audits(source_object_id, id);
+
+        CREATE TABLE IF NOT EXISTS processing_run_inputs (
+            run_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            source_object_id INTEGER NOT NULL,
+            source_sha256 TEXT NOT NULL,
+            session_start_ms INTEGER NOT NULL,
+            session_end_ms INTEGER NOT NULL,
+            source_start_ms INTEGER NOT NULL,
+            source_end_ms INTEGER NOT NULL,
+            PRIMARY KEY (run_id, position),
+            FOREIGN KEY (run_id) REFERENCES processing_runs(id) ON DELETE CASCADE,
+            FOREIGN KEY (source_object_id) REFERENCES source_objects(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS derived_artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER,
+            source_object_id INTEGER,
+            artifact_type TEXT NOT NULL,
+            artifact_path TEXT NOT NULL,
+            sha256 TEXT,
+            byte_size INTEGER,
+            cache_key TEXT UNIQUE,
+            regenerable INTEGER NOT NULL DEFAULT 1,
+            session_start_ms INTEGER,
+            session_end_ms INTEGER,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (run_id) REFERENCES processing_runs(id) ON DELETE SET NULL,
+            FOREIGN KEY (source_object_id) REFERENCES source_objects(id) ON DELETE SET NULL
+        );
+    """,
+}
+
+V4_PROCESSING_RUN_COLUMNS = {
+    "session_id": "INTEGER REFERENCES recording_sessions(id)",
+    "input_fingerprint": "TEXT",
+    "model_manifest_json": "TEXT NOT NULL DEFAULT '{}'",
+    "pipeline_version": "TEXT",
+    "code_version": "TEXT",
+    "parent_run_id": "INTEGER",
 }
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _canonical_source_fingerprint(rows: Sequence[sqlite3.Row]) -> str:
+    payload = [
+        {
+            "position": position,
+            "source_object_id": int(row["source_object_id"]),
+            "sha256": str(row["sha256"]),
+            "session_start_ms": int(row["session_start_ms"]),
+            "session_end_ms": int(row["session_end_ms"]),
+            "source_start_ms": int(row["source_start_ms"]),
+            "source_end_ms": int(row["source_end_ms"]),
+        }
+        for position, row in enumerate(rows)
+    ]
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _ensure_v4_processing_run_columns(connection: sqlite3.Connection) -> None:
+    existing = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(processing_runs)")
+    }
+    for name, declaration in V4_PROCESSING_RUN_COLUMNS.items():
+        if name not in existing:
+            connection.execute(
+                f"ALTER TABLE processing_runs ADD COLUMN {name} {declaration}"
+            )
+
+
+def _backfill_v2_source_graph(
+    connection: sqlite3.Connection, recording_id: int | None = None
+) -> None:
+    where = "WHERE id = ?" if recording_id is not None else ""
+    params: tuple[Any, ...] = (recording_id,) if recording_id is not None else ()
+    recordings = list(
+        connection.execute(f"SELECT * FROM recordings {where} ORDER BY id", params)
+    )
+    now = utc_now()
+    for recording in recordings:
+        path = Path(str(recording["source_path"]))
+        byte_size = path.stat().st_size if path.is_file() else None
+        container = path.suffix.lower().lstrip(".") or None
+        connection.execute(
+            """
+            INSERT INTO source_objects (
+                sha256, source_path, original_filename, byte_size, container,
+                codec, sample_rate, channels, bit_rate, encoder, device,
+                recorded_at, timezone, duration_ms, ingest_method,
+                storage_class, integrity_status, backup_status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual_file',
+                      'original_permanent', 'unverified', 'not_configured', ?, ?)
+            ON CONFLICT(sha256) DO NOTHING
+            """,
+            (
+                recording["sha256"],
+                recording["source_path"],
+                path.name,
+                byte_size,
+                container,
+                recording["codec"],
+                recording["sample_rate"],
+                recording["channels"],
+                recording["bit_rate"],
+                recording["encoder"],
+                recording["device"],
+                recording["recorded_at"],
+                recording["timezone"],
+                recording["duration_ms"],
+                recording["created_at"] or now,
+                now,
+            ),
+        )
+        source = connection.execute(
+            "SELECT * FROM source_objects WHERE sha256 = ?", (recording["sha256"],)
+        ).fetchone()
+        session_key = f"legacy-recording:{int(recording['id'])}"
+        connection.execute(
+            """
+            INSERT INTO recording_sessions (
+                session_key, legacy_recording_id, device, recorded_at, timezone,
+                duration_ms, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'closed', ?, ?)
+            ON CONFLICT(session_key) DO NOTHING
+            """,
+            (
+                session_key,
+                recording["id"],
+                recording["device"],
+                recording["recorded_at"],
+                recording["timezone"],
+                recording["duration_ms"],
+                recording["created_at"] or now,
+                now,
+            ),
+        )
+        session = connection.execute(
+            "SELECT * FROM recording_sessions WHERE session_key = ?", (session_key,)
+        ).fetchone()
+        connection.execute(
+            """
+            INSERT INTO session_sources (
+                session_id, source_object_id, chunk_index, session_start_ms,
+                session_end_ms, source_start_ms, source_end_ms,
+                continuity_status, created_at
+            ) VALUES (?, ?, 0, 0, ?, 0, ?, 'single', ?)
+            ON CONFLICT(session_id, chunk_index) DO NOTHING
+            """,
+            (
+                session["id"],
+                source["id"],
+                recording["duration_ms"],
+                recording["duration_ms"],
+                now,
+            ),
+        )
+
+    runs = list(
+        connection.execute(
+            """
+            SELECT pr.id AS run_id, rs.id AS session_id
+            FROM processing_runs pr
+            JOIN recording_sessions rs ON rs.legacy_recording_id = pr.recording_id
+            ORDER BY pr.id
+            """
+        )
+    )
+    for run in runs:
+        inputs = list(
+            connection.execute(
+                """
+                SELECT ss.*, so.sha256
+                FROM session_sources ss
+                JOIN source_objects so ON so.id = ss.source_object_id
+                WHERE ss.session_id = ?
+                ORDER BY ss.chunk_index
+                """,
+                (run["session_id"],),
+            )
+        )
+        if not inputs:
+            continue
+        fingerprint = _canonical_source_fingerprint(inputs)
+        connection.execute(
+            """
+            UPDATE processing_runs
+            SET input_fingerprint = COALESCE(input_fingerprint, ?),
+                session_id = COALESCE(session_id, ?)
+            WHERE id = ?
+            """,
+            (fingerprint, run["session_id"], run["run_id"]),
+        )
+        connection.executemany(
+            """
+            INSERT INTO processing_run_inputs (
+                run_id, position, source_object_id, source_sha256,
+                session_start_ms, session_end_ms, source_start_ms, source_end_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, position) DO NOTHING
+            """,
+            [
+                (
+                    run["run_id"],
+                    position,
+                    row["source_object_id"],
+                    row["sha256"],
+                    row["session_start_ms"],
+                    row["session_end_ms"],
+                    row["source_start_ms"],
+                    row["source_end_ms"],
+                )
+                for position, row in enumerate(inputs)
+            ],
+        )
 
 
 class Database:
@@ -241,6 +565,9 @@ class Database:
             connection.close()
 
     def initialize(self) -> None:
+        previous_version = self._existing_schema_version()
+        if 0 < previous_version < LATEST_SCHEMA_VERSION:
+            self._backup_before_migration(previous_version)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             connection.execute(
@@ -273,6 +600,43 @@ class Database:
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (version, utc_now()),
                 )
+            _ensure_v4_processing_run_columns(connection)
+            _backfill_v2_source_graph(connection)
+
+    def _existing_schema_version(self) -> int:
+        if not self.path.is_file() or self.path.stat().st_size == 0:
+            return 0
+        connection = sqlite3.connect(self.path)
+        try:
+            table = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'schema_migrations'
+                """
+            ).fetchone()
+            if table is None:
+                return 0
+            row = connection.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()
+            return int(row[0] or 0)
+        finally:
+            connection.close()
+
+    def _backup_before_migration(self, previous_version: int) -> Path:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_path = self.path.with_name(
+            f"{self.path.stem}.schema-v{previous_version}-to-v{LATEST_SCHEMA_VERSION}."
+            f"{timestamp}{self.path.suffix}"
+        )
+        source = sqlite3.connect(self.path)
+        destination = sqlite3.connect(backup_path)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+            source.close()
+        return backup_path
 
     def schema_version(self) -> int:
         with self.connect() as connection:
@@ -314,9 +678,9 @@ class Database:
                 ),
             )
             recording_id = int(cursor.lastrowid)
-            return connection.execute(
-                "SELECT * FROM recordings WHERE id = ?", (recording_id,)
-            ).fetchone()
+        with self.connect() as connection:
+            _backfill_v2_source_graph(connection, recording_id=recording_id)
+        return self.get_recording(recording_id)
 
     def get_recording(self, recording_id: int) -> sqlite3.Row:
         with self.connect() as connection:
@@ -330,6 +694,225 @@ class Database:
     def list_recordings(self) -> list[sqlite3.Row]:
         with self.connect() as connection:
             return list(connection.execute("SELECT * FROM recordings ORDER BY id DESC"))
+
+    def get_source_object(self, source_object_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM source_objects WHERE id = ?", (source_object_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"原始音频对象 {source_object_id} 不存在")
+        return row
+
+    def list_source_objects(self) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(connection.execute("SELECT * FROM source_objects ORDER BY id"))
+
+    def create_source_object(self, values: dict[str, Any]) -> sqlite3.Row:
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT * FROM source_objects WHERE sha256 = ?", (values["sha256"],)
+            ).fetchone()
+            if existing is not None:
+                return existing
+            now = utc_now()
+            cursor = connection.execute(
+                """
+                INSERT INTO source_objects (
+                    sha256, source_path, original_filename, byte_size, container,
+                    codec, sample_rate, channels, bit_rate, encoder, device,
+                    recorded_at, timezone, duration_ms, ingest_method,
+                    storage_class, integrity_status, backup_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          'original_permanent', 'unverified', 'not_configured', ?, ?)
+                """,
+                (
+                    values["sha256"],
+                    values["source_path"],
+                    values.get("original_filename")
+                    or Path(values["source_path"]).name,
+                    values.get("byte_size"),
+                    values.get("container"),
+                    values.get("codec"),
+                    values.get("sample_rate"),
+                    values.get("channels"),
+                    values.get("bit_rate"),
+                    values.get("encoder"),
+                    values.get("device"),
+                    values["recorded_at"],
+                    values["timezone"],
+                    values["duration_ms"],
+                    values.get("ingest_method", "manual_file"),
+                    now,
+                    now,
+                ),
+            )
+            source_object_id = int(cursor.lastrowid)
+            return connection.execute(
+                "SELECT * FROM source_objects WHERE id = ?", (source_object_id,)
+            ).fetchone()
+
+    def get_recording_session(self, session_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM recording_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"录音会话 {session_id} 不存在")
+        return row
+
+    def get_session_for_recording(self, recording_id: int) -> sqlite3.Row:
+        self.get_recording(recording_id)
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM recording_sessions
+                WHERE legacy_recording_id = ?
+                """,
+                (recording_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"录音 {recording_id} 尚未映射到 V2 会话")
+        return row
+
+    def list_recording_sessions(self) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(connection.execute("SELECT * FROM recording_sessions ORDER BY id"))
+
+    def create_recording_session(self, values: dict[str, Any]) -> sqlite3.Row:
+        now = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO recording_sessions (
+                    session_key, legacy_recording_id, device, recorded_at,
+                    timezone, duration_ms, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    values["session_key"],
+                    values.get("legacy_recording_id"),
+                    values.get("device"),
+                    values["recorded_at"],
+                    values["timezone"],
+                    values["duration_ms"],
+                    values.get("status", "active"),
+                    now,
+                    now,
+                ),
+            )
+            session_id = int(cursor.lastrowid)
+            return connection.execute(
+                "SELECT * FROM recording_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+
+    def add_session_source(self, values: dict[str, Any]) -> sqlite3.Row:
+        self.get_recording_session(int(values["session_id"]))
+        self.get_source_object(int(values["source_object_id"]))
+        created_at = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO session_sources (
+                    session_id, source_object_id, chunk_index, session_start_ms,
+                    session_end_ms, source_start_ms, source_end_ms,
+                    continuity_status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    values["session_id"],
+                    values["source_object_id"],
+                    values["chunk_index"],
+                    values["session_start_ms"],
+                    values["session_end_ms"],
+                    values.get("source_start_ms", 0),
+                    values["source_end_ms"],
+                    values.get("continuity_status", "unchecked"),
+                    created_at,
+                ),
+            )
+            source_id = int(cursor.lastrowid)
+            connection.execute(
+                """
+                UPDATE recording_sessions
+                SET duration_ms = MAX(duration_ms, ?), updated_at = ?
+                WHERE id = ?
+                """,
+                (values["session_end_ms"], created_at, values["session_id"]),
+            )
+            return connection.execute(
+                "SELECT * FROM session_sources WHERE id = ?", (source_id,)
+            ).fetchone()
+
+    def list_session_sources(self, session_id: int) -> list[sqlite3.Row]:
+        self.get_recording_session(session_id)
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT ss.*, so.sha256, so.source_path, so.original_filename,
+                           so.integrity_status, so.duration_ms AS source_duration_ms
+                    FROM session_sources ss
+                    JOIN source_objects so ON so.id = ss.source_object_id
+                    WHERE ss.session_id = ?
+                    ORDER BY ss.chunk_index
+                    """,
+                    (session_id,),
+                )
+            )
+
+    def record_source_integrity_audit(
+        self,
+        source_object_id: int,
+        *,
+        status: str,
+        actual_sha256: str | None,
+        actual_byte_size: int | None,
+        details: dict[str, Any],
+    ) -> int:
+        source = self.get_source_object(source_object_id)
+        checked_at = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO source_integrity_audits (
+                    source_object_id, status, expected_sha256, actual_sha256,
+                    expected_byte_size, actual_byte_size, details_json, checked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_object_id,
+                    status,
+                    source["sha256"],
+                    actual_sha256,
+                    source["byte_size"],
+                    actual_byte_size,
+                    json.dumps(details, ensure_ascii=False, sort_keys=True),
+                    checked_at,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE source_objects
+                SET integrity_status = ?, last_verified_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, checked_at, checked_at, source_object_id),
+            )
+            return int(cursor.lastrowid)
+
+    def list_source_integrity_audits(self, source_object_id: int) -> list[sqlite3.Row]:
+        self.get_source_object(source_object_id)
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM source_integrity_audits
+                    WHERE source_object_id = ? ORDER BY id
+                    """,
+                    (source_object_id,),
+                )
+            )
 
     def update_recording(self, recording_id: int, **values: Any) -> None:
         if not values:
@@ -420,25 +1003,62 @@ class Database:
         run_kind: str,
         config: dict[str, Any],
         config_sha256: str,
+        model_manifest: dict[str, Any] | None = None,
+        pipeline_version: str | None = None,
+        code_version: str | None = None,
+        parent_run_id: int | None = None,
     ) -> int:
         self.get_recording(recording_id)
+        session = self.get_session_for_recording(recording_id)
+        inputs = self.list_session_sources(int(session["id"]))
+        input_fingerprint = _canonical_source_fingerprint(inputs)
+        model_manifest = model_manifest or {}
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO processing_runs (
-                    recording_id, run_kind, status, config_json,
-                    config_sha256, started_at
-                ) VALUES (?, ?, 'running', ?, ?, ?)
+                    recording_id, session_id, run_kind, status, config_json,
+                    config_sha256, started_at, input_fingerprint,
+                    model_manifest_json, pipeline_version, code_version, parent_run_id
+                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     recording_id,
+                    session["id"],
                     run_kind,
                     json.dumps(config, ensure_ascii=False, sort_keys=True),
                     config_sha256,
                     utc_now(),
+                    input_fingerprint,
+                    json.dumps(model_manifest, ensure_ascii=False, sort_keys=True),
+                    pipeline_version,
+                    code_version,
+                    parent_run_id,
                 ),
             )
-            return int(cursor.lastrowid)
+            run_id = int(cursor.lastrowid)
+            connection.executemany(
+                """
+                INSERT INTO processing_run_inputs (
+                    run_id, position, source_object_id, source_sha256,
+                    session_start_ms, session_end_ms, source_start_ms, source_end_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        run_id,
+                        position,
+                        row["source_object_id"],
+                        row["sha256"],
+                        row["session_start_ms"],
+                        row["session_end_ms"],
+                        row["source_start_ms"],
+                        row["source_end_ms"],
+                    )
+                    for position, row in enumerate(inputs)
+                ],
+            )
+            return run_id
 
     def finish_processing_run(
         self,
@@ -478,6 +1098,18 @@ class Database:
                     WHERE recording_id = ? ORDER BY id
                     """,
                     (recording_id,),
+                )
+            )
+
+    def list_processing_run_inputs(self, run_id: int) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM processing_run_inputs
+                    WHERE run_id = ? ORDER BY position
+                    """,
+                    (run_id,),
                 )
             )
 
