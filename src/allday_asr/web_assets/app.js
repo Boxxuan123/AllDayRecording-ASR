@@ -279,7 +279,7 @@ function renderSegmentCard(segment) {
   audio.src = segment.audio_url;
   audio.setAttribute("aria-label", `播放片段 ${segment.segment_id}`);
   evidence.append(audio);
-  evidence.append(node("small", "audio-note", "试听增强：前后各 0.6 秒 · 自动提升音量"));
+  evidence.append(node("small", "audio-note", "试听增强：严格原片段边界 · 自动提升音量"));
   evidence.append(node("div", "speaker-chip", segment.hypothesis_speaker_at_export || "unknown"));
   evidence.append(node("p", "hypothesis-label", "系统当前识别"));
   evidence.append(node("p", "hypothesis-text", segment.hypothesis_text_at_export || "（没有识别文字）"));

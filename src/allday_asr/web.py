@@ -118,7 +118,7 @@ class WebApplication:
             "segments": [
                 {
                     **row,
-                    "audio_url": f"/api/audio/{int(row['segment_id'])}?v=2",
+                    "audio_url": f"/api/audio/{int(row['segment_id'])}?v=3",
                 }
                 for row in rows
             ],
@@ -244,21 +244,16 @@ class WebApplication:
         recording = database.get_recording(int(segment["recording_id"]))
         destination = (
             recording_output_dir(int(recording["id"]))
-            / "web-audio-v2"
+            / "web-audio-v3"
             / f"segment-{segment_id}-listening.wav"
-        )
-        context_ms = 600
-        start_ms = max(0, int(segment["start_ms"]) - context_ms)
-        end_ms = min(
-            int(recording["duration_ms"]), int(segment["end_ms"]) + context_ms
         )
         with self.audio_lock:
             if not destination.is_file():
                 extract_clip(
                     Path(recording["source_path"]),
                     destination,
-                    start_ms,
-                    end_ms,
+                    int(segment["start_ms"]),
+                    int(segment["end_ms"]),
                     audio_filter="loudnorm=I=-18:LRA=7:TP=-2",
                 )
         return destination

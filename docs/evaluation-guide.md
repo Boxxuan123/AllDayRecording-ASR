@@ -41,6 +41,8 @@ state/evaluations/recording-000001/baseline-first-15m.jsonl
 - `include`：音频损坏、严重重叠且无法形成真值时设为 `false`。
 - `notes`：记录电视、重叠、方言、远场等场景。
 
+重叠或混合讲话无法对应到一个人物时，`reference_speaker` 和 `reference_identity` 都留空，并在 `notes` 中分别记录听到的人。不要把所有混合片段都标成同一个名为 `mixed` 的人物，否则会扭曲说话人成对指标。纯吃饭声、碰撞声等非语音片段设为 `include=false`。
+
 不要修改 `segment_id`、`start_ms`、`end_ms`。`hypothesis_*_at_export` 只是创建模板时的系统结果；正式评测总是读取数据库中的当前预测。
 
 需要回听时：
@@ -51,7 +53,7 @@ allday-asr clip <segment-id>
 
 为避免被现有转写诱导，建议先听音频写 `reference_text`，再对照 `hypothesis_text_at_export`。
 
-网页工作台的试听副本会在片段前后各补 0.6 秒并自动提升响度，便于听清很短、很轻的 Watch 语音。时间边界、原录音和模型输入不会因此改变。
+网页工作台的试听副本严格使用原片段时间边界，只自动提升响度，避免把片段外的声音误写进真值。原录音和模型输入不会因此改变。
 
 ## 3. 运行评测
 

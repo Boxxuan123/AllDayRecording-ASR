@@ -78,7 +78,7 @@ class WebConsoleTests(unittest.TestCase):
                     listening_clip.name, f"segment-{segment_id}-listening.wav"
                 )
                 extract_clip.assert_called_once()
-                self.assertEqual(extract_clip.call_args.args[2:4], (0, 3_100))
+                self.assertEqual(extract_clip.call_args.args[2:4], (500, 2_500))
                 self.assertEqual(
                     extract_clip.call_args.kwargs["audio_filter"],
                     "loudnorm=I=-18:LRA=7:TP=-2",
@@ -117,7 +117,7 @@ class WebConsoleTests(unittest.TestCase):
                     evaluation = json.load(response)
                 self.assertEqual(
                     evaluation["segments"][0]["audio_url"],
-                    f"/api/audio/{segment_id}?v=2",
+                    f"/api/audio/{segment_id}?v=3",
                 )
 
                 request = urllib.request.Request(
