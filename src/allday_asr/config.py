@@ -38,6 +38,16 @@ class AsrConfig:
     max_new_tokens: int = 4096
     primary_batch_size_16gb: int = 4
     primary_batch_size_8gb: int = 1
+    speech_gate_fsmn_merge_gap_ms: int = 600
+    speech_gate_max_utterance_ms: int = 30_000
+    speech_gate_inference_padding_ms: int = 750
+    speech_gate_output_padding_ms: int = 500
+    speech_gate_min_candidate_ms: int = 800
+    speech_gate_min_snr_db: float = 9.0
+    speech_gate_silero_threshold: float = 0.15
+    speech_gate_silero_min_speech_ms: int = 100
+    speech_gate_silero_min_silence_ms: int = 250
+    speech_gate_min_silero_overlap_ms: int = 500
 
 
 @dataclass(frozen=True)
@@ -140,6 +150,16 @@ def config_from_mapping(payload: dict[str, Any]) -> AppConfig:
             "max_new_tokens",
             "primary_batch_size_16gb",
             "primary_batch_size_8gb",
+            "speech_gate_fsmn_merge_gap_ms",
+            "speech_gate_max_utterance_ms",
+            "speech_gate_inference_padding_ms",
+            "speech_gate_output_padding_ms",
+            "speech_gate_min_candidate_ms",
+            "speech_gate_min_snr_db",
+            "speech_gate_silero_threshold",
+            "speech_gate_silero_min_speech_ms",
+            "speech_gate_silero_min_silence_ms",
+            "speech_gate_min_silero_overlap_ms",
         },
     )
     diarization_values = _section(
@@ -225,6 +245,25 @@ def _validate(config: AppConfig) -> None:
         raise ConfigError("asr.max_new_tokens 不能小于 256")
     if asr.primary_batch_size_16gb < 1 or asr.primary_batch_size_8gb < 1:
         raise ConfigError("ASR batch size 必须大于 0")
+    if asr.speech_gate_fsmn_merge_gap_ms < 0:
+        raise ConfigError("asr.speech_gate_fsmn_merge_gap_ms 不能小于 0")
+    if asr.speech_gate_max_utterance_ms < 1:
+        raise ConfigError("asr.speech_gate_max_utterance_ms 必须大于 0")
+    if (
+        asr.speech_gate_inference_padding_ms < 0
+        or asr.speech_gate_output_padding_ms < 0
+    ):
+        raise ConfigError("ASR speech gate padding 不能小于 0")
+    if asr.speech_gate_min_candidate_ms < 1:
+        raise ConfigError("asr.speech_gate_min_candidate_ms 必须大于 0")
+    if not 0 < asr.speech_gate_silero_threshold < 1:
+        raise ConfigError("asr.speech_gate_silero_threshold 必须在 0 到 1 之间")
+    if (
+        asr.speech_gate_silero_min_speech_ms < 1
+        or asr.speech_gate_silero_min_silence_ms < 0
+        or asr.speech_gate_min_silero_overlap_ms < 0
+    ):
+        raise ConfigError("ASR Silero speech gate 时长配置无效")
     diarization = config.diarization
     if diarization.preset_speakers is not None and diarization.preset_speakers < 1:
         raise ConfigError("diarization.preset_speakers 必须大于 0")

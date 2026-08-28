@@ -38,7 +38,7 @@ schema v6 只追加四组实体：
 
 当前长 M4A 和未来 Watch 五分钟块统一投影为 session 时间轴，再生成默认 300 秒 core、前后各 5 秒 analysis context 的逻辑窗口。五分钟是上传、调度和提交单位，不是强迫模型一次处理五分钟连续波形：Qwen 路径先用 CPU FSMN-VAD 找出最长 30 秒的语音区间，合并不超过 600 ms 的短间隔，并在两侧各保留 750 ms 声学上下文；相邻 padding 相撞时以中点切开，避免重复 token。这个做法既跳过大量静音，又避免 Qwen ForcedAligner 在官方 180 秒上限附近出现对齐覆盖下降。
 
-数据库保留 analysis 范围内全部 token；只有“时间中点落在五分钟 core 内”的 token 会进入冻结 benchmark 视图。这样保留跨上传块的边界诊断证据，又不会把上下文文字重复提交两次。主/次假设的规范化文本与 token 串还会计算 alignment coverage；低于 85% 的窗口自动提升为高优先级复核。
+V2-C.3 在这条基础上增加独立 Silero、相对 SNR 和候选时长证据。数据库保留 analysis 范围内全部 token；只有“时间中点同时落在五分钟 core 与已接受的未加 padding FSMN core 内”的 token 会进入冻结 benchmark 视图。这样既保留跨上传块和拒绝候选的诊断证据，又不会把上下文文字重复提交。详细门控、配置和实测结果见 [V2-C.3 双 VAD 证据门控](v2-c3-speech-gating.md)。
 
 逻辑窗口临时解码为 16 kHz mono PCM，模型完成后立即删除。原始 M4A 不移动、不重命名、不转码、不写元数据。
 

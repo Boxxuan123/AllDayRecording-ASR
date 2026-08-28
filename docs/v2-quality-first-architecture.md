@@ -297,7 +297,7 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 
 验收结果：schema v5 建立冻结真值、源范围引用、预测快照和 benchmark run；合成穷尽真值已验证 VAD Miss/FA、DER/JER、对齐误差和实体指标。现有 15 分钟标注映射为 277 条连续事实，冻结当前 V1 的 971 条预测后 CER 仍为 `0.1436`。旧标注源于 V1 VAD，系统明确将真实 VAD/DER 标为 N/A；完成穷尽式连续标注后即可统计真实漏检，不伪造结果。
 
-### V2-C：高质量 ASR 与对齐（已完成，候选未晋级）
+### V2-C：高质量 ASR 与对齐（已完成）
 
 1. 接入 Qwen3-ASR-1.7B backend。
 2. 接入 Qwen3-ForcedAligner-0.6B。
@@ -318,13 +318,21 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 
 当前同边界诊断结果为 SenseVoice `0.1593`、Qwen `0.2063`（ITN `0.1984`）、Fun-ASR `0.2585`（ITN `0.2480`）。由于旧真值仍由 V1 segment 产生且可见 V1 hypothesis，这些数值只用于定位组件，不用于最终晋级。均匀连续盲标范围 `01:41:42–02:11:42` 经复核接近全静音，因此保留为环境负样本，不用于主 CER 排名。
 
-### V2-C.2：波形声学富集盲测（已实现，等待人工盲标）
+### V2-C.2：波形声学富集盲测（已实现，五块开发子集已冻结）
 
 1. 将完整不可变 PCM 划成固定一分钟候选，只计算 RMS 活动、最长持续活动、P90/RMS 音量和语音频带能量比例，不读取任何候选 VAD、ASR、speaker 或旧转写。
 2. 全候选分数、权重、阈值、固定 seed 和最终选择写入不可变 selection manifest；任务 metadata 绑定 manifest SHA-256。
 3. 选择十个相隔至少一分钟的高活动块，总人工复核时长 10 分钟；真实选择集中在 `00:11–00:37`，独立非静音代理为每块 `86.7%–100%`。
 4. schema v6 继续保存首尾包围范围，十个 review-region 才是穷尽评测范围；benchmark 不处罚未抽中间隙中的预测。
 5. V2-C.1 环境负样本与 V2-C.2 语音富集集分轨报告，不能简单平均或互相替代。
+
+### V2-C.3：双 VAD 证据门控（已实现，等待未见验证）
+
+1. FSMN-VAD 保留为高召回候选生成器，Silero VAD 作为独立确认信号。
+2. 候选同时保存时长、相对噪声底 SNR、Silero 重叠量和接受原因。
+3. Qwen 推理 padding 与最终提交 core 分离；拒绝候选和 padding token 保留证据但不进入结果。
+4. v4 快照同时冻结 speech range 和 committed transcript token，可在同一连续真值上报告 VAD 与 CER。
+5. 五块开发集总体 CER 为 `92.27%`，现场人声为 `116.18%`；阈值已接触该数据，晋级前必须建立新 holdout。
 
 ### V2-D：说话人时间轴与身份
 
@@ -371,8 +379,9 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 5. Fun-ASR-Nano 第二假设与分歧队列。
 6. V2-C.1 独立盲标、同边界比较与统计不确定性。
 7. V2-C.2 环境负样本与波形声学富集盲测。
-8. Sortformer/pyannote 和词级说话人融合。
-9. 云端语义接口。
-10. Watch chunk 同步。
+8. V2-C.3 双 VAD 证据门控和核心 token 提交。
+9. Sortformer/pyannote 和词级说话人融合。
+10. 云端语义接口。
+11. Watch chunk 同步。
 
-V2-A/V2-B/V2-C 和 V2-C.1/V2-C.2 工具链已完成；先完成十个一分钟 V2-C.2 富集块的人工盲标并冻结真正公平的 review-region 真值，再进入 V2-D 的 Sortformer/pyannote 候选比较和 token-to-speaker 融合。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在同一冻结真值上比较。
+V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；先用未参与 V2-C.3 阈值选择的新录音或 review-region 做留出验证，再进入 V2-D 的 Sortformer/pyannote 候选比较和 token-to-speaker 融合。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。

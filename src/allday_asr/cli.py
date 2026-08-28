@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -9,7 +10,11 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from allday_asr.asr.oracle_backends import create_oracle_backend
-from allday_asr.asr.quality_backends import FunAsrNanoBackend, Qwen3AsrBackend
+from allday_asr.asr.quality_backends import (
+    FunAsrNanoBackend,
+    Qwen3AsrBackend,
+    SpeechGateSettings,
+)
 from allday_asr.audio.tools import extract_clip
 from allday_asr.blind_web import serve_blind_annotation
 from allday_asr.config import load_config
@@ -127,6 +132,36 @@ def quality_asr_run(
         context_ms=round(resolved.asr.context_seconds * 1000),
         vram_profile=selected_profile,
         max_windows=max_windows,
+        speech_gate_fsmn_merge_gap_ms=resolved.asr.speech_gate_fsmn_merge_gap_ms,
+        speech_gate_max_utterance_ms=resolved.asr.speech_gate_max_utterance_ms,
+        speech_gate_inference_padding_ms=(
+            resolved.asr.speech_gate_inference_padding_ms
+        ),
+        speech_gate_output_padding_ms=resolved.asr.speech_gate_output_padding_ms,
+        speech_gate_min_candidate_ms=resolved.asr.speech_gate_min_candidate_ms,
+        speech_gate_min_snr_db=resolved.asr.speech_gate_min_snr_db,
+        speech_gate_silero_threshold=resolved.asr.speech_gate_silero_threshold,
+        speech_gate_silero_min_speech_ms=(
+            resolved.asr.speech_gate_silero_min_speech_ms
+        ),
+        speech_gate_silero_min_silence_ms=(
+            resolved.asr.speech_gate_silero_min_silence_ms
+        ),
+        speech_gate_min_silero_overlap_ms=(
+            resolved.asr.speech_gate_min_silero_overlap_ms
+        ),
+    )
+    speech_gate = SpeechGateSettings(
+        fsmn_merge_gap_ms=settings.speech_gate_fsmn_merge_gap_ms,
+        max_utterance_ms=settings.speech_gate_max_utterance_ms,
+        inference_padding_ms=settings.speech_gate_inference_padding_ms,
+        speech_output_padding_ms=settings.speech_gate_output_padding_ms,
+        min_candidate_ms=settings.speech_gate_min_candidate_ms,
+        min_snr_db=settings.speech_gate_min_snr_db,
+        silero_threshold=settings.speech_gate_silero_threshold,
+        silero_min_speech_ms=settings.speech_gate_silero_min_speech_ms,
+        silero_min_silence_ms=settings.speech_gate_silero_min_silence_ms,
+        min_silero_overlap_ms=settings.speech_gate_min_silero_overlap_ms,
     )
     summary = run_quality_asr(
         Database(db),
@@ -138,6 +173,7 @@ def quality_asr_run(
             device=resolved.runtime.device,
             batch_size=batch_size,
             max_new_tokens=resolved.asr.max_new_tokens,
+            speech_gate=speech_gate,
         ),
         secondary_factory=lambda: FunAsrNanoBackend(
             model_id=resolved.asr.secondary_model,
@@ -149,6 +185,8 @@ def quality_asr_run(
         f"[green]V2-C 完成[/green] run={summary.run_id} | "
         f"windows={summary.window_count} | primary={summary.primary_hypotheses} | "
         f"secondary={summary.secondary_hypotheses} | tokens={summary.aligned_tokens} | "
+        f"speech_gate={summary.accepted_speech_candidates}/"
+        f"{summary.speech_candidates} | committed={summary.committed_primary_tokens} | "
         f"disagreements={summary.disagreements} | "
         f"low_alignment={summary.low_alignment_hypotheses}"
     )
@@ -165,14 +203,23 @@ def quality_asr_status(
     run = database.get_processing_run(run_id)
     hypotheses = database.list_asr_hypotheses(run_id)
     disagreements = database.list_asr_disagreements(run_id)
-    table = Table("窗口", "角色", "模型", "Tokens", "文本")
+    table = Table("窗口", "角色", "模型", "Gate", "Tokens", "文本")
     for row in hypotheses:
         tokens = database.list_asr_tokens(int(row["id"]), core_only=True)
         text = str(row["text"]).replace("\n", " ")
+        raw_response = json.loads(str(row["raw_response_json"] or "{}"))
+        segments = raw_response.get("segments", [])
+        gate = (
+            f"{sum(bool(item.get('accepted', True)) for item in segments)}/"
+            f"{len(segments)}"
+            if segments
+            else "-"
+        )
         table.add_row(
             str(row["window_index"]),
             str(row["hypothesis_role"]),
             str(row["model_id"]),
+            gate,
             str(len(tokens)),
             text[:80],
         )

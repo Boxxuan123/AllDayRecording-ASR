@@ -38,7 +38,11 @@ class FakeBackend:
                 AlignedToken(self.text[0], 0.100, 0.300),
                 AlignedToken(self.text[1], 0.300, 0.500),
             ),
-            raw_response={"text": self.text},
+            raw_response={
+                "text": self.text,
+                "speech_ranges_ms": [[100, 500]],
+                "segments": [],
+            },
         )
 
     def parameters(self):
@@ -46,6 +50,41 @@ class FakeBackend:
 
     def close(self):
         self.closed = True
+
+
+class GateFakeBackend(FakeBackend):
+    def transcribe(self, audio_path: Path, *, language: str | None):
+        del audio_path
+        return HypothesisResult(
+            text=self.text[0],
+            language=language,
+            tokens=(
+                AlignedToken(
+                    self.text[0],
+                    0.100,
+                    0.300,
+                    metadata={
+                        "speech_gate_accepted": True,
+                        "speech_gate_committed": True,
+                    },
+                ),
+                AlignedToken(
+                    self.text[1],
+                    0.300,
+                    0.500,
+                    metadata={
+                        "speech_gate_accepted": False,
+                        "speech_gate_committed": False,
+                    },
+                ),
+            ),
+            raw_response={
+                "text": self.text,
+                "committed_token_text": self.text[0],
+                "speech_ranges_ms": [[100, 300]],
+                "segments": [{"accepted": True}, {"accepted": False}],
+            },
+        )
 
 
 class QualityAsrTests(unittest.TestCase):
@@ -140,6 +179,9 @@ class QualityAsrTests(unittest.TestCase):
         alignment_predictions = [
             row for row in predictions if row["prediction_kind"] == "alignment_token"
         ]
+        speech_predictions = [
+            row for row in predictions if row["prediction_kind"] == "speech"
+        ]
         primary_core_tokens = [
             token
             for hypothesis in hypotheses
@@ -150,7 +192,11 @@ class QualityAsrTests(unittest.TestCase):
         ]
         self.assertEqual(len(transcript_predictions), len(primary_core_tokens))
         self.assertEqual(len(alignment_predictions), len(primary_core_tokens))
-        self.assertEqual(snapshot.prediction_count, 2 * len(primary_core_tokens))
+        self.assertEqual(len(speech_predictions), 2)
+        self.assertEqual(
+            snapshot.prediction_count,
+            2 * len(primary_core_tokens) + len(speech_predictions),
+        )
         self.assertEqual(
             {
                 (row["session_start_ms"], row["session_end_ms"], row["text"])
@@ -226,10 +272,20 @@ class QualityAsrTests(unittest.TestCase):
         scoped_predictions = self.database.list_benchmark_predictions(
             scoped_snapshot.prediction_set_id, prediction_kind="transcript"
         )
+        scoped_speech = self.database.list_benchmark_predictions(
+            scoped_snapshot.prediction_set_id, prediction_kind="speech"
+        )
         self.assertEqual(
             [
                 (row["session_start_ms"], row["session_end_ms"])
                 for row in scoped_predictions
+            ],
+            [(100, 250), (1_100, 1_200)],
+        )
+        self.assertEqual(
+            [
+                (row["session_start_ms"], row["session_end_ms"])
+                for row in scoped_speech
             ],
             [(100, 250), (1_100, 1_200)],
         )
@@ -252,6 +308,43 @@ class QualityAsrTests(unittest.TestCase):
                     "UPDATE asr_hypotheses SET text = 'changed' WHERE id = ?",
                     (hypotheses[0]["id"],),
                 )
+
+    def test_v2c3_keeps_rejected_context_tokens_as_evidence_not_predictions(self):
+        @contextmanager
+        def fake_window(window):
+            del window
+            yield self.source_path
+
+        with (
+            patch("allday_asr.services.quality_asr.temporary_logical_window", fake_window),
+            patch("allday_asr.services.quality_asr.OUTPUT_DIR", self.output_dir),
+        ):
+            summary = run_quality_asr(
+                self.database,
+                self.recording_id,
+                settings=QualityAsrSettings(window_ms=1_000, context_ms=100),
+                primary_factory=lambda: GateFakeBackend("primary", "你好"),
+                secondary_factory=lambda: FakeBackend("secondary", "您好"),
+            )
+
+        primary = self.database.list_asr_hypotheses(
+            summary.run_id, role="primary"
+        )
+        self.assertEqual(summary.speech_candidates, 4)
+        self.assertEqual(summary.accepted_speech_candidates, 2)
+        self.assertEqual(summary.rejected_speech_candidates, 2)
+        self.assertEqual(summary.committed_primary_tokens, 2)
+        self.assertEqual(
+            sum(len(self.database.list_asr_tokens(int(row["id"]))) for row in primary),
+            4,
+        )
+        self.assertEqual(
+            sum(
+                len(self.database.list_asr_tokens(int(row["id"]), core_only=True))
+                for row in primary
+            ),
+            2,
+        )
 
 
 if __name__ == "__main__":

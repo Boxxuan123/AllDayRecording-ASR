@@ -2,16 +2,16 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、schema v6、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-C.1 已重建公平评测协议；V2-C.2 又将偶然抽中的近静音连续块拆为环境负样本，并用完全不读取 ASR/VAD/旧转写的波形声学排序生成 10 分钟语音富集盲标任务。前五块预备结果已确认 Qwen 的纯 ASR 最优，同时定位出五分钟整窗识别在静音处产生大量插入；当前进入 V2-C.3 高召回语音门控和切句。V2 不以实时性或小模型为目标；之后继续实现允许重叠的说话人时间轴，再接云端 LLM 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、schema v6、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-C.1 已重建公平评测协议；V2-C.2 将偶然抽中的近静音连续块拆为环境负样本，并生成独立于模型的语音富集盲标任务。V2-C.3 已实现 FSMN proposal、Silero/相对 SNR/时长证据门控和强制对齐后的核心 token 提交；五块开发集上总体 CER 从 `109.94%` 降到 `92.27%`，现场人声从 `154.90%` 降到 `116.18%`。这批数据已用于调参，仍需新的未见 holdout。V2 不以实时性或小模型为目标；之后继续实现允许重叠的说话人时间轴，再接云端 LLM 和 Watch 同步。
 
-实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)。
+实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现与开发集结果见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)。
 
 ## 已验证环境
 
 - Windows、Python 3.12。
 - RTX 5070 Laptop GPU，8 GB 显存。
 - PyTorch / torchaudio `2.9.1+cu128`、torchvision `0.24.1+cu128`。
-- FunASR `1.4.4`、ModelScope `1.39.1`、Qwen-ASR `0.0.6`。
+- FunASR `1.4.4`、ModelScope `1.39.1`、Qwen-ASR `0.0.6`、Silero VAD `6.2.1`。
 - FFmpeg / FFprobe 可用。
 
 PyTorch 使用 CUDA 专用 wheel，应根据显卡和 CUDA 环境单独安装，因此不由 `pyproject.toml` 自动解析。
@@ -66,6 +66,8 @@ allday-asr benchmark init-truth 1 --name first-15m-exhaustive --end 15:00
 schema v6 为每个五分钟窗口不可变保存 Qwen3-ASR-1.7B 主假设、Qwen3-ForcedAligner 时间戳、Fun-ASR-Nano 第二假设和分歧队列。每个 token 同时保存 session 时间与原始 M4A 的 source 时间、对象 ID 和 SHA-256；窗口上下文 token 保留作诊断，冻结视图只取 token 中点位于 core 的内容以避免重复。
 
 当前 8 GB RTX 5070 已完成 2 小时 44 分 35 秒录音的全量 BF16 运行：33 个主假设、33 个第二假设、6,147 个对齐 token 和 16 个分歧窗口，耗时约 8 分 14 秒且未 OOM。全部 token 的源范围覆盖检查为 0 错误。旧 token 时间快照的 `30.03%` 与 V1 的 `14.36%` 混合了切分/对齐差异，并且真值本身由 V1 segment 产生，不能再解释为纯模型排名。V2-C.1 同边界重跑为 SenseVoice `15.93%`、Qwen `20.63%`（ITN `19.84%`）、Fun-ASR `25.85%`（ITN `24.80%`）；这仍是 V1 条件化诊断集，最终晋级等待独立盲测。
+
+V2-C.3 全量 run 10 也已在 8 GB 上完成：33+33 份假设、312 个门控候选、287 个接受、25 个拒绝、2,192 个 committed 主 token，耗时 460.534 秒且未 OOM。旧 run 7 的全部 6,147 个审计 token 数量不变，新管线通过元数据决定哪些 token 可以提交，不删除旧证据。
 
 ```powershell
 # 当前 8 GB 5070：模型精度不变，batch=1 且两套模型顺序加载
@@ -122,7 +124,7 @@ V2-C.1 的均匀连续 30 分钟块经人工抽听和客观音量复核后确认
 
 V2-C.2 对整段不可变 PCM 只计算 100 ms RMS 活动、持续活动、P90/RMS 音量和 200–4000 Hz 能量比例，不读取候选 VAD、ASR 或旧转写。真实任务选择了 `00:11–00:37` 之间 10 个相隔至少一分钟的一分钟块，独立 `-50 dBFS` 检查的非静音代理为 `86.7%–100%`。数据库仍保存包围范围，但 benchmark 只计算十个明确的 review-region，未抽中的间隙不会被误当作人工确认的静音。网页可记录语音起止、准确听写或无法可靠听清，并将声源标为现场、电视/媒体、现场与媒体重叠或不确定；重叠声不要求人工强行分离。旧标注按现场人声兼容，编辑会撤销对应块的完成状态。导入必须验证 selection manifest、窗口/音频 SHA-256、声源值、完整复核和 `model_outputs_unseen` 声明。完整设计见 [V2-C.2 指南](docs/v2-c2-acoustic-blind-benchmark.md)。
 
-当前人工在前五块停止，系统将其冻结为明确的 V2-C.2a 预备子集，没有伪装成完整十分钟 holdout。同一人工边界上，18 段现场人声的 SenseVoice/Qwen/Fun-ASR raw CER 分别为 `49.02%/32.35%/54.41%`；Qwen 相对 SenseVoice 的 20 万次 paired bootstrap 95% 区间为 `[-29.61, -8.12]` 个百分点，确认 Qwen 是当前主识别模型。完整流水线的五块 CER 则为 V1 `117.68%`、五分钟窗 Qwen `109.94%`；排除唯一纯电视窗口后 Qwen 略差，定位到静音区插入/幻觉而非模型正文识别能力。下一阶段是 ASR 前高召回语音门控和 utterance segmentation，详细审计见同一指南第 8 节。
+当前人工在前五块停止，系统将其冻结为明确的 V2-C.2a 预备子集，没有伪装成完整十分钟 holdout。同一人工边界上，18 段现场人声的 SenseVoice/Qwen/Fun-ASR raw CER 分别为 `49.02%/32.35%/54.41%`；Qwen 相对 SenseVoice 的 20 万次 paired bootstrap 95% 区间为 `[-29.61, -8.12]` 个百分点，确认 Qwen 是当前主识别模型。旧完整流水线五块 CER 为 `109.94%`，V2-C.3 降为 `92.27%`；排除唯一纯电视窗口后从 `154.90%` 降为 `116.18%`，确认提升来自现场人声而不是电视样本。由于同一五块已参与阈值选择，这只是开发证据，下一步必须使用新 holdout。完整结果见 [V2-C.3 指南](docs/v2-c3-speech-gating.md)。
 
 ## 推荐：一键离线日记
 
@@ -290,4 +292,4 @@ allday-asr action-review 3 --status dismissed
 
 ## 当前边界
 
-V2-A/V2-B/V2-C 的不可变源对象、schema v6、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现；V2-C.1/V2-C.2 已加入同边界 Oracle ASR、原始/ITN 双 CER、paired bootstrap、环境负样本和波形声学富集盲测。Qwen 已被选为下一版主模型，但生产默认暂时仍运行 V1 SenseVoice，因为 V2-C.3 的静音门控和切句尚未实现，而不是因为旧 `30.03% vs 14.36%` 已证明 Qwen 普遍更差。V2-D 的重叠说话人时间轴尚未实施。Watch 五分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现。
+V2-A/V2-B/V2-C 的不可变源对象、schema v6、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现；V2-C.1/V2-C.2 已加入同边界 Oracle ASR、原始/ITN 双 CER、paired bootstrap、环境负样本和波形声学富集盲测。V2-C.3 的双 VAD 证据门控、padding/core 分离、committed token 快照和显式 VAD prediction 已实现。Qwen 是下一版主模型，但生产默认仍不覆盖 V1：当前五块已被当作开发集使用，还缺新的未见 holdout。V2-D 的重叠说话人时间轴尚未实施；Watch 五分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现。

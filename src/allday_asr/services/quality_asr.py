@@ -25,8 +25,18 @@ class QualityAsrSettings:
     window_ms: int = 300_000
     context_ms: int = 5_000
     vram_profile: str = "quality-16gb"
-    pipeline_revision: str = "v2c-vad-utterance-v2"
+    pipeline_revision: str = "v2c3-dual-vad-evidence-gate-v2"
     max_windows: int | None = None
+    speech_gate_fsmn_merge_gap_ms: int = 600
+    speech_gate_max_utterance_ms: int = 30_000
+    speech_gate_inference_padding_ms: int = 750
+    speech_gate_output_padding_ms: int = 500
+    speech_gate_min_candidate_ms: int = 800
+    speech_gate_min_snr_db: float = 9.0
+    speech_gate_silero_threshold: float = 0.15
+    speech_gate_silero_min_speech_ms: int = 100
+    speech_gate_silero_min_silence_ms: int = 250
+    speech_gate_min_silero_overlap_ms: int = 500
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -48,6 +58,10 @@ class QualityAsrSummary:
     aligned_tokens: int
     disagreements: int
     low_alignment_hypotheses: int
+    speech_candidates: int
+    accepted_speech_candidates: int
+    rejected_speech_candidates: int
+    committed_primary_tokens: int
     manifest_path: Path
 
 
@@ -144,6 +158,23 @@ def run_quality_asr(
             len(database.list_asr_tokens(int(row["id"]))) for row in hypotheses
         )
         disagreements = database.list_asr_disagreements(run_id)
+        primary_hypotheses = [
+            row for row in hypotheses if row["hypothesis_role"] == "primary"
+        ]
+        speech_segments = [
+            segment
+            for row in primary_hypotheses
+            for segment in json.loads(str(row["raw_response_json"] or "{}")).get(
+                "segments", []
+            )
+        ]
+        accepted_speech_candidates = sum(
+            bool(segment.get("accepted", True)) for segment in speech_segments
+        )
+        committed_primary_tokens = sum(
+            len(database.list_asr_tokens(int(row["id"]), core_only=True))
+            for row in primary_hypotheses
+        )
         low_alignment_hypotheses = sum(
             _hypothesis_alignment_coverage(database, row) < 0.85
             for row in hypotheses
@@ -161,6 +192,12 @@ def run_quality_asr(
             "aligned_tokens": aligned_tokens,
             "disagreements": len(disagreements),
             "low_alignment_hypotheses": low_alignment_hypotheses,
+            "speech_candidates": len(speech_segments),
+            "accepted_speech_candidates": accepted_speech_candidates,
+            "rejected_speech_candidates": (
+                len(speech_segments) - accepted_speech_candidates
+            ),
+            "committed_primary_tokens": committed_primary_tokens,
         }
         manifest_path = _write_manifest(database, run_id, settings, summary_payload)
         database.finish_processing_run(
@@ -193,7 +230,7 @@ def snapshot_quality_asr(
         raise ValueError("only a completed V2-C run can be frozen as a benchmark snapshot")
     session_id = int(run["session_id"])
     input_fingerprint = str(run["input_fingerprint"])
-    adapter = "quality-asr-v2c-primary-aligned-token-transcripts-v2"
+    adapter = "quality-asr-v2c-primary-speech-aligned-token-transcripts-v4"
     evaluation_scopes: list[tuple[int, int]] | None = None
     if truth_set_id is not None:
         truth_set = database.get_truth_set(truth_set_id)
@@ -219,15 +256,72 @@ def snapshot_quality_asr(
         for previous, current in zip(evaluation_scopes, evaluation_scopes[1:]):
             if current[0] < previous[1]:
                 raise ValueError("真值集的 review-region 相互重叠")
-        adapter = "quality-asr-v2c-primary-aligned-token-transcripts-v3-review-scoped"
+        adapter += "-review-scoped"
 
     predictions: list[dict[str, Any]] = []
     for hypothesis in database.list_asr_hypotheses(run_id, role="primary"):
         hypothesis_id = int(hypothesis["id"])
+        hypothesis_scopes = evaluation_scopes or [
+            (int(hypothesis["core_start_ms"]), int(hypothesis["core_end_ms"]))
+        ]
+        raw_response = json.loads(str(hypothesis["raw_response_json"] or "{}"))
+        for region_index, value in enumerate(raw_response.get("speech_ranges_ms", [])):
+            if not isinstance(value, (list, tuple)) or len(value) < 2:
+                continue
+            original_region_start = int(hypothesis["analysis_start_ms"]) + int(
+                value[0]
+            )
+            original_region_end = int(hypothesis["analysis_start_ms"]) + int(value[1])
+            region_start = original_region_start
+            region_end = original_region_end
+            region_start = max(region_start, int(hypothesis["core_start_ms"]))
+            region_end = min(region_end, int(hypothesis["core_end_ms"]))
+            for scope_index, (scope_start, scope_end) in enumerate(hypothesis_scopes):
+                start_ms = max(region_start, scope_start)
+                end_ms = min(region_end, scope_end)
+                if end_ms <= start_ms:
+                    continue
+                scope_suffix = (
+                    ""
+                    if evaluation_scopes is None
+                    else f":truth:{truth_set_id}:scope:{scope_index}"
+                )
+                predictions.append(
+                    {
+                        "prediction_key": (
+                            f"v2c:{run_id}:hypothesis:{hypothesis_id}:speech:"
+                            f"{region_index}{scope_suffix}"
+                        ),
+                        "prediction_kind": "speech",
+                        "session_start_ms": start_ms,
+                        "session_end_ms": end_ms,
+                        "label": "speech",
+                        "metadata": {
+                            "hypothesis_id": hypothesis_id,
+                            "model_id": hypothesis["model_id"],
+                            "speech_region_index": region_index,
+                            "original_session_start_ms": original_region_start,
+                            "original_session_end_ms": original_region_end,
+                            "core_clipped": (
+                                region_start != original_region_start
+                                or region_end != original_region_end
+                            ),
+                            "scope_clipped": (
+                                start_ms != region_start or end_ms != region_end
+                            ),
+                            "truth_set_id": truth_set_id,
+                            "review_region_index": (
+                                scope_index if evaluation_scopes is not None else None
+                            ),
+                            "source": "immutable hypothesis raw_response.speech_ranges_ms",
+                        },
+                    }
+                )
         tokens = database.list_asr_tokens(hypothesis_id, core_only=True)
         for token in tokens:
             token_id = int(token["id"])
             source_trace_complete = bool(database.list_asr_token_sources(token_id))
+            token_metadata = json.loads(str(token["metadata_json"] or "{}"))
             token_start = int(token["session_start_ms"])
             token_end = int(token["session_end_ms"])
             spans = (
@@ -258,6 +352,7 @@ def snapshot_quality_asr(
                     "original_session_start_ms": token_start,
                     "original_session_end_ms": token_end,
                     "scope_clipped": start_ms != token_start or end_ms != token_end,
+                    "alignment_metadata": token_metadata,
                 }
                 if truth_set_id is not None:
                     common_metadata.update(
@@ -389,7 +484,14 @@ def _trace_tokens(database, window, backend, aligned_tokens) -> list[dict[str, A
                 f"token {raw_index} in window {window.index} cannot be traced to source"
             )
         midpoint = (session_start + session_end) / 2
-        kept = window.core_start_ms <= midpoint < window.core_end_ms
+        token_metadata = token.metadata or {}
+        speech_gate_committed = bool(
+            token_metadata.get("speech_gate_committed", True)
+        )
+        kept = (
+            window.core_start_ms <= midpoint < window.core_end_ms
+            and speech_gate_committed
+        )
         traced.append(
             {
                 "token_index": len(traced),
@@ -402,9 +504,13 @@ def _trace_tokens(database, window, backend, aligned_tokens) -> list[dict[str, A
                 "confidence": token.confidence,
                 "alignment_model_id": backend.alignment_model_id,
                 "metadata": {
-                    **(token.metadata or {}),
+                    **token_metadata,
                     "raw_token_index": raw_index,
-                    "boundary_policy": "token-midpoint-in-core-v1",
+                    "boundary_policy": (
+                        "token-midpoint-in-window-core-and-accepted-speech-core-v2c3"
+                        if "speech_gate_committed" in token_metadata
+                        else "token-midpoint-in-core-v1"
+                    ),
                 },
                 "source_refs": [
                     {
@@ -482,11 +588,20 @@ def _hypothesis_alignment_coverage(database: Database, hypothesis) -> float:
     text = normalize_text(str(hypothesis["text"]))
     if not text:
         return 1.0
+    raw_response = json.loads(str(hypothesis["raw_response_json"] or "{}"))
+    expected_committed = raw_response.get("committed_token_text")
+    tokens = database.list_asr_tokens(int(hypothesis["id"]))
+    if expected_committed is not None:
+        text = normalize_text(str(expected_committed))
+        tokens = [
+            token
+            for token in tokens
+            if json.loads(str(token["metadata_json"] or "{}")).get(
+                "speech_gate_committed", False
+            )
+        ]
     token_text = normalize_text(
-        "".join(
-            str(token["text"])
-            for token in database.list_asr_tokens(int(hypothesis["id"]))
-        )
+        "".join(str(token["text"]) for token in tokens)
     )
     return max(0.0, 1.0 - _normalized_distance(text, token_text))
 

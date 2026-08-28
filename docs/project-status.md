@@ -1,13 +1,13 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-28  
-> 当前阶段：V1 基线和本地操作台可用；V2-A/V2-B/V2-C 已验收。V2-C.1 的近静音连续块保留为环境负样本；V2-C.2 前 5 块已冻结为明确标注“预备”的真值子集，后 5 块保持待检查。纯 ASR 已确认 Qwen 最优，下一瓶颈是 ASR 前语音门控和切句。
+> 当前阶段：V1 基线和本地操作台可用；V2-A/V2-B/V2-C.3 已实现。V2-C.1 的近静音连续块保留为环境负样本；V2-C.2 前 5 块已冻结为明确标注“预备”的开发真值，后 5 块保持待检查。Qwen 主模型和双 VAD 证据门控已完成，下一质量验证需要新的未见 holdout。
 
 ## 1. 结论
 
 项目已经越过“技术路线设计”，具备一条可实际运行的离线处理链路。它可以把一段 Watch 长录音变成可追溯的转写和事件时间线，也已经建立了“独立本人声纹 → 候选片段 → 人工真值 → 留出/负样本库”的闭环。
 
-V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的数据模型无法可靠表达片段内换人、重叠讲话和多模型假设。V2-A/V2-B 已完成不可变 source/session、跨源逻辑窗口、连续时间真值、不可变预测快照和多 run benchmark；V2-C 已接入 Qwen3-ASR-1.7B、强制对齐和 Fun-ASR-Nano 第二假设。V2-C.1 发现旧真值全部沿用 V1 segment 边界且标注时可见 V1 hypothesis；V2-C.2 又修正“单个均匀连续盲块可能近乎全静音”的信息量问题，形成同边界纯 ASR、环境负样本和声学富集盲测三条互补轨道。V2-C.2a 已确认 Qwen 的正文识别能力更强，同时把当前最大问题定位为整段窗口在静音处产生插入文字。下一步先实现 V2-C.3 语音门控和切句，再建立新的未见 holdout；之后进入允许重叠的说话人时间轴。
+V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的数据模型无法可靠表达片段内换人、重叠讲话和多模型假设。V2-A/V2-B 已完成不可变 source/session、跨源逻辑窗口、连续时间真值、不可变预测快照和多 run benchmark；V2-C 已接入 Qwen3-ASR-1.7B、强制对齐和 Fun-ASR-Nano 第二假设。V2-C.1 发现旧真值全部沿用 V1 segment 边界且标注时可见 V1 hypothesis；V2-C.2 又修正“单个均匀连续盲块可能近乎全静音”的信息量问题。V2-C.3 进一步确认 run 7 已有 FSMN-VAD，真正瓶颈是单路 VAD 误报和 padding token 被提交；现已用 FSMN proposal、Silero/相对 SNR/时长证据和强制对齐后的 core commit 修复。五块开发集的现场人声 CER 从 `154.90%` 降到 `116.18%`，但阈值尚未通过新 holdout 验证。
 
 新的硬约束是：Watch 原始 M4A 永久保存且永不修改；当前继续面向已有 2 小时 44 分长录音开发；未来 5 分钟音频块通过同一虚拟时间轴进入核心管线；本地不运行通用 LLM，语义阶段之后使用可替换云端接口。实时 ASR 不再是既定里程碑。
 
@@ -18,7 +18,7 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 | 环境自检 | 已完成 | 检查 Python、FFmpeg、依赖和真实 CUDA 运算 |
 | 录音入库 | V2-A 已完成 | 不可变 source/session、SHA-256 去重、证据字段防修改/删除、完整性审计 |
 | 音频处理 | V2-A 基础完成 | V1 标准化/VAD/断点续跑；V2 逻辑窗口临时解码且不新增长期整段 PCM |
-| ASR | V2-C.2a 预备比较完成 | Qwen3-ASR-1.7B、0.6B ForcedAligner、Fun-ASR-Nano、逐 token 原音追溯；同边界现场人声确认 Qwen 最优，完整五分钟窗仍有静音幻觉；下一步为 V2-C.3 高召回门控和 utterance segmentation |
+| ASR | V2-C.3 已实现 | Qwen3-ASR-1.7B、0.6B ForcedAligner、Fun-ASR-Nano、FSMN+Silero 证据门控、padding/core 分离、逐 token 原音追溯；等待新 holdout |
 | 匿名说话人 | 原型完成 | CAM++ 聚类、短片段/弱聚类质量门槛、允许 `unknown` |
 | 本人身份 | 原型完成 | 独立多录音登记、片段候选、人工导入、阈值校准 |
 | 人物样本库 | 已完成 V1 | `accepted`、`holdout`、`negative`、会话隔离、清单 |
@@ -61,6 +61,10 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 | V2-C.2a 现场 Oracle CER | SenseVoice 49.02%；Qwen **32.35%**；Fun-ASR 54.41% |
 | V2-C.2a 现场 Qwen−Sense | -16.67 个百分点；paired bootstrap 95% CI `[-29.61, -8.12]` |
 | V2-C.2a 端到端 CER | 全部：V1 117.68%、Qwen 109.94%；仅现场窗口：V1 148.53%、Qwen 154.90% |
+| V2-C.3 开发集 CER | 全部 **92.27%**；仅现场 **116.18%**；纯电视 61.39% |
+| V2-C.3 开发集 VAD | F1 **61.42%**；miss 27.66%；false alarm 49.66% |
+| V2-C.3 五窗口 run 9 | 161 个候选、147 个接受、14 个拒绝、1,301 个 committed 主模型 token |
+| V2-C.3 全量 run 10 | 33+33 假设、312 个候选、287 个接受、2,192 个 committed 主 token、460.534 秒、8 GB 无 OOM |
 | V2-C 全量运行 | 33+33 假设、6,147 token、16 个分歧、约 8 分 14 秒 |
 | 说话人成对 F1 | 0.543（电视标签语义仍需拆分） |
 | 本人识别真值 | 2 段本人、70 段非本人；样本不足以判断泛化 |
@@ -94,7 +98,7 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 ## 6. 本次盘点验证
 
 - `doctor` 全部通过：Python 3.12.10、FFmpeg/FFprobe、FunASR 1.4.4、ModelScope 1.39.1、PyTorch/torchaudio 2.9.1+cu128 和 RTX 5070 CUDA 实算正常。
-- 39 项单元测试全部通过，其中包含 schema v4→v6 自动备份、冻结 ASR/token/source 防篡改、跨源逐 token 引用、V2-C.1/V2-C.2 任务拒绝未完成/污染/清单不一致数据、非连续 review-region 排除未复核间隙、专用盲标网页的鉴权/音频 Range/原子保存/最终锁定、穷尽真值孤立 transcript 插入处罚、Oracle 快照、双 CER、paired bootstrap、VAD/DER/JER/对齐/实体指标和全部 V1 回归测试。
+- 全量单元测试包含 schema v4→v6 自动备份、冻结 ASR/token/source 防篡改、跨源逐 token 引用、V2-C.1/V2-C.2 盲标约束、非连续 review-region、Oracle 快照、双 CER、paired bootstrap、VAD/DER/JER，以及 V2-C.3 门控接受/拒绝、无重叠 padding 和拒绝 token 不进入预测的回归检查。
 - 真实库已从 schema v3 升级到 v4，升级前自动保存一份 schema v3 SQLite 备份。迁移前后 V1 各表计数一致：423 个语音段、17 条人工身份标注、26 条声纹样本、10 个事件和 3 个历史 run 均保留。
 - 当前 79,826,205 字节 Watch M4A 完整性状态为 `verified`；迁移和真实逻辑窗口解码前后 SHA-256 均为 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`。
 - 当前长录音可规划为 33 个无空洞的 5 分钟核心窗口并带 5 秒边界上下文；真实 10 秒核心窗口临时解码为 11 秒 WAV，退出后缓存已删除。
@@ -168,6 +172,6 @@ V2-A：**“不可变原始对象、schema v4 与长文件逻辑窗口”** 已�
 
 V2-B 已完成 schema v5、连续时间真值格式、旧标注迁移、不可变预测快照、VAD/DER/JER/对齐/实体指标和多 run 对比。当前标注的覆盖等级被真实保留，没有把稀疏 V1 标注误报为穷尽真值。
 
-V2-C 已完成 schema v6、Qwen3-ASR-1.7B、Qwen3-ForcedAligner-0.6B、Fun-ASR-Nano 第二假设、边界 token 去重、分歧队列、失败续跑和 token 时间 benchmark snapshot。默认 `quality-16gb` 使用 BF16 且不量化；当前 8 GB 环境以同模型 batch=1 顺序运行，不牺牲模型精度。全量实测证明工程可行，V2-C.2a 也确认 Qwen 纯 ASR 已达到主模型晋级门槛；尚未达标的是五分钟整窗直接识别造成的静音插入。
+V2-C 已完成 schema v6、Qwen3-ASR-1.7B、Qwen3-ForcedAligner-0.6B、Fun-ASR-Nano 第二假设、边界 token 去重、分歧队列、失败续跑和 token 时间 benchmark snapshot。V2-C.3 已增加 FSMN proposal、Silero/相对 SNR/时长证据门控、推理 padding 与提交 core 分离，以及同时含 speech 和 committed token 的 v4 snapshot。默认 `quality-16gb` 使用 BF16 且不量化；当前 8 GB 环境仍以同模型 batch=1 顺序运行，不牺牲模型精度。
 
-当前进入 **V2-C.3：高召回语音门控与 utterance segmentation**：保留 Qwen 主模型，不再把长静音整段送入 ASR；在五块预备开发集上降低插入/幻觉，然后新建独立未见 holdout 验证。V2-C.1 近静音块只评测环境 false alarm/hallucination。通过后进入 **V2-D：允许重叠的说话人时间轴**，比较 Sortformer 与 pyannote，并将 V2-C token 按时间关联到 speaker turns；不得回退到“一整个 VAD 段只能有一个人”。
+当前 V2-C.3 在五块开发集上达到总体 CER `92.27%`、现场 CER `116.18%` 和 VAD-F1 `61.42%`，相对 run 7 有实质改善，但这五块已经参与阈值选择。下一步先用新的未见录音或 review-region 验证，不能把开发集重复包装成最终测试；随后进入 **V2-D：允许重叠的说话人时间轴**，比较 Sortformer 与 pyannote，并将 V2-C token 按时间关联到 speaker turns。

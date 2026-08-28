@@ -15,12 +15,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(first.sha256(), second.sha256())
         self.assertEqual(first.identity.threshold, 0.36)
         self.assertEqual(first.diarization.min_cluster_segments, 3)
+        self.assertEqual(first.asr.speech_gate_min_candidate_ms, 800)
+        self.assertEqual(first.asr.speech_gate_min_silero_overlap_ms, 500)
 
     def test_unknown_or_invalid_values_are_rejected(self) -> None:
         with self.assertRaises(ConfigError):
             config_from_mapping({"identity": {"threshold": 1.5}})
         with self.assertRaises(ConfigError):
             config_from_mapping({"runtime": {"devcie": "cpu"}})
+        with self.assertRaises(ConfigError):
+            config_from_mapping(
+                {"asr": {"speech_gate_silero_threshold": 1.0}}
+            )
 
     def test_custom_toml_is_loaded(self) -> None:
         path = Path(__file__).parent / f"config-{uuid4().hex}.toml"
