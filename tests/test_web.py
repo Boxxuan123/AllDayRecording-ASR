@@ -22,6 +22,7 @@ class WebConsoleTests(unittest.TestCase):
         root = Path(__file__).parent
         database_path = root / f"web-{suffix}.sqlite3"
         evaluation_dir = root / f"web-evaluation-{suffix}"
+        web_output = root / f"web-output-{suffix}"
         server = None
         try:
             database = Database(database_path)
@@ -65,6 +66,23 @@ class WebConsoleTests(unittest.TestCase):
                     port=0,
                     token="test-token",
                 )
+                with (
+                    patch(
+                        "allday_asr.web.recording_output_dir",
+                        return_value=web_output,
+                    ),
+                    patch("allday_asr.web.extract_clip") as extract_clip,
+                ):
+                    listening_clip = server.application.audio_clip(segment_id)
+                self.assertEqual(
+                    listening_clip.name, f"segment-{segment_id}-listening.wav"
+                )
+                extract_clip.assert_called_once()
+                self.assertEqual(extract_clip.call_args.args[2:4], (0, 3_100))
+                self.assertEqual(
+                    extract_clip.call_args.kwargs["audio_filter"],
+                    "loudnorm=I=-18:LRA=7:TP=-2",
+                )
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
                 base_url = server.application.base_url
@@ -91,6 +109,16 @@ class WebConsoleTests(unittest.TestCase):
                     dashboard = json.load(response)
                 self.assertEqual(dashboard["segments"]["completed"], 1)
                 self.assertEqual(dashboard["evaluations"][0]["segments"], 1)
+
+                with opener.open(
+                    f"{base_url}/api/evaluations/{recording_id}/web-test",
+                    timeout=3,
+                ) as response:
+                    evaluation = json.load(response)
+                self.assertEqual(
+                    evaluation["segments"][0]["audio_url"],
+                    f"/api/audio/{segment_id}?v=2",
+                )
 
                 request = urllib.request.Request(
                     f"{base_url}/api/evaluations/{recording_id}/web-test/segments/{segment_id}",
@@ -120,6 +148,8 @@ class WebConsoleTests(unittest.TestCase):
                 server.server_close()
             if evaluation_dir.exists():
                 shutil.rmtree(evaluation_dir)
+            if web_output.exists():
+                shutil.rmtree(web_output)
             for database_suffix in ("", "-shm", "-wal"):
                 candidate = Path(f"{database_path}{database_suffix}")
                 if candidate.exists():

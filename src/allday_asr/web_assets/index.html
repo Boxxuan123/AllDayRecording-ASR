@@ -121,6 +121,11 @@
             </div>
           </div>
 
+          <div class="annotation-purpose">
+            <strong>这是一份留出的“考试答案”，不会直接拿去训练模型。</strong>
+            <p>准确文字测 ASR；真实说话人测多人切分；是否本人测声纹；关键事实测时间、地点和承诺有没有丢失。混合或听不清时可以留空并备注。</p>
+          </div>
+
           <div id="evaluation-empty" class="empty-state hidden">
             <strong>还没有评测模板</strong>
             <p>请先在终端运行 evaluation init，或选择其他录音。</p>
@@ -171,6 +176,14 @@
     </div>
 
     <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <datalist id="speaker-labels">
+      <option value="self"></option>
+      <option value="mother"></option>
+      <option value="father"></option>
+      <option value="tv"></option>
+      <option value="mixed"></option>
+      <option value="unknown"></option>
+    </datalist>
     <script src="/assets/app.js" defer></script>
   </body>
 </html>

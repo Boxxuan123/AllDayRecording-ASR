@@ -479,6 +479,25 @@ button:disabled {
   box-shadow: 0 2px 8px rgba(31, 40, 49, 0.08);
 }
 
+.annotation-purpose {
+  padding: 14px 18px;
+  background: rgba(215, 164, 69, 0.1);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--amber);
+}
+
+.annotation-purpose strong {
+  font-size: 12px;
+}
+
+.annotation-purpose p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 .segment-list {
   display: grid;
   gap: 12px;
@@ -557,6 +576,13 @@ button:disabled {
 audio {
   width: 100%;
   height: 36px;
+}
+
+.audio-note {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .segment-form {

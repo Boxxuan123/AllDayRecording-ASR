@@ -151,7 +151,14 @@ def normalize_to_wav(source: Path, destination: Path) -> Path:
     return destination
 
 
-def extract_clip(source: Path, destination: Path, start_ms: int, end_ms: int) -> Path:
+def extract_clip(
+    source: Path,
+    destination: Path,
+    start_ms: int,
+    end_ms: int,
+    *,
+    audio_filter: str | None = None,
+) -> Path:
     if end_ms <= start_ms:
         raise ValueError("end_ms 必须大于 start_ms")
     destination = destination.resolve()
@@ -159,24 +166,28 @@ def extract_clip(source: Path, destination: Path, start_ms: int, end_ms: int) ->
     executable = shutil.which("ffmpeg")
     if not executable:
         raise AudioToolError("找不到 ffmpeg")
+    arguments = [
+        executable,
+        "-v",
+        "error",
+        "-y",
+        "-ss",
+        f"{start_ms / 1000:.3f}",
+        "-to",
+        f"{end_ms / 1000:.3f}",
+        "-i",
+        str(source.resolve(strict=True)),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+    ]
+    if audio_filter:
+        arguments.extend(["-af", audio_filter])
+    arguments.extend(["-c:a", "pcm_s16le", str(destination)])
     completed = subprocess.run(
-        [
-            executable,
-            "-v",
-            "error",
-            "-y",
-            "-ss",
-            f"{start_ms / 1000:.3f}",
-            "-to",
-            f"{end_ms / 1000:.3f}",
-            "-i",
-            str(source.resolve(strict=True)),
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            str(destination),
-        ],
+        arguments,
         check=False,
         capture_output=True,
         text=True,
@@ -192,4 +203,3 @@ def _optional_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
     return int(value)
-
