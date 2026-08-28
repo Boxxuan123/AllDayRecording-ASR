@@ -2,9 +2,9 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行，V2-A 已完成不可变原音、schema v4、可追溯 run 输入和逻辑窗口基础。V2 不以实时性或小模型为目标；后续继续使用 `data/` 中现有的 2 小时 44 分 Watch 录音建立连续时间真值、Qwen3-ASR/强制对齐和词级说话人融合，之后再接云端 LLM 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B 已完成不可变原音、schema v5、逻辑窗口、连续时间真值、不可变预测快照和多 run benchmark。V2 不以实时性或小模型为目标；后续继续使用 `data/` 中现有的 2 小时 44 分 Watch 录音接入 Qwen3-ASR、强制对齐和词级说话人融合，之后再接云端 LLM 和 Watch 同步。
 
-实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V1 评测操作见 [人工真值与评测指南](docs/evaluation-guide.md)。
+实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V1 兼容评测见 [人工真值与评测指南](docs/evaluation-guide.md)。
 
 ## 已验证环境
 
@@ -40,6 +40,26 @@ allday-asr session-windows 1 --window-seconds 300 --context-seconds 5
 ```
 
 逻辑窗口可以跨越多个未来 Watch 5 分钟块；只有模型真正运行时才临时解码当前窗口，退出后立即删除。当前 V1 已有的整段标准化 WAV 保留用于兼容和复现，但 V2-A 不再创建新的长期整段 PCM。
+
+## V2-B：连续时间真值与多 run Benchmark
+
+schema v5 将真值、预测快照和报告都绑定到同一个不可变输入指纹。旧 `segment_id` 只作为迁移来源说明，不再是评测主键；替换 VAD segments 不会使冻结真值失效。
+
+```powershell
+# 无损迁移已有 15 分钟 V1 标注
+allday-asr benchmark migrate-v1-truth `
+  state\evaluations\recording-000001\baseline-first-15m.jsonl
+
+# 冻结当前 V1 结果、运行并比较 benchmark
+allday-asr benchmark snapshot-v1 1 --name v1-sensevoice-current
+allday-asr benchmark run 1 1
+allday-asr benchmark compare 1
+
+# 为真正穷尽式的 VAD/DER 标注创建新模板
+allday-asr benchmark init-truth 1 --name first-15m-exhaustive --end 15:00
+```
+
+当前迁移基线包含 277 条连续时间事实和 971 条冻结预测，CER 为 `14.36%`。旧标注不是穷尽式 VAD/说话人真值，因此 VAD-F1、DER/JER 显示 `N/A`，不会把未标时间错误地当成非语音。完整格式与指标定义见 [V2-B 指南](docs/v2-b-continuous-benchmark.md)。
 
 ## 推荐：一键离线日记
 
@@ -207,4 +227,4 @@ allday-asr action-review 3 --status dismissed
 
 ## 当前边界
 
-V2-A 的不可变源对象、schema v4、输入指纹、完整性审计和逻辑窗口已经实现；生产 ASR 命令目前仍运行 V1 的 SenseVoiceSmall + FSMN-VAD + CAM++ 管线。连续时间真值、多 ASR 假设、强制对齐和重叠说话人时间轴从 V2-B 开始实施。Watch 的 5 分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现，不阻塞当前长录音上的 V2 开发。说话人分离在电视、远场、重叠讲话及很短语音上仍不可靠，不能把匿名聚类直接当作人物身份。
+V2-A/V2-B 的不可变源对象、schema v5、输入指纹、完整性审计、逻辑窗口、连续真值和 benchmark 已经实现；生产 ASR 命令目前仍运行 V1 的 SenseVoiceSmall + FSMN-VAD + CAM++ 管线。Qwen3-ASR、多 ASR 假设、强制对齐和新的重叠说话人模型从 V2-C/V2-D 开始实施。Watch 的 5 分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现。说话人分离在电视、远场、重叠讲话及很短语音上仍不可靠，不能把匿名聚类直接当作人物身份。

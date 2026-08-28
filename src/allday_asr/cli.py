@@ -13,6 +13,14 @@ from allday_asr.config import load_config
 from allday_asr.doctor import run_checks
 from allday_asr.exporters import export_jsonl, export_markdown
 from allday_asr.paths import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH, recording_output_dir
+from allday_asr.services.benchmark import (
+    benchmark_comparison,
+    create_continuous_truth_template,
+    evaluate_benchmark,
+    import_continuous_truth,
+    migrate_legacy_truth,
+    snapshot_v1_predictions,
+)
 from allday_asr.services.daily import run_daily
 from allday_asr.services.evaluation import (
     create_evaluation_template,
@@ -57,6 +65,11 @@ library_app = typer.Typer(help="管理本地人物声纹样本库。", no_args_i
 app.add_typer(library_app, name="voice-library")
 evaluation_app = typer.Typer(help="建立人工真值并评测离线结果。", no_args_is_help=True)
 app.add_typer(evaluation_app, name="evaluation")
+benchmark_app = typer.Typer(
+    help="管理连续时间真值、不可变预测快照和多 run 对比。",
+    no_args_is_help=True,
+)
+app.add_typer(benchmark_app, name="benchmark")
 
 
 @app.command(name="web")
@@ -373,6 +386,149 @@ def evaluation_run(
         f"key_fact_recall={_metric(fact_metrics['recall'])}"
     )
     console.print(f"报告：{summary.report_markdown_path.resolve()}")
+
+
+@benchmark_app.command(name="migrate-v1-truth")
+def benchmark_migrate_v1_truth(
+    truth: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="现有 AllDayRecording evaluation truth v1 JSONL。",
+    ),
+    name: Optional[str] = typer.Option(None, help="新的连续时间真值集名称。"),
+    output: Optional[Path] = typer.Option(
+        None, help="新 JSONL 路径；默认写在旧真值旁且不覆盖。"
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """将 segment 绑定的旧标注无损映射到 source/session 连续时间。"""
+    summary = migrate_legacy_truth(
+        Database(db), truth, name=name, output_path=output
+    )
+    console.print(
+        f"[green]连续时间真值已冻结[/green] truth_set={summary.truth_set_id}，"
+        f"annotations={summary.annotation_count}"
+    )
+    console.print(f"真值：{summary.output_path.resolve()}")
+    console.print(f"SHA-256：{summary.truth_sha256}")
+
+
+@benchmark_app.command(name="init-truth")
+def benchmark_init_truth(
+    session_id: int = typer.Argument(..., min=1, help="录音会话 ID。"),
+    name: str = typer.Option(..., help="连续时间真值名称。"),
+    start: str = typer.Option("0", help="开始偏移：秒、MM:SS 或 HH:MM:SS。"),
+    end: Optional[str] = typer.Option(None, help="结束偏移；默认到会话结束。"),
+    output: Optional[Path] = typer.Option(None, help="自定义 JSONL 输出路径。"),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """创建不依赖 VAD segment、尚未冻结的连续时间真值模板。"""
+    try:
+        start_ms = parse_offset(start)
+        end_ms = parse_offset(end) if end is not None else None
+        path = create_continuous_truth_template(
+            Database(db),
+            session_id,
+            name=name,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            output_path=output,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(f"[green]连续时间真值模板已创建[/green] {path.resolve()}")
+    console.print("填写 annotation 后运行：allday-asr benchmark import-truth <path>")
+
+
+@benchmark_app.command(name="snapshot-v1")
+def benchmark_snapshot_v1(
+    truth_set_id: int = typer.Argument(..., min=1, help="连续时间真值集 ID。"),
+    name: str = typer.Option(..., help="不可变预测快照名称。"),
+    processing_run_id: Optional[int] = typer.Option(
+        None, min=1, help="关联的 processing run；默认使用最近一次。"
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """冻结当前 V1 segments、转写、人物标签，防止后续结果漂移。"""
+    summary = snapshot_v1_predictions(
+        Database(db),
+        truth_set_id,
+        name=name,
+        processing_run_id=processing_run_id,
+    )
+    console.print(
+        f"[green]预测快照已创建[/green] prediction_set={summary.prediction_set_id}，"
+        f"predictions={summary.prediction_count}"
+    )
+    console.print(f"内容 SHA-256：{summary.content_sha256}")
+
+
+@benchmark_app.command(name="import-truth")
+def benchmark_import_truth(
+    truth: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="AllDayRecording continuous truth v2 JSONL。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """验证源哈希和时间映射后，将连续真值冻结入库。"""
+    summary = import_continuous_truth(Database(db), truth)
+    console.print(
+        f"[green]连续时间真值已冻结[/green] truth_set={summary.truth_set_id}，"
+        f"annotations={summary.annotation_count}，SHA-256={summary.truth_sha256}"
+    )
+
+
+@benchmark_app.command(name="run")
+def benchmark_run(
+    truth_set_id: int = typer.Argument(..., min=1),
+    prediction_set_id: int = typer.Argument(..., min=1),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """计算 segmentation-independent CER、VAD、DER/JER、对齐和实体指标。"""
+    summary = evaluate_benchmark(Database(db), truth_set_id, prediction_set_id)
+    metrics = summary.metrics
+    console.print(
+        f"[green]Benchmark 完成[/green] run={summary.benchmark_run_id} | "
+        f"CER={_metric(metrics['asr'].get('cer'))} | "
+        f"VAD-F1={_metric(metrics['vad'].get('f1'))} | "
+        f"DER={_metric(metrics['speaker'].get('der'))} | "
+        f"JER={_metric(metrics['speaker'].get('jer'))} | "
+        f"entity-F1={_metric(metrics['entities']['extraction'].get('f1'))}"
+    )
+    console.print(f"报告：{summary.report_markdown_path.resolve()}")
+
+
+@benchmark_app.command(name="compare")
+def benchmark_compare(
+    truth_set_id: int = typer.Argument(..., min=1),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """比较同一冻结真值和原始输入上的全部 benchmark run。"""
+    rows = benchmark_comparison(Database(db), truth_set_id)
+    table = Table(
+        "Run", "Prediction", "Name", "CER", "VAD F1", "DER", "JER", "Align ms", "Entity F1"
+    )
+    for row in rows:
+        table.add_row(
+            str(row["benchmark_run_id"]),
+            str(row["prediction_set_id"]),
+            row["prediction_name"],
+            _metric(row["asr_cer"]),
+            _metric(row["vad_f1"]),
+            _metric(row["der"]),
+            _metric(row["jer"]),
+            _metric(row["alignment_mean_ms"]),
+            _metric(row["entity_f1"]),
+        )
+    console.print(table)
 
 
 def _metric(value: float | None) -> str:

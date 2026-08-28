@@ -181,6 +181,20 @@ def plan_logical_windows(
     return windows
 
 
+def resolve_session_slices(
+    database: Database, session_id: int, start_ms: int, end_ms: int
+) -> tuple[tuple[SourceSlice, ...], tuple[tuple[int, int], ...]]:
+    session = database.get_recording_session(session_id)
+    if start_ms < 0 or end_ms <= start_ms:
+        raise ValueError("会话时间范围无效")
+    if end_ms > int(session["duration_ms"]):
+        raise ValueError("会话时间范围超过录音持续时间")
+    slices, gaps = _resolve_source_slices(
+        database.list_session_sources(session_id), start_ms, end_ms
+    )
+    return tuple(slices), tuple(gaps)
+
+
 def logical_window_cache_key(
     window: LogicalWindow, *, transform: str = "pcm16-16khz-mono-v1"
 ) -> str:

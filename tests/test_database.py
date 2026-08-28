@@ -6,7 +6,12 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-from allday_asr.storage.database import Database, MIGRATIONS, SCHEMA
+from allday_asr.storage.database import (
+    LATEST_SCHEMA_VERSION,
+    Database,
+    MIGRATIONS,
+    SCHEMA,
+)
 
 
 class DatabaseTests(unittest.TestCase):
@@ -14,7 +19,7 @@ class DatabaseTests(unittest.TestCase):
         database_path = Path(__file__).parent / f"test-{uuid4().hex}.sqlite3"
         try:
             database = Database(database_path)
-            self.assertEqual(database.schema_version(), 4)
+            self.assertEqual(database.schema_version(), LATEST_SCHEMA_VERSION)
             values = {
                 "source_path": str(Path(__file__).parent / "audio.m4a"),
                 "sha256": "abc123",
@@ -176,13 +181,17 @@ class DatabaseTests(unittest.TestCase):
         backup_paths: list[Path] = []
         try:
             database = Database(database_path)
-            self.assertEqual(database.schema_version(), 4)
+            self.assertEqual(database.schema_version(), LATEST_SCHEMA_VERSION)
             source = database.list_source_objects()[0]
             session = database.get_session_for_recording(1)
             self.assertEqual(source["sha256"], digest)
             self.assertEqual(source["source_path"], str(source_path.resolve()))
             self.assertEqual(session["duration_ms"], 5000)
-            backup_paths = list(root.glob(f"migration-{token}.schema-v3-to-v4.*.sqlite3"))
+            backup_paths = list(
+                root.glob(
+                    f"migration-{token}.schema-v3-to-v{LATEST_SCHEMA_VERSION}.*.sqlite3"
+                )
+            )
             self.assertEqual(len(backup_paths), 1)
             backup = sqlite3.connect(backup_paths[0])
             try:
@@ -199,6 +208,68 @@ class DatabaseTests(unittest.TestCase):
                 Path(f"{database_path}-shm"),
                 Path(f"{database_path}-wal"),
                 *backup_paths,
+            ]:
+                candidate.unlink(missing_ok=True)
+
+    def test_schema_v4_is_backed_up_before_v2_b_migration(self) -> None:
+        root = Path(__file__).parent
+        token = uuid4().hex
+        database_path = root / f"v2b-migration-{token}.sqlite3"
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.executescript(SCHEMA)
+            connection.execute(
+                """
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO schema_migrations VALUES (1, '2026-08-28T00:00:00+00:00')"
+            )
+            for version in (2, 3, 4):
+                connection.executescript(MIGRATIONS[version])
+                connection.execute(
+                    "INSERT INTO schema_migrations VALUES (?, '2026-08-28T00:00:00+00:00')",
+                    (version,),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
+        backup_pattern = f"v2b-migration-{token}.schema-v4-to-v5.*.sqlite3"
+        try:
+            database = Database(database_path)
+            self.assertEqual(database.schema_version(), 5)
+            with database.connect() as connection:
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+            self.assertIn("truth_sets", tables)
+            self.assertIn("benchmark_prediction_sets", tables)
+            backups = list(root.glob(backup_pattern))
+            self.assertEqual(len(backups), 1)
+            backup = sqlite3.connect(backups[0])
+            try:
+                self.assertEqual(
+                    backup.execute(
+                        "SELECT MAX(version) FROM schema_migrations"
+                    ).fetchone()[0],
+                    4,
+                )
+            finally:
+                backup.close()
+        finally:
+            for candidate in [
+                database_path,
+                Path(f"{database_path}-shm"),
+                Path(f"{database_path}-wal"),
+                *root.glob(backup_pattern),
             ]:
                 candidate.unlink(missing_ok=True)
 

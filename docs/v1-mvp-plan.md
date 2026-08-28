@@ -494,4 +494,4 @@ allday-asr evaluation run <truth.jsonl>
 
 ## 13. 第一版完成后的下一步
 
-V1 已完成原型闭环。2026-08-28 起，后续工作转入 [V2 质量优先架构](v2-quality-first-architecture.md)：先实现不可变原始对象、schema v4、连续时间真值和多模型 run，再接入高质量 ASR、强制对齐、重叠感知说话人时间轴和云端语义接口。Watch 同步延后，不阻塞当前长录音开发；实时字幕不再是既定交付目标。
+V1 已完成原型闭环。2026-08-28 起，后续工作转入 [V2 质量优先架构](v2-quality-first-architecture.md)：不可变原始对象、schema v5、连续时间真值和多 run benchmark 已完成，下一步接入高质量 ASR、强制对齐、重叠感知说话人时间轴和云端语义接口。Watch 同步延后，不阻塞当前长录音开发；实时字幕不再是既定交付目标。
