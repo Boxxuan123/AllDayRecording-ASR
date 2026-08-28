@@ -3,13 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import random
+import re
 from collections import Counter
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
+from allday_asr.asr.oracle_backends import OracleAsrBackend
 from allday_asr.paths import EVALUATION_DIR, OUTPUT_DIR
 from allday_asr.services.evaluation import (
     EVALUATION_FORMAT,
@@ -17,12 +21,17 @@ from allday_asr.services.evaluation import (
     levenshtein_operations,
     normalize_text,
 )
-from allday_asr.services.sources import resolve_session_slices
+from allday_asr.services.sources import (
+    LogicalWindow,
+    materialize_logical_window,
+    resolve_session_slices,
+    temporary_logical_window,
+)
 from allday_asr.storage.database import Database
-
 
 CONTINUOUS_TRUTH_FORMAT = "AllDayRecording continuous truth v2"
 BENCHMARK_REPORT_FORMAT = "AllDayRecording continuous benchmark report v1"
+BLIND_PROTOCOL_FORMAT = "AllDayRecording V2-C.1 blind benchmark v1"
 EXHAUSTIVE = "exhaustive"
 
 
@@ -51,6 +60,143 @@ class BenchmarkSummary:
     metrics: dict[str, Any]
     report_json_path: Path
     report_markdown_path: Path
+
+
+@dataclass(frozen=True)
+class BlindTruthTaskSummary:
+    session_id: int
+    scope_start_ms: int
+    scope_end_ms: int
+    task_path: Path
+    audio_paths: tuple[Path, ...]
+
+
+def create_blind_truth_task(
+    database: Database,
+    session_id: int,
+    *,
+    name: str,
+    duration_ms: int = 1_800_000,
+    chunk_ms: int = 300_000,
+    seed: str = "20260828",
+    output_dir: Path | None = None,
+) -> BlindTruthTaskSummary:
+    """Create a model-independent continuous listening task from immutable audio."""
+    if not NAME_PATTERN.fullmatch(name):
+        raise ValueError("name 只能包含字母、数字、点、下划线和连字符，最长 64 字符")
+    if duration_ms <= 0 or chunk_ms <= 0:
+        raise ValueError("duration_ms 和 chunk_ms 必须大于 0")
+    session = database.get_recording_session(session_id)
+    session_duration = int(session["duration_ms"])
+    if duration_ms > session_duration:
+        raise ValueError("盲标时长不能超过录音会话时长")
+    input_fingerprint = database.session_input_fingerprint(session_id)
+    max_start_second = (session_duration - duration_ms) // 1_000
+    selector = hashlib.sha256(
+        f"{BLIND_PROTOCOL_FORMAT}:{input_fingerprint}:{seed}".encode("utf-8")
+    ).digest()
+    start_ms = (
+        int.from_bytes(selector[:8], "big") % (max_start_second + 1)
+    ) * 1_000
+    end_ms = start_ms + duration_ms
+    target = (
+        output_dir.resolve()
+        if output_dir is not None
+        else EVALUATION_DIR / f"session-{session_id:06d}" / f"{name}-blind-v2c1"
+    )
+    if target.exists():
+        raise FileExistsError(f"盲标任务已存在，不会覆盖：{target}")
+    target.mkdir(parents=True)
+
+    windows: list[dict[str, Any]] = []
+    audio_paths: list[Path] = []
+    cursor = start_ms
+    position = 0
+    while cursor < end_ms:
+        window_end = min(end_ms, cursor + chunk_ms)
+        slices, gaps = resolve_session_slices(database, session_id, cursor, window_end)
+        window = LogicalWindow(
+            session_id=session_id,
+            index=position,
+            core_start_ms=cursor,
+            core_end_ms=window_end,
+            analysis_start_ms=cursor,
+            analysis_end_ms=window_end,
+            slices=slices,
+            uncovered_ranges=gaps,
+        )
+        audio_path = target / f"window-{position:03d}.wav"
+        materialize_logical_window(window, audio_path)
+        audio_paths.append(audio_path)
+        windows.append(
+            {
+                "type": "blind_window",
+                "window_index": position,
+                "session_start_ms": cursor,
+                "session_end_ms": window_end,
+                "audio_file": audio_path.name,
+                "audio_sha256": _sha256_file(audio_path),
+                "review_status": "pending",
+                "notes": "",
+            }
+        )
+        cursor = window_end
+        position += 1
+
+    metadata = {
+        "type": "metadata",
+        "format": CONTINUOUS_TRUTH_FORMAT,
+        "name": name,
+        "session_id": session_id,
+        "scope_start_ms": start_ms,
+        "scope_end_ms": end_ms,
+        "input_fingerprint": input_fingerprint,
+        "completeness": {
+            "vad": "pending",
+            "transcript": "pending",
+            "speaker": "none",
+            "alignment": "none",
+            "entities": "none",
+        },
+        "provenance": {
+            "kind": "blind_continuous_annotation_v1",
+            "protocol": BLIND_PROTOCOL_FORMAT,
+            "selection_algorithm": "sha256-uniform-contiguous-second-v1",
+            "selection_seed": seed,
+            "requested_duration_ms": duration_ms,
+            "chunk_ms": chunk_ms,
+            "source_selection_inputs": ["session duration", "input fingerprint", "seed"],
+            "model_outputs_used_for_selection": False,
+        },
+        "blind_attestation": {
+            "model_outputs_unseen": False,
+            "annotator": "",
+            "completed_at": None,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    review_region = {
+        "type": "annotation",
+        "key": "blind:review-region:0000",
+        "kind": "uncertain",
+        "session_start_ms": start_ms,
+        "session_end_ms": end_ms,
+        "label": "review_region_complete_scope",
+        "text": None,
+        "metadata": {"protocol": BLIND_PROTOCOL_FORMAT},
+    }
+    task_path = target / "truth-draft.jsonl"
+    _write_jsonl_atomically(task_path, [metadata, *windows, review_region])
+    (target / "README.md").write_text(
+        _blind_task_readme(task_path.name, windows), encoding="utf-8"
+    )
+    return BlindTruthTaskSummary(
+        session_id=session_id,
+        scope_start_ms=start_ms,
+        scope_end_ms=end_ms,
+        task_path=task_path,
+        audio_paths=tuple(audio_paths),
+    )
 
 
 def create_continuous_truth_template(
@@ -320,6 +466,11 @@ def import_continuous_truth(
     completeness = metadata.get("completeness", {})
     if not isinstance(completeness, dict):
         raise ValueError("completeness 必须是对象")
+    provenance = metadata.get("provenance", {})
+    if not isinstance(provenance, dict):
+        raise ValueError("provenance 必须是对象")
+    if provenance.get("kind") == "blind_continuous_annotation_v1":
+        _validate_blind_truth(rows, metadata, scope_start, scope_end, truth_path)
 
     annotations: list[dict[str, Any]] = []
     truth_name = str(metadata.get("name", ""))
@@ -383,6 +534,116 @@ def import_continuous_truth(
         annotation_count=len(annotations),
         output_path=truth_path,
         truth_sha256=truth_sha256,
+    )
+
+
+def snapshot_oracle_asr_predictions(
+    database: Database,
+    truth_set_id: int,
+    backend: OracleAsrBackend,
+    *,
+    name: str,
+    language: str | None = "zh",
+    on_progress: Callable[[int, int], None] | None = None,
+) -> PredictionSnapshotSummary:
+    """Run one ASR model on exactly the same human transcript intervals."""
+    if not NAME_PATTERN.fullmatch(name):
+        raise ValueError("预测快照名称无效")
+    truth_set = database.get_truth_set(truth_set_id)
+    session_id = int(truth_set["session_id"])
+    input_fingerprint = database.session_input_fingerprint(session_id)
+    if str(truth_set["input_fingerprint"]) != input_fingerprint:
+        raise ValueError("冻结真值的输入指纹与当前录音会话不一致")
+    references = database.list_truth_annotations(
+        truth_set_id, annotation_kind="transcript"
+    )
+    if not references:
+        raise ValueError("真值集没有 transcript 标注，无法运行同边界 ASR")
+
+    predictions: list[dict[str, Any]] = []
+    model_manifest: dict[str, Any] | None = None
+    try:
+        for index, reference in enumerate(references):
+            start_ms = int(reference["session_start_ms"])
+            end_ms = int(reference["session_end_ms"])
+            slices, gaps = resolve_session_slices(
+                database, session_id, start_ms, end_ms
+            )
+            window = LogicalWindow(
+                session_id=session_id,
+                index=index,
+                core_start_ms=start_ms,
+                core_end_ms=end_ms,
+                analysis_start_ms=start_ms,
+                analysis_end_ms=end_ms,
+                slices=slices,
+                uncovered_ranges=gaps,
+            )
+            with temporary_logical_window(window) as audio_path:
+                result = backend.transcribe(audio_path, language=language)
+            raw_canonical = json.dumps(
+                result.raw_response,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            annotation_key = str(reference["annotation_key"])
+            predictions.append(
+                _prediction(
+                    f"oracle:{index:06d}:{annotation_key}",
+                    "transcript",
+                    start_ms,
+                    end_ms,
+                    text=result.text,
+                    metadata={
+                        "track": "oracle-segmentation",
+                        "truth_annotation_key": annotation_key,
+                        "reference_boundary_used": True,
+                        "reference_text_used": False,
+                        "language": result.language,
+                        "raw_response_sha256": hashlib.sha256(
+                            raw_canonical.encode("utf-8")
+                        ).hexdigest(),
+                    },
+                )
+            )
+            if on_progress is not None:
+                on_progress(index + 1, len(references))
+        model_manifest = {
+            "model_id": backend.model_id,
+            "model_revision": backend.model_revision,
+            "backend": backend.backend_name,
+            "parameters": backend.parameters(),
+            "evaluation_track": "oracle-segmentation",
+            "truth_set_id": truth_set_id,
+            "reference_text_exposed_to_model": False,
+        }
+    finally:
+        backend.close()
+
+    canonical = json.dumps(
+        predictions, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    content_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    row = database.create_benchmark_prediction_set(
+        {
+            "prediction_key": (
+                f"oracle:{session_id}:{backend.model_id}:{name}:{content_sha256}"
+            ),
+            "name": name,
+            "session_id": session_id,
+            "input_fingerprint": input_fingerprint,
+            "adapter": "oracle-asr-boundaries-v1",
+            "model_manifest": model_manifest or {},
+            "content_sha256": content_sha256,
+        },
+        predictions,
+    )
+    return PredictionSnapshotSummary(
+        prediction_set_id=int(row["id"]),
+        session_id=session_id,
+        prediction_count=len(predictions),
+        content_sha256=content_sha256,
     )
 
 
@@ -522,9 +783,23 @@ def evaluate_benchmark(
     predictions = database.list_benchmark_predictions(prediction_set_id)
     completeness = json.loads(str(truth_set["completeness_json"]))
     scope = (int(truth_set["scope_start_ms"]), int(truth_set["scope_end_ms"]))
+    transcript_exhaustive = completeness.get("transcript") == EXHAUSTIVE
 
     metrics = {
-        "asr": _asr_metrics(annotations, predictions),
+        "asr": _asr_metrics(
+            annotations,
+            predictions,
+            normalizer=normalize_text,
+            scope=scope,
+            exhaustive=transcript_exhaustive,
+        ),
+        "asr_itn": _asr_metrics(
+            annotations,
+            predictions,
+            normalizer=normalize_text_itn_equivalent,
+            scope=scope,
+            exhaustive=transcript_exhaustive,
+        ),
         "vad": (
             _vad_metrics(annotations, predictions, scope)
             if completeness.get("vad") == EXHAUSTIVE
@@ -551,7 +826,12 @@ def evaluate_benchmark(
         "time_unit": "milliseconds",
         "vad_collar_ms": 0,
         "speaker_overlap": "included",
-        "asr_normalization": "NFKC + lowercase + remove whitespace/punctuation",
+        "asr_normalizations": {
+            "raw": "NFKC + lowercase + remove whitespace/punctuation",
+            "itn_equivalent": (
+                "raw + conservative canonical Chinese cardinal numerals to Arabic"
+            ),
+        },
     }
     details = {
         "truth_completeness": completeness,
@@ -614,6 +894,7 @@ def benchmark_comparison(database: Database, truth_set_id: int) -> list[dict[str
                 "prediction_name": str(row["prediction_name"]),
                 "adapter": str(row["prediction_adapter"]),
                 "asr_cer": metrics["asr"].get("cer"),
+                "asr_itn_cer": metrics.get("asr_itn", {}).get("cer"),
                 "vad_f1": metrics["vad"].get("f1"),
                 "der": metrics["speaker"].get("der"),
                 "jer": metrics["speaker"].get("jer"),
@@ -626,13 +907,176 @@ def benchmark_comparison(database: Database, truth_set_id: int) -> list[dict[str
     return comparison
 
 
-def _asr_metrics(annotations: Sequence[Any], predictions: Sequence[Any]) -> dict[str, Any]:
+def paired_oracle_bootstrap(
+    database: Database,
+    truth_set_id: int,
+    baseline_prediction_set_id: int,
+    candidate_prediction_set_id: int,
+    *,
+    samples: int = 20_000,
+    seed: int = 20_260_828,
+    itn_equivalent: bool = False,
+) -> dict[str, Any]:
+    """Paired bootstrap over human transcript intervals for oracle ASR snapshots."""
+    if samples < 1:
+        raise ValueError("samples 必须大于 0")
+    truth = database.get_truth_set(truth_set_id)
+    prediction_sets = [
+        database.get_benchmark_prediction_set(baseline_prediction_set_id),
+        database.get_benchmark_prediction_set(candidate_prediction_set_id),
+    ]
+    for prediction_set in prediction_sets:
+        if int(prediction_set["session_id"]) != int(truth["session_id"]):
+            raise ValueError("paired bootstrap 的真值和预测不属于同一会话")
+        if str(prediction_set["adapter"]) != "oracle-asr-boundaries-v1":
+            raise ValueError("paired bootstrap 只接受 oracle-asr-boundaries-v1 快照")
+    references = database.list_truth_annotations(
+        truth_set_id, annotation_kind="transcript"
+    )
+    if not references:
+        raise ValueError("真值集没有 transcript 标注")
+    normalizer = normalize_text_itn_equivalent if itn_equivalent else normalize_text
+
+    def indexed_predictions(prediction_set_id: int) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for row in database.list_benchmark_predictions(
+            prediction_set_id, prediction_kind="transcript"
+        ):
+            key = str(_metadata(row).get("truth_annotation_key") or "")
+            if not key:
+                raise ValueError("oracle ASR 快照缺少 truth_annotation_key")
+            if key in result:
+                raise ValueError(f"oracle ASR 快照包含重复真值键：{key}")
+            result[key] = row
+        return result
+
+    baseline = indexed_predictions(baseline_prediction_set_id)
+    candidate = indexed_predictions(candidate_prediction_set_id)
+    items: list[tuple[int, int, int]] = []
+    segment_wins = {"baseline": 0, "candidate": 0, "tie": 0}
+    for reference in references:
+        key = str(reference["annotation_key"])
+        if key not in baseline or key not in candidate:
+            raise ValueError(f"oracle ASR 快照没有完整覆盖真值键：{key}")
+        normalized_reference = normalizer(str(reference["text"] or ""))
+        if not normalized_reference:
+            continue
+        errors: list[int] = []
+        for prediction in (baseline[key], candidate[key]):
+            operations = levenshtein_operations(
+                normalized_reference, normalizer(str(prediction["text"] or ""))
+            )
+            errors.append(
+                operations["substitutions"]
+                + operations["deletions"]
+                + operations["insertions"]
+            )
+        items.append((len(normalized_reference), errors[0], errors[1]))
+        if errors[0] < errors[1]:
+            segment_wins["baseline"] += 1
+        elif errors[1] < errors[0]:
+            segment_wins["candidate"] += 1
+        else:
+            segment_wins["tie"] += 1
+    if not items:
+        raise ValueError("真值集没有非空 transcript 标注")
+
+    reference_chars = sum(item[0] for item in items)
+    baseline_errors = sum(item[1] for item in items)
+    candidate_errors = sum(item[2] for item in items)
+    rng = random.Random(seed)
+    deltas: list[float] = []
+    for _ in range(samples):
+        drawn = [items[rng.randrange(len(items))] for _ in items]
+        chars = sum(item[0] for item in drawn)
+        baseline_cer = sum(item[1] for item in drawn) / chars
+        candidate_cer = sum(item[2] for item in drawn) / chars
+        deltas.append(candidate_cer - baseline_cer)
+    ordered = sorted(deltas)
+    return {
+        "truth_set_id": truth_set_id,
+        "baseline_prediction_set_id": baseline_prediction_set_id,
+        "candidate_prediction_set_id": candidate_prediction_set_id,
+        "normalization": "itn_equivalent" if itn_equivalent else "raw",
+        "evaluated_intervals": len(items),
+        "reference_chars": reference_chars,
+        "baseline": {
+            "errors": baseline_errors,
+            "cer": baseline_errors / reference_chars,
+        },
+        "candidate": {
+            "errors": candidate_errors,
+            "cer": candidate_errors / reference_chars,
+        },
+        "candidate_minus_baseline_cer": (
+            candidate_errors - baseline_errors
+        ) / reference_chars,
+        "paired_bootstrap": {
+            "samples": samples,
+            "seed": seed,
+            "confidence_interval_95": [
+                ordered[max(0, math.ceil(0.025 * samples) - 1)],
+                ordered[max(0, math.ceil(0.975 * samples) - 1)],
+            ],
+            "candidate_better_probability": sum(delta < 0 for delta in deltas) / samples,
+            "tie_probability": sum(delta == 0 for delta in deltas) / samples,
+        },
+        "interval_wins": segment_wins,
+    }
+
+
+def _asr_metrics(
+    annotations: Sequence[Any],
+    predictions: Sequence[Any],
+    *,
+    normalizer: Callable[[str], str],
+    scope: tuple[int, int],
+    exhaustive: bool,
+) -> dict[str, Any]:
     references = _of_kind(annotations, "transcript")
-    hypotheses = _of_kind(predictions, "transcript")
+    hypotheses = [
+        row
+        for row in _of_kind(predictions, "transcript")
+        if _overlap_ms(row, scope[0], scope[1]) > 0
+    ]
+    excluded_ranges = [
+        row
+        for row in _of_kind(annotations, "uncertain")
+        if _label(row) in {"unintelligible", "exclude_asr"}
+    ]
+    if excluded_ranges:
+        references = [
+            row
+            for row in references
+            if not any(
+                _overlap_ms(row, _start(excluded), _end(excluded)) > 0
+                for excluded in excluded_ranges
+            )
+        ]
+        hypotheses = [
+            row
+            for row in hypotheses
+            if not any(
+                _overlap_ms(row, _start(excluded), _end(excluded)) > 0
+                for excluded in excluded_ranges
+            )
+        ]
     totals = {"reference_chars": 0, "substitutions": 0, "deletions": 0, "insertions": 0}
     exact = 0
     details: list[dict[str, Any]] = []
     components = _transcript_components(references, hypotheses)
+    connected_hypotheses = {
+        id(hypothesis)
+        for _, component_hypotheses in components
+        for hypothesis in component_hypotheses
+    }
+    orphan_hypotheses = [
+        hypothesis
+        for hypothesis in hypotheses
+        if id(hypothesis) not in connected_hypotheses
+    ]
+    if exhaustive and orphan_hypotheses:
+        components.append(([], orphan_hypotheses))
     for component_references, component_hypotheses in components:
         component_references.sort(key=lambda row: (_start(row), _end(row)))
         component_hypotheses.sort(key=lambda row: (_start(row), _end(row)))
@@ -642,8 +1086,8 @@ def _asr_metrics(annotations: Sequence[Any], predictions: Sequence[Any]) -> dict
         hypothesis_text = "".join(
             str(_value(row, "text") or "") for row in component_hypotheses
         )
-        normalized_reference = normalize_text(reference_text)
-        normalized_hypothesis = normalize_text(hypothesis_text)
+        normalized_reference = normalizer(reference_text)
+        normalized_hypothesis = normalizer(hypothesis_text)
         operations = levenshtein_operations(
             normalized_reference, normalized_hypothesis
         )
@@ -651,23 +1095,28 @@ def _asr_metrics(annotations: Sequence[Any], predictions: Sequence[Any]) -> dict
         for key in ("substitutions", "deletions", "insertions"):
             totals[key] += operations[key]
         exact += normalized_reference == normalized_hypothesis
+        component_rows = [*component_references, *component_hypotheses]
         details.append(
             {
                 "annotation_keys": [
                     _value(row, "annotation_key") for row in component_references
                 ],
-                "start_ms": min(_start(row) for row in component_references),
-                "end_ms": max(_end(row) for row in component_references),
+                "start_ms": min(_start(row) for row in component_rows),
+                "end_ms": max(_end(row) for row in component_rows),
                 "reference_text": reference_text,
                 "hypothesis_text": hypothesis_text,
                 "operations": operations,
+                "orphan_hypothesis_component": not component_references,
             }
         )
     errors = totals["substitutions"] + totals["deletions"] + totals["insertions"]
     return {
-        "available": bool(references),
+        "available": bool(references) or exhaustive,
         "evaluated_intervals": len(references),
         "evaluation_components": len(components),
+        "exhaustive": exhaustive,
+        "excluded_uncertain_ranges": len(excluded_ranges),
+        "orphan_hypotheses": len(orphan_hypotheses) if exhaustive else 0,
         **totals,
         "errors": errors,
         "cer": _safe_ratio(errors, totals["reference_chars"]),
@@ -1088,6 +1537,222 @@ def _prediction(
     }
 
 
+def normalize_text_itn_equivalent(value: str) -> str:
+    """Conservative CER view that only folds unambiguous Chinese cardinals."""
+    normalized = normalize_text(value)
+
+    def normalize_token(raw_token: str) -> str:
+        token = raw_token.replace("两", "二").replace("〇", "零")
+        digit_characters = set("零一二三四五六七八九")
+        for split_at in range(len(token), 1, -1):
+            prefix = token[:split_at]
+            if not any(item in digit_characters for item in prefix):
+                continue
+            try:
+                parsed = _parse_chinese_cardinal(prefix)
+            except ValueError:
+                continue
+            if _format_chinese_cardinal(parsed) == prefix:
+                suffix = token[split_at:]
+                return str(parsed) + (normalize_token(suffix) if suffix else "")
+        return token
+
+    return re.sub(
+        r"[零〇一二两三四五六七八九十百千万亿]+",
+        lambda match: normalize_token(match.group(0)),
+        normalized,
+    )
+
+
+def _parse_chinese_cardinal(token: str) -> int:
+    digits = {
+        "零": 0,
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    small_units = {"十": 10, "百": 100, "千": 1_000}
+    big_units = {"万": 10_000, "亿": 100_000_000}
+    if not any(item in small_units or item in big_units for item in token):
+        raise ValueError("not a cardinal with a multiplier")
+    total = section = number = 0
+    for character in token:
+        if character in digits:
+            number = digits[character]
+        elif character in small_units:
+            unit = small_units[character]
+            section += (number or 1) * unit
+            number = 0
+        elif character in big_units:
+            section += number
+            total += (section or 1) * big_units[character]
+            section = number = 0
+        else:
+            raise ValueError("unsupported Chinese numeral")
+    return total + section + number
+
+
+def _format_chinese_cardinal(value: int) -> str:
+    if value < 0 or value >= 100_000_000:
+        raise ValueError("Chinese cardinal is outside the conservative range")
+    digits = "零一二三四五六七八九"
+
+    def group(number: int) -> str:
+        if number == 0:
+            return "零"
+        result: list[str] = []
+        pending_zero = False
+        for divisor, unit in ((1_000, "千"), (100, "百"), (10, "十"), (1, "")):
+            digit = number // divisor
+            number %= divisor
+            if digit:
+                if pending_zero and result:
+                    result.append("零")
+                result.extend((digits[digit], unit))
+                pending_zero = False
+            elif result and number:
+                pending_zero = True
+        text = "".join(result)
+        return text[1:] if text.startswith("一十") else text
+
+    if value < 10_000:
+        return group(value)
+    high, low = divmod(value, 10_000)
+    text = group(high) + "万"
+    if low == 0:
+        return text
+    if low < 1_000:
+        text += "零"
+    return text + group(low)
+
+
+def _validate_blind_truth(
+    rows: Sequence[dict[str, Any]],
+    metadata: dict[str, Any],
+    scope_start: int,
+    scope_end: int,
+    truth_path: Path,
+) -> None:
+    provenance = metadata.get("provenance")
+    if not isinstance(provenance, dict) or provenance.get("protocol") != BLIND_PROTOCOL_FORMAT:
+        raise ValueError("盲标真值缺少 V2-C.1 协议声明")
+    if provenance.get("model_outputs_used_for_selection") is not False:
+        raise ValueError("盲标范围必须在不使用模型输出的情况下选择")
+    attestation = metadata.get("blind_attestation")
+    if not isinstance(attestation, dict):
+        raise ValueError("盲标真值缺少 blind_attestation")
+    if attestation.get("model_outputs_unseen") is not True:
+        raise ValueError("盲标者必须确认 model_outputs_unseen=true")
+    if not str(attestation.get("annotator") or "").strip():
+        raise ValueError("盲标者必须填写 annotator")
+    if not str(attestation.get("completed_at") or "").strip():
+        raise ValueError("盲标者必须填写 completed_at")
+    completeness = metadata.get("completeness", {})
+    if completeness.get("vad") != EXHAUSTIVE:
+        raise ValueError("盲标真值只有在 vad=exhaustive 后才能冻结")
+    if completeness.get("transcript") != EXHAUSTIVE:
+        raise ValueError("盲标真值只有在 transcript=exhaustive 后才能冻结")
+
+    forbidden_keys = {
+        "hypothesis_text",
+        "hypothesis_text_at_export",
+        "prediction_text",
+        "model_output",
+        "asr_output",
+        "segment_id",
+        "legacy_segment_id",
+    }
+
+    def inspect(value: Any) -> None:
+        if isinstance(value, dict):
+            present = forbidden_keys & set(value)
+            if present:
+                raise ValueError(f"盲标文件包含被禁止的模型/V1 字段：{sorted(present)}")
+            for nested in value.values():
+                inspect(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                inspect(nested)
+
+    inspect(rows)
+    allowed_types = {"metadata", "blind_window", "annotation"}
+    unsupported = [row.get("type") for row in rows if row.get("type") not in allowed_types]
+    if unsupported:
+        raise ValueError(f"盲标文件包含不支持的行类型：{unsupported}")
+    windows = sorted(
+        (row for row in rows if row.get("type") == "blind_window"),
+        key=lambda row: int(row["window_index"]),
+    )
+    if not windows:
+        raise ValueError("盲标真值没有 blind_window")
+    cursor = scope_start
+    for expected_index, window in enumerate(windows):
+        if int(window["window_index"]) != expected_index:
+            raise ValueError("blind_window index 必须从 0 连续递增")
+        start_ms = int(window["session_start_ms"])
+        end_ms = int(window["session_end_ms"])
+        if start_ms != cursor or end_ms <= start_ms or end_ms > scope_end:
+            raise ValueError("blind_window 必须无缝覆盖完整真值范围")
+        if window.get("review_status") != "complete":
+            raise ValueError(f"blind_window {expected_index} 尚未标记 complete")
+        audio_name = str(window.get("audio_file") or "")
+        if Path(audio_name).name != audio_name:
+            raise ValueError("blind_window audio_file 必须是同目录文件名")
+        audio_path = truth_path.parent / audio_name
+        if not audio_path.is_file():
+            raise ValueError(f"盲标派生音频不存在：{audio_path}")
+        if _sha256_file(audio_path) != str(window.get("audio_sha256") or ""):
+            raise ValueError(f"盲标派生音频 SHA-256 不一致：{audio_path}")
+        cursor = end_ms
+    if cursor != scope_end:
+        raise ValueError("blind_window 没有覆盖完整真值范围")
+    review_regions = [
+        row
+        for row in rows
+        if row.get("type") == "annotation"
+        and row.get("kind") == "uncertain"
+        and row.get("label") == "review_region_complete_scope"
+    ]
+    if len(review_regions) != 1 or (
+        int(review_regions[0]["session_start_ms"]) != scope_start
+        or int(review_regions[0]["session_end_ms"]) != scope_end
+    ):
+        raise ValueError("盲标真值必须保留覆盖完整 scope 的 review-region 行")
+
+
+def _blind_task_readme(task_name: str, windows: Sequence[dict[str, Any]]) -> str:
+    window_lines = "\n".join(
+        f"- `{row['audio_file']}`：{row['session_start_ms']}–{row['session_end_ms']} ms"
+        for row in windows
+    )
+    return f"""# V2-C.1 盲标任务
+
+只听本目录 WAV，不打开网页中的 V1/V2 转写。原始 Watch 文件没有被修改；这些 WAV 是可重建的 16 kHz 单声道派生片段。
+
+{window_lines}
+
+在 `{task_name}` 中完成以下工作：
+
+1. 每段完整听完，把对应 `blind_window.review_status` 改为 `complete`。
+2. 为每段可听语音添加 `speech` annotation，并为所有可听清内容添加 `transcript`；无法可靠听写的语音另加 `uncertain` annotation，label 使用 `unintelligible`，该范围不计 ASR CER。时间是 session 绝对毫秒；key 必须唯一。
+3. 无语音区域不添加 `speech`，这正是穷尽式 VAD 真值的一部分。不要删除 `blind:review-region:0000` 行。穷尽真值中的孤立模型 transcript 会作为插入错误计入，不能靠不重叠人工文字逃避处罚。
+4. 全部完成后把 `completeness.vad` 和 `completeness.transcript` 改为 `exhaustive`，填写 `blind_attestation`，再运行 `allday-asr benchmark import-truth <path>`。
+
+示例 annotation（仅展示格式，不是答案）：
+
+```json
+{{"type":"annotation","key":"blind:speech:0001","kind":"speech","session_start_ms":123000,"session_end_ms":124500,"label":"speech","text":null,"metadata":{{"reviewed":true}}}}
+{{"type":"annotation","key":"blind:transcript:0001","kind":"transcript","session_start_ms":123000,"session_end_ms":124500,"label":null,"text":"人工听写内容","metadata":{{"reviewed":true}}}}
+```
+"""
+
+
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for line_number, line in enumerate(
@@ -1272,7 +1937,8 @@ def _render_report(payload: dict[str, Any]) -> str:
             "",
             "| 指标 | 结果 |",
             "| --- | ---: |",
-            f"| CER | {display(metrics['asr'].get('cer'))} |",
+            f"| 原始规范化 CER | {display(metrics['asr'].get('cer'))} |",
+            f"| ITN 等价 CER | {display(metrics['asr_itn'].get('cer'))} |",
             f"| VAD Miss | {display(metrics['vad'].get('miss_rate'))} |",
             f"| VAD False Alarm | {display(metrics['vad'].get('false_alarm_rate'))} |",
             f"| DER | {display(metrics['speaker'].get('der'))} |",

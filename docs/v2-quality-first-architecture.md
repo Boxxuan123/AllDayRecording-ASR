@@ -307,7 +307,16 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 
 验收：完整处理当前长录音；新结果可与 V1 同屏比较；所有最终 token 可追溯到原始时间范围。
 
-验收结果：RTX 5070 8 GB 以相同 BF16 模型、batch=1 在约 8 分 14 秒内完成 33 个窗口的双模型处理，保存 66 份不可变假设、6,147 个 token 和 16 个分歧窗口；所有 token 源覆盖检查为 0 错误。修正 snapshot 的 transcript 时间粒度后，Qwen 在当前稀疏 Watch 真值上的 CER 为 `0.3003`，劣于 V1 `0.1436`，因此只作为候选和复核证据保留，不更新生产默认。
+验收结果：RTX 5070 8 GB 以相同 BF16 模型、batch=1 在约 8 分 14 秒内完成 33 个窗口的双模型处理，保存 66 份不可变假设、6,147 个 token 和 16 个分歧窗口；所有 token 源覆盖检查为 0 错误。旧 snapshot 在 V1 条件化稀疏真值上为 `0.3003`，但 V2-C.1 审计确认它混合了切分和对齐误差，不能与 V1 `0.1436` 直接解释为纯模型排名。
+
+### V2-C.1：公平基准重建（已实现，等待人工盲标）
+
+1. 用原音指纹、会话时长和固定 seed 盲选连续 30 分钟，不读取任何模型输出。
+2. 六个 5 分钟派生试听块必须完整复核，语音与文字覆盖声明为 exhaustive 后才能冻结。
+3. SenseVoice、Qwen 和 Fun-ASR 支持同一人工 transcript 边界的 Oracle ASR 快照，隔离 VAD/对齐影响。
+4. 报告同时给出原始 CER、保守 ITN 等价 CER和 paired bootstrap 置信区间。
+
+当前同边界诊断结果为 SenseVoice `0.1593`、Qwen `0.2063`（ITN `0.1984`）、Fun-ASR `0.2585`（ITN `0.2480`）。由于旧真值仍由 V1 segment 产生且可见 V1 hypothesis，这些数值只用于定位组件，不用于最终晋级。独立盲标范围固定为 `01:41:42–02:11:42`，人工完成前保持 pending。
 
 ### V2-D：说话人时间轴与身份
 
@@ -352,8 +361,9 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 3. V2-B 连续时间真值与多 run 对比。
 4. Qwen3-ASR-1.7B 和 ForcedAligner。
 5. Fun-ASR-Nano 第二假设与分歧队列。
-6. Sortformer/pyannote 和词级说话人融合。
-7. 云端语义接口。
-8. Watch chunk 同步。
+6. V2-C.1 独立盲标、同边界比较与统计不确定性。
+7. Sortformer/pyannote 和词级说话人融合。
+8. 云端语义接口。
+9. Watch chunk 同步。
 
-V2-A/V2-B/V2-C 已完成；下一步进入 V2-D 的 Sortformer/pyannote 候选比较和 token-to-speaker 融合。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在同一冻结真值上比较。
+V2-A/V2-B/V2-C 和 V2-C.1 工具链已完成；先完成独立 30 分钟人工盲标并冻结真正公平的连续真值，再进入 V2-D 的 Sortformer/pyannote 候选比较和 token-to-speaker 融合。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在同一冻结真值上比较。

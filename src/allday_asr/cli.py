@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from allday_asr.asr.oracle_backends import create_oracle_backend
 from allday_asr.asr.quality_backends import FunAsrNanoBackend, Qwen3AsrBackend
 from allday_asr.audio.tools import extract_clip
 from allday_asr.config import load_config
@@ -16,10 +17,13 @@ from allday_asr.exporters import export_jsonl, export_markdown
 from allday_asr.paths import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH, recording_output_dir
 from allday_asr.services.benchmark import (
     benchmark_comparison,
+    create_blind_truth_task,
     create_continuous_truth_template,
     evaluate_benchmark,
     import_continuous_truth,
     migrate_legacy_truth,
+    paired_oracle_bootstrap,
+    snapshot_oracle_asr_predictions,
     snapshot_v1_predictions,
 )
 from allday_asr.services.daily import run_daily
@@ -571,6 +575,38 @@ def benchmark_init_truth(
     console.print("填写 annotation 后运行：allday-asr benchmark import-truth <path>")
 
 
+@benchmark_app.command(name="init-blind")
+def benchmark_init_blind(
+    session_id: int = typer.Argument(..., min=1, help="录音会话 ID。"),
+    name: str = typer.Option(..., help="盲标任务/真值名称。"),
+    duration: str = typer.Option("30:00", help="连续盲标时长。"),
+    chunk: str = typer.Option("5:00", help="仅用于人工试听的派生 WAV 分块时长。"),
+    seed: str = typer.Option("20260828", help="可审计的盲选种子。"),
+    output_dir: Optional[Path] = typer.Option(None, help="自定义任务目录。"),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """从未查看模型输出的连续范围建立 V2-C.1 盲标任务。"""
+    try:
+        summary = create_blind_truth_task(
+            Database(db),
+            session_id,
+            name=name,
+            duration_ms=parse_offset(duration),
+            chunk_ms=parse_offset(chunk),
+            seed=seed,
+            output_dir=output_dir,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(
+        f"[green]V2-C.1 盲标任务已创建[/green] "
+        f"scope={summary.scope_start_ms}–{summary.scope_end_ms} ms | "
+        f"windows={len(summary.audio_paths)}"
+    )
+    console.print(f"任务：{summary.task_path.resolve()}")
+    console.print("标注前不要查看任何模型输出；具体格式见同目录 README.md。")
+
+
 @benchmark_app.command(name="snapshot-v1")
 def benchmark_snapshot_v1(
     truth_set_id: int = typer.Argument(..., min=1, help="连续时间真值集 ID。"),
@@ -590,6 +626,48 @@ def benchmark_snapshot_v1(
     console.print(
         f"[green]预测快照已创建[/green] prediction_set={summary.prediction_set_id}，"
         f"predictions={summary.prediction_count}"
+    )
+    console.print(f"内容 SHA-256：{summary.content_sha256}")
+
+
+@benchmark_app.command(name="oracle-asr")
+def benchmark_oracle_asr(
+    truth_set_id: int = typer.Argument(..., min=1, help="冻结真值集 ID。"),
+    model: str = typer.Option(..., help="sensevoice、qwen 或 fun。"),
+    name: str = typer.Option(..., help="不可变预测快照名称。"),
+    language: str = typer.Option("zh", help="传给所有模型的统一语言提示。"),
+    device: str = typer.Option("auto", help="auto、cpu 或 cuda:0。"),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """在完全相同的人工 transcript 边界上运行一个纯 ASR 模型。"""
+    try:
+        backend = create_oracle_backend(model, device=device)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--model") from exc
+    with Progress(
+        TextColumn("{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("同边界 ASR：准备模型", total=None)
+
+        def update(completed: int, total: int) -> None:
+            progress.update(
+                task,
+                description=f"同边界 ASR：{completed}/{total}",
+            )
+
+        summary = snapshot_oracle_asr_predictions(
+            Database(db),
+            truth_set_id,
+            backend,
+            name=name,
+            language=language,
+            on_progress=update,
+        )
+    console.print(
+        f"[green]Oracle ASR 快照已冻结[/green] "
+        f"prediction_set={summary.prediction_set_id} | "
+        f"intervals={summary.prediction_count}"
     )
     console.print(f"内容 SHA-256：{summary.content_sha256}")
 
@@ -626,6 +704,7 @@ def benchmark_run(
     console.print(
         f"[green]Benchmark 完成[/green] run={summary.benchmark_run_id} | "
         f"CER={_metric(metrics['asr'].get('cer'))} | "
+        f"ITN-CER={_metric(metrics['asr_itn'].get('cer'))} | "
         f"VAD-F1={_metric(metrics['vad'].get('f1'))} | "
         f"DER={_metric(metrics['speaker'].get('der'))} | "
         f"JER={_metric(metrics['speaker'].get('jer'))} | "
@@ -642,7 +721,16 @@ def benchmark_compare(
     """比较同一冻结真值和原始输入上的全部 benchmark run。"""
     rows = benchmark_comparison(Database(db), truth_set_id)
     table = Table(
-        "Run", "Prediction", "Name", "CER", "VAD F1", "DER", "JER", "Align ms", "Entity F1"
+        "Run",
+        "Prediction",
+        "Name",
+        "CER",
+        "ITN CER",
+        "VAD F1",
+        "DER",
+        "JER",
+        "Align ms",
+        "Entity F1",
     )
     for row in rows:
         table.add_row(
@@ -650,6 +738,7 @@ def benchmark_compare(
             str(row["prediction_set_id"]),
             row["prediction_name"],
             _metric(row["asr_cer"]),
+            _metric(row["asr_itn_cer"]),
             _metric(row["vad_f1"]),
             _metric(row["der"]),
             _metric(row["jer"]),
@@ -657,6 +746,38 @@ def benchmark_compare(
             _metric(row["entity_f1"]),
         )
     console.print(table)
+
+
+@benchmark_app.command(name="compare-oracle-pair")
+def benchmark_compare_oracle_pair(
+    truth_set_id: int = typer.Argument(..., min=1),
+    baseline_prediction_set_id: int = typer.Argument(..., min=1),
+    candidate_prediction_set_id: int = typer.Argument(..., min=1),
+    samples: int = typer.Option(20_000, min=1, help="paired bootstrap 重采样次数。"),
+    seed: int = typer.Option(20_260_828, help="统计重采样种子。"),
+    itn: bool = typer.Option(False, help="使用保守 ITN 等价 CER。"),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """对两个同边界 ASR 快照做 paired bootstrap，不只看点估计。"""
+    result = paired_oracle_bootstrap(
+        Database(db),
+        truth_set_id,
+        baseline_prediction_set_id,
+        candidate_prediction_set_id,
+        samples=samples,
+        seed=seed,
+        itn_equivalent=itn,
+    )
+    interval = result["paired_bootstrap"]["confidence_interval_95"]
+    console.print(
+        f"baseline CER={result['baseline']['cer']:.4f} | "
+        f"candidate CER={result['candidate']['cer']:.4f} | "
+        f"delta={result['candidate_minus_baseline_cer']:+.4f} | "
+        f"95% CI=[{interval[0]:+.4f}, {interval[1]:+.4f}] | "
+        f"P(candidate better)="
+        f"{result['paired_bootstrap']['candidate_better_probability']:.4f}"
+    )
+    console.print(f"interval wins：{result['interval_wins']}")
 
 
 def _metric(value: float | None) -> str:

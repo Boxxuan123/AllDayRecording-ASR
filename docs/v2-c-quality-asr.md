@@ -102,7 +102,9 @@ allday-asr benchmark compare 1
 | Fun-ASR 非空假设平均对齐覆盖率 | 100% |
 | token 源范围覆盖错误 | 0 |
 
-prediction set 3 使用修正后的 token 时间区间，truth set 1 上 CER 为 `0.3003`；V1 SenseVoice 为 `0.1436`。因此 V2-C 完成了候选模型和证据管线，但 Qwen 不满足“真实 Watch 真值显著优于 V1”的晋级规则，当前不得替换生产基线。主要差异集中在远场短句、电视声遮蔽和数字；后续可利用已保存的两份假设和 16 个分歧窗口做场景路由或最小音频云端复核。
+prediction set 3 使用修正后的 token 时间区间，truth set 1 上 CER 为 `0.3003`；V1 数据库快照为 `0.1436`。V2-C.1 公平性审计确认，这个比较同时包含两套不同的 VAD、边界和对齐误差，而 truth set 1 的全部文字边界又来自 V1 segment，因此它只能说明两条既有流水线在 V1 条件化样本上的结果不同，不能说明 Qwen 纯 ASR 或真实连续场景必然更差。
+
+随后在完全相同的 46 条人工边界上重新推理，SenseVoice/Qwen/Fun-ASR 的原始 CER 分别为 `0.1593/0.2063/0.2585`，Qwen 的 ITN 等价 CER 为 `0.1984`。Qwen 相对 SenseVoice 的 ITN 差值 paired bootstrap 95% 区间为 `[-0.0085, 0.0956]`。生产基线仍不替换，但理由修订为“独立盲测尚未完成且候选没有给出充分晋级证据”，不是旧 `0.3003 vs 0.1436` 已证明全局劣化。完整协议见 [V2-C.1 公平基准重建](v2-c1-fair-benchmark.md)。
 
 曾生成的 prediction set 2 把整个五分钟窗口作为 transcript 区间，得到 `0.7859`。该结果是快照适配器缺陷，不代表模型质量；由于预测集和 benchmark run 不可变，它作为审计记录保留，新适配器以独立 prediction key 冻结 set 3，没有覆盖旧证据。
 

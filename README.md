@@ -2,9 +2,9 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、schema v6、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2 不以实时性或小模型为目标；下一阶段继续用现有 2 小时 44 分 Watch 录音实现允许重叠的说话人时间轴，之后再接云端 LLM 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、schema v6、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-C.1 已重建公平评测协议并生成独立 30 分钟盲标任务；人工盲标完成前不再用旧 V1 条件化真值作模型晋级结论。V2 不以实时性或小模型为目标；盲测之后继续实现允许重叠的说话人时间轴，再接云端 LLM 和 Watch 同步。
 
-实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)。
+实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md)。
 
 ## 已验证环境
 
@@ -65,7 +65,7 @@ allday-asr benchmark init-truth 1 --name first-15m-exhaustive --end 15:00
 
 schema v6 为每个五分钟窗口不可变保存 Qwen3-ASR-1.7B 主假设、Qwen3-ForcedAligner 时间戳、Fun-ASR-Nano 第二假设和分歧队列。每个 token 同时保存 session 时间与原始 M4A 的 source 时间、对象 ID 和 SHA-256；窗口上下文 token 保留作诊断，冻结视图只取 token 中点位于 core 的内容以避免重复。
 
-当前 8 GB RTX 5070 已完成 2 小时 44 分 35 秒录音的全量 BF16 运行：33 个主假设、33 个第二假设、6,147 个对齐 token 和 16 个分歧窗口，耗时约 8 分 14 秒且未 OOM。全部 token 的源范围覆盖检查为 0 错误。冻结的 token 时间区间快照在现有稀疏真值上 CER 为 `0.3003`，劣于 V1 的 `0.1436`，所以 Qwen 当前只保留为候选与复核证据，不替换 SenseVoice 基线。
+当前 8 GB RTX 5070 已完成 2 小时 44 分 35 秒录音的全量 BF16 运行：33 个主假设、33 个第二假设、6,147 个对齐 token 和 16 个分歧窗口，耗时约 8 分 14 秒且未 OOM。全部 token 的源范围覆盖检查为 0 错误。旧 token 时间快照的 `30.03%` 与 V1 的 `14.36%` 混合了切分/对齐差异，并且真值本身由 V1 segment 产生，不能再解释为纯模型排名。V2-C.1 同边界重跑为 SenseVoice `15.93%`、Qwen `20.63%`（ITN `19.84%`）、Fun-ASR `25.85%`（ITN `24.80%`）；这仍是 V1 条件化诊断集，最终晋级等待独立盲测。
 
 ```powershell
 # 当前 8 GB 5070：模型精度不变，batch=1 且两套模型顺序加载
@@ -81,6 +81,22 @@ allday-asr benchmark compare 1
 ```
 
 完整配置、续跑语义、边界策略和依赖固定原因见 [V2-C 指南](docs/v2-c-quality-asr.md)。
+
+## V2-C.1：公平基准
+
+```powershell
+# 只依赖原音指纹、时长和 seed 生成连续盲标范围；任务不含模型输出
+allday-asr benchmark init-blind 1 --name watch-blind-30m-v2c1-20260828 `
+  --duration 30:00 --chunk 5:00 --seed v2c1-primary-20260828
+
+# 在同一人工 transcript 边界上比较纯 ASR
+allday-asr benchmark oracle-asr 1 --model sensevoice --name oracle-sensevoice
+allday-asr benchmark oracle-asr 1 --model qwen --name oracle-qwen
+allday-asr benchmark compare-oracle-pair 1 <baseline-set> <candidate-set> `
+  --samples 200000 --itn
+```
+
+盲标导入必须满足完整窗口复核、穷尽式 VAD/转写覆盖、派生音频哈希和 `model_outputs_unseen` 声明。当前真实 30 分钟任务范围为 `01:41:42–02:11:42`，状态保持 `pending`，不能在人工完成前产生最终结果。完整协议、统计口径和当前诊断结果见 [V2-C.1 指南](docs/v2-c1-fair-benchmark.md)。
 
 ## 推荐：一键离线日记
 
@@ -248,4 +264,4 @@ allday-asr action-review 3 --status dismissed
 
 ## 当前边界
 
-V2-A/V2-B/V2-C 的不可变源对象、schema v6、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现。生产默认仍运行 V1 SenseVoice，因为当前冻结 Watch 真值没有支持 Qwen 晋级；V2-D 的重叠说话人时间轴尚未实施。Watch 五分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现。说话人分离在电视、远场、重叠讲话及很短语音上仍不可靠，不能把匿名聚类直接当作人物身份。
+V2-A/V2-B/V2-C 的不可变源对象、schema v6、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现；V2-C.1 已加入盲选连续任务、Oracle ASR 同边界快照、原始/ITN 双 CER 和 paired bootstrap。生产默认暂时仍运行 V1 SenseVoice，因为独立盲标尚未完成，而不是因为旧 `30.03% vs 14.36%` 已证明 Qwen 普遍更差。V2-D 的重叠说话人时间轴尚未实施。Watch 五分钟分块同步、云端 LLM、桌面确认弹窗和真实日历写入也尚未实现。

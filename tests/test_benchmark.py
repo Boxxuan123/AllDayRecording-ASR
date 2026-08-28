@@ -5,20 +5,28 @@ import json
 import shutil
 import sqlite3
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
+from allday_asr.asr.oracle_backends import OracleTranscript
 from allday_asr.services.benchmark import (
+    BLIND_PROTOCOL_FORMAT,
     CONTINUOUS_TRUTH_FORMAT,
+    _asr_metrics,
     benchmark_comparison,
+    create_blind_truth_task,
     create_continuous_truth_template,
     evaluate_benchmark,
     import_continuous_truth,
     migrate_legacy_truth,
+    normalize_text_itn_equivalent,
+    paired_oracle_bootstrap,
+    snapshot_oracle_asr_predictions,
     snapshot_v1_predictions,
 )
-from allday_asr.services.evaluation import EVALUATION_FORMAT
+from allday_asr.services.evaluation import EVALUATION_FORMAT, normalize_text
 from allday_asr.storage.database import Database
 
 
@@ -263,6 +271,222 @@ class ContinuousBenchmarkTests(unittest.TestCase):
         self.assertEqual(len(sources), 1)
         self.assertEqual(sources[0]["source_start_ms"], 500)
         self.assertEqual(sources[0]["source_end_ms"], 1_500)
+
+    def test_blind_task_is_model_independent_and_cannot_freeze_while_pending(self) -> None:
+        target = self.output_dir / "blind-task"
+
+        def fake_materialize(window, destination, **_kwargs):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(f"window:{window.index}".encode())
+            return destination
+
+        with patch(
+            "allday_asr.services.benchmark.materialize_logical_window",
+            fake_materialize,
+        ):
+            summary = create_blind_truth_task(
+                self.database,
+                int(self.session["id"]),
+                name=f"blind-{self.token}",
+                duration_ms=4_000,
+                chunk_ms=2_000,
+                seed="fixed-test-seed",
+                output_dir=target,
+            )
+        rows = [json.loads(line) for line in summary.task_path.read_text().splitlines()]
+        self.assertEqual(rows[0]["provenance"]["protocol"], BLIND_PROTOCOL_FORMAT)
+        self.assertFalse(rows[0]["provenance"]["model_outputs_used_for_selection"])
+        self.assertNotIn("hypothesis_text_at_export", summary.task_path.read_text())
+        with self.assertRaisesRegex(ValueError, "model_outputs_unseen"):
+            import_continuous_truth(self.database, summary.task_path)
+
+        rows[0]["completeness"]["vad"] = "exhaustive"
+        rows[0]["completeness"]["transcript"] = "exhaustive"
+        rows[0]["blind_attestation"] = {
+            "model_outputs_unseen": True,
+            "annotator": "unit-test-human",
+            "completed_at": "2026-08-28T00:00:00Z",
+        }
+        for row in rows:
+            if row.get("type") == "blind_window":
+                row["review_status"] = "complete"
+        rows.extend(
+            [
+                {
+                    "type": "annotation",
+                    "key": "blind:speech:0001",
+                    "kind": "speech",
+                    "session_start_ms": summary.scope_start_ms + 500,
+                    "session_end_ms": summary.scope_start_ms + 1_500,
+                    "label": "speech",
+                    "text": None,
+                    "metadata": {"reviewed": True},
+                },
+                {
+                    "type": "annotation",
+                    "key": "blind:transcript:0001",
+                    "kind": "transcript",
+                    "session_start_ms": summary.scope_start_ms + 500,
+                    "session_end_ms": summary.scope_start_ms + 1_500,
+                    "label": None,
+                    "text": "三十五一斤",
+                    "metadata": {"reviewed": True},
+                },
+            ]
+        )
+        summary.task_path.write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        frozen = import_continuous_truth(self.database, summary.task_path)
+        self.assertEqual(frozen.annotation_count, 3)
+
+    def test_oracle_snapshots_dual_cer_and_paired_bootstrap(self) -> None:
+        path = self.root / f"oracle-truth-{self.token}.jsonl"
+        self.paths.append(path)
+        create_continuous_truth_template(
+            self.database,
+            int(self.session["id"]),
+            name=f"oracle-truth-{self.token}",
+            start_ms=0,
+            end_ms=2_000,
+            output_path=path,
+        )
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        annotation = {
+            "type": "annotation",
+            "key": "human:transcript:0001",
+            "kind": "transcript",
+            "session_start_ms": 500,
+            "session_end_ms": 1_500,
+            "text": "35一斤",
+            "metadata": {"reviewed": True},
+        }
+        path.write_text(
+            json.dumps(metadata, ensure_ascii=False)
+            + "\n"
+            + json.dumps(annotation, ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+        )
+        truth = import_continuous_truth(self.database, path)
+
+        class FakeBackend:
+            model_revision = "test-revision"
+
+            def __init__(self, model_id: str, text: str):
+                self.model_id = model_id
+                self.backend_name = "unit-test-oracle"
+                self.text = text
+                self.closed = False
+
+            def transcribe(self, _audio_path, *, language):
+                return OracleTranscript(
+                    text=self.text,
+                    language=language,
+                    raw_response={"text": self.text},
+                )
+
+            def parameters(self):
+                return {"segmentation": "human-reference-interval"}
+
+            def close(self):
+                self.closed = True
+
+        @contextmanager
+        def fake_window(_window):
+            yield self.root / "not-read-by-fake.wav"
+
+        baseline_backend = FakeBackend("baseline", "35一斤")
+        candidate_backend = FakeBackend("candidate", "三十五一斤")
+        with patch(
+            "allday_asr.services.benchmark.temporary_logical_window", fake_window
+        ):
+            baseline = snapshot_oracle_asr_predictions(
+                self.database,
+                truth.truth_set_id,
+                baseline_backend,
+                name=f"baseline-{self.token}",
+            )
+            candidate = snapshot_oracle_asr_predictions(
+                self.database,
+                truth.truth_set_id,
+                candidate_backend,
+                name=f"candidate-{self.token}",
+            )
+        self.assertTrue(baseline_backend.closed)
+        self.assertTrue(candidate_backend.closed)
+        with patch("allday_asr.services.benchmark.OUTPUT_DIR", self.output_dir):
+            candidate_result = evaluate_benchmark(
+                self.database, truth.truth_set_id, candidate.prediction_set_id
+            )
+        self.assertGreater(candidate_result.metrics["asr"]["cer"], 0)
+        self.assertEqual(candidate_result.metrics["asr_itn"]["cer"], 0)
+        paired = paired_oracle_bootstrap(
+            self.database,
+            truth.truth_set_id,
+            baseline.prediction_set_id,
+            candidate.prediction_set_id,
+            samples=100,
+        )
+        self.assertGreater(paired["candidate_minus_baseline_cer"], 0)
+        paired_itn = paired_oracle_bootstrap(
+            self.database,
+            truth.truth_set_id,
+            baseline.prediction_set_id,
+            candidate.prediction_set_id,
+            samples=100,
+            itn_equivalent=True,
+        )
+        self.assertEqual(paired_itn["candidate_minus_baseline_cer"], 0)
+
+    def test_itn_equivalent_normalization_is_conservative(self) -> None:
+        self.assertEqual(normalize_text_itn_equivalent("35 一斤"), "35一斤")
+        self.assertEqual(normalize_text_itn_equivalent("三十五一斤"), "35一斤")
+        self.assertEqual(normalize_text_itn_equivalent("十分好"), "十分好")
+        self.assertEqual(normalize_text_itn_equivalent("二零二六年"), "二零二六年")
+
+    def test_exhaustive_asr_counts_orphans_and_respects_unintelligible_masks(self) -> None:
+        references = [self._truth("ref", "transcript", 500, 1_500, text="你好")]
+        predictions = [
+            self._prediction("matched", "transcript", 500, 1_500, text="你好"),
+            self._prediction("orphan", "transcript", 3_000, 4_000, text="幻觉"),
+        ]
+        sparse = _asr_metrics(
+            references,
+            predictions,
+            normalizer=normalize_text,
+            scope=(0, 5_000),
+            exhaustive=False,
+        )
+        self.assertEqual(sparse["errors"], 0)
+        exhaustive = _asr_metrics(
+            references,
+            predictions,
+            normalizer=normalize_text,
+            scope=(0, 5_000),
+            exhaustive=True,
+        )
+        self.assertEqual(exhaustive["insertions"], 2)
+        self.assertEqual(exhaustive["orphan_hypotheses"], 1)
+        masked = _asr_metrics(
+            [
+                *references,
+                self._truth(
+                    "unclear",
+                    "uncertain",
+                    3_000,
+                    4_000,
+                    label="unintelligible",
+                ),
+            ],
+            predictions,
+            normalizer=normalize_text,
+            scope=(0, 5_000),
+            exhaustive=True,
+        )
+        self.assertEqual(masked["errors"], 0)
+        self.assertEqual(masked["excluded_uncertain_ranges"], 1)
 
     def _source_ref(self, start_ms: int, end_ms: int) -> list[dict]:
         return [
