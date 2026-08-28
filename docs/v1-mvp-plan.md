@@ -354,11 +354,17 @@ AllDayRecording-ASR/
 # 检查环境和 GPU
 allday-asr doctor
 
+# 校验统一配置和数据库 schema 版本
+allday-asr config-show
+
 # 导入录音
 allday-asr ingest data/watch_1787564356920.m4a
 
 # 运行完整离线处理
 allday-asr process <recording-id>
+
+# 推荐：安全、幂等地编排完整离线日记
+allday-asr daily-run <audio-path-or-recording-id>
 
 # 匿名说话人和质量过滤
 allday-asr diarize <recording-id>
@@ -380,6 +386,10 @@ allday-asr timeline <recording-id>
 
 # 导出机器可读结果
 allday-asr export <recording-id> --format jsonl
+
+# 创建人工真值并生成评测报告
+allday-asr evaluation init <recording-id> --end 15:00
+allday-asr evaluation run <truth.jsonl>
 ```
 
 所有长任务都需要显示当前阶段、处理时长、实时倍率和错误原因。
@@ -487,8 +497,8 @@ allday-asr export <recording-id> --format jsonl
 后续按以下顺序扩展：
 
 1. 建立 schema 迁移、统一配置、15～30 分钟人工真值集和自动评测报告。
-2. 改进说话人切分、电视/混合语音处理，并增加幂等的 `daily-run` 编排。
-3. 在离线转写上提取带原文和原音证据的日程/待办候选，只供用户确认，不自动创建。
+2. 改进说话人切分、电视/混合语音处理，并扩充现有幂等 `daily-run` 的真实文件集成测试。
+3. 扩充现有离线日程/待办候选的自然语言覆盖率和人工评测，只供用户确认，不自动创建。
 4. 为已获同意的固定人物增加跨天候选匹配、人工确认和持续积累。
 5. 根据真实评测需要，再比较 Fun-ASR-Nano、Paraformer 和 Whisper turbo；不为更换模型而更换模型。
 6. 开发增量 ASR、临时/稳定字幕以及 Watch/手机端实时音频传输。

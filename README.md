@@ -2,7 +2,7 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前处于 **V1 离线原型验证阶段**，不是实时录音产品。现有测试录音已经跑通入库、VAD、ASR、匿名说话人分离、本人声纹候选、人工标注、样本库积累和时间线导出。具体结果、风险和下一步见 [项目现状与路线图](docs/project-status.md)，原始范围见 [第一版 MVP 计划](docs/v1-mvp-plan.md)。
+当前处于 **可评测的一键离线日记 V1** 阶段，不是实时录音产品。现有测试录音已经跑通入库、VAD、ASR、匿名说话人分离、本人声纹候选、人工标注、样本库积累和时间线导出；V0.2 新增数据库迁移、统一 TOML 配置、一键编排和人工真值评测。具体结果、风险和下一步见 [项目现状与路线图](docs/project-status.md)，评测方法见 [人工真值与评测指南](docs/evaluation-guide.md)。
 
 ## 已验证环境
 
@@ -22,7 +22,30 @@ python -m pip install -e . --no-deps
 allday-asr doctor
 ```
 
-## 推荐离线流程
+## 推荐：一键离线日记
+
+所有一键参数集中在 [allday-asr.toml](allday-asr.toml)。先校验配置和数据库版本：
+
+```powershell
+allday-asr config-show
+```
+
+可以直接传入新音频，也可以复用已经入库的 `recording_id`：
+
+```powershell
+allday-asr daily-run data\watch_new.m4a
+allday-asr daily-run 1
+```
+
+`daily-run` 会安全执行 ingest → process → diarization → 本人候选 → timeline → export，并生成 `daily-run.md/json`。重复运行时：
+
+- 复用已经完成的 ASR，不重复计算。
+- 复用已有说话人标签，避免清除人工身份。
+- 不覆盖已经存在的候选审核 README。
+- 将最终配置、配置 SHA-256、每一步状态和结果路径写入 SQLite。
+- 缺少本人声纹或需要试听时返回 `needs_attention`，但仍然生成可用日记。
+
+## 分步离线流程
 
 ```powershell
 # 1. 导入并去重
@@ -96,6 +119,42 @@ allday-asr voice-library enroll-person "妈妈" data\voice-library\mother
 
 这一步目前只建立人物档案和样本库；**跨天自动识别该人物尚未实现**。日常对话无需要求所有人预先上传声纹，默认保留为会话级匿名人物。
 
+## 人工真值与评测
+
+从录音的一个连续时间范围生成私有 JSONL 模板：
+
+```powershell
+# 前 15 分钟；start/end 也支持 MM:SS 和 HH:MM:SS
+allday-asr evaluation init 1 --name baseline-first-15m --start 0 --end 15:00
+```
+
+人工填写 `reference_text`、`reference_speaker`、`reference_identity` 和 `key_facts` 后运行：
+
+```powershell
+allday-asr evaluation run state\evaluations\recording-000001\baseline-first-15m.jsonl
+```
+
+报告包含 CER、说话人成对 F1、本人识别指标和关键事实召回率。真值和报告分别保存在已被 Git 忽略的 `state/` 与 `outputs/`。
+
+## 日程/待办候选
+
+`daily-run` 会对包含明确日期、时间和行动词的语句执行高置信规则提取。默认还要求检测到“本人提出”或随后由本人说出“好的/可以”等确认语。候选始终保留提议、确认、原音区间和匹配规则作为证据。
+
+```powershell
+# 查看待确认项
+allday-asr actions 1 --status pending
+
+# 确认、忽略，或同时人工修订字段
+allday-asr action-review 3 --status confirmed
+allday-asr action-review 3 --status confirmed `
+  --title "与老师见面" `
+  --scheduled-at "2026-08-29T10:00:00+08:00" `
+  --location "学校"
+allday-asr action-review 3 --status dismissed
+```
+
+确认操作目前只更新本地候选状态，**不会写入任何真实日历或待办应用**。
+
 ## 结果与隐私
 
 - 私人数据：`data/`、`state/`、`outputs/`。
@@ -108,4 +167,4 @@ allday-asr voice-library enroll-person "妈妈" data\voice-library\mother
 
 ## 当前边界
 
-尚未实现实时音频传输、流式字幕、日程/待办候选、桌面确认弹窗、日历写入和完整 UI。当前说话人分离在电视、远场、重叠讲话及很短语音上仍不可靠，不能把匿名聚类直接当作人物身份。
+尚未实现实时音频传输、流式字幕、桌面确认弹窗、真实日历写入和完整 UI。日程/待办目前是保守规则候选，不是完整自然语言理解。当前说话人分离在电视、远场、重叠讲话及很短语音上仍不可靠，不能把匿名聚类直接当作人物身份。

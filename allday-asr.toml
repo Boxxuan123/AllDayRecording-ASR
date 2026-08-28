@@ -1,0 +1,32 @@
+config_version = 1
+
+[runtime]
+device = "auto"
+
+[ingest]
+device = "Huawei Watch"
+timezone = "Asia/Singapore"
+
+[asr]
+language = "zh"
+
+[diarization]
+enabled = true
+min_segment_seconds = 1.5
+min_cluster_segments = 3
+min_cluster_speech_seconds = 5.0
+
+[identity]
+candidates_enabled = true
+threshold = 0.36
+min_segment_seconds = 0.8
+top = 30
+
+[timeline]
+max_gap_seconds = 120.0
+
+[actions]
+enabled = true
+require_self_confirmation = true
+confirmation_window_seconds = 90.0
+min_confidence = 0.75

@@ -149,6 +149,71 @@ CREATE TABLE IF NOT EXISTS conversation_events (
 );
 """
 
+LATEST_SCHEMA_VERSION = 3
+
+MIGRATIONS: dict[int, str] = {
+    2: """
+        CREATE TABLE IF NOT EXISTS processing_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER NOT NULL,
+            run_kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            config_sha256 TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            error TEXT,
+            summary_json TEXT,
+            artifacts_json TEXT,
+            FOREIGN KEY (recording_id) REFERENCES recordings(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_processing_runs_recording
+        ON processing_runs(recording_id, id);
+
+        CREATE TABLE IF NOT EXISTS evaluation_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER NOT NULL,
+            truth_path TEXT NOT NULL,
+            truth_sha256 TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            report_json_path TEXT NOT NULL,
+            report_markdown_path TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (recording_id) REFERENCES recordings(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_evaluation_runs_recording
+        ON evaluation_runs(recording_id, id);
+    """,
+    3: """
+        CREATE TABLE IF NOT EXISTS action_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER NOT NULL,
+            candidate_key TEXT NOT NULL UNIQUE,
+            candidate_type TEXT NOT NULL CHECK(candidate_type IN ('schedule', 'todo')),
+            status TEXT NOT NULL CHECK(status IN ('pending', 'confirmed', 'dismissed')),
+            start_ms INTEGER NOT NULL,
+            end_ms INTEGER NOT NULL,
+            source_segment_ids_json TEXT NOT NULL,
+            title TEXT NOT NULL,
+            scheduled_at TEXT,
+            time_text TEXT,
+            location TEXT,
+            participants_json TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            evidence_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (recording_id) REFERENCES recordings(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_action_candidates_recording_status
+        ON action_candidates(recording_id, status, start_ms);
+    """,
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -178,6 +243,43 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )
+                """
+            )
+            versions = {
+                int(row["version"])
+                for row in connection.execute("SELECT version FROM schema_migrations")
+            }
+            if not versions:
+                connection.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?)",
+                    (utc_now(),),
+                )
+                versions.add(1)
+            if max(versions) > LATEST_SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"数据库版本 {max(versions)} 高于程序支持的 {LATEST_SCHEMA_VERSION}"
+                )
+            for version in range(2, LATEST_SCHEMA_VERSION + 1):
+                if version in versions:
+                    continue
+                connection.executescript(MIGRATIONS[version])
+                connection.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (version, utc_now()),
+                )
+
+    def schema_version(self) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT MAX(version) AS version FROM schema_migrations"
+            ).fetchone()
+            return int(row["version"] or 0)
 
     def find_recording_by_hash(self, sha256: str) -> sqlite3.Row | None:
         with self.connect() as connection:
@@ -298,6 +400,86 @@ class Database:
                 """,
                 (recording_id, stage),
             ).fetchone()
+
+    def list_stages(self, recording_id: int) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM processing_stages
+                    WHERE recording_id = ? ORDER BY stage
+                    """,
+                    (recording_id,),
+                )
+            )
+
+    def start_processing_run(
+        self,
+        recording_id: int,
+        *,
+        run_kind: str,
+        config: dict[str, Any],
+        config_sha256: str,
+    ) -> int:
+        self.get_recording(recording_id)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO processing_runs (
+                    recording_id, run_kind, status, config_json,
+                    config_sha256, started_at
+                ) VALUES (?, ?, 'running', ?, ?, ?)
+                """,
+                (
+                    recording_id,
+                    run_kind,
+                    json.dumps(config, ensure_ascii=False, sort_keys=True),
+                    config_sha256,
+                    utc_now(),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def finish_processing_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        summary: dict[str, Any] | None = None,
+        artifacts: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE processing_runs
+                SET status = ?, completed_at = ?, error = ?,
+                    summary_json = ?, artifacts_json = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    utc_now(),
+                    error[:2000] if error else None,
+                    json.dumps(summary, ensure_ascii=False) if summary is not None else None,
+                    json.dumps(artifacts, ensure_ascii=False) if artifacts is not None else None,
+                    run_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"处理运行 {run_id} 不存在")
+
+    def list_processing_runs(self, recording_id: int) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM processing_runs
+                    WHERE recording_id = ? ORDER BY id
+                    """,
+                    (recording_id,),
+                )
+            )
 
     def segment_count(self, recording_id: int) -> int:
         with self.connect() as connection:
@@ -849,3 +1031,166 @@ class Database:
                     (recording_id,),
                 )
             )
+
+    def record_evaluation_run(
+        self,
+        recording_id: int,
+        *,
+        truth_path: str,
+        truth_sha256: str,
+        config: dict[str, Any],
+        metrics: dict[str, Any],
+        report_json_path: str,
+        report_markdown_path: str,
+    ) -> int:
+        self.get_recording(recording_id)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO evaluation_runs (
+                    recording_id, truth_path, truth_sha256, config_json,
+                    metrics_json, report_json_path, report_markdown_path, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    recording_id,
+                    truth_path,
+                    truth_sha256,
+                    json.dumps(config, ensure_ascii=False, sort_keys=True),
+                    json.dumps(metrics, ensure_ascii=False, sort_keys=True),
+                    report_json_path,
+                    report_markdown_path,
+                    utc_now(),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_evaluation_runs(self, recording_id: int) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM evaluation_runs
+                    WHERE recording_id = ? ORDER BY id
+                    """,
+                    (recording_id,),
+                )
+            )
+
+    def upsert_action_candidate(self, values: dict[str, Any]) -> sqlite3.Row:
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO action_candidates (
+                    recording_id, candidate_key, candidate_type, status,
+                    start_ms, end_ms, source_segment_ids_json, title,
+                    scheduled_at, time_text, location, participants_json,
+                    confidence, evidence_json, created_at, updated_at
+                ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(candidate_key) DO UPDATE SET
+                    start_ms = excluded.start_ms,
+                    end_ms = excluded.end_ms,
+                    source_segment_ids_json = excluded.source_segment_ids_json,
+                    title = CASE
+                        WHEN action_candidates.status = 'pending' THEN excluded.title
+                        ELSE action_candidates.title
+                    END,
+                    scheduled_at = CASE
+                        WHEN action_candidates.status = 'pending' THEN excluded.scheduled_at
+                        ELSE action_candidates.scheduled_at
+                    END,
+                    time_text = excluded.time_text,
+                    location = CASE
+                        WHEN action_candidates.status = 'pending' THEN excluded.location
+                        ELSE action_candidates.location
+                    END,
+                    participants_json = excluded.participants_json,
+                    confidence = excluded.confidence,
+                    evidence_json = excluded.evidence_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    values["recording_id"],
+                    values["candidate_key"],
+                    values["candidate_type"],
+                    values["start_ms"],
+                    values["end_ms"],
+                    json.dumps(values["source_segment_ids"], ensure_ascii=False),
+                    values["title"],
+                    values.get("scheduled_at"),
+                    values.get("time_text"),
+                    values.get("location"),
+                    json.dumps(values.get("participants", []), ensure_ascii=False),
+                    values["confidence"],
+                    json.dumps(values["evidence"], ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            return connection.execute(
+                "SELECT * FROM action_candidates WHERE candidate_key = ?",
+                (values["candidate_key"],),
+            ).fetchone()
+
+    def list_action_candidates(
+        self, recording_id: int, *, status: str | None = None
+    ) -> list[sqlite3.Row]:
+        sql = "SELECT * FROM action_candidates WHERE recording_id = ?"
+        params: list[Any] = [recording_id]
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY start_ms, id"
+        with self.connect() as connection:
+            return list(connection.execute(sql, params))
+
+    def get_action_candidate(self, candidate_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM action_candidates WHERE id = ?", (candidate_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"行动候选 {candidate_id} 不存在")
+        return row
+
+    def review_action_candidate(
+        self,
+        candidate_id: int,
+        *,
+        status: str,
+        title: str | None = None,
+        scheduled_at: str | None = None,
+        location: str | None = None,
+    ) -> sqlite3.Row:
+        if status not in {"pending", "confirmed", "dismissed"}:
+            raise ValueError("status 只能是 pending、confirmed 或 dismissed")
+        if title is not None and not title.strip():
+            raise ValueError("title 不能为空")
+        if scheduled_at is not None:
+            try:
+                datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError("scheduled_at 必须是有效的 ISO 8601 时间") from exc
+        updates = ["status = ?", "updated_at = ?"]
+        params: list[Any] = [status, utc_now()]
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title.strip())
+        if scheduled_at is not None:
+            updates.append("scheduled_at = ?")
+            params.append(scheduled_at)
+        if location is not None:
+            updates.append("location = ?")
+            params.append(location)
+        params.append(candidate_id)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE action_candidates SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"行动候选 {candidate_id} 不存在")
+            return connection.execute(
+                "SELECT * FROM action_candidates WHERE id = ?", (candidate_id,)
+            ).fetchone()

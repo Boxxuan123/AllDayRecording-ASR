@@ -51,18 +51,27 @@ def process_recording(
     normalized_path = output_dir / "normalized-16k-mono.wav"
 
     try:
-        database.set_stage(recording_id, "normalize", "running")
-        normalize_to_wav(source, normalized_path)
-        database.update_recording(recording_id, normalized_path=str(normalized_path))
-        database.set_stage(
-            recording_id,
-            "normalize",
-            "completed",
-            details={"path": str(normalized_path), "sample_rate": 16000, "channels": 1},
-        )
+        if not normalized_path.is_file():
+            database.set_stage(recording_id, "normalize", "running")
+            normalize_to_wav(source, normalized_path)
+            database.update_recording(recording_id, normalized_path=str(normalized_path))
+            database.set_stage(
+                recording_id,
+                "normalize",
+                "completed",
+                details={
+                    "path": str(normalized_path),
+                    "sample_rate": 16000,
+                    "channels": 1,
+                    "reused": False,
+                },
+            )
+        elif recording["normalized_path"] != str(normalized_path):
+            database.update_recording(recording_id, normalized_path=str(normalized_path))
 
-        backend = FunASRBackend(device=device)
+        backend: FunASRBackend | None = None
         if force_vad or database.segment_count(recording_id) == 0:
+            backend = FunASRBackend(device=device)
             database.set_stage(
                 recording_id,
                 "vad",
@@ -112,6 +121,7 @@ def process_recording(
                 peak_vram_mib=None,
             )
 
+        backend = backend or FunASRBackend(device=device)
         database.set_stage(
             recording_id,
             "asr",

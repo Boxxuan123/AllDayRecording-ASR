@@ -9,9 +9,16 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from allday_asr.audio.tools import extract_clip
+from allday_asr.config import load_config
 from allday_asr.doctor import run_checks
 from allday_asr.exporters import export_jsonl, export_markdown
-from allday_asr.paths import DEFAULT_DB_PATH, recording_output_dir
+from allday_asr.paths import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH, recording_output_dir
+from allday_asr.services.daily import run_daily
+from allday_asr.services.evaluation import (
+    create_evaluation_template,
+    evaluate_truth,
+    parse_offset,
+)
 from allday_asr.services.ingest import ingest_recording
 from allday_asr.services.enrollment import enroll_known_person, enroll_self
 from allday_asr.services.diarization import audit_speaker_assignments, diarize_recording
@@ -42,6 +49,208 @@ app = typer.Typer(
 console = Console()
 library_app = typer.Typer(help="管理本地人物声纹样本库。", no_args_is_help=True)
 app.add_typer(library_app, name="voice-library")
+evaluation_app = typer.Typer(help="建立人工真值并评测离线结果。", no_args_is_help=True)
+app.add_typer(evaluation_app, name="evaluation")
+
+
+@app.command(name="config-show")
+def config_show(
+    config: Path = typer.Option(
+        DEFAULT_CONFIG_PATH,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="TOML 配置文件。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """校验并显示一键流程的最终配置、哈希和数据库版本。"""
+    resolved = load_config(config)
+    database = Database(db)
+    console.print_json(data=resolved.to_dict())
+    console.print(f"config_sha256={resolved.sha256()}")
+    console.print(f"database_schema_version={database.schema_version()}")
+
+
+@app.command(name="daily-run")
+def daily_run_command(
+    source: str = typer.Argument(
+        ..., help="音频文件路径，或已经入库的 recording_id。"
+    ),
+    config: Path = typer.Option(
+        DEFAULT_CONFIG_PATH,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="TOML 配置文件。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """安全、幂等地生成一次离线日记，并列出所有待人工确认项。"""
+    source_path = Path(source)
+    if source.isdigit() and not source_path.exists():
+        resolved_source: int | Path = int(source)
+    else:
+        if not source_path.is_file():
+            raise typer.BadParameter(f"音频文件不存在：{source}")
+        resolved_source = source_path.resolve()
+    resolved_config = load_config(config)
+
+    with Progress(
+        SpinnerColumn(spinner_name="line"),
+        TextColumn("{task.description}"),
+        console=console,
+    ) as progress_ui:
+        task_id = progress_ui.add_task("准备一键离线日记……", total=None)
+
+        def update(stage: str, detail: str) -> None:
+            progress_ui.update(task_id, description=f"{stage}：{detail}")
+
+        summary = run_daily(
+            Database(db), resolved_source, resolved_config, progress=update
+        )
+
+    table = Table(title=f"一键离线日记 · recording {summary.recording_id}")
+    for column in ("阶段", "状态", "说明"):
+        table.add_column(column)
+    for step in summary.steps:
+        table.add_row(step.name, step.status, step.detail)
+    console.print(table)
+    console.print(
+        f"status={summary.status} | run_id={summary.run_id} | "
+        f"config={summary.config_sha256[:12]}"
+    )
+    if summary.review_actions:
+        console.print("[yellow]待人工确认：[/yellow]")
+        for action in summary.review_actions:
+            console.print(f"- {action}")
+    console.print(f"运行清单：{summary.manifest_markdown_path.resolve()}")
+
+
+@app.command(name="actions")
+def action_candidates(
+    recording_id: int = typer.Argument(..., min=1),
+    status: Optional[str] = typer.Option(
+        None, help="只显示 pending、confirmed 或 dismissed。"
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """查看已经提取的日程/待办候选；不会写入真实日历。"""
+    if status is not None and status not in {"pending", "confirmed", "dismissed"}:
+        raise typer.BadParameter("status 只能是 pending、confirmed 或 dismissed")
+    rows = Database(db).list_action_candidates(recording_id, status=status)
+    table = Table(title=f"行动候选 · recording {recording_id}")
+    for column in ("ID", "类型", "状态", "时间", "地点", "置信度", "标题"):
+        table.add_column(column)
+    for row in rows:
+        table.add_row(
+            str(row["id"]),
+            row["candidate_type"],
+            row["status"],
+            row["scheduled_at"] or row["time_text"] or "",
+            row["location"] or "",
+            f"{row['confidence']:.2f}",
+            row["title"],
+        )
+    console.print(table)
+
+
+@app.command(name="action-review")
+def action_review(
+    candidate_id: int = typer.Argument(..., min=1),
+    status: str = typer.Option(..., help="pending、confirmed 或 dismissed。"),
+    title: Optional[str] = typer.Option(None, help="人工修订标题。"),
+    scheduled_at: Optional[str] = typer.Option(
+        None, help="人工修订 ISO 8601 时间，例如 2026-08-29T10:00:00+08:00。"
+    ),
+    location: Optional[str] = typer.Option(None, help="人工修订地点。"),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """确认、忽略或重新打开候选；仍然不会写入真实日历。"""
+    try:
+        row = Database(db).review_action_candidate(
+            candidate_id,
+            status=status,
+            title=title,
+            scheduled_at=scheduled_at,
+            location=location,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(
+        f"[green]候选已更新[/green] id={row['id']}，status={row['status']}，"
+        f"title={row['title']}"
+    )
+
+
+@evaluation_app.command(name="init")
+def evaluation_init(
+    recording_id: int = typer.Argument(..., min=1),
+    name: str = typer.Option("baseline-v1", help="评测集名称。"),
+    start: str = typer.Option("0", help="开始偏移：秒、MM:SS 或 HH:MM:SS。"),
+    end: Optional[str] = typer.Option(
+        None, help="结束偏移：秒、MM:SS 或 HH:MM:SS；默认到录音结束。"
+    ),
+    force: bool = typer.Option(False, help="覆盖同名真值模板。"),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """从现有片段创建不含原音的私有 JSONL 人工真值模板。"""
+    try:
+        start_ms = parse_offset(start)
+        end_ms = parse_offset(end) if end is not None else None
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    summary = create_evaluation_template(
+        Database(db),
+        recording_id,
+        name=name,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        force=force,
+    )
+    console.print(
+        f"[green]评测模板已创建[/green] segments={summary.item_count}，"
+        f"speech={summary.speech_seconds:.1f}s"
+    )
+    console.print(f"真值：{summary.truth_path.resolve()}")
+    console.print(f"说明：{summary.instructions_path.resolve()}")
+
+
+@evaluation_app.command(name="run")
+def evaluation_run(
+    truth: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="人工填写后的 JSONL 真值文件。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """计算 CER、说话人成对指标、本人识别和关键事实召回率。"""
+    summary = evaluate_truth(Database(db), truth)
+    text_metrics = summary.metrics["text"]
+    speaker_metrics = summary.metrics["speaker_pairwise"]
+    identity_metrics = summary.metrics["self_identity"]
+    fact_metrics = summary.metrics["key_facts"]
+    console.print(
+        f"[green]评测完成[/green] run_id={summary.evaluation_run_id}，"
+        f"segments={summary.item_count}"
+    )
+    console.print(
+        f"CER={_metric(text_metrics['cer'])} | "
+        f"speaker_pair_f1={_metric(speaker_metrics['f1'])} | "
+        f"self_recall={_metric(identity_metrics['recall'])} | "
+        f"key_fact_recall={_metric(fact_metrics['recall'])}"
+    )
+    console.print(f"报告：{summary.report_markdown_path.resolve()}")
+
+
+def _metric(value: float | None) -> str:
+    return "N/A" if value is None else f"{value:.4f}"
 
 
 @library_app.command(name="sync")

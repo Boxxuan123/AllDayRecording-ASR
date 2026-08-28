@@ -12,6 +12,7 @@ class DatabaseTests(unittest.TestCase):
         database_path = Path(__file__).parent / f"test-{uuid4().hex}.sqlite3"
         try:
             database = Database(database_path)
+            self.assertEqual(database.schema_version(), 3)
             values = {
                 "source_path": str(Path(__file__).parent / "audio.m4a"),
                 "sha256": "abc123",
@@ -58,6 +59,21 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(database.person_assignment_count(profile["id"]), 1)
             self.assertEqual(database.clear_person_assignments(1, profile["id"]), 1)
             self.assertEqual(database.person_assignment_count(profile["id"]), 0)
+            run_id = database.start_processing_run(
+                1,
+                run_kind="daily",
+                config={"version": 1},
+                config_sha256="config-hash",
+            )
+            database.finish_processing_run(
+                run_id,
+                status="completed",
+                summary={"segments": 2},
+                artifacts={"timeline": "timeline.md"},
+            )
+            run = database.list_processing_runs(1)[0]
+            self.assertEqual(run["status"], "completed")
+            self.assertEqual(run["config_sha256"], "config-hash")
             sample = database.upsert_voice_library_sample(
                 {
                     "sample_key": "test:sample:1",

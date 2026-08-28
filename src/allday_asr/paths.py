@@ -9,6 +9,8 @@ STATE_DIR = Path(os.environ.get("ALLDAY_ASR_STATE_DIR", PROJECT_ROOT / "state"))
 OUTPUT_DIR = Path(os.environ.get("ALLDAY_ASR_OUTPUT_DIR", PROJECT_ROOT / "outputs"))
 MODEL_DIR = Path(os.environ.get("ALLDAY_ASR_MODEL_DIR", PROJECT_ROOT / "models"))
 DEFAULT_DB_PATH = STATE_DIR / "allday_asr.sqlite3"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "allday-asr.toml"
+EVALUATION_DIR = STATE_DIR / "evaluations"
 
 
 def ensure_runtime_dirs() -> None:
@@ -27,4 +29,3 @@ def configure_model_cache() -> None:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("MODELSCOPE_CACHE", str(MODEL_DIR / "modelscope"))
     os.environ.setdefault("HF_HOME", str(MODEL_DIR / "huggingface"))
-
