@@ -1122,7 +1122,12 @@ function renderSemantic() {
   workspace.classList.remove("hidden");
   generate.disabled = false;
   const summary = payload.summary || {};
-  $("#semantic-event-count").textContent = String(summary.event_count || 0);
+  const conversationCount = summary.conversation_count ?? summary.event_count ?? 0;
+  const excludedCount = summary.excluded_block_count ?? 0;
+  const jobCount = summary.llm_job_count ?? 0;
+  $("#semantic-conversation-count").textContent = String(conversationCount);
+  $("#semantic-excluded-count").textContent = String(excludedCount);
+  $("#semantic-job-count").textContent = jobCount ? String(jobCount) : "旧版";
   $("#semantic-token-count").textContent = Number(summary.token_count || 0).toLocaleString("zh-CN");
   $("#semantic-reviewed-count").textContent = `${payload.reviewed_candidates} / ${payload.candidates.length}`;
   $("#semantic-provider").textContent = payload.run.provider === "local_mock" ? "本地 mock" : payload.run.provider;
@@ -1131,11 +1136,32 @@ function renderSemantic() {
     + `${payload.run.diarization_run_id ? ` · DIARIZATION #${payload.run.diarization_run_id}` : ""}`
     + ` · REQUEST ${payload.run.request_sha256.slice(0, 12)}`
   );
+  const transport = payload.transport || {};
+  $("#semantic-transport-note").textContent = payload.version === "v2-e.0.1"
+    ? `${conversationCount} 个完整对话 → ${jobCount} 个计划请求；对话无时长硬切，${Math.round((transport.review_clip_ms || 120000) / 1000)} 秒仅是播放器切片。`
+    : "这是旧版 120 秒证据分组；重新生成后会升级为完整对话传输计划。";
+  renderSemanticExcluded(payload.excluded_blocks || []);
   const pending = payload.candidates.filter((item) => !item.review_status).length;
   updateSemanticBadge(pending);
   const container = $("#semantic-candidate-list");
   container.replaceChildren();
   payload.candidates.forEach((candidate) => container.append(renderSemanticCard(candidate)));
+}
+
+function renderSemanticExcluded(items) {
+  const panel = $("#semantic-excluded-panel");
+  const container = $("#semantic-excluded-list");
+  container.replaceChildren();
+  panel.classList.toggle("hidden", items.length === 0);
+  items.forEach((item) => {
+    const row = node("div", "semantic-excluded-item");
+    row.append(
+      node("strong", "", `${formatOffset(item.start_ms)}–${formatOffset(item.end_ms)}`),
+      node("span", "", item.transcript || "（空）"),
+      node("small", "", `${item.token_count} tokens · 信息字符 ${item.informative_char_count}`),
+    );
+    container.append(row);
+  });
 }
 
 function updateSemanticBadge(count) {
@@ -1148,7 +1174,8 @@ function renderSemanticCard(candidate) {
   const card = node("article", `semantic-card ${candidate.type} ${candidate.review_status || "pending"}`);
   const header = node("header", "semantic-card-header");
   const meta = node("div", "semantic-card-meta");
-  meta.append(node("span", "segment-id", candidate.type === "daily_summary" ? "DAY EVIDENCE" : "EVENT EVIDENCE"));
+  const isConversation = candidate.semantic_unit === "conversation";
+  meta.append(node("span", "segment-id", candidate.type === "daily_summary" ? "DAY EVIDENCE" : isConversation ? "FULL CONVERSATION" : "EVENT EVIDENCE"));
   meta.append(node("span", "time-chip", `${formatOffset(candidate.start_ms)}–${formatOffset(candidate.end_ms)}`));
   const status = node(
     "span",
@@ -1168,19 +1195,22 @@ function renderSemanticCard(candidate) {
   body.setAttribute("aria-label", "语义候选内容");
   card.append(title, body);
 
-  if (candidate.audio_url) {
+  if (isConversation && candidate.review_clips?.length) {
+    card.append(renderConversationReviewPlayer(candidate));
+  } else if (candidate.audio_url) {
     card.append(renderAudioPlayer("本地原音证据", candidate.audio_url, `播放语义证据 ${candidate.id}`, "exact"));
   }
   const evidence = node("div", "semantic-evidence-row");
   if (candidate.type === "daily_summary") {
-    evidence.append(node("span", "semantic-evidence-chip", `${candidate.evidence.event_keys?.length || 0} 个事件引用`));
+    evidence.append(node("span", "semantic-evidence-chip", `${candidate.evidence.conversation_keys?.length || candidate.evidence.event_keys?.length || 0} 个对话引用`));
   } else {
     const uncertainty = candidate.evidence.uncertainty || {};
     evidence.append(
       node("span", "semantic-evidence-chip", `${candidate.evidence.token_ids?.length || 0} tokens`),
-      node("span", "semantic-evidence-chip", `${candidate.evidence.source_refs?.length || 0} 原音坐标`),
+      node("span", "semantic-evidence-chip", `${candidate.evidence.utterance_keys?.length || 0} 说话轮次`),
+      node("span", "semantic-evidence-chip", `${candidate.review_clips?.length || 1} 个回听切片`),
       node("span", "semantic-evidence-chip warning", `${uncertainty.unassigned_tokens || 0} 无归属`),
-      node("span", "semantic-evidence-chip warning", `${uncertainty.disagreement_ids?.length || 0} 模型分歧`),
+      node("span", "semantic-evidence-chip warning", `${candidate.evidence.asr_alternative_windows || uncertainty.disagreement_ids?.length || 0} 模型分歧`),
     );
   }
   card.append(evidence);
@@ -1202,6 +1232,27 @@ function renderSemanticCard(candidate) {
   return card;
 }
 
+function renderConversationReviewPlayer(candidate) {
+  const wrapper = node("div", "semantic-review-player");
+  const label = node("label", "semantic-clip-select");
+  label.append(node("span", "", "本地回听切片（不会切断发送给 LLM 的对话）"));
+  const select = node("select");
+  candidate.review_clips.forEach((clip) => {
+    const option = node("option", "", `片段 ${clip.index} · ${formatOffset(clip.start_ms)}–${formatOffset(clip.end_ms)}`);
+    option.value = clip.audio_url;
+    select.append(option);
+  });
+  label.append(select);
+  const player = renderAudioPlayer("当前切片", candidate.review_clips[0].audio_url, `播放完整对话 ${candidate.id} 的回听切片`, "exact");
+  const audio = player.querySelector("audio");
+  select.addEventListener("change", () => {
+    audio.src = select.value;
+    audio.load();
+  });
+  wrapper.append(label, player);
+  return wrapper;
+}
+
 async function generateSemantic() {
   if (!state.recordingId) return;
   const button = $("#generate-semantic-button");
@@ -1212,7 +1263,7 @@ async function generateSemantic() {
       method: "POST",
       body: JSON.stringify({ recording_id: state.recordingId }),
     });
-    toast(`V2-E.0 run #${result.run_id}：${result.event_count} 个本地证据事件`);
+    toast(`V2-E.0.1 run #${result.run_id}：${result.conversation_count} 个完整对话，${result.excluded_block_count} 个低信息块不发送`);
     state.semantic = await api(`/api/semantic?recording_id=${state.recordingId}`);
     renderSemantic();
   } catch (error) {

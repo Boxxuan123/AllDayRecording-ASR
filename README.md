@@ -2,9 +2,9 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-D 已完成 Community-1 重叠/互斥时间轴和 token-to-speaker；V2-D.1 把确定/可能语音、媒体来源和匿名 speaker 解耦；V2-D.2 又恢复稀疏人工 `mother/father/tv` 真值，按短区间揭示匿名簇污染而不全局改名。V2-E.0 已实现不联网的语义证据契约、不可变交换和追加式人工审核；真实云端 LLM 尚未接入。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。V2 不以实时性或小模型为目标；之后需补充干净父母声纹样本，再接真实云端 provider 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-D 已完成 Community-1 重叠/互斥时间轴和 token-to-speaker；V2-D.1 把确定/可能语音、媒体来源和匿名 speaker 解耦；V2-D.2 又恢复稀疏人工 `mother/father/tv` 真值，按短区间揭示匿名簇污染而不全局改名。V2-E.0.1 已实现“完整对话优先”的不联网语义证据契约：完整对话、provider 传输任务和 120 秒回听片互不混用；真实云端 LLM 尚未接入。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。V2 不以实时性或小模型为目标；之后需补充干净父母声纹样本，再接真实云端 provider 和 Watch 同步。
 
-实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0 本地语义证据层](docs/v2-e0-semantic-evidence.md)。
+实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0.1 完整对话优先证据层](docs/v2-e0-semantic-evidence.md)。
 
 ## 已验证环境
 
@@ -106,9 +106,9 @@ allday-asr diarization-v2 sync-identity-references --identity father
 
 V2-D.3 run 17 复用 Community-1 内置 WeSpeaker ResNet34，把父亲 5.970 秒稀疏真值组成 2 个弱种子 embedding，同时以母亲、本人和电视作负对照；378 个未见短窗中只展示前 12 条。首轮人工审核为 11/12 命中：高对照 7/7、中对照 4/4、探索项 0/1；新排序因此优先高/中对照，并把同一音频区间的人工结论继承到等价新 run。网页审核保存在 schema v8 的独立覆盖层，不修改完成 run、不自动登记身份，也不持久化生物特征 embedding。稀疏真值仍不能支持公平 DER/JER。
 
-## V2-E.0：本地语义证据层
+## V2-E.0.1：完整对话优先的本地语义证据层
 
-schema v10 将 V2-C committed token、V2-D token-to-speaker、不确定性和永久原音坐标组织成供应商无关的语义请求。当前 `local_mock` 不联网、不运行 LLM、不读取音频字节或文件路径，只创建可回听证据卡；事实和行动候选刻意保持为空。请求、响应和基础候选不可修改，网页人工确认/驳回以追加 revision 保存。
+schema v10 将 V2-C committed token、V2-D token-to-speaker、不确定性和永久原音坐标组织成供应商无关的本地证据底账，再单独生成不含音频、路径、原音哈希和数据库 token ID 的最小化 provider payload。语义单元是无固定时长上限的完整对话；120 秒只用于网页回听。纯“嗯”等低信息块保留在本地但不发送。当前 `local_mock` 不联网、不运行 LLM，事实和行动候选刻意保持为空。请求、响应和基础候选不可修改，网页人工确认/驳回以追加 revision 保存。
 
 ```powershell
 allday-asr semantic-v2 build 1
@@ -116,7 +116,7 @@ allday-asr semantic-v2 status 1
 allday-asr web
 ```
 
-真实 run 18 以 V2-C run 10 和 V2-D run 11 为输入，把 2,192 个 committed token 整理为 35 个事件和 36 个候选；原 M4A 的字节数与 SHA-256 前后不变。完整契约、隐私边界和 V2-E.1 进入条件见 [V2-E.0 指南](docs/v2-e0-semantic-evidence.md)。
+真实 run 20 以 V2-C run 10 和 V2-D run 11 为输入，把 2,192 个 committed token 整理为 2 个完整对话、7 个本地低信息块和 3 个候选；最长对话为 37 分 19 秒，只对应一个语义实体和 19 个播放器回听片。两个完整对话合成 1 个 98,600 字节的计划请求，原 M4A 的字节数与 SHA-256 前后不变。A–D 边界审计、完整契约、隐私边界和 V2-E.1 进入条件见 [V2-E.0.1 指南](docs/v2-e0-semantic-evidence.md)。
 
 ## V2-C.1/V2-C.2：公平基准
 
@@ -195,7 +195,7 @@ allday-asr web
 
 - 选择已入库录音，查看转写、身份标注、事件和运行概览。
 - 查看 V2-D 多说话人轨道，并优先试听自动排序的多人对话、重叠说话和成组无归属文字。
-- 查看 V2-E.0 本地语义证据包，逐事件回听、编辑并追加确认或驳回记录。
+- 查看 V2-E.0.1 本地语义证据包，按完整对话切换短回听片、编辑并追加确认或驳回记录。
 - 逐段播放原音，填写准确文字、真实说话人、本人身份与关键事实。
 - 直接生成 CER、说话人成对 F1、本人识别和关键事实评测报告。
 - 确认或忽略日程/待办候选；不会写入真实日历。

@@ -27,9 +27,9 @@ from allday_asr.services.evaluation import (
 from allday_asr.services.quality_diarization_v2d3 import (
     review_identity_candidate,
 )
-from allday_asr.services.semantic_v2e0 import (
-    review_semantic_candidate,
-    run_semantic_v2e0,
+from allday_asr.services.semantic_v2e0 import review_semantic_candidate
+from allday_asr.services.semantic_v2e01 import (
+    run_semantic_v2e01,
     semantic_overview,
 )
 from allday_asr.services.sources import (
@@ -240,13 +240,16 @@ class WebApplication:
         return semantic_overview(self.database(), recording_id)
 
     def generate_semantic(self, recording_id: int) -> dict[str, Any]:
-        summary = run_semantic_v2e0(self.database(), recording_id)
+        summary = run_semantic_v2e01(self.database(), recording_id)
         return {
             "run_id": summary.run_id,
             "recording_id": recording_id,
             "asr_run_id": summary.asr_run_id,
             "diarization_run_id": summary.diarization_run_id,
-            "event_count": summary.event_count,
+            "conversation_count": summary.conversation_count,
+            "excluded_block_count": summary.excluded_block_count,
+            "llm_job_count": summary.llm_job_count,
+            "llm_payload_bytes": summary.llm_payload_bytes,
             "token_count": summary.token_count,
             "candidate_count": summary.candidate_count,
             "request_sha256": summary.request_sha256,

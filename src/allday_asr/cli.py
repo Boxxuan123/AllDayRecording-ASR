@@ -73,9 +73,9 @@ from allday_asr.services.quality_diarization_v2d3 import (
     sync_identity_reference_set,
 )
 from allday_asr.services.review import import_self_review
-from allday_asr.services.semantic_v2e0 import (
-    SemanticV2E0Settings,
-    run_semantic_v2e0,
+from allday_asr.services.semantic_v2e01 import (
+    SemanticV2E01Settings,
+    run_semantic_v2e01,
     semantic_overview,
 )
 from allday_asr.services.sources import (
@@ -558,42 +558,50 @@ def semantic_v2_build(
         min=1,
         help="V2-D run；默认使用最新完成的一次。",
     ),
-    event_gap_seconds: float = typer.Option(
-        45.0,
-        "--event-gap-seconds",
-        min=1.0,
-        max=120.0,
-        help="超过该无文字间隔时开始新证据事件。",
+    conversation_gap_seconds: float = typer.Option(
+        180.0,
+        "--conversation-gap-seconds",
+        min=30.0,
+        max=900.0,
+        help="超过该无文字间隔时开始新对话候选；不限制对话总时长。",
     ),
-    max_event_seconds: float = typer.Option(
-        120.0,
-        "--max-event-seconds",
-        min=10.0,
-        max=120.0,
-        help="单个证据事件最大时长，保证网页可回听。",
+    min_informative_chars: int = typer.Option(
+        4,
+        "--min-informative-chars",
+        min=1,
+        max=100,
+        help="进入 LLM 请求所需的最少信息字符；纯语气词仍留在本地底账。",
+    ),
+    max_llm_request_chars: int = typer.Option(
+        200_000,
+        "--max-llm-request-chars",
+        min=4_000,
+        help="仅用于传输规划；超限才按说话轮次重叠分块，不切断对话实体。",
     ),
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
-    """生成不联网、不调用 LLM 的 V2-E.0 本地语义证据包。"""
-    summary = run_semantic_v2e0(
+    """生成完整对话优先、不联网的 V2-E.0.1 语义传输计划。"""
+    summary = run_semantic_v2e01(
         Database(db),
         recording_id,
         asr_run_id=asr_run_id,
         diarization_run_id=diarization_run_id,
-        settings=SemanticV2E0Settings(
-            event_gap_ms=round(event_gap_seconds * 1_000),
-            max_event_ms=round(max_event_seconds * 1_000),
+        settings=SemanticV2E01Settings(
+            conversation_gap_ms=round(conversation_gap_seconds * 1_000),
+            min_informative_chars=min_informative_chars,
+            max_llm_request_chars=max_llm_request_chars,
         ),
     )
     console.print(
-        f"[green]V2-E.0 本地语义证据包完成[/green] run={summary.run_id} | "
+        f"[green]V2-E.0.1 完整对话传输计划完成[/green] run={summary.run_id} | "
         f"ASR={summary.asr_run_id} | D={summary.diarization_run_id or 'none'} | "
-        f"events={summary.event_count} | tokens={summary.token_count} | "
-        f"candidates={summary.candidate_count}"
+        f"conversations={summary.conversation_count} | "
+        f"excluded={summary.excluded_block_count} | jobs={summary.llm_job_count} | "
+        f"tokens={summary.token_count}"
     )
     console.print(
         "[yellow]本轮没有网络请求，没有上传文字或音频；"
-        "事件标题只是时间标签，不是 LLM 生成的事实。[/yellow]"
+        "完整对话不受 120 秒回听上限切割，标题也不是 LLM 事实。[/yellow]"
     )
     console.print(f"运行清单：{summary.manifest_path.resolve()}")
 
@@ -603,17 +611,26 @@ def semantic_v2_status(
     recording_id: int = typer.Argument(..., min=1),
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
-    """查看最新 V2-E.0 证据包和人工审核进度。"""
+    """查看最新 V2-E 证据包、传输计划和人工审核进度。"""
     payload = semantic_overview(Database(db), recording_id)
     if not payload["available"]:
         console.print(f"[yellow]{payload['reason']}[/yellow]")
         return
     summary = payload["summary"]
-    console.print(
-        f"run={payload['run']['id']} | provider={payload['run']['provider']} | "
-        f"events={summary['event_count']} | tokens={summary['token_count']} | "
-        f"reviewed={payload['reviewed_candidates']}/{len(payload['candidates'])}"
-    )
+    if payload.get("version") == "v2-e.0.1":
+        console.print(
+            f"run={payload['run']['id']} | provider={payload['run']['provider']} | "
+            f"conversations={summary['conversation_count']} | "
+            f"excluded={summary['excluded_block_count']} | "
+            f"jobs={summary['llm_job_count']} | tokens={summary['token_count']} | "
+            f"reviewed={payload['reviewed_candidates']}/{len(payload['candidates'])}"
+        )
+    else:
+        console.print(
+            f"run={payload['run']['id']} | provider={payload['run']['provider']} | "
+            f"events={summary['event_count']} | tokens={summary['token_count']} | "
+            f"reviewed={payload['reviewed_candidates']}/{len(payload['candidates'])}"
+        )
 
 
 @quality_asr_app.command(name="run")

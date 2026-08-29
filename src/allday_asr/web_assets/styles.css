@@ -692,7 +692,7 @@ audio {
 
 .semantic-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
   overflow: hidden;
   margin-top: 14px;
@@ -724,6 +724,79 @@ audio {
   color: var(--muted);
   font-family: var(--mono);
   font-size: 10px;
+}
+
+.semantic-transport-note {
+  margin: 0 0 14px;
+  padding: 11px 13px;
+  color: #35596a;
+  font-size: 11px;
+  line-height: 1.55;
+  background: #edf5f7;
+  border-left: 3px solid var(--cyan);
+}
+
+.semantic-excluded-panel {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  background: #f1eee7;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.semantic-excluded-panel summary {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.semantic-excluded-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.semantic-excluded-item {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 10px;
+  background: rgba(255, 255, 255, .65);
+}
+
+.semantic-excluded-item span {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.semantic-review-player {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.semantic-clip-select {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.semantic-clip-select select {
+  min-width: 240px;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: #fbfaf7;
+  border: 1px solid var(--line);
+  border-radius: 7px;
 }
 
 .semantic-candidate-list {
@@ -1703,6 +1776,8 @@ td {
   .timeline-review-grid { grid-template-columns: minmax(220px, 0.65fr) minmax(420px, 1.35fr); }
   .timeline-detail-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .semantic-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .semantic-excluded-item { grid-template-columns: 105px minmax(0, 1fr); }
+  .semantic-excluded-item small { grid-column: 2; }
 }
 
 @media (max-width: 760px) {
@@ -1741,4 +1816,6 @@ td {
   .nav-item { padding: 10px 6px; font-size: 12px; }
   .section-heading { padding: 20px; }
   .semantic-summary-grid { grid-template-columns: 1fr; }
+  .semantic-excluded-item { grid-template-columns: 1fr; }
+  .semantic-excluded-item small { grid-column: auto; }
 }

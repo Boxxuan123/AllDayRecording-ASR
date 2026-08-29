@@ -9,11 +9,12 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
-from allday_asr.services.semantic_v2e0 import (
+from allday_asr.services.semantic_v2e0 import review_semantic_candidate
+from allday_asr.services.semantic_v2e01 import (
     DeterministicMockSemanticProvider,
-    SemanticV2E0Settings,
-    review_semantic_candidate,
-    run_semantic_v2e0,
+    SemanticV2E01Settings,
+    build_provider_request,
+    run_semantic_v2e01,
     semantic_overview,
 )
 from allday_asr.storage.database import Database
@@ -60,23 +61,32 @@ class SemanticV2E0Tests(unittest.TestCase):
             backup.unlink(missing_ok=True)
 
     def test_local_exchange_is_immutable_private_and_reviewable(self) -> None:
+        class CapturingProvider(DeterministicMockSemanticProvider):
+            def __init__(self):
+                self.request = None
+
+            def generate(self, request):
+                self.request = request
+                return super().generate(request)
+
+        provider = CapturingProvider()
         with patch(
-            "allday_asr.services.semantic_v2e0.OUTPUT_DIR", self.output_dir
+            "allday_asr.services.semantic_v2e01.OUTPUT_DIR", self.output_dir
         ):
-            summary = run_semantic_v2e0(
+            summary = run_semantic_v2e01(
                 self.database,
                 self.recording_id,
                 asr_run_id=self.asr_run_id,
                 diarization_run_id=self.diarization_run_id,
-                settings=SemanticV2E0Settings(
-                    event_gap_ms=10_000,
-                    max_event_ms=120_000,
-                ),
+                settings=SemanticV2E01Settings(),
+                provider=provider,
             )
 
-        self.assertEqual(summary.event_count, 2)
+        self.assertEqual(summary.conversation_count, 1)
+        self.assertEqual(summary.excluded_block_count, 0)
+        self.assertEqual(summary.llm_job_count, 1)
         self.assertEqual(summary.token_count, 4)
-        self.assertEqual(summary.candidate_count, 3)
+        self.assertEqual(summary.candidate_count, 2)
         exchange = self.database.get_semantic_exchange(summary.run_id)
         self.assertFalse(exchange["audio_bytes_included"])
         self.assertFalse(exchange["source_paths_included"])
@@ -86,23 +96,35 @@ class SemanticV2E0Tests(unittest.TestCase):
         self.assertNotIn(str(self.source_path), exchange["request_json"])
         self.assertEqual(response["facts"], [])
         self.assertEqual(response["actions"], [])
+        conversation = request["evidence_ledger"]["conversations"][0]
+        self.assertGreater(conversation["duration_ms"], 120_000)
+        self.assertEqual(len(conversation["review_clips"]), 2)
         self.assertTrue(
             all(
                 token["source_refs"]
-                for event in request["events"]
-                for token in event["tokens"]
+                for item in request["evidence_ledger"]["conversations"]
+                for token in item["tokens"]
             )
         )
+        provider_json = json.dumps(provider.request, ensure_ascii=False)
+        self.assertNotIn("source_refs", provider_json)
+        self.assertNotIn("source_sha256", provider_json)
+        self.assertNotIn('"token_ids":', provider_json)
+        self.assertIn("complete_conversation", provider_json)
         manifest = json.loads(summary.manifest_path.read_text(encoding="utf-8"))
         self.assertFalse(manifest["safety"]["network_access"])
         self.assertFalse(manifest["safety"]["audio_bytes_included"])
+        self.assertFalse(manifest["safety"]["provider_receives_source_hashes"])
 
         overview = semantic_overview(self.database, self.recording_id)
         self.assertTrue(overview["available"])
         self.assertEqual(overview["run"]["asr_run_id"], self.asr_run_id)
+        self.assertTrue(overview["transport"]["whole_conversation_first"])
         event = next(
             item for item in overview["candidates"] if item["type"] == "event"
         )
+        self.assertEqual(event["semantic_unit"], "conversation")
+        self.assertEqual(len(event["review_clips"]), 2)
         first_revision = review_semantic_candidate(
             self.database,
             self.recording_id,
@@ -144,17 +166,19 @@ class SemanticV2E0Tests(unittest.TestCase):
 
             def generate(self, request):
                 response = super().generate(request)
-                response["events"][0]["evidence_token_ids"] = [999_999]
+                response["conversations"][0]["evidence_utterance_keys"] = [
+                    "invented-utterance"
+                ]
                 return response
 
         with (
             patch(
-                "allday_asr.services.semantic_v2e0.OUTPUT_DIR",
+                "allday_asr.services.semantic_v2e01.OUTPUT_DIR",
                 self.output_dir,
             ),
-            self.assertRaisesRegex(ValueError, "原音证据被改变"),
+            self.assertRaisesRegex(ValueError, "证据引用被改变"),
         ):
-            run_semantic_v2e0(
+            run_semantic_v2e01(
                 self.database,
                 self.recording_id,
                 asr_run_id=self.asr_run_id,
@@ -169,6 +193,48 @@ class SemanticV2E0Tests(unittest.TestCase):
         self.assertEqual(semantic_runs[-1]["status"], "failed")
         with self.assertRaises(KeyError):
             self.database.get_semantic_exchange(int(semantic_runs[-1]["id"]))
+
+    def test_provider_chunks_reassemble_as_one_complete_conversation(self) -> None:
+        utterances = [
+            {
+                "key": f"utterance-{index:04d}",
+                "start_ms": index * 1_000,
+                "end_ms": index * 1_000 + 800,
+                "speaker": "SPEAKER_00",
+                "speaker_kind": "primary",
+                "text": "这是一段需要保留完整上下文的测试对话" * 5,
+                "uncertainty": {},
+            }
+            for index in range(60)
+        ]
+        conversation = {
+            "key": "conversation-0001",
+            "start_ms": 0,
+            "end_ms": 59_800,
+            "transcript": "".join(item["text"] for item in utterances),
+            "speakers": ["SPEAKER_00"],
+            "uncertainty": {},
+            "utterances": utterances,
+            "asr_alternatives": [],
+        }
+        request = build_provider_request(
+            self.session,
+            [conversation],
+            settings=SemanticV2E01Settings(
+                max_llm_request_chars=4_000,
+                chunk_overlap_utterances=3,
+            ),
+        )
+        self.assertGreater(len(request["jobs"]), 1)
+        response = DeterministicMockSemanticProvider().generate(request)
+        self.assertEqual(len(response["conversations"]), 1)
+        output = response["conversations"][0]
+        self.assertEqual(output["start_ms"], 0)
+        self.assertEqual(output["end_ms"], 59_800)
+        self.assertEqual(
+            output["evidence_utterance_keys"],
+            [item["key"] for item in utterances],
+        )
 
     def _create_asr_run(self) -> int:
         run_id = self.database.start_processing_run(
@@ -186,8 +252,8 @@ class SemanticV2E0Tests(unittest.TestCase):
         token_values = [
             ("你", 1_000, 1_200),
             ("好", 1_200, 1_400),
-            ("再", 100_000, 100_200),
-            ("见", 100_200, 100_400),
+            ("再", 150_000, 150_200),
+            ("见", 150_200, 150_400),
         ]
         self.database.create_asr_hypothesis(
             {
