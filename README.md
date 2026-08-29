@@ -2,7 +2,7 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A.1/V2-W.0 已补上通用多分片清单准入、内容对象与文件实例分离、session-native C/D/E、自动显存档位和 SQLite 持久工作流。V2-C 已完成 Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设；V2-D 已完成 Community-1 重叠/互斥时间轴和 token-to-speaker；V2-E.0.2 已实现 episode/utterance/scene 与四轨证据。项目运行时仍未接入云端 LLM。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。V2 不以实时性或小模型为目标；之后需补充原音独立备份、日级说话人处理，再接真实云端 provider 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A.1/V2-W.1 已补上通用多分片清单准入、内容对象与文件实例分离、session-native C/D/E、自动显存档位、不可覆盖的逐实例备份、恢复演练、会话准入门和 SQLite 持久工作流。V2-C 已完成 Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设；V2-D 已完成 Community-1 重叠/互斥时间轴和 token-to-speaker；V2-E.0.2 已实现 episode/utterance/scene 与四轨证据。项目运行时仍未接入云端 LLM。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。V2 不以实时性或小模型为目标；之后需补充日级说话人处理，再接真实云端 provider 和 Watch 同步。
 
 实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，新分片正式使用前的堵点和准入顺序见 [新音频正式使用前准入审计](docs/new-audio-production-readiness.md)。V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0.2 Episode 证据层](docs/v2-e0-semantic-evidence.md)。
 
@@ -26,7 +26,7 @@ allday-asr doctor
 
 ## V2-A/V2-A.1：不可变原音、分片会话与逻辑窗口
 
-schema v11 在原有 source/session 图上增加 `source_instance` 和不可变 `session_manifest`：SHA-256 相同的静音分片可共享内容对象，但每次真实采集仍有独立文件实例和时间位置。清单先完整检查所有文件、采样坐标、格式和哈希，再在单个事务中创建关闭会话；任何一条失败都不会留下半个会话。原始音频不移动、不改名、不重编码，关闭后的清单、会话和映射均受触发器保护。
+schema v11 在原有 source/session 图上增加 `source_instance` 和不可变 `session_manifest`：SHA-256 相同的静音分片可共享内容对象，但每次真实采集仍有独立文件实例和时间位置。schema v12 再增加逐实例备份清单、当前字节校验和恢复演练证据。清单先完整检查所有文件、采样坐标、格式和哈希，再在单个事务中创建关闭会话；任何一条失败都不会留下半个会话。原始音频不移动、不改名、不重编码，关闭后的清单、会话、映射和备份文件证据均受触发器保护。
 
 ```powershell
 # 查看永久原始对象和对应会话
@@ -167,18 +167,32 @@ V2-C.2 对整段不可变 PCM 只计算 100 ms RMS 活动、持续活动、P90/R
 
 当前人工在前五块停止，系统将其冻结为明确的 V2-C.2a 预备子集，没有伪装成完整十分钟 holdout。同一人工边界上，18 段现场人声的 SenseVoice/Qwen/Fun-ASR raw CER 分别为 `49.02%/32.35%/54.41%`；Qwen 相对 SenseVoice 的 20 万次 paired bootstrap 95% 区间为 `[-29.61, -8.12]` 个百分点，确认 Qwen 是当前主识别模型。旧完整流水线五块 CER 为 `109.94%`，V2-C.3 降为 `92.27%`；排除唯一纯电视窗口后从 `154.90%` 降为 `116.18%`，确认提升来自现场人声而不是电视样本。由于同一五块已参与阈值选择，这只是开发证据，下一步必须使用新 holdout。完整结果见 [V2-C.3 指南](docs/v2-c3-speech-gating.md)。
 
-## V2-W.0：分片会话质量工作流
+## V2-W.0/V2-W.1：分片会话质量工作流与生产准入
 
-新录音不需要伪造一条“代表整个会话”的 `recording`。导入清单得到 `session_id` 后，V2 工作流会重新读取并核对原始清单及每个文件实例的字节数和 SHA-256，拒绝活动会话、缺片、重叠或已改变的原音，然后顺序编排 V2-C → V2-D → V2-E.0.2：
+新录音不需要伪造一条“代表整个会话”的 `recording`。导入清单得到 `session_id` 后，先把每个原始文件实例和原始采集清单复制到独立设备或网络存储，逐文件复算 SHA-256 并做临时恢复演练。`readiness` 只读检查输入、连续性、备份和当前已验证的处理时长，不运行音频模型：
 
 ```powershell
+# 1. 原子导入后先检查；没有独立备份时应得到 shadow_ready
+allday-asr session readiness <session-id>
+
+# 2. 目标应是真正的独立设备或网络位置；命令从不覆盖既有备份
+allday-asr session backup <session-id> <backup-root> `
+  --storage-kind independent_device
+
+# 3. 当前字节和恢复演练通过后应得到 production_ready
+allday-asr session readiness <session-id>
+
+# 4. 默认执行入口强制要求 production_ready
 allday-asr workflow-v2 run --session <session-id>
 allday-asr workflow-v2 status <session-id>
+
+# 只有明确接受风险的受监控实验才绕过生产门；仍会阻断损坏/gap/overlap
+allday-asr workflow-v2 run --session <session-id> --shadow
 ```
 
-阶段状态和子 run ID 持久保存在 SQLite；进程退出后仍可检查。输入指纹、阶段配置和本地模型签名一致时才复用完成阶段，V2-C 的失败 run 可按既有窗口 checkpoint 续跑。没有 committed token 时工作流以 `semantic_ready_empty` 正常结束；有文字时生成本地 `semantic_ready` 证据。两种情况都不调用云端 LLM，也不把临时拼接 PCM 当作原音保存。
+备份目录由会话键与输入指纹稳定寻址；既有目录只校验不覆盖，每个相同内容的真实文件实例仍分别备份。校验失败会撤销旧的恢复资格。阶段状态和子 run ID 持久保存在 SQLite；进程退出后仍可检查。输入指纹、阶段配置和本地模型签名一致时才复用完成阶段，V2-C 的失败 run 可按既有窗口 checkpoint 续跑。没有 committed token 时工作流以 `semantic_ready_empty` 正常结束；有文字时生成本地 `semantic_ready` 证据。两种情况都不调用云端 LLM，也不把临时拼接 PCM 当作原音保存。
 
-这是可用于新录音的本地影子工作流。进入无人值守正式日常流程前，仍需配置并验证原音第二份存储、让 V2-D 按连续语音岛处理日级录音，以及把网页的 V1/V2 操作明确分开。
+这条 CLI 流程已经可以用于新的、已关闭的录音会话。独立存储位置属于每次真实会话的外部条件，不由程序猜测；超过 3 小时的会话目前只允许显式 shadow 运行，进入无人值守日级流程前仍需让 V2-D 按连续语音岛处理，并把网页的 V1/V2 操作明确分开。
 
 ## V1 兼容：一键离线日记
 
@@ -348,4 +362,4 @@ allday-asr action-review 3 --status dismissed
 
 ## 当前边界
 
-V2-A.1 的 schema v11、原子清单导入、重复静音文件实例、冻结会话和 session-native C/D/E 已实现；V2-W.0 的自动显存档位、输入复核、阶段复用和持久工作流也已实现。V2-C.3 双 VAD、V2-D Community-1 与 V2-E.0.2 本地语义证据继续作为质量主链。尚未实现的是 Watch 传输客户端、原音第二份存储验证、日级/缺口感知 V2-D、真实云端 LLM、独立新 holdout、跨天身份和真实日历写入；因此当前适合本地影子运行，不应宣称无人值守生产完成。
+V2-A.1 的 schema v11、原子清单导入、重复静音文件实例、冻结会话和 session-native C/D/E 已实现；V2-W.1 的 schema v12、不可覆盖备份、逐文件复核、恢复演练、准入状态、自动显存档位、阶段复用和持久工作流也已实现。V2-C.3 双 VAD、V2-D Community-1 与 V2-E.0.2 本地语义证据继续作为质量主链。新的短会话在独立备份后可进入 CLI 正式工作流；尚未实现的是 Watch 传输客户端、超过 3 小时的分岛/缺口感知 V2-D、真实云端 LLM、独立新 holdout、跨天身份和真实日历写入，因此不能把“单会话 production_ready”扩张成“全天无人值守产品已完成”。

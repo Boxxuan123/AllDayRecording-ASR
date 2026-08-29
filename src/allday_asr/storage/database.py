@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS conversation_events (
 );
 """
 
-LATEST_SCHEMA_VERSION = 11
+LATEST_SCHEMA_VERSION = 12
 
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -1345,6 +1345,83 @@ MIGRATIONS: dict[int, str] = {
         COMMIT;
         PRAGMA foreign_keys = ON;
     """,
+    12: """
+        CREATE TABLE session_backups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            backup_key TEXT NOT NULL UNIQUE,
+            session_id INTEGER NOT NULL,
+            storage_kind TEXT NOT NULL CHECK(
+                storage_kind IN ('independent_device', 'network', 'same_device_test')
+            ),
+            backup_path TEXT NOT NULL UNIQUE,
+            input_fingerprint TEXT NOT NULL,
+            backup_manifest_sha256 TEXT NOT NULL,
+            file_count INTEGER NOT NULL,
+            total_bytes INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('verified', 'failed')),
+            created_at TEXT NOT NULL,
+            verified_at TEXT,
+            restore_verified_at TEXT,
+            last_checked_at TEXT,
+            error TEXT,
+            UNIQUE(session_id, backup_path, input_fingerprint),
+            CHECK(file_count > 0),
+            CHECK(total_bytes >= 0),
+            FOREIGN KEY (session_id) REFERENCES recording_sessions(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX idx_session_backups_session_status
+        ON session_backups(session_id, status, id);
+
+        CREATE TABLE session_backup_files (
+            backup_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            file_kind TEXT NOT NULL CHECK(
+                file_kind IN ('source_audio', 'capture_manifest')
+            ),
+            source_instance_id INTEGER,
+            relative_path TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            byte_size INTEGER NOT NULL,
+            PRIMARY KEY (backup_id, position),
+            UNIQUE(backup_id, relative_path),
+            CHECK(byte_size >= 0),
+            CHECK(
+                (file_kind = 'source_audio' AND source_instance_id IS NOT NULL)
+                OR (file_kind = 'capture_manifest' AND source_instance_id IS NULL)
+            ),
+            FOREIGN KEY (backup_id) REFERENCES session_backups(id) ON DELETE RESTRICT,
+            FOREIGN KEY (source_instance_id) REFERENCES source_instances(id) ON DELETE RESTRICT
+        );
+
+        CREATE TRIGGER protect_session_backups_immutable_fields
+        BEFORE UPDATE OF
+            backup_key, session_id, storage_kind, backup_path,
+            input_fingerprint, backup_manifest_sha256, file_count,
+            total_bytes, created_at
+        ON session_backups
+        BEGIN
+            SELECT RAISE(ABORT, 'immutable session backup metadata cannot be changed');
+        END;
+
+        CREATE TRIGGER protect_session_backups_from_delete
+        BEFORE DELETE ON session_backups
+        BEGIN
+            SELECT RAISE(ABORT, 'session backup evidence cannot be deleted');
+        END;
+
+        CREATE TRIGGER protect_session_backup_files_from_update
+        BEFORE UPDATE ON session_backup_files
+        BEGIN
+            SELECT RAISE(ABORT, 'session backup file evidence cannot be changed');
+        END;
+
+        CREATE TRIGGER protect_session_backup_files_from_delete
+        BEFORE DELETE ON session_backup_files
+        BEGIN
+            SELECT RAISE(ABORT, 'session backup file evidence cannot be deleted');
+        END;
+    """,
 }
 
 V4_PROCESSING_RUN_COLUMNS = {
@@ -1470,6 +1547,49 @@ def _canonical_source_fingerprint(rows: Sequence[sqlite3.Row]) -> str:
     ]
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _refresh_session_instance_backup_statuses(
+    connection: sqlite3.Connection, session_id: int
+) -> None:
+    now = utc_now()
+    connection.execute(
+        """
+        UPDATE source_instances AS si
+        SET backup_status = CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM session_backup_files sbf
+                    JOIN session_backups sb ON sb.id = sbf.backup_id
+                    WHERE sbf.source_instance_id = si.id
+                      AND sb.status = 'verified'
+                      AND sb.restore_verified_at IS NOT NULL
+                      AND sb.storage_kind IN ('independent_device', 'network')
+                ) THEN 'verified'
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM session_backup_files sbf
+                    JOIN session_backups sb ON sb.id = sbf.backup_id
+                    WHERE sbf.source_instance_id = si.id
+                      AND sb.status = 'verified'
+                ) THEN 'pending'
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM session_backup_files sbf
+                    JOIN session_backups sb ON sb.id = sbf.backup_id
+                    WHERE sbf.source_instance_id = si.id
+                ) THEN 'failed'
+                ELSE 'not_configured'
+            END,
+            updated_at = ?
+        WHERE si.id IN (
+            SELECT source_instance_id
+            FROM session_sources
+            WHERE session_id = ?
+        )
+        """,
+        (now, session_id),
+    )
 
 
 def _ensure_v4_processing_run_columns(connection: sqlite3.Connection) -> None:
@@ -2007,6 +2127,253 @@ class Database:
             return connection.execute(
                 "SELECT * FROM session_manifests WHERE manifest_sha256 = ?",
                 (manifest_sha256,),
+            ).fetchone()
+
+    def create_verified_session_backup(
+        self,
+        values: dict[str, Any],
+        files: Sequence[dict[str, Any]],
+    ) -> sqlite3.Row:
+        session_id = int(values["session_id"])
+        self.get_recording_session(session_id)
+        expected_input_fingerprint = self.session_input_fingerprint(session_id)
+        if str(values["input_fingerprint"]) != expected_input_fingerprint:
+            raise ValueError("会话备份输入指纹与当前不可变会话不一致")
+        storage_kind = str(values["storage_kind"])
+        if storage_kind not in {"independent_device", "network", "same_device_test"}:
+            raise ValueError(f"无效的备份存储类型：{storage_kind}")
+        if not files:
+            raise ValueError("会话备份没有文件证据")
+        session_sources = self.list_session_sources(session_id)
+        source_evidence = {
+            int(row["source_instance_id"]): (
+                str(row["sha256"]),
+                int(row["instance_byte_size"]),
+            )
+            for row in session_sources
+        }
+        source_ids = set(source_evidence)
+        supplied_source_ids = [
+            int(item["source_instance_id"])
+            for item in files
+            if item["file_kind"] == "source_audio"
+        ]
+        if len(supplied_source_ids) != len(set(supplied_source_ids)):
+            raise ValueError("会话备份包含重复的原音实例")
+        if set(supplied_source_ids) != source_ids:
+            raise ValueError("会话备份没有精确覆盖全部原音实例")
+        manifest = self.get_session_manifest(session_id)
+        manifest_expected = manifest is not None
+        manifest_files = [
+            item for item in files if item["file_kind"] == "capture_manifest"
+        ]
+        if len(manifest_files) != (1 if manifest_expected else 0):
+            raise ValueError("会话备份的原始采集清单覆盖不正确")
+        relative_paths: set[str] = set()
+        for position, item in enumerate(files):
+            if int(item["position"]) != position:
+                raise ValueError("会话备份文件 position 必须连续")
+            file_kind = str(item["file_kind"])
+            if file_kind not in {"source_audio", "capture_manifest"}:
+                raise ValueError("会话备份文件类型无效")
+            relative_path = str(item["relative_path"])
+            relative = Path(relative_path)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError("会话备份文件必须使用安全的相对路径")
+            if relative_path in relative_paths:
+                raise ValueError("会话备份包含重复的相对路径")
+            relative_paths.add(relative_path)
+            if int(item["byte_size"]) < 0:
+                raise ValueError("会话备份文件大小不能为负数")
+            if file_kind == "source_audio":
+                expected = source_evidence[int(item["source_instance_id"])]
+            else:
+                assert manifest is not None
+                expected = (
+                    str(manifest["manifest_sha256"]),
+                    int(manifest["byte_size"]),
+                )
+            actual = (str(item["sha256"]), int(item["byte_size"]))
+            if actual != expected:
+                raise ValueError("会话备份文件证据与不可变原始输入不一致")
+
+        now = utc_now()
+        backup_key = str(values["backup_key"])
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT * FROM session_backups WHERE backup_key = ?",
+                (backup_key,),
+            ).fetchone()
+            if existing is None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO session_backups (
+                        backup_key, session_id, storage_kind, backup_path,
+                        input_fingerprint, backup_manifest_sha256,
+                        file_count, total_bytes, status, created_at,
+                        verified_at, last_checked_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'verified', ?, ?, ?)
+                    """,
+                    (
+                        backup_key,
+                        session_id,
+                        storage_kind,
+                        values["backup_path"],
+                        values["input_fingerprint"],
+                        values["backup_manifest_sha256"],
+                        len(files),
+                        sum(int(item["byte_size"]) for item in files),
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                backup_id = int(cursor.lastrowid)
+                connection.executemany(
+                    """
+                    INSERT INTO session_backup_files (
+                        backup_id, position, file_kind, source_instance_id,
+                        relative_path, sha256, byte_size
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            backup_id,
+                            item["position"],
+                            item["file_kind"],
+                            item.get("source_instance_id"),
+                            item["relative_path"],
+                            item["sha256"],
+                            item["byte_size"],
+                        )
+                        for item in files
+                    ],
+                )
+            else:
+                backup_id = int(existing["id"])
+                immutable_values = {
+                    "session_id": session_id,
+                    "storage_kind": storage_kind,
+                    "backup_path": str(values["backup_path"]),
+                    "input_fingerprint": str(values["input_fingerprint"]),
+                    "backup_manifest_sha256": str(
+                        values["backup_manifest_sha256"]
+                    ),
+                    "file_count": len(files),
+                    "total_bytes": sum(int(item["byte_size"]) for item in files),
+                }
+                if any(existing[key] != value for key, value in immutable_values.items()):
+                    raise ValueError("同一 backup_key 的不可变备份元数据不一致")
+                existing_files = list(
+                    connection.execute(
+                        """
+                        SELECT position, file_kind, source_instance_id,
+                               relative_path, sha256, byte_size
+                        FROM session_backup_files
+                        WHERE backup_id = ? ORDER BY position
+                        """,
+                        (backup_id,),
+                    )
+                )
+                canonical_existing = [tuple(row) for row in existing_files]
+                canonical_supplied = [
+                    (
+                        item["position"],
+                        item["file_kind"],
+                        item.get("source_instance_id"),
+                        item["relative_path"],
+                        item["sha256"],
+                        item["byte_size"],
+                    )
+                    for item in files
+                ]
+                if canonical_existing != canonical_supplied:
+                    raise ValueError("同一 backup_key 的文件证据不一致")
+                connection.execute(
+                    """
+                    UPDATE session_backups
+                    SET status = 'verified', verified_at = ?,
+                        last_checked_at = ?, error = NULL
+                    WHERE id = ?
+                    """,
+                    (now, now, backup_id),
+                )
+            _refresh_session_instance_backup_statuses(connection, session_id)
+            return connection.execute(
+                "SELECT * FROM session_backups WHERE id = ?", (backup_id,)
+            ).fetchone()
+
+    def get_session_backup(self, backup_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM session_backups WHERE id = ?", (backup_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"会话备份 {backup_id} 不存在")
+        return row
+
+    def list_session_backups(self, session_id: int) -> list[sqlite3.Row]:
+        self.get_recording_session(session_id)
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT * FROM session_backups WHERE session_id = ? ORDER BY id",
+                    (session_id,),
+                )
+            )
+
+    def list_session_backup_files(self, backup_id: int) -> list[sqlite3.Row]:
+        self.get_session_backup(backup_id)
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM session_backup_files
+                    WHERE backup_id = ? ORDER BY position
+                    """,
+                    (backup_id,),
+                )
+            )
+
+    def mark_session_backup_restore_verified(self, backup_id: int) -> sqlite3.Row:
+        backup = self.get_session_backup(backup_id)
+        if str(backup["status"]) != "verified":
+            raise ValueError("只有文件校验通过的备份才能完成恢复演练")
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE session_backups
+                SET restore_verified_at = ?, last_checked_at = ?, error = NULL
+                WHERE id = ?
+                """,
+                (now, now, backup_id),
+            )
+            _refresh_session_instance_backup_statuses(
+                connection, int(backup["session_id"])
+            )
+            return connection.execute(
+                "SELECT * FROM session_backups WHERE id = ?", (backup_id,)
+            ).fetchone()
+
+    def mark_session_backup_failed(self, backup_id: int, error: str) -> sqlite3.Row:
+        backup = self.get_session_backup(backup_id)
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE session_backups
+                SET status = 'failed', restore_verified_at = NULL,
+                    last_checked_at = ?, error = ?
+                WHERE id = ?
+                """,
+                (now, error[:2000], backup_id),
+            )
+            _refresh_session_instance_backup_statuses(
+                connection, int(backup["session_id"])
+            )
+            return connection.execute(
+                "SELECT * FROM session_backups WHERE id = ?", (backup_id,)
             ).fetchone()
 
     def get_session_for_recording(self, recording_id: int) -> sqlite3.Row:

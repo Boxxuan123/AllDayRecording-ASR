@@ -4,22 +4,22 @@
 > 审计对象：`data/pcm_gap_test_1787972654273/`  
 > 审计边界：只读取目录、清单、文件大小、哈希和媒体元数据；没有入库、转写、重编码、移动、重命名或修改原始文件。
 
-> 实施更新：同日已按通用方案完成 schema v11、清单适配器、文件实例模型、session-native V2-C/D/E、自动显存档位和 SQLite 持久工作流。新增实现与测试全部使用临时合成音频，没有再次读取或针对上述新增音频运行任何模型。本文第 2 节的数据盘点保留为实施前审计记录，不作为代码中的固定假设。
+> 实施更新：已按通用方案完成 schema v12、清单适配器、文件实例模型、session-native V2-C/D/E、不可覆盖备份与恢复演练、自动显存档位、准入门和 SQLite 持久工作流。最近一轮实现与测试全部使用临时合成 WAV，没有列举、读取、播放或针对 `data` 中的新音频运行模型。本文第 2 节只保留为更早一次实施前审计记录，不作为代码中的固定假设。
 
 ## 1. 结论
 
 项目现在可以把任意符合受支持清单格式的多分片录音导入为真实 `session`，并运行本地 V2 影子工作流；实现不依赖本批文件数、总时长、目录名或固定采样数。
 
-正确入口是 `session import-manifest` → `workflow-v2 run --session <id>`。仍然不应该逐条运行旧 `ingest`，也不应该拿第一条 WAV 冒充整段 `recording`。
+正确入口是 `session import-manifest` → `session backup` → `session readiness` → `workflow-v2 run --session <id>`。仍然不应该逐条运行旧 `ingest`，也不应该拿第一条 WAV 冒充整段 `recording`。
 
 原审计提出的四项 P0 当前状态如下：
 
 1. [x] 原子、幂等的分片清单导入器；保存每个原始文件实例、内容哈希和原始清单身份。
 2. [x] V2-C/D/E 和 `processing_runs` 原生支持 `session_id`，不再要求虚假 `recording_id`。
 3. [x] 独立 `workflow-v2` 持久编排器；模型前复核原始输入，C→D→E 状态保存在 SQLite，且不调用云端 LLM。
-4. [~] 关闭会话后时间映射和清单已经冻结；独立第二份原音存储及恢复演练尚未实现。
+4. [x] 关闭会话后时间映射和清单冻结；schema v12 逐实例记录独立副本、当前哈希复核和恢复演练证据。
 
-因此代码已经可以进入本地影子工作流，但还不能宣称无人值守生产完成。真实云端 LLM、跨天人物识别和 Watch 自动同步不阻塞影子验证；第二份原音存储与日级 V2-D 则仍是正式日常运行前的工程门槛。
+因此代码已经可以让一个已关闭、连续且不超过 3 小时的会话进入 CLI 正式工作流；但每个真实会话仍必须先由用户指定真正的独立设备/网络备份位置，并让 `readiness` 实际返回 `production_ready`。真实云端 LLM、跨天人物识别和 Watch 自动同步不阻塞首次使用；超过 3 小时的日级 V2-D 仍是全天无人值守前的工程门槛。
 
 ## 2. 新数据盘点
 
@@ -64,45 +64,32 @@
 
 | 环节 | 已有能力 | 对新分片的实际状态 |
 | --- | --- | --- |
-| 原音登记 | `source_objects` 保存内容；schema v11 的 `source_instances/session_manifests` 保存每次真实文件和原清单身份 | 已有清单级预检、单事务导入、幂等会话键和关闭冻结；独立备份仍待配置 |
+| 原音登记 | `source_objects` 保存内容；schema v11 的 `source_instances/session_manifests` 保存每次真实文件和原清单身份 | 已有清单级预检、单事务导入、幂等会话键和关闭冻结 |
 | 多源时间轴 | `recording_sessions/session_sources` 和逻辑窗口可跨多个源解码 | 已有正式导入入口与不可变映射；整数采样坐标与毫秒投影同时保存 |
 | V2-C ASR | 5 分钟窗口、5 秒上下文、双模型、token 原音追溯、按窗口续跑 | 已可直接使用 `session_id`，并冻结每次 run 的文件实例输入 |
 | V2-D 说话人 | Community-1、重叠时间轴、token 归属 | 一次性物化并处理整个会话；没有断点续跑；遇真实时间缺口直接拒绝 |
 | V2-E 语义证据 | Episode/utterance/scene 四轨证据和严格响应校验 | 已可使用 `session_id`；没有云端 provider 时正常停在 `semantic_ready` |
-| 一键工作流 | V1 `daily-run` 与 V2 `workflow-v2` 分开 | V2 会复核输入并编排 C→D→E；网页原生 session 操作仍待补 |
+| 一键工作流 | V1 `daily-run` 与 V2 `workflow-v2` 分开 | 默认要求 `production_ready` 后才编排 C→D→E；显式 `--shadow` 才允许受监控实验；网页原生 session 操作仍待补 |
 | 任务恢复 | V2-C 窗口续跑；工作流及阶段 ID 持久化 | V2-D/E 失败会保留失败 run 后新建；尚无 D/E 阶段内 checkpoint |
 | GPU 配置 | 同一 BF16 模型，8 GB batch=1，16 GB 提高 batch | TOML 默认 `auto`，按实际 CUDA 显存选择档位 |
-| 原音永久性 | 入库后可审计哈希，派生 WAV 不替代原音 | `backup_status` 尚未形成可验证流程；哈希审计不能代替备份 |
+| 原音永久性 | 入库后可审计哈希，派生 WAV 不替代原音 | schema v12 备份清单精确覆盖每个文件实例和原采集清单；独立/网络副本须逐文件复核并通过恢复演练，失败会撤销资格 |
 
-### 3.1 最关键的数据模型缺口
+### 3.1 已解决：内容与真实文件实例分离
 
-`source_objects` 当前以 SHA-256 唯一去重，`session_sources` 又禁止同一 `source_object_id` 在一个会话出现两次。当前 109 条恰好没有重复哈希，所以这个问题不会在本样本立刻触发；但正式 Watch 数据会有大量静音，两个 PCM/WAV 分片完全相同是合理情况。它们可能是：
+schema v11 已把按 SHA-256 去重的内容对象与一次真实采集的 `source_instance` 分开。两个完全相同的静音 WAV 可以共享内容对象，但仍保留不同的实例键、原路径、分片位置和备份证据；同一清单重复上传则按会话键和清单哈希幂等返回，不会混淆这两种情况。
 
-- 同一个上传重试，应该幂等地忽略；
-- 不同时间位置的两个真实静音分片，必须都保留在时间轴上。
+### 3.2 已解决：V2 原生使用 `session_id`
 
-仅凭内容哈希无法区分两者。正式设计应分开：
-
-- `audio_blob`：按 SHA-256 标识内容，可用于完整性和可选存储去重；
-- `source_instance`：按会话、分片序号、采集端对象 ID 标识一次真实文件实例，保存原文件名、原路径和上传来源；
-- `session_source`：引用实例并保存 `first_sample/sample_count` 与会话时间映射。
-
-如果暂时不拆表，也至少要增加稳定的 `ingest_object_key`，允许同哈希内容在不同时间位置出现，并用“会话键 + 分片序号 + 采集对象 ID”判断重试，而不是只用 SHA-256 判断。
-
-### 3.2 V2 仍被旧 `recording_id` 卡住
-
-V2 表已经大量使用 `session_id`，但 `processing_runs.recording_id` 仍为非空，`start_processing_run()`、V2-C/D/E 服务和网页选择器都先要求一条旧式 `recordings` 行。对于一个由 109 个原始文件组成的会话，没有哪一条文件可以诚实代表整段录音。
-
-正确做法是增加 session-native API：
+`processing_runs.recording_id` 对 V2 已可空，V2-C/D/E、输入冻结、产物目录和持久编排器都可直接使用 `session_id`。核心入口现在是：
 
 ```text
 session import-manifest -> session_id
 session run-v2 <session_id> -> C run -> D run -> E evidence run
 ```
 
-兼容层可以继续接受旧 `recording_id` 并解析到会话，但新分片不能反向制造一个虚假的“代表文件”。`processing_runs` 的 V2 新运行应以非空 `session_id` 为主，`recording_id` 只保留为可空的 V1 兼容字段。
+旧单文件仍通过兼容层解析到会话；新分片不会制造虚假的“代表文件”。
 
-### 3.3 一键按钮目前不是 V2
+### 3.3 已解决 CLI 主入口，网页仍待补
 
 现有 `daily-run` 执行的是：
 
@@ -110,19 +97,19 @@ session run-v2 <session_id> -> C run -> D run -> E evidence run
 单文件 ingest -> V1 标准化/VAD/SenseVoice -> V1 diarization -> V1 timeline/actions
 ```
 
-目标工作流应是：
+已实现的 CLI 目标工作流是：
 
 ```text
 清单预检 -> 原子导入/完整性审计 -> V2-C -> V2-D -> V2-E.0.2 semantic_ready
 ```
 
-V2-D.1 的确定/可能语音层可作为自动步骤；V2-D.2 人工污染审计和 V2-D.3 人物候选挖掘属于可选审核支线，不能卡住日常主流程。真实 LLM provider 也应是可选尾段：未配置时保存完整本地证据并正常结束，不应把整条音频标成失败。
+V2-D.2 人工污染审计和 V2-D.3 人物候选挖掘属于可选审核支线，不会卡住主流程。真实 LLM provider 也是可选尾段：未配置时保存完整本地证据并正常结束。尚未补的是网页的原生 session 选择、备份/准入状态和 V2 恢复按钮。
 
-## 4. 正式使用前必须补的 P0
+## 4. 已完成的 P0 工程门
 
-### P0-1：分片会话准入器
+### P0-1：分片会话准入器（已完成）
 
-建议新增 `session import-manifest <session_summary.json>`，先完整验证，后单事务写入：
+`session import-manifest <session_summary.json>` 已按“先完整验证、后单事务写入”实现：
 
 1. 校验清单版本、整数采样坐标、文件存在性、文件数、索引唯一性和文件名安全性。
 2. 对每条 WAV 独立执行媒体探测和 SHA-256，核对采样率、声道、位深、采样数与字节数。
@@ -135,7 +122,7 @@ V2-D.1 的确定/可能语音层可作为自动步骤；V2-D.2 人工污染审�
 
 本批数据的固定验收值是：109 个实例、109 个唯一哈希、8,702,080 个采样、543,880 ms、0 gap、0 overlap。
 
-### P0-2：冻结会话证据和备份状态
+### P0-2：冻结会话证据和备份状态（已完成代码）
 
 - 活跃同步会话只允许追加新分片，不允许更新/删除已有映射。
 - 会话关闭后，`recording_sessions` 的时间信息和全部 `session_sources` 映射不可修改或删除。
@@ -143,7 +130,23 @@ V2-D.1 的确定/可能语音层可作为自动步骤；V2-D.2 人工污染审�
 - 原始文件至少保留本地工作副本和一份独立存储副本；备份后重新读取并校验 SHA-256，再把状态记为 `verified`。
 - 数据库备份和音频备份是两件事，两者都要验证恢复；Git 忽略原音不等于备份。
 
-### P0-3：session-native V2 运行
+实际操作：
+
+```powershell
+# 导入后先只读检查；未备份时应是 shadow_ready，而不是 production_ready
+allday-asr session readiness <session-id>
+
+# 目标必须由用户确认属于独立设备或网络存储
+allday-asr session backup <session-id> <backup-root> `
+  --storage-kind independent_device
+
+# 命令默认复制后做恢复演练；随后再次准入
+allday-asr session readiness <session-id>
+```
+
+备份不会覆盖已有目录；既有路径只允许在内容完全匹配时幂等复核。每个文件实例和原始采集清单都有独立证据行。`same_device_test` 只用于验证机制，永远不能满足生产门。程序无法物理证明盘符背后是否真是另一块设备，因此 `storage_kind` 是操作者对存储拓扑的明确声明，字节与恢复结果则由程序验证。
+
+### P0-3：session-native V2 运行（已完成）
 
 - 为 V2 入口、run 查询、产物目录和网页选择器增加 `session_id`。
 - `processing_run_inputs` 继续在启动时冻结所有输入实例和时间坐标；后续新分片到达只能产生新 run，不能悄悄扩大旧 run。
@@ -151,9 +154,9 @@ V2-D.1 的确定/可能语音层可作为自动步骤；V2-D.2 人工污染审�
 - 每个 token、speaker turn、回听片都必须通过 session/source 坐标回到一条或多条原始实例。
 - 兼容旧单文件数据，但新代码测试必须完全不创建虚假代表录音。
 
-### P0-4：真正的 V2 工作流与恢复
+### P0-4：真正的 V2 工作流与恢复（CLI 已完成）
 
-新增一个独立于 V1 `daily-run` 的编排器，至少持久化以下状态：
+独立于 V1 `daily-run` 的编排器已持久化以下状态：
 
 ```text
 admitted -> integrity_verified -> asr_completed
@@ -169,11 +172,13 @@ admitted -> integrity_verified -> asr_completed
 - 网页任务状态来自 SQLite，而不是进程内字典；网页重启后仍能显示运行、失败和恢复入口。
 - 页面明确显示 `run_kind`，V1 一键日记与 V2 质量工作流不能使用同一个含糊按钮。
 
+`workflow-v2 run` 默认要求 `production_ready`；没有通过当前字节复核和恢复演练的独立/网络备份时，会在模型启动前失败并留下失败状态。只有显式 `--shadow` 才允许受监控实验；原音损坏、清单损坏、gap 或 overlap 在 shadow 模式下仍然是硬阻断。
+
 ## 5. 可以在第一次影子运行后补的 P1
 
 这些工作重要，但不应继续阻止本批数据首次进入本地 V2 影子流程：
 
-1. **长会话 V2-D**：当前 V2-D 一次性临时物化整个会话。9 分钟样本可接受，全天录音应按连续段/语音候选处理，再跨段关联匿名 speaker；不能因为静音多就解码整天 PCM。
+1. **长会话 V2-D**：当前 V2-D 一次性临时物化整个会话。基于已完成的约 2 小时 44 分真实运行，准入器暂把 3 小时设为已验证上界；更长会话可显式 shadow，但 production 会被阻断。全天录音应按连续段/语音候选处理，再跨段关联匿名 speaker，不能因为静音多就解码整天 PCM。
 2. **真实缺口语义**：本批没有 gap。未来丢片时，ASR/Diarization 应分别处理连续岛，E 的 episode 必须在“未录到的时间”处强制断开，不能把数据缺失当作静音或把两边对话合并。
 3. **现场人声/媒体自动来源证据**：当前 E 中可靠的 `live_person/media_playback` 主要来自人工冻结区间。新录音默认会有大量 `unknown`；在信任人物事实和日记前，需要独立的媒体/现场来源模型与新真值验证。
 4. **跨天人物候选**：保留匿名 speaker 和原音引用即可，身份不确定时保持 unknown。后续新录音增加后再用参考库提出候选，不能强行合并。
@@ -211,7 +216,7 @@ admitted -> integrity_verified -> asr_completed
 
 ### 可以开始本地影子处理
 
-- P0-1、P0-3 和 V2 工作流代码已实现并有合成测试；P0-2 的会话冻结已实现。
+- P0-1 至 P0-4 均已实现并有合成测试。
 - 目标音频和清单在正式导入时由工具逐对象重新计算哈希，且原文件只读保留。
 - 当前机器 profile 自动选择正确，运行不依赖手工修改代码或伪造 recording。
 - 允许 source/identity 为 unknown，允许停在 `semantic_ready`，不把未知结果包装成可靠日记事实。
@@ -226,6 +231,8 @@ admitted -> integrity_verified -> asr_completed
 - 至少一个从未用于调参的新录音完成质量门，核心指标没有不可接受退化。
 - 网页展示和一键按钮只调用 V2 工作流，或明确把 V1 标成历史基线。
 
+这里要区分两个范围：一个不超过 3 小时的已关闭会话，只要 `session readiness` 返回 `production_ready`，现在即可进入 CLI 正式工作流；“全天、自动同步、无人值守”的产品级流程仍需长会话分岛 V2-D 和网页操作层。程序不会根据文件名、目录或某一批数据作例外判断。
+
 ### 仍可后置
 
 - Watch 自动上传和断点续传；当前可以先用手动同步清单。
@@ -236,10 +243,11 @@ admitted -> integrity_verified -> asr_completed
 ## 8. 推荐实施顺序
 
 1. [x] **V2-A.1：分片会话准入**——清单 schema、实例身份、原子导入与冻结。
-2. [x] **V2-W.0：V2 会话工作流**——session-native run、持久任务和自动显存 profile；V1/V2 CLI 已分离，网页分离待补。
-3. **配置并验证原音独立备份**——不改变原文件，校验第二份副本和恢复结果。
-4. **首次影子 run**——先冻结工程报告和小型未见质量报告，不接真实 LLM。
-5. **V2-D 日级化与 gap 语义**——根据影子运行的通用瓶颈实施，不为单条录音写特例。
-6. **来源分类与云端 LLM**——分别建立新真值和安全边界后接入。
+2. [x] **V2-W.0：V2 会话工作流**——session-native run、持久任务和自动显存 profile；V1/V2 CLI 已分离。
+3. [x] **V2-W.1：会话备份与准入门**——schema v12、逐实例不可覆盖副本、恢复演练、`shadow_ready/production_ready` 和默认生产门。
+4. **首次新会话运行**——导入后先配置真实独立备份，以 `session readiness` 的机器判定为准，再运行 V2；不接真实 LLM。
+5. **冻结未见质量报告**——第一次模型输出生成后才按通用盲测流程选择少量高信息区，报告先冻结再考虑调参。
+6. **V2-D 日级化与网页 V2 操作**——按连续语音岛处理超过 3 小时的会话，补 session/备份/恢复 UI，不为单条录音写特例。
+7. **来源分类与云端 LLM**——分别建立新真值和安全边界后接入。
 
-因此，下一步应当开始 V2-A.1，而不是直接对 109 个 WAV 运行旧 `ingest`，也不是继续在旧录音上微调识别阈值。
+因此，代码层下一步不再是继续补 A–E 的基本连接，而是让一条新会话按“导入 → 独立备份 → production readiness → V2 工作流”首次通过。若准入失败，就按命令列出的具体阻断项修复；若会话超过 3 小时，则先安排 V2-D 分岛处理，而不是强行启动整段模型。

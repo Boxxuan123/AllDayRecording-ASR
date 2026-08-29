@@ -64,7 +64,7 @@ V2 不以实时性、低显存或最小模型为目标，而以真实 Watch 录�
 
 应用只能以只读方式打开原始对象。标准化、响度调整、降噪、重采样和裁剪必须写到独立的派生目录。任何命令都不得将临时文件移动或替换到原始路径。
 
-“永久保存”不能只依赖同一磁盘上的一个文件。V2 schema 需要记录备份与校验状态；真正的第二存储介质或备份位置由后续单独设计和授权，本阶段不自动复制私人音频到任何外部位置。
+“永久保存”不能只依赖同一磁盘上的一个文件。schema v12 已记录逐实例备份清单、当前校验和恢复演练状态；`session backup` 只在用户明确给出的本地独立设备或网络路径上执行，不会自行选择位置、联网或上传私人音频。`workflow-v2 run` 默认要求当前会话达到 `production_ready`，同盘测试副本不计入生产资格。
 
 ### 3.3 当前长文件与未来音频块
 
@@ -391,4 +391,4 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 10. 云端语义接口。
 11. Watch chunk 同步。
 
-V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；V2-D 已完成 schema v7、Community-1 backend、token-to-speaker 融合和全量 run 11；V2-E.0.2 已完成 episode/utterance/scene 契约、区间级 source/identity、响应验证器、CLI/网页以及 Codex manual run 22。之后在新的穷尽 speaker/media/overlap 真值上决定是否增加 Sortformer 候选，并在单独授权后为同一 V2-E 契约增加真实云端 provider。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。
+V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；V2-D 已完成 schema v7、Community-1 backend、token-to-speaker 融合和全量 run 11；V2-E.0.2 已完成 episode/utterance/scene 契约、区间级 source/identity、响应验证器、CLI/网页以及 Codex manual run 22；V2-W.1 已完成 schema v12、不可覆盖备份、恢复演练和 production/shadow 准入门。下一步先让一个新会话按正式准入链通过，再为超过 3 小时的会话实现连续语音岛 V2-D；之后在新的穷尽 speaker/media/overlap 真值上决定是否增加 Sortformer 候选，并在单独授权后为同一 V2-E 契约增加真实云端 provider。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。

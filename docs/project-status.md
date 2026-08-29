@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-29
-> 当前阶段：V2-A.1 多分片准入与 V2-W.0 session-native 持久工作流已完成代码和合成数据回归；真实新增音频尚未进行模型分析。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
+> 当前阶段：V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一轮没有读取或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
 
 ## 1. 结论
 
@@ -19,6 +19,7 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 | --- | --- | --- |
 | 环境自检 | 已完成 | 检查 Python、FFmpeg、依赖和真实 CUDA 运算 |
 | 录音入库 | V2-A.1 已完成 | schema v11；内容对象/真实文件实例分离、原子幂等清单导入、整数采样坐标、关闭会话冻结、逐实例完整性状态 |
+| 原音备份准入 | V2-W.1 已完成代码 | schema v12；独立/网络/同机测试存储类型、逐实例和原清单覆盖、不可覆盖原子复制、当前哈希复核、恢复演练、失败撤销资格、三态 readiness |
 | 音频处理 | V2-A 基础完成 | V1 标准化/VAD/断点续跑；V2 逻辑窗口临时解码且不新增长期整段 PCM |
 | ASR | V2-C.3 已实现 | Qwen3-ASR-1.7B、0.6B ForcedAligner、Fun-ASR-Nano、FSMN+Silero 证据门控、padding/core 分离、逐 token 原音追溯；等待新 holdout |
 | 说话人时间轴 | V2-D.2 已完成 | 在 D.1 证据/来源分层上增加稀疏人工身份轨、簇污染矩阵和 token 人工角标；审计不改写匿名 speaker；等待干净父母声纹与穷尽真值 |
@@ -28,9 +29,9 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 | 固定人物登记 | 基础完成 | 经同意可建立 `known_person` 档案；V2-D.3 人工参考区间可跨录音积累，尚无跨天自动匹配 |
 | 时间线 | 原型完成 | 规则聚合事件、Markdown/JSON、原音区间追溯 |
 | 语义证据 | V2-E.0.2 已完成 | episode/utterance/scene 分层、ASR/匿名声纹/source/identity 四轨证据、最小化 provider payload、严格响应校验、Codex manual record/replay、追加式审核和分片回听；真实云端 provider 待接入 |
-| 数据库迁移 | V2-A.1 已完成 | 最新 schema v11；`processing_runs.recording_id` 对 session-native V2 可空，所有历史证据保留，升级前自动备份 |
+| 数据库迁移 | V2-W.1 已完成 | 最新 schema v12；`processing_runs.recording_id` 对 session-native V2 可空，所有历史证据保留，升级前自动备份 |
 | 统一配置 | 已完成 V1 | TOML 校验、配置哈希、每次运行完整快照 |
-| 一键日处理 | V1/V2 分离 | V1 保留 `daily-run`；V2 使用 `workflow-v2`，先复核原音与连续性，再持久编排 C→D→E，本地停在 `semantic_ready` |
+| 一键日处理 | V1/V2 分离 | V1 保留 `daily-run`；V2 默认要求 `production_ready` 后持久编排 C→D→E，本地停在 `semantic_ready`；`--shadow` 是显式实验模式 |
 | 人工评测 | V2-B 已完成 | 连续 session/source 真值、预测快照、CER、VAD、DER/JER、对齐、实体和多 run 对比；保留 V1 兼容入口 |
 | 行动建议 | 已完成规则 V1 | 明确日期/时间/行动、本人承诺、证据链、确认/忽略；不写真实日历 |
 | 本地网页 | V2-E.0.2 已扩展 | 逐段试听标注、说话人时间轴、episode 容器与 scene/claim/action 分层审核、短片回听、评测、一键运行和历史；只监听回环地址 |
@@ -111,14 +112,14 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 3. `workflow-v2` 已持久编排 C→D→E 并与 V1 `daily-run` 分开；网页仍主要暴露 V1 一键入口，尚未加入原生分片会话选择和 V2 恢复按钮。
 4. V2-E.0.2 已完成一次 Codex manual eval，但它不是可复现的固定模型质量基准；真实云端模型、数据保留策略、上下文上限和独立的幻觉/遗漏评测仍需在 V2-E.1 明确后才能调用。
 5. 固定人物可以登记，但尚无通用的跨天人物候选匹配和人工确认流程。
-6. schema v11 已新增不可变文件实例、清单和 session-native run；完成 run、原始模型输出和语义基础候选仍不可变。后续结构变化必须继续新增 migration，不能修改既有版本。
+6. schema v12 已新增不可变备份及逐文件证据；可变的只有当前校验/恢复状态。完成 run、原始模型输出和语义基础候选仍不可变。后续结构变化必须继续新增 migration，不能修改既有版本。
 7. `daily-run` 已使用统一配置；旧的分步命令仍保留各自参数，后续可逐步接入同一配置层。
 8. 已建立 Git 基线提交 `d9e9377` 和一键日记提交 `57cbe2e`；后续能力继续按可验证功能独立提交。
 
 ## 6. 本次盘点验证
 
 - `doctor` 全部通过：Python 3.12.10、FFmpeg/FFprobe、FunASR 1.4.4、ModelScope 1.39.1、pyannote.audio 4.0.7、PyTorch/torchaudio 2.9.1+cu128 和 RTX 5070 CUDA 实算正常。
-- 全量 70 个单元测试通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution/semantic 防篡改、跨源引用、v10→v11 身份证据迁移、分片清单事务、相同静音内容的不同实例、session-native run、原音篡改预阻断、阶段复用、持久工作流、V2-C/D/E 与既有评测逻辑。V2-A.1/V2-W.0 新测试只使用临时合成 WAV，没有读取或运行新增真实音频。
+- 全量 78 个单元测试通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution/semantic 防篡改、跨源引用、v10→v11 身份证据迁移、分片清单事务、相同静音内容的不同实例、session-native run、不可覆盖独立备份、清单外文件拒绝、篡改撤销恢复资格、production/shadow 准入、原音篡改预阻断、阶段复用、持久工作流、V2-C/D/E 与既有评测逻辑。V2-W.1 新测试只使用临时合成 WAV，没有读取或运行新增真实音频。
 - 真实库已从 schema v3 升级到 v4，升级前自动保存一份 schema v3 SQLite 备份。迁移前后 V1 各表计数一致：423 个语音段、17 条人工身份标注、26 条声纹样本、10 个事件和 3 个历史 run 均保留。
 - 当前 79,826,205 字节 Watch M4A 完整性状态为 `verified`；迁移和真实逻辑窗口解码前后 SHA-256 均为 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`。
 - 当前长录音可规划为 33 个无空洞的 5 分钟核心窗口并带 5 秒边界上下文；真实 10 秒核心窗口临时解码为 11 秒 WAV，退出后缓存已删除。
@@ -189,7 +190,7 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 
 ## 8. V2-A 至 V2-E.0 交付结果与下一轮目标
 
-V2-A/V2-A.1：**“不可变原始对象、schema v11、多分片清单与逻辑窗口”** 已完成。
+V2-A/V2-A.1/V2-W.1：**“不可变原始对象、schema v12、多分片清单、可恢复备份、准入门与逻辑窗口”** 已完成。
 
 完成条件：
 
@@ -201,7 +202,7 @@ V2-A/V2-A.1：**“不可变原始对象、schema v11、多分片清单与逻辑
 - [x] 五分钟或任意长度分片可通过清单适配器原子导入；相同内容哈希不再吞掉不同时间的真实静音实例。
 - [x] V2-C/D/E 与 `processing_runs` 可只使用 `session_id`，不制造虚假的代表录音。
 - [x] V2-W.0 在模型前复核清单/逐实例哈希并拒绝 gap、overlap 或篡改，进度和失败状态保存在 SQLite。
-- [ ] 原音独立第二份存储与恢复演练；这仍是从本地影子流程进入无人值守正式流程的门槛。
+- [x] 原音独立第二份存储、当前字节复核和恢复演练机制；每条真实会话仍须由用户提供实际独立位置并通过 `session readiness`。
 
 V2-B 已完成 schema v5、连续时间真值格式、旧标注迁移、不可变预测快照、VAD/DER/JER/对齐/实体指标和多 run 对比。当前标注的覆盖等级被真实保留，没有把稀疏 V1 标注误报为穷尽真值。
 

@@ -76,7 +76,12 @@ from allday_asr.services.quality_diarization_v2d3 import (
 from allday_asr.services.quality_workflow import run_quality_workflow
 from allday_asr.services.review import import_self_review
 from allday_asr.services.runtime_profile import resolve_vram_profile
+from allday_asr.services.session_backup import (
+    create_session_backup,
+    verify_session_backup,
+)
 from allday_asr.services.session_ingest import ingest_session_manifest
+from allday_asr.services.session_readiness import evaluate_session_readiness
 from allday_asr.services.semantic_v2e02 import (
     ReplaySemanticProvider,
     SemanticV2E02Settings,
@@ -356,6 +361,137 @@ def session_list(
     console.print(table)
 
 
+@session_app.command(name="backup")
+def session_backup(
+    session_id: int = typer.Argument(..., min=1, help="已经关闭的录音会话 ID。"),
+    destination: Path = typer.Argument(
+        ...,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
+        help="独立磁盘、移动设备或网络存储的目标根目录。",
+    ),
+    storage_kind: str = typer.Option(
+        ...,
+        "--storage-kind",
+        help="independent_device、network 或 same_device_test。",
+    ),
+    restore_drill: bool = typer.Option(
+        True,
+        "--restore-drill/--no-restore-drill",
+        help="复制后从备份临时恢复并逐文件复算 SHA-256。",
+    ),
+    restore_probe_root: Optional[Path] = typer.Option(
+        None,
+        "--restore-probe-root",
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
+        help="恢复演练临时目录；默认使用系统临时目录。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """创建不覆盖已有文件的逐实例原音备份，并保存验证证据。"""
+    try:
+        summary = create_session_backup(
+            Database(db),
+            session_id,
+            destination,
+            storage_kind=storage_kind,
+            restore_drill=restore_drill,
+            restore_probe_root=restore_probe_root,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        console.print(f"[red]会话备份未完成[/red]：{exc}")
+        raise typer.Exit(code=2) from exc
+    action = "已创建" if summary.created else "已复核既有"
+    console.print(
+        f"[green]{action}会话备份[/green] backup={summary.backup_id} | "
+        f"files={summary.file_count} | bytes={summary.total_bytes} | "
+        f"storage={summary.storage_kind} | restore={summary.restore_verified}"
+    )
+    console.print(f"备份目录：{summary.backup_path}")
+    if summary.storage_kind == "same_device_test":
+        console.print(
+            "[yellow]same_device_test 只验证流程，不满足正式生产的独立副本要求。[/yellow]"
+        )
+
+
+@session_app.command(name="backup-verify")
+def session_backup_verify(
+    backup_id: int = typer.Argument(..., min=1, help="会话备份 ID。"),
+    restore_drill: bool = typer.Option(
+        True,
+        "--restore-drill/--no-restore-drill",
+        help="同时执行一次临时恢复演练。",
+    ),
+    restore_probe_root: Optional[Path] = typer.Option(
+        None,
+        "--restore-probe-root",
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
+        help="恢复演练临时目录；默认使用系统临时目录。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """重新读取备份并验证清单、每个文件和可恢复性。"""
+    try:
+        summary = verify_session_backup(
+            Database(db),
+            backup_id,
+            restore_drill=restore_drill,
+            restore_probe_root=restore_probe_root,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        console.print(f"[red]备份复核失败[/red]：{exc}")
+        raise typer.Exit(code=2) from exc
+    console.print(
+        f"[green]备份复核通过[/green] backup={summary.backup_id} | "
+        f"files={summary.file_count} | bytes={summary.total_bytes} | "
+        f"restore={summary.restore_drill} | production={summary.production_grade}"
+    )
+
+
+@session_app.command(name="readiness")
+def session_readiness(
+    session_id: int = typer.Argument(..., min=1, help="录音会话 ID。"),
+    verify_backups: bool = typer.Option(
+        True,
+        "--verify-backups/--no-verify-backups",
+        help="重新读取生产备份并复算 SHA-256。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """只做完整性和工程能力检查，不运行 VAD、ASR 或说话人模型。"""
+    try:
+        result = evaluate_session_readiness(
+            Database(db), session_id, verify_backups=verify_backups
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        console.print(f"[red]会话准入检查失败[/red]：{exc}")
+        raise typer.Exit(code=2) from exc
+    color = {
+        "production_ready": "green",
+        "shadow_ready": "yellow",
+        "blocked": "red",
+    }[str(result["state"])]
+    console.print(
+        f"[{color}]state={result['state']}[/{color}] | "
+        f"shadow={result['shadow_ready']} | production={result['production_ready']} | "
+        f"duration={result['duration_ms'] / 1000:.3f}s"
+    )
+    for reason in result["blocking_reasons"]:
+        console.print(f"[red]阻断[/red]：{reason}")
+    for reason in result["production_blockers"]:
+        console.print(f"[yellow]生产门槛[/yellow]：{reason}")
+    for warning in result["warnings"]:
+        console.print(f"[yellow]提示[/yellow]：{warning}")
+    console.print(
+        "[dim]本命令只读取文件字节进行哈希校验，不解码或分析音频内容。[/dim]"
+    )
+
+
 @workflow_app.command(name="run")
 def quality_workflow_run(
     recording_id: Optional[int] = typer.Argument(
@@ -363,6 +499,11 @@ def quality_workflow_run(
     ),
     session_id: Optional[int] = typer.Option(
         None, "--session", min=1, help="已经关闭并冻结的录音会话 ID。"
+    ),
+    shadow: bool = typer.Option(
+        False,
+        "--shadow",
+        help="显式允许无独立备份或超出已验证时长的受监控实验运行。",
     ),
     profile: Optional[str] = typer.Option(
         None, help="auto、quality-16gb 或 compatible-8gb。"
@@ -411,6 +552,7 @@ def quality_workflow_run(
             primary_factory=primary_factory,
             secondary_factory=secondary_factory,
             diarization_factory=diarization_factory,
+            admission_mode="shadow" if shadow else "production",
             progress=lambda stage, detail: console.print(
                 f"[cyan]{stage}[/cyan] {detail}"
             ),
@@ -425,6 +567,10 @@ def quality_workflow_run(
     )
     if summary.reused_stages:
         console.print(f"复用阶段：{', '.join(summary.reused_stages)}")
+    if shadow:
+        console.print(
+            "[yellow]本次为显式 shadow 运行，不代表已满足独立备份和正式生产门槛。[/yellow]"
+        )
     console.print(
         "[yellow]已停在本地 semantic_ready 边界；没有调用云端 LLM，"
         "也没有修改或生成替代原音。[/yellow]"

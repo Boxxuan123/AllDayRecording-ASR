@@ -62,6 +62,18 @@ class QualityWorkflowTests(unittest.TestCase):
         persisted = json.loads(str(run["summary_json"]))
         self.assertEqual(persisted["workflow_state"], "semantic_ready_empty")
         self.assertEqual(persisted["integrity"]["instances"][0]["status"], "verified")
+        self.assertEqual(persisted["admission_mode"], "shadow")
+
+    def test_production_mode_rejects_session_without_independent_backup(self) -> None:
+        session_id, _ = self._import_session("production-gate")
+        with (
+            patch.object(workflow, "run_quality_asr") as asr_mock,
+            patch.object(workflow, "run_quality_diarization") as diarization_mock,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "独立设备/网络备份"):
+                self._run(session_id, admission_mode="production")
+        asr_mock.assert_not_called()
+        diarization_mock.assert_not_called()
 
     def test_workflow_runs_local_semantic_stage_when_asr_has_tokens(self) -> None:
         session_id, _ = self._import_session("semantic-workflow")
@@ -154,7 +166,7 @@ class QualityWorkflowTests(unittest.TestCase):
         asr_mock.assert_not_called()
         diarization_mock.assert_not_called()
 
-    def _run(self, session_id: int):
+    def _run(self, session_id: int, *, admission_mode: str = "shadow"):
         return workflow.run_quality_workflow(
             self.database,
             None,
@@ -167,6 +179,7 @@ class QualityWorkflowTests(unittest.TestCase):
             primary_factory=lambda: object(),
             secondary_factory=lambda: object(),
             diarization_factory=lambda: object(),
+            admission_mode=admission_mode,
         )
 
     def _import_session(self, session_key: str) -> tuple[int, Path]:
