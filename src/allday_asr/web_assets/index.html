@@ -28,13 +28,18 @@
             <span class="nav-index">02</span>
             <span>评测标注</span>
           </button>
-          <button class="nav-item" data-view="actions">
+          <button class="nav-item" data-view="semantic">
             <span class="nav-index">03</span>
+            <span>语义证据</span>
+            <span id="semantic-review-badge" class="badge hidden">0</span>
+          </button>
+          <button class="nav-item" data-view="actions">
+            <span class="nav-index">04</span>
             <span>行动候选</span>
             <span id="pending-action-badge" class="badge hidden">0</span>
           </button>
           <button class="nav-item" data-view="runs">
-            <span class="nav-index">04</span>
+            <span class="nav-index">05</span>
             <span>运行记录</span>
           </button>
         </nav>
@@ -172,6 +177,40 @@
                 </div>
               </article>
             </div>
+          </div>
+        </section>
+
+        <section id="view-semantic" class="view">
+          <div class="section-heading semantic-heading">
+            <div>
+              <p class="eyebrow">V2-E.0 / LOCAL EVIDENCE CONTRACT</p>
+              <h3>把转写整理成可追溯的语义输入</h3>
+              <p>这里只封装对齐文字、说话人、不确定性与原音坐标；当前 mock 不生成日记事实，也不调用云服务。</p>
+            </div>
+            <div class="section-actions">
+              <button id="generate-semantic-button" class="secondary-button">生成本地证据包</button>
+            </div>
+          </div>
+
+          <div class="semantic-privacy-notice">
+            <strong>本轮网络访问：关闭</strong>
+            <p>数据库只记录本地请求/响应和 SHA-256。请求包不含音频字节、原音路径或声纹；所有事件仍可回到本机永久原音复核。</p>
+          </div>
+
+          <div id="semantic-empty" class="empty-state hidden">
+            <strong>还没有语义证据包</strong>
+            <p id="semantic-empty-copy">完成 V2-C/V2-D 后即可生成。</p>
+          </div>
+
+          <div id="semantic-workspace" class="semantic-workspace hidden">
+            <div class="semantic-summary-grid" aria-label="语义证据包概览">
+              <article><span>证据事件</span><strong id="semantic-event-count">—</strong></article>
+              <article><span>对齐 token</span><strong id="semantic-token-count">—</strong></article>
+              <article><span>人工审核</span><strong id="semantic-reviewed-count">—</strong></article>
+              <article><span>Provider</span><strong id="semantic-provider">—</strong></article>
+            </div>
+            <div id="semantic-run-note" class="semantic-run-note"></div>
+            <div id="semantic-candidate-list" class="semantic-candidate-list"></div>
           </div>
         </section>
 

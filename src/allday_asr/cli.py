@@ -73,6 +73,11 @@ from allday_asr.services.quality_diarization_v2d3 import (
     sync_identity_reference_set,
 )
 from allday_asr.services.review import import_self_review
+from allday_asr.services.semantic_v2e0 import (
+    SemanticV2E0Settings,
+    run_semantic_v2e0,
+    semantic_overview,
+)
 from allday_asr.services.sources import (
     audit_all_sources,
     audit_source_object,
@@ -120,6 +125,11 @@ quality_diarization_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(quality_diarization_app, name="diarization-v2")
+semantic_app = typer.Typer(
+    help="V2-E 本地语义证据包与云端接口边界。",
+    no_args_is_help=True,
+)
+app.add_typer(semantic_app, name="semantic-v2")
 
 
 @quality_diarization_app.command(name="run")
@@ -530,6 +540,79 @@ def quality_diarization_sync_identity_references(
     console.print(
         "[yellow]这里只保存永久原音的 SHA-256 和时间坐标；"
         "没有复制音频、生成正式声纹或自动绑定人物。[/yellow]"
+    )
+
+
+@semantic_app.command(name="build")
+def semantic_v2_build(
+    recording_id: int = typer.Argument(..., min=1),
+    asr_run_id: int | None = typer.Option(
+        None,
+        "--asr-run",
+        min=1,
+        help="V2-C run；默认使用最新 V2-D 对应的 V2-C run。",
+    ),
+    diarization_run_id: int | None = typer.Option(
+        None,
+        "--diarization-run",
+        min=1,
+        help="V2-D run；默认使用最新完成的一次。",
+    ),
+    event_gap_seconds: float = typer.Option(
+        45.0,
+        "--event-gap-seconds",
+        min=1.0,
+        max=120.0,
+        help="超过该无文字间隔时开始新证据事件。",
+    ),
+    max_event_seconds: float = typer.Option(
+        120.0,
+        "--max-event-seconds",
+        min=10.0,
+        max=120.0,
+        help="单个证据事件最大时长，保证网页可回听。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """生成不联网、不调用 LLM 的 V2-E.0 本地语义证据包。"""
+    summary = run_semantic_v2e0(
+        Database(db),
+        recording_id,
+        asr_run_id=asr_run_id,
+        diarization_run_id=diarization_run_id,
+        settings=SemanticV2E0Settings(
+            event_gap_ms=round(event_gap_seconds * 1_000),
+            max_event_ms=round(max_event_seconds * 1_000),
+        ),
+    )
+    console.print(
+        f"[green]V2-E.0 本地语义证据包完成[/green] run={summary.run_id} | "
+        f"ASR={summary.asr_run_id} | D={summary.diarization_run_id or 'none'} | "
+        f"events={summary.event_count} | tokens={summary.token_count} | "
+        f"candidates={summary.candidate_count}"
+    )
+    console.print(
+        "[yellow]本轮没有网络请求，没有上传文字或音频；"
+        "事件标题只是时间标签，不是 LLM 生成的事实。[/yellow]"
+    )
+    console.print(f"运行清单：{summary.manifest_path.resolve()}")
+
+
+@semantic_app.command(name="status")
+def semantic_v2_status(
+    recording_id: int = typer.Argument(..., min=1),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """查看最新 V2-E.0 证据包和人工审核进度。"""
+    payload = semantic_overview(Database(db), recording_id)
+    if not payload["available"]:
+        console.print(f"[yellow]{payload['reason']}[/yellow]")
+        return
+    summary = payload["summary"]
+    console.print(
+        f"run={payload['run']['id']} | provider={payload['run']['provider']} | "
+        f"events={summary['event_count']} | tokens={summary['token_count']} | "
+        f"reviewed={payload['reviewed_candidates']}/{len(payload['candidates'])}"
     )
 
 

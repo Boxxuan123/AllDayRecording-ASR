@@ -106,10 +106,12 @@ class WebConsoleTests(unittest.TestCase):
                     html = response.read().decode("utf-8")
                 self.assertIn("<title>AllDay · 本地日记工作台</title>", html)
                 self.assertIn("说话人时间轴", html)
+                self.assertIn("语义证据", html)
                 with opener.open(f"{base_url}/assets/app.js", timeout=3) as response:
                     javascript = response.read().decode("utf-8")
                 self.assertIn("DOMContentLoaded", javascript)
                 self.assertIn("renderTimelineOverview", javascript)
+                self.assertIn("renderSemantic", javascript)
 
                 with opener.open(
                     f"{base_url}/api/dashboard?recording_id={recording_id}",
@@ -125,6 +127,14 @@ class WebConsoleTests(unittest.TestCase):
                 ) as response:
                     timeline = json.load(response)
                 self.assertFalse(timeline["available"])
+
+                with opener.open(
+                    f"{base_url}/api/semantic?recording_id={recording_id}",
+                    timeout=3,
+                ) as response:
+                    semantic = json.load(response)
+                self.assertFalse(semantic["available"])
+                self.assertFalse(semantic["can_generate"])
 
                 with opener.open(
                     f"{base_url}/api/evaluations/{recording_id}/web-test",

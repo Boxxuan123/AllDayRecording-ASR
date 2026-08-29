@@ -10,6 +10,7 @@ const state = {
   actions: [],
   runs: [],
   timeline: null,
+  semantic: null,
   timelineQueue: "conversation",
   timelineSelectedId: null,
   timelineWindow: null,
@@ -124,6 +125,7 @@ function bindToolbar() {
     state.evaluationName = null;
     state.evaluation = null;
     state.timeline = null;
+    state.semantic = null;
     state.timelineSelectedId = null;
     state.timelineWindow = null;
     state.page = 1;
@@ -136,6 +138,7 @@ function bindToolbar() {
   });
   $("#run-evaluation-button").addEventListener("click", runEvaluation);
   $("#run-daily-button").addEventListener("click", startDailyRun);
+  $("#generate-semantic-button").addEventListener("click", generateSemantic);
 }
 
 function switchView(view) {
@@ -143,6 +146,7 @@ function switchView(view) {
   const titles = {
     timeline: "说话人时间轴",
     evaluation: "评测标注",
+    semantic: "语义证据",
     actions: "行动候选",
     runs: "运行记录",
   };
@@ -168,23 +172,26 @@ function renderRecordingOptions() {
 async function loadRecordingWorkspace() {
   if (!state.recordingId) return;
   try {
-    const [dashboard, templates, actions, runs, timeline] = await Promise.all([
+    const [dashboard, templates, actions, runs, timeline, semantic] = await Promise.all([
       api(`/api/dashboard?recording_id=${state.recordingId}`),
       api(`/api/evaluations?recording_id=${state.recordingId}`),
       api(`/api/actions?recording_id=${state.recordingId}`),
       api(`/api/runs?recording_id=${state.recordingId}`),
       api(`/api/speaker-timeline?recording_id=${state.recordingId}`),
+      api(`/api/semantic?recording_id=${state.recordingId}`),
     ]);
     state.dashboard = dashboard;
     state.templates = templates.evaluations;
     state.actions = actions.actions;
     state.runs = runs.runs;
     state.timeline = timeline;
+    state.semantic = semantic;
     renderDashboard();
     renderEvaluationOptions();
     renderActions();
     renderRuns();
     renderTimelineOverview();
+    renderSemantic();
     await loadEvaluation();
   } catch (error) {
     toast(error.message, "error");
@@ -1094,6 +1101,148 @@ async function runEvaluation() {
   } finally {
     button.disabled = false;
     button.textContent = "生成评测报告";
+  }
+}
+
+function renderSemantic() {
+  const payload = state.semantic;
+  const empty = $("#semantic-empty");
+  const workspace = $("#semantic-workspace");
+  const generate = $("#generate-semantic-button");
+  if (!payload?.available) {
+    empty.classList.remove("hidden");
+    workspace.classList.add("hidden");
+    $("#semantic-empty-copy").textContent = payload?.reason || "完成 V2-C/V2-D 后即可生成。";
+    generate.disabled = payload?.can_generate === false;
+    updateSemanticBadge(0);
+    return;
+  }
+
+  empty.classList.add("hidden");
+  workspace.classList.remove("hidden");
+  generate.disabled = false;
+  const summary = payload.summary || {};
+  $("#semantic-event-count").textContent = String(summary.event_count || 0);
+  $("#semantic-token-count").textContent = Number(summary.token_count || 0).toLocaleString("zh-CN");
+  $("#semantic-reviewed-count").textContent = `${payload.reviewed_candidates} / ${payload.candidates.length}`;
+  $("#semantic-provider").textContent = payload.run.provider === "local_mock" ? "本地 mock" : payload.run.provider;
+  $("#semantic-run-note").textContent = (
+    `RUN #${payload.run.id} · ASR #${payload.run.asr_run_id}`
+    + `${payload.run.diarization_run_id ? ` · DIARIZATION #${payload.run.diarization_run_id}` : ""}`
+    + ` · REQUEST ${payload.run.request_sha256.slice(0, 12)}`
+  );
+  const pending = payload.candidates.filter((item) => !item.review_status).length;
+  updateSemanticBadge(pending);
+  const container = $("#semantic-candidate-list");
+  container.replaceChildren();
+  payload.candidates.forEach((candidate) => container.append(renderSemanticCard(candidate)));
+}
+
+function updateSemanticBadge(count) {
+  const badge = $("#semantic-review-badge");
+  badge.textContent = String(count);
+  badge.classList.toggle("hidden", count === 0);
+}
+
+function renderSemanticCard(candidate) {
+  const card = node("article", `semantic-card ${candidate.type} ${candidate.review_status || "pending"}`);
+  const header = node("header", "semantic-card-header");
+  const meta = node("div", "semantic-card-meta");
+  meta.append(node("span", "segment-id", candidate.type === "daily_summary" ? "DAY EVIDENCE" : "EVENT EVIDENCE"));
+  meta.append(node("span", "time-chip", `${formatOffset(candidate.start_ms)}–${formatOffset(candidate.end_ms)}`));
+  const status = node(
+    "span",
+    `status-chip ${candidate.review_status || "pending"}`,
+    candidate.review_status === "confirmed" ? "已确认" : candidate.review_status === "rejected" ? "已排除" : "待审核",
+  );
+  header.append(meta, status);
+  card.append(header);
+
+  const title = node("input", "semantic-title-input");
+  title.type = "text";
+  title.value = candidate.title;
+  title.setAttribute("aria-label", "语义候选标题");
+  const body = node("textarea", "semantic-body-input");
+  body.value = candidate.body;
+  body.rows = candidate.type === "daily_summary" ? 3 : 4;
+  body.setAttribute("aria-label", "语义候选内容");
+  card.append(title, body);
+
+  if (candidate.audio_url) {
+    card.append(renderAudioPlayer("本地原音证据", candidate.audio_url, `播放语义证据 ${candidate.id}`, "exact"));
+  }
+  const evidence = node("div", "semantic-evidence-row");
+  if (candidate.type === "daily_summary") {
+    evidence.append(node("span", "semantic-evidence-chip", `${candidate.evidence.event_keys?.length || 0} 个事件引用`));
+  } else {
+    const uncertainty = candidate.evidence.uncertainty || {};
+    evidence.append(
+      node("span", "semantic-evidence-chip", `${candidate.evidence.token_ids?.length || 0} tokens`),
+      node("span", "semantic-evidence-chip", `${candidate.evidence.source_refs?.length || 0} 原音坐标`),
+      node("span", "semantic-evidence-chip warning", `${uncertainty.unassigned_tokens || 0} 无归属`),
+      node("span", "semantic-evidence-chip warning", `${uncertainty.disagreement_ids?.length || 0} 模型分歧`),
+    );
+  }
+  card.append(evidence);
+
+  const note = node("input", "semantic-note-input");
+  note.type = "text";
+  note.value = candidate.review_note || "";
+  note.placeholder = "可选审核备注";
+  note.setAttribute("aria-label", "语义审核备注");
+  const actions = node("div", "semantic-review-actions");
+  const confirm = node("button", "review-button confirm", "确认并保存修订");
+  const reject = node("button", "review-button dismiss", "排除");
+  confirm.type = "button";
+  reject.type = "button";
+  confirm.addEventListener("click", () => reviewSemantic(candidate, "confirmed", title, body, note, confirm));
+  reject.addEventListener("click", () => reviewSemantic(candidate, "rejected", title, body, note, reject));
+  actions.append(confirm, reject);
+  card.append(note, actions);
+  return card;
+}
+
+async function generateSemantic() {
+  if (!state.recordingId) return;
+  const button = $("#generate-semantic-button");
+  button.disabled = true;
+  button.textContent = "整理证据中…";
+  try {
+    const result = await api("/api/semantic/generate", {
+      method: "POST",
+      body: JSON.stringify({ recording_id: state.recordingId }),
+    });
+    toast(`V2-E.0 run #${result.run_id}：${result.event_count} 个本地证据事件`);
+    state.semantic = await api(`/api/semantic?recording_id=${state.recordingId}`);
+    renderSemantic();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "重新生成本地证据包";
+  }
+}
+
+async function reviewSemantic(candidate, status, title, body, note, button) {
+  button.disabled = true;
+  try {
+    await api(`/api/semantic/candidates/${candidate.id}/review`, {
+      method: "POST",
+      body: JSON.stringify({
+        recording_id: state.recordingId,
+        status,
+        title: title.value,
+        body: body.value,
+        note: note.value,
+      }),
+    });
+    state.semantic = await api(`/api/semantic?recording_id=${state.recordingId}`);
+    renderSemantic();
+    toast(`语义证据 #${candidate.id} 已${status === "confirmed" ? "确认" : "排除"}`);
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
   }
 }
 

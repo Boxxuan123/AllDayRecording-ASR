@@ -663,6 +663,157 @@ audio {
   margin-top: 14px;
 }
 
+.semantic-heading {
+  align-items: end;
+}
+
+.semantic-privacy-notice {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.34fr) minmax(0, 1fr);
+  gap: 18px;
+  margin: 14px 0;
+  padding: 16px 18px;
+  color: #315f50;
+  background: #eef8f4;
+  border: 1px solid #a8cabc;
+  border-radius: 12px;
+}
+
+.semantic-privacy-notice strong {
+  font-size: 12px;
+}
+
+.semantic-privacy-notice p {
+  margin: 0;
+  color: #4d6c61;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.semantic-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  margin-top: 14px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.semantic-summary-grid article {
+  display: grid;
+  gap: 7px;
+  padding: 16px;
+  background: var(--surface);
+}
+
+.semantic-summary-grid span {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.semantic-summary-grid strong {
+  font-size: 18px;
+}
+
+.semantic-run-note {
+  margin: 12px 2px 16px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.semantic-candidate-list {
+  display: grid;
+  gap: 12px;
+}
+
+.semantic-card {
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid #aab2b7;
+  border-radius: 13px;
+}
+
+.semantic-card.daily_summary {
+  border-left-color: var(--violet);
+  background: linear-gradient(135deg, rgba(129,114,198,.07), var(--surface) 48%);
+}
+
+.semantic-card.confirmed { border-left-color: var(--green); }
+.semantic-card.rejected { border-left-color: #b7b8b4; opacity: .78; }
+
+.semantic-card-header,
+.semantic-card-meta,
+.semantic-review-actions,
+.semantic-evidence-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.semantic-card-header {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.semantic-title-input,
+.semantic-body-input,
+.semantic-note-input {
+  width: 100%;
+  color: var(--ink);
+  background: #fbfaf7;
+  border: 1px solid #d9d4ca;
+  border-radius: 8px;
+}
+
+.semantic-title-input {
+  padding: 10px 11px;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.semantic-body-input {
+  margin-top: 8px;
+  padding: 11px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.65;
+  resize: vertical;
+}
+
+.semantic-note-input {
+  margin-top: 12px;
+  padding: 9px 10px;
+  font-size: 11px;
+}
+
+.semantic-evidence-row {
+  margin-top: 10px;
+}
+
+.semantic-evidence-chip {
+  padding: 5px 8px;
+  color: #365e62;
+  font-size: 10px;
+  background: rgba(63,143,145,.11);
+  border-radius: 999px;
+}
+
+.semantic-evidence-chip.warning {
+  color: #815b22;
+  background: rgba(217,155,61,.14);
+}
+
+.semantic-review-actions {
+  margin-top: 10px;
+}
+
 .action-card {
   padding: 21px;
   background: var(--surface);
@@ -1551,6 +1702,7 @@ td {
   .segment-evidence { border-right: 0; border-bottom: 1px solid var(--line); }
   .timeline-review-grid { grid-template-columns: minmax(220px, 0.65fr) minmax(420px, 1.35fr); }
   .timeline-detail-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .semantic-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 760px) {
@@ -1561,7 +1713,7 @@ td {
     padding: 16px;
   }
   .brand-block { padding-bottom: 14px; }
-  .nav-list { grid-template-columns: repeat(4, 1fr); margin-top: 14px; }
+  .nav-list { grid-template-columns: repeat(5, 1fr); margin-top: 14px; }
   .nav-item { grid-template-columns: 1fr; gap: 4px; text-align: center; }
   .nav-index, .privacy-card { display: none; }
   .workspace { padding: 20px 14px 50px; }
@@ -1571,6 +1723,7 @@ td {
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .review-toolbar { grid-template-columns: 1fr; }
   .field-grid, .action-list { grid-template-columns: 1fr; }
+  .semantic-privacy-notice { grid-template-columns: 1fr; gap: 6px; }
   .timeline-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .timeline-queue-toolbar, .timeline-detail-header { align-items: stretch; flex-direction: column; }
   .timeline-queue-toolbar p, .speaker-legend-note { text-align: left; }
@@ -1587,4 +1740,5 @@ td {
   .metric-grid { grid-template-columns: 1fr; }
   .nav-item { padding: 10px 6px; font-size: 12px; }
   .section-heading { padding: 20px; }
+  .semantic-summary-grid { grid-template-columns: 1fr; }
 }

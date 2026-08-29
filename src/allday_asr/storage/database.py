@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS conversation_events (
 );
 """
 
-LATEST_SCHEMA_VERSION = 9
+LATEST_SCHEMA_VERSION = 10
 
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -877,6 +877,97 @@ MIGRATIONS: dict[int, str] = {
             identity_label, decision, session_id, session_start_ms
         );
     """,
+    10: """
+        CREATE TABLE IF NOT EXISTS semantic_exchanges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL UNIQUE,
+            session_id INTEGER NOT NULL,
+            asr_run_id INTEGER NOT NULL,
+            diarization_run_id INTEGER,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            request_format TEXT NOT NULL,
+            response_format TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            request_sha256 TEXT NOT NULL,
+            response_json TEXT NOT NULL,
+            response_sha256 TEXT NOT NULL,
+            audio_bytes_included INTEGER NOT NULL DEFAULT 0 CHECK(audio_bytes_included = 0),
+            source_paths_included INTEGER NOT NULL DEFAULT 0 CHECK(source_paths_included = 0),
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (run_id) REFERENCES processing_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY (session_id) REFERENCES recording_sessions(id) ON DELETE RESTRICT,
+            FOREIGN KEY (asr_run_id) REFERENCES processing_runs(id) ON DELETE RESTRICT,
+            FOREIGN KEY (diarization_run_id) REFERENCES processing_runs(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS semantic_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            candidate_key TEXT NOT NULL UNIQUE,
+            candidate_type TEXT NOT NULL CHECK(
+                candidate_type IN ('daily_summary', 'event', 'fact', 'action')
+            ),
+            session_start_ms INTEGER NOT NULL,
+            session_end_ms INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            confidence REAL,
+            evidence_json TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(run_id, candidate_key),
+            CHECK(session_end_ms > session_start_ms),
+            CHECK(confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0)),
+            FOREIGN KEY (run_id) REFERENCES processing_runs(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_semantic_candidates_run_type_time
+        ON semantic_candidates(run_id, candidate_type, session_start_ms);
+
+        CREATE TABLE IF NOT EXISTS semantic_candidate_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_id INTEGER NOT NULL,
+            revision_index INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('confirmed', 'rejected')),
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            note TEXT,
+            content_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(candidate_id, revision_index),
+            CHECK(revision_index >= 1),
+            FOREIGN KEY (candidate_id) REFERENCES semantic_candidates(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_semantic_revisions_candidate_index
+        ON semantic_candidate_revisions(candidate_id, revision_index DESC);
+
+        CREATE TRIGGER IF NOT EXISTS protect_semantic_exchanges_from_update
+        BEFORE UPDATE ON semantic_exchanges BEGIN
+            SELECT RAISE(ABORT, 'semantic exchange cannot be changed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_semantic_exchanges_from_delete
+        BEFORE DELETE ON semantic_exchanges BEGIN
+            SELECT RAISE(ABORT, 'semantic exchange cannot be deleted');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_semantic_candidates_from_update
+        BEFORE UPDATE ON semantic_candidates BEGIN
+            SELECT RAISE(ABORT, 'semantic candidate cannot be changed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_semantic_candidates_from_delete
+        BEFORE DELETE ON semantic_candidates BEGIN
+            SELECT RAISE(ABORT, 'semantic candidate cannot be deleted');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_semantic_revisions_from_update
+        BEFORE UPDATE ON semantic_candidate_revisions BEGIN
+            SELECT RAISE(ABORT, 'semantic revision cannot be changed');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_semantic_revisions_from_delete
+        BEFORE DELETE ON semantic_candidate_revisions BEGIN
+            SELECT RAISE(ABORT, 'semantic revision cannot be deleted');
+        END;
+    """,
 }
 
 V4_PROCESSING_RUN_COLUMNS = {
@@ -1229,6 +1320,8 @@ class Database:
             connection.executescript(V5_GUARD_SQL)
             connection.executescript(V7_GUARD_SQL)
             _backfill_v2_source_graph(connection)
+            if previous_version < LATEST_SCHEMA_VERSION:
+                connection.execute("PRAGMA optimize")
 
     def _existing_schema_version(self) -> int:
         if not self.path.is_file() or self.path.stat().st_size == 0:
@@ -1751,6 +1844,285 @@ class Database:
                 )
             )
 
+    def create_semantic_snapshot(
+        self,
+        run_id: int,
+        exchange: dict[str, Any],
+        candidates: Sequence[dict[str, Any]],
+    ) -> list[sqlite3.Row]:
+        """Append one private, immutable V2-E.0 exchange and its candidates."""
+        run = self.get_processing_run(run_id)
+        if str(run["run_kind"]) != "semantic_v2e0":
+            raise ValueError("语义快照只适用于 V2-E.0 run")
+        if str(run["status"]) != "running":
+            raise ValueError("语义快照只能写入运行中的 V2-E.0 run")
+        session_id = int(run["session_id"])
+        asr_run_id = int(exchange["asr_run_id"])
+        asr_run = self.get_processing_run(asr_run_id)
+        if (
+            str(asr_run["run_kind"]) != "quality_asr_v2c"
+            or str(asr_run["status"]) != "completed"
+            or int(asr_run["session_id"]) != session_id
+        ):
+            raise ValueError("语义快照需要同会话已完成的 V2-C ASR run")
+        diarization_run_id = exchange.get("diarization_run_id")
+        if diarization_run_id is not None:
+            diarization_run = self.get_processing_run(int(diarization_run_id))
+            if (
+                str(diarization_run["run_kind"]) != "quality_diarization_v2d"
+                or str(diarization_run["status"]) != "completed"
+                or int(diarization_run["session_id"]) != session_id
+            ):
+                raise ValueError("语义快照的 V2-D run 无效")
+        if exchange.get("audio_bytes_included") or exchange.get(
+            "source_paths_included"
+        ):
+            raise ValueError("V2-E.0 禁止在语义交换中包含音频字节或原音路径")
+
+        request_json = json.dumps(
+            exchange["request"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        response_json = json.dumps(
+            exchange["response"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        request_sha256 = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
+        response_sha256 = hashlib.sha256(response_json.encode("utf-8")).hexdigest()
+        if exchange.get("request_sha256") not in {None, request_sha256}:
+            raise ValueError("语义请求 SHA-256 不正确")
+        if exchange.get("response_sha256") not in {None, response_sha256}:
+            raise ValueError("语义响应 SHA-256 不正确")
+
+        session = self.get_recording_session(session_id)
+        duration_ms = int(session["duration_ms"])
+        prepared: list[tuple[Any, ...]] = []
+        for candidate in candidates:
+            candidate_type = str(candidate["candidate_type"])
+            if candidate_type not in {"daily_summary", "event", "fact", "action"}:
+                raise ValueError("语义候选类型无效")
+            start_ms = int(candidate["session_start_ms"])
+            end_ms = int(candidate["session_end_ms"])
+            if start_ms < 0 or end_ms <= start_ms or end_ms > duration_ms:
+                raise ValueError("语义候选超出录音会话范围")
+            confidence = candidate.get("confidence")
+            if confidence is not None and not 0.0 <= float(confidence) <= 1.0:
+                raise ValueError("语义候选置信度无效")
+            title = str(candidate["title"]).strip()
+            body = str(candidate["body"]).strip()
+            if not title or not body:
+                raise ValueError("语义候选标题和内容不能为空")
+            if len(title) > 500 or len(body) > 100_000:
+                raise ValueError("语义候选内容过长")
+            evidence_json = json.dumps(
+                candidate.get("evidence", {}),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            canonical_payload = {
+                "candidate_key": str(candidate["candidate_key"]),
+                "candidate_type": candidate_type,
+                "session_start_ms": start_ms,
+                "session_end_ms": end_ms,
+                "title": title,
+                "body": body,
+                "confidence": confidence,
+                "evidence": json.loads(evidence_json),
+            }
+            canonical = json.dumps(
+                canonical_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            content_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            prepared.append(
+                (
+                    run_id,
+                    str(candidate["candidate_key"]),
+                    candidate_type,
+                    start_ms,
+                    end_ms,
+                    title,
+                    body,
+                    float(confidence) if confidence is not None else None,
+                    evidence_json,
+                    content_sha256,
+                    utc_now(),
+                )
+            )
+
+        with self.connect() as connection:
+            now = utc_now()
+            connection.execute(
+                """
+                INSERT INTO semantic_exchanges (
+                    run_id, session_id, asr_run_id, diarization_run_id,
+                    provider, model, request_format, response_format,
+                    request_json, request_sha256, response_json,
+                    response_sha256, audio_bytes_included,
+                    source_paths_included, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+                """,
+                (
+                    run_id,
+                    session_id,
+                    asr_run_id,
+                    int(diarization_run_id)
+                    if diarization_run_id is not None
+                    else None,
+                    str(exchange["provider"]),
+                    str(exchange["model"]),
+                    str(exchange["request_format"]),
+                    str(exchange["response_format"]),
+                    request_json,
+                    request_sha256,
+                    response_json,
+                    response_sha256,
+                    now,
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO semantic_candidates (
+                    run_id, candidate_key, candidate_type,
+                    session_start_ms, session_end_ms, title, body,
+                    confidence, evidence_json, content_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                prepared,
+            )
+        return self.list_semantic_candidates(run_id)
+
+    def get_semantic_exchange(self, run_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM semantic_exchanges WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"V2-E.0 run {run_id} 没有语义交换")
+        return row
+
+    def list_semantic_candidates(self, run_id: int) -> list[sqlite3.Row]:
+        run = self.get_processing_run(run_id)
+        if str(run["run_kind"]) != "semantic_v2e0":
+            raise ValueError("语义候选只适用于 V2-E.0 run")
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM semantic_candidates
+                    WHERE run_id = ?
+                    ORDER BY CASE candidate_type
+                        WHEN 'daily_summary' THEN 0
+                        WHEN 'event' THEN 1
+                        WHEN 'fact' THEN 2
+                        ELSE 3 END,
+                        session_start_ms, id
+                    """,
+                    (run_id,),
+                )
+            )
+
+    def get_semantic_candidate(self, candidate_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM semantic_candidates WHERE id = ?", (candidate_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"语义候选 {candidate_id} 不存在")
+        return row
+
+    def create_semantic_candidate_revision(
+        self,
+        candidate_id: int,
+        *,
+        status: str,
+        title: str | None = None,
+        body: str | None = None,
+        note: str | None = None,
+    ) -> sqlite3.Row:
+        if status not in {"confirmed", "rejected"}:
+            raise ValueError("语义审核状态必须是 confirmed 或 rejected")
+        candidate = self.get_semantic_candidate(candidate_id)
+        run = self.get_processing_run(int(candidate["run_id"]))
+        if str(run["status"]) != "completed":
+            raise ValueError("只能审核已完成 V2-E.0 run 的候选")
+        with self.connect() as connection:
+            latest = connection.execute(
+                """
+                SELECT * FROM semantic_candidate_revisions
+                WHERE candidate_id = ? ORDER BY revision_index DESC LIMIT 1
+                """,
+                (candidate_id,),
+            ).fetchone()
+            current_title = str(latest["title"] if latest else candidate["title"])
+            current_body = str(latest["body"] if latest else candidate["body"])
+            revised_title = str(title).strip() if title is not None else current_title
+            revised_body = str(body).strip() if body is not None else current_body
+            if not revised_title or not revised_body:
+                raise ValueError("语义审核后的标题和内容不能为空")
+            if len(revised_title) > 500 or len(revised_body) > 100_000:
+                raise ValueError("语义审核内容过长")
+            revision_index = int(latest["revision_index"] if latest else 0) + 1
+            payload = {
+                "candidate_id": candidate_id,
+                "revision_index": revision_index,
+                "status": status,
+                "title": revised_title,
+                "body": revised_body,
+                "note": note.strip() if note and note.strip() else None,
+            }
+            canonical = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            cursor = connection.execute(
+                """
+                INSERT INTO semantic_candidate_revisions (
+                    candidate_id, revision_index, status, title, body,
+                    note, content_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate_id,
+                    revision_index,
+                    status,
+                    revised_title,
+                    revised_body,
+                    payload["note"],
+                    hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    utc_now(),
+                ),
+            )
+            revision_id = int(cursor.lastrowid)
+            return connection.execute(
+                "SELECT * FROM semantic_candidate_revisions WHERE id = ?",
+                (revision_id,),
+            ).fetchone()
+
+    def list_semantic_candidate_revisions(
+        self, candidate_id: int
+    ) -> list[sqlite3.Row]:
+        self.get_semantic_candidate(candidate_id)
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM semantic_candidate_revisions
+                    WHERE candidate_id = ? ORDER BY revision_index
+                    """,
+                    (candidate_id,),
+                )
+            )
+
     def upsert_identity_candidate_review(
         self, run_id: int, values: dict[str, Any]
     ) -> sqlite3.Row:
@@ -2173,6 +2545,26 @@ class Database:
                 connection.execute(
                     "SELECT * FROM asr_token_sources WHERE token_id = ? ORDER BY position",
                     (token_id,),
+                )
+            )
+
+    def list_asr_token_sources_for_run(self, run_id: int) -> list[sqlite3.Row]:
+        """Return source coordinates for every committed primary token in a run."""
+        self.get_processing_run(run_id)
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT s.*, t.session_start_ms, t.session_end_ms
+                    FROM asr_token_sources s
+                    JOIN asr_alignment_tokens t ON t.id = s.token_id
+                    JOIN asr_hypotheses h ON h.id = t.hypothesis_id
+                    WHERE h.run_id = ? AND h.hypothesis_role = 'primary'
+                      AND t.kept_in_core = 1
+                    ORDER BY t.session_start_ms, t.session_end_ms,
+                             t.id, s.position
+                    """,
+                    (run_id,),
                 )
             )
 

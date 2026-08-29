@@ -27,6 +27,11 @@ from allday_asr.services.evaluation import (
 from allday_asr.services.quality_diarization_v2d3 import (
     review_identity_candidate,
 )
+from allday_asr.services.semantic_v2e0 import (
+    review_semantic_candidate,
+    run_semantic_v2e0,
+    semantic_overview,
+)
 from allday_asr.services.sources import (
     LogicalWindow,
     logical_window_cache_key,
@@ -229,6 +234,42 @@ class WebApplication:
             candidate_id=candidate_id,
             status=status,
             note=note,
+        )
+
+    def semantic(self, recording_id: int) -> dict[str, Any]:
+        return semantic_overview(self.database(), recording_id)
+
+    def generate_semantic(self, recording_id: int) -> dict[str, Any]:
+        summary = run_semantic_v2e0(self.database(), recording_id)
+        return {
+            "run_id": summary.run_id,
+            "recording_id": recording_id,
+            "asr_run_id": summary.asr_run_id,
+            "diarization_run_id": summary.diarization_run_id,
+            "event_count": summary.event_count,
+            "token_count": summary.token_count,
+            "candidate_count": summary.candidate_count,
+            "request_sha256": summary.request_sha256,
+            "response_sha256": summary.response_sha256,
+        }
+
+    def review_semantic(
+        self, recording_id: int, candidate_id: int, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        allowed = {"recording_id", "status", "title", "body", "note"}
+        unknown = set(values) - allowed
+        if unknown:
+            raise ValueError(f"不允许更新字段：{', '.join(sorted(unknown))}")
+        if "status" not in values:
+            raise ValueError("缺少 status")
+        return review_semantic_candidate(
+            self.database(),
+            recording_id,
+            candidate_id,
+            status=str(values["status"]),
+            title=str(values["title"]) if values.get("title") is not None else None,
+            body=str(values["body"]) if values.get("body") is not None else None,
+            note=str(values["note"]) if values.get("note") is not None else None,
         )
 
     def start_daily_run(self, recording_id: int) -> dict:
@@ -455,6 +496,12 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK, {"actions": self.application.actions(recording_id)}
             )
             return
+        if parsed.path == "/api/semantic":
+            recording_id = _query_int(parsed.query, "recording_id")
+            self._send_json(
+                HTTPStatus.OK, self.application.semantic(recording_id)
+            )
+            return
         if parsed.path == "/api/runs":
             recording_id = _query_int(parsed.query, "recording_id")
             self._send_json(
@@ -526,6 +573,26 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
                     candidate_id=str(body["candidate_id"]),
                     status=str(body["status"]),
                     note=str(body["note"]) if body.get("note") is not None else None,
+                ),
+            )
+            return
+        if parsed.path == "/api/semantic/generate":
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.generate_semantic(int(body["recording_id"])),
+            )
+            return
+        semantic_review_match = _match_path(
+            parsed.path,
+            r"/api/semantic/candidates/(?P<candidate_id>\d+)/review",
+        )
+        if semantic_review_match:
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.review_semantic(
+                    int(body["recording_id"]),
+                    int(semantic_review_match["candidate_id"]),
+                    body,
                 ),
             )
             return

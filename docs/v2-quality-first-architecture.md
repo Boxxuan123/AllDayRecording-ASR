@@ -347,10 +347,11 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 
 ### V2-E：云端语义接口
 
-1. 定义供应商无关的请求、响应和 JSON schema。
-2. 实现带证据的会话、事实、日程和待办候选。
-3. 保存云端修订历史，不覆盖本地 ASR。
-4. 保持人工确认后才能写入外部系统的原则。
+1. [x] V2-E.0 定义供应商无关的请求/响应格式，并冻结本地 record/replay 证据包。
+2. [x] 每个事件绑定 committed token、speaker、不确定性和永久原音坐标；不向 provider 暴露本地路径或音频字节。
+3. [x] 保存不可变交换、基础候选和追加式人工修订，不覆盖本地 ASR。
+4. [ ] V2-E.1 接入真实云端 provider，并评测带证据的事实、日程和待办候选。
+5. [ ] 保持人工确认后才能写入外部系统的原则。
 
 ### V2-F：Watch 同步
 
@@ -386,4 +387,4 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 10. 云端语义接口。
 11. Watch chunk 同步。
 
-V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；V2-D 已完成 schema v7、Community-1 backend、token-to-speaker 融合和全量 run 11。之后在新的穷尽 speaker/media/overlap 真值上决定是否增加 Sortformer 候选。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。
+V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；V2-D 已完成 schema v7、Community-1 backend、token-to-speaker 融合和全量 run 11；V2-E.0 已完成 schema v10、本地语义证据交换和审核页。之后在新的穷尽 speaker/media/overlap 真值上决定是否增加 Sortformer 候选，并在单独授权后为同一 V2-E 契约增加真实云端 provider。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。
