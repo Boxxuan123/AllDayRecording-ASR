@@ -23,6 +23,7 @@ from allday_asr.services.quality_diarization_v2d3 import (
     review_identity_candidate,
     run_identity_candidate_mining,
     score_identity_candidates,
+    sync_identity_reference_set,
 )
 from allday_asr.services.speaker_timeline import speaker_timeline_overview
 from allday_asr.storage.database import Database
@@ -146,6 +147,20 @@ class QualityDiarizationV2D3Tests(unittest.TestCase):
         )
         self.assertEqual(review["status"], "confirmed_target")
         self.assertEqual(
+            review["reference_set"]["status"], "provisional_reference_set"
+        )
+        self.assertEqual(review["reference_set"]["confirmed_intervals"], 2)
+        self.assertEqual(review["reference_set"]["confirmed_duration_ms"], 6_000)
+        references = self.database.list_identity_reference_intervals("father")
+        self.assertEqual(len(references), 2)
+        self.assertEqual(
+            {row["provenance_kind"] for row in references},
+            {"truth", "v2d3_review"},
+        )
+        self.assertEqual(
+            {row["source_sha256"] for row in references}, {self.source_sha256}
+        )
+        self.assertEqual(
             self.database.get_processing_run(summary.run_id)["summary_json"],
             sealed_summary,
         )
@@ -165,6 +180,12 @@ class QualityDiarizationV2D3Tests(unittest.TestCase):
         inherited = self.database.list_identity_candidate_reviews(repeated.run_id)
         self.assertEqual(len(inherited), 1)
         self.assertEqual(inherited[0]["status"], "confirmed_target")
+        reference_summary = sync_identity_reference_set(self.database, "father")
+        self.assertEqual(reference_summary.confirmed_intervals, 2)
+        self.assertEqual(reference_summary.confirmed_duration_ms, 6_000)
+        self.assertEqual(reference_summary.sessions, 1)
+        self.assertEqual(reference_summary.source_objects, 1)
+        self.assertEqual(reference_summary.source_reference_rows, 2)
         overview = speaker_timeline_overview(self.database, self.recording_id)
         self.assertTrue(overview["v2d3"]["available"])
         self.assertEqual(overview["queues"]["identity_expansion"]["count"], 2)
@@ -172,6 +193,22 @@ class QualityDiarizationV2D3Tests(unittest.TestCase):
         self.assertEqual(
             overview["queues"]["identity_expansion"]["items"][0]["review_status"],
             "confirmed_target",
+        )
+        changed = review_identity_candidate(
+            self.database,
+            repeated.run_id,
+            candidate_id=candidates[0]["id"],
+            status="rejected",
+        )
+        self.assertEqual(changed["reference_set"]["confirmed_intervals"], 1)
+        self.assertEqual(changed["reference_set"]["confirmed_duration_ms"], 3_000)
+        self.assertEqual(changed["reference_set"]["rejected_intervals"], 1)
+        updated_references = self.database.list_identity_reference_intervals(
+            "father"
+        )
+        self.assertEqual(len(updated_references), 2)
+        self.assertEqual(
+            [row["decision"] for row in updated_references].count("rejected"), 1
         )
         self.assertEqual(hashlib.sha256(self.source_path.read_bytes()).hexdigest(), self.source_sha256)
 

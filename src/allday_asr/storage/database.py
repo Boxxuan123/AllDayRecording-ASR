@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS conversation_events (
 );
 """
 
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -839,6 +839,43 @@ MIGRATIONS: dict[int, str] = {
 
         CREATE INDEX IF NOT EXISTS idx_identity_candidate_reviews_run_status
         ON identity_candidate_reviews(run_id, status, session_start_ms);
+    """,
+    9: """
+        CREATE TABLE IF NOT EXISTS identity_reference_intervals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reference_key TEXT NOT NULL UNIQUE,
+            identity_label TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK(
+                decision IN ('confirmed_target', 'rejected', 'uncertain')
+            ),
+            session_id INTEGER NOT NULL,
+            session_start_ms INTEGER NOT NULL,
+            session_end_ms INTEGER NOT NULL,
+            source_object_id INTEGER NOT NULL,
+            source_sha256 TEXT NOT NULL,
+            source_start_ms INTEGER NOT NULL,
+            source_end_ms INTEGER NOT NULL,
+            provenance_kind TEXT NOT NULL CHECK(
+                provenance_kind IN ('truth', 'v2d3_review')
+            ),
+            provenance_id INTEGER NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK(session_end_ms > session_start_ms),
+            CHECK(source_end_ms > source_start_ms),
+            UNIQUE(
+                identity_label, session_id, source_object_id,
+                source_start_ms, source_end_ms
+            ),
+            FOREIGN KEY (session_id) REFERENCES recording_sessions(id) ON DELETE RESTRICT,
+            FOREIGN KEY (source_object_id) REFERENCES source_objects(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_identity_reference_label_decision
+        ON identity_reference_intervals(
+            identity_label, decision, session_id, session_start_ms
+        );
     """,
 }
 
@@ -1774,6 +1811,137 @@ class Database:
                     WHERE run_id = ? ORDER BY session_start_ms, id
                     """,
                     (run_id,),
+                )
+            )
+
+    def upsert_identity_reference_interval(
+        self, values: dict[str, Any]
+    ) -> sqlite3.Row:
+        """Save one source-backed identity reference without copying source audio."""
+        identity_label = str(values["identity_label"]).strip()
+        if not identity_label:
+            raise ValueError("人物参考身份不能为空")
+        decision = str(values["decision"])
+        if decision not in {"confirmed_target", "rejected", "uncertain"}:
+            raise ValueError("人物参考结论无效")
+        provenance_kind = str(values["provenance_kind"])
+        if provenance_kind not in {"truth", "v2d3_review"}:
+            raise ValueError("人物参考来源无效")
+        session_id = int(values["session_id"])
+        source_object_id = int(values["source_object_id"])
+        session_start = int(values["session_start_ms"])
+        session_end = int(values["session_end_ms"])
+        source_start = int(values["source_start_ms"])
+        source_end = int(values["source_end_ms"])
+        if session_start < 0 or session_end <= session_start:
+            raise ValueError("人物参考会话时间范围无效")
+        if source_start < 0 or source_end <= source_start:
+            raise ValueError("人物参考原音时间范围无效")
+        now = utc_now()
+        with self.connect() as connection:
+            source = connection.execute(
+                """
+                SELECT so.sha256, ss.session_start_ms, ss.session_end_ms,
+                       ss.source_start_ms, ss.source_end_ms
+                FROM source_objects so
+                JOIN session_sources ss ON ss.source_object_id = so.id
+                WHERE so.id = ? AND ss.session_id = ?
+                """,
+                (source_object_id, session_id),
+            ).fetchone()
+            if source is None:
+                raise ValueError("人物参考原音不属于指定录音会话")
+            if str(source["sha256"]) != str(values["source_sha256"]):
+                raise ValueError("人物参考原音 SHA-256 不一致")
+            if (
+                source_start < int(source["source_start_ms"])
+                or source_end > int(source["source_end_ms"])
+            ):
+                raise ValueError("人物参考范围超出不可变原音映射")
+            mapped_start = int(source["session_start_ms"]) + (
+                source_start - int(source["source_start_ms"])
+            )
+            mapped_end = mapped_start + (source_end - source_start)
+            if (mapped_start, mapped_end) != (session_start, session_end):
+                raise ValueError("人物参考的会话时间与原音时间不对应")
+            connection.execute(
+                """
+                INSERT INTO identity_reference_intervals (
+                    reference_key, identity_label, decision, session_id,
+                    session_start_ms, session_end_ms, source_object_id,
+                    source_sha256, source_start_ms, source_end_ms,
+                    provenance_kind, provenance_id, metadata_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    identity_label, session_id, source_object_id,
+                    source_start_ms, source_end_ms
+                ) DO UPDATE SET
+                    decision = excluded.decision,
+                    provenance_kind = excluded.provenance_kind,
+                    provenance_id = excluded.provenance_id,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(values["reference_key"]),
+                    identity_label,
+                    decision,
+                    session_id,
+                    session_start,
+                    session_end,
+                    source_object_id,
+                    str(values["source_sha256"]),
+                    source_start,
+                    source_end,
+                    provenance_kind,
+                    int(values["provenance_id"]),
+                    json.dumps(
+                        values.get("metadata", {}),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    now,
+                    now,
+                ),
+            )
+            return connection.execute(
+                """
+                SELECT * FROM identity_reference_intervals
+                WHERE identity_label = ? AND session_id = ?
+                  AND source_object_id = ? AND source_start_ms = ?
+                  AND source_end_ms = ?
+                """,
+                (
+                    identity_label,
+                    session_id,
+                    source_object_id,
+                    source_start,
+                    source_end,
+                ),
+            ).fetchone()
+
+    def list_identity_reference_intervals(
+        self, identity_label: str | None = None
+    ) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            if identity_label is None:
+                return list(
+                    connection.execute(
+                        """
+                        SELECT * FROM identity_reference_intervals
+                        ORDER BY identity_label, session_id, session_start_ms, id
+                        """
+                    )
+                )
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM identity_reference_intervals
+                    WHERE identity_label = ?
+                    ORDER BY session_id, session_start_ms, id
+                    """,
+                    (identity_label,),
                 )
             )
 

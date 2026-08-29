@@ -70,6 +70,7 @@ from allday_asr.services.quality_diarization_v2d2 import (
 from allday_asr.services.quality_diarization_v2d3 import (
     V2D3Settings,
     run_identity_candidate_mining,
+    sync_identity_reference_set,
 )
 from allday_asr.services.review import import_self_review
 from allday_asr.services.sources import (
@@ -506,6 +507,30 @@ def quality_diarization_mine_identities(
         "没有写入任何人物身份或正式声纹。[/yellow]"
     )
     console.print(f"运行清单：{summary.manifest_path.resolve()}")
+
+
+@quality_diarization_app.command(name="sync-identity-references")
+def quality_diarization_sync_identity_references(
+    identity: str = typer.Option(
+        ...,
+        "--identity",
+        help="要汇总的人工身份标签，例如 father 或 mother。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """把跨 run 人工结论索引为可跨录音复用的原音区间。"""
+    summary = sync_identity_reference_set(Database(db), identity)
+    console.print(
+        f"[green]人物参考集已同步[/green] identity={summary.identity_label} | "
+        f"confirmed={summary.confirmed_intervals}/"
+        f"{summary.confirmed_duration_ms / 1000:.3f}s | "
+        f"rejected={summary.rejected_intervals} | "
+        f"sessions={summary.sessions} | sources={summary.source_objects}"
+    )
+    console.print(
+        "[yellow]这里只保存永久原音的 SHA-256 和时间坐标；"
+        "没有复制音频、生成正式声纹或自动绑定人物。[/yellow]"
+    )
 
 
 @quality_asr_app.command(name="run")

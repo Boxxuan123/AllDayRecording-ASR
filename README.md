@@ -97,6 +97,7 @@ allday-asr diarization-v2 source-truth 1 --start 17:00 --end 17:14 --source medi
 allday-asr diarization-v2 refine 1 --truth-set 2 --truth-set 3
 allday-asr diarization-v2 identity-audit 1 --truth-set 1
 allday-asr diarization-v2 mine-identities 1 --truth-set 1 --identity father
+allday-asr diarization-v2 sync-identity-references --identity father
 ```
 
 音频仍只在本地处理，pyannote telemetry 已关闭；HF token 不进入配置或数据库。完整模型选择、融合阈值和评测边界见 [V2-D 指南](docs/v2-d-speaker-timeline.md)。
@@ -261,7 +262,7 @@ allday-asr audit-speakers 1
 allday-asr voice-library enroll-person "妈妈" data\voice-library\mother
 ```
 
-这一步目前只建立人物档案和样本库；**跨天自动识别该人物尚未实现**。日常对话无需要求所有人预先上传声纹，默认保留为会话级匿名人物。
+这一步目前只建立人物档案和样本库；**跨天自动识别该人物尚未实现**。V2-D.3 已能把冻结真值和候选人工结论保存为跨录音可复用的永久原音坐标参考集，但不会因累计时长接近门槛就自动生成声纹或绑定身份。日常对话无需要求所有人预先上传声纹，默认保留为会话级匿名人物。
 
 ## 人工真值与评测
 

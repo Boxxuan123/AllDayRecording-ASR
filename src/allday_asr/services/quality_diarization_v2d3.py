@@ -21,6 +21,7 @@ from allday_asr.diarization.quality_backends import (
 )
 from allday_asr.paths import OUTPUT_DIR
 from allday_asr.services.enrollment import l2_normalize, normalize_speech_level
+from allday_asr.services.sources import resolve_session_slices
 from allday_asr.storage.database import Database
 
 EMBEDDING_WINDOW_MS = 3_000
@@ -69,6 +70,170 @@ class V2D3Summary:
     manifest_path: Path
 
 
+@dataclass(frozen=True)
+class IdentityReferenceSummary:
+    identity_label: str
+    status: str
+    confirmed_intervals: int
+    rejected_intervals: int
+    uncertain_intervals: int
+    confirmed_duration_ms: int
+    sessions: int
+    source_objects: int
+    source_reference_rows: int
+
+
+def sync_identity_reference_set(
+    database: Database, identity_label: str
+) -> IdentityReferenceSummary:
+    """Index reviewed source intervals for reuse across future recordings.
+
+    The index stores only immutable source coordinates and human decisions. It
+    deliberately stores neither copied audio nor biometric embeddings.
+    """
+    identity_label = identity_label.strip()
+    if not identity_label:
+        raise ValueError("人物参考身份不能为空")
+
+    relevant_runs: list[Any] = []
+    for recording in database.list_recordings():
+        for run in database.list_processing_runs(int(recording["id"])):
+            if (
+                str(run["run_kind"]) != "quality_diarization_v2d3"
+                or str(run["status"]) != "completed"
+                or run["session_id"] is None
+            ):
+                continue
+            summary = _json_object(run["summary_json"])
+            if str(summary.get("target_identity") or "") != identity_label:
+                continue
+            relevant_runs.append(run)
+
+    latest_reviews: dict[tuple[int, int, int], tuple[tuple[str, int, int], Any, Any]] = {}
+    truth_sets: dict[int, Any] = {}
+    for run in relevant_runs:
+        summary = _json_object(run["summary_json"])
+        truth_set_id = int(summary.get("truth_set_id") or 0)
+        if truth_set_id:
+            truth_sets[truth_set_id] = database.get_truth_set(truth_set_id)
+        session_id = int(run["session_id"])
+        for review in database.list_identity_candidate_reviews(int(run["id"])):
+            if str(review["target_identity"]) != identity_label:
+                continue
+            interval_key = (
+                session_id,
+                int(review["session_start_ms"]),
+                int(review["session_end_ms"]),
+            )
+            freshness = (
+                str(review["updated_at"]),
+                int(run["id"]),
+                int(review["id"]),
+            )
+            previous = latest_reviews.get(interval_key)
+            if previous is None or freshness > previous[0]:
+                latest_reviews[interval_key] = (freshness, run, review)
+
+    logical_intervals: dict[tuple[int, int, int], dict[str, Any]] = {}
+    for interval_key, (_, run, review) in latest_reviews.items():
+        logical_intervals[interval_key] = {
+            "decision": str(review["status"]),
+            "provenance_kind": "v2d3_review",
+            "provenance_id": int(review["id"]),
+            "metadata": {
+                "run_id": int(run["id"]),
+                "candidate_id": str(review["candidate_id"]),
+                "human_reviewed": True,
+            },
+        }
+
+    # Frozen truth is stronger than a candidate decision for an identical range.
+    for truth_set_id, truth_set in truth_sets.items():
+        session_id = int(truth_set["session_id"])
+        for annotation in database.list_truth_annotations(
+            truth_set_id, annotation_kind="speaker"
+        ):
+            if str(annotation["label"] or "").strip() != identity_label:
+                continue
+            interval_key = (
+                session_id,
+                int(annotation["session_start_ms"]),
+                int(annotation["session_end_ms"]),
+            )
+            logical_intervals[interval_key] = {
+                "decision": "confirmed_target",
+                "provenance_kind": "truth",
+                "provenance_id": int(annotation["id"]),
+                "metadata": {
+                    "truth_set_id": truth_set_id,
+                    "annotation_key": str(annotation["annotation_key"]),
+                    "human_reviewed": True,
+                },
+            }
+
+    for (session_id, start_ms, end_ms), evidence in sorted(
+        logical_intervals.items()
+    ):
+        slices, gaps = resolve_session_slices(
+            database, session_id, start_ms, end_ms
+        )
+        if gaps:
+            raise RuntimeError(
+                f"人物参考区间存在未映射原音：session={session_id}, gaps={gaps}"
+            )
+        for source_slice in slices:
+            reference_payload = {
+                "identity_label": identity_label,
+                "session_id": session_id,
+                "source_object_id": source_slice.source_object_id,
+                "source_sha256": source_slice.source_sha256,
+                "source_start_ms": source_slice.source_start_ms,
+                "source_end_ms": source_slice.source_end_ms,
+            }
+            database.upsert_identity_reference_interval(
+                {
+                    "reference_key": _sha256_mapping(reference_payload),
+                    "identity_label": identity_label,
+                    "decision": evidence["decision"],
+                    "session_id": session_id,
+                    "session_start_ms": source_slice.session_start_ms,
+                    "session_end_ms": source_slice.session_end_ms,
+                    "source_object_id": source_slice.source_object_id,
+                    "source_sha256": source_slice.source_sha256,
+                    "source_start_ms": source_slice.source_start_ms,
+                    "source_end_ms": source_slice.source_end_ms,
+                    "provenance_kind": evidence["provenance_kind"],
+                    "provenance_id": evidence["provenance_id"],
+                    "metadata": evidence["metadata"],
+                }
+            )
+
+    decisions = [item["decision"] for item in logical_intervals.values()]
+    confirmed_ranges = [
+        interval
+        for interval, evidence in logical_intervals.items()
+        if evidence["decision"] == "confirmed_target"
+    ]
+    reference_rows = database.list_identity_reference_intervals(identity_label)
+    return IdentityReferenceSummary(
+        identity_label=identity_label,
+        status="provisional_reference_set",
+        confirmed_intervals=decisions.count("confirmed_target"),
+        rejected_intervals=decisions.count("rejected"),
+        uncertain_intervals=decisions.count("uncertain"),
+        confirmed_duration_ms=_union_session_ranges_ms(confirmed_ranges),
+        sessions=len({item[0] for item in confirmed_ranges}),
+        source_objects=len(
+            {
+                int(row["source_object_id"])
+                for row in reference_rows
+                if str(row["decision"]) == "confirmed_target"
+            }
+        ),
+        source_reference_rows=len(reference_rows),
+    )
+
+
 def review_identity_candidate(
     database: Database,
     run_id: int,
@@ -105,6 +270,21 @@ def review_identity_candidate(
             "note": note.strip() if note and note.strip() else None,
         },
     )
+    reference_sync: dict[str, Any]
+    try:
+        synced = sync_identity_reference_set(
+            database, str(row["target_identity"])
+        )
+        reference_sync = {
+            "status": synced.status,
+            "confirmed_intervals": synced.confirmed_intervals,
+            "confirmed_duration_ms": synced.confirmed_duration_ms,
+            "rejected_intervals": synced.rejected_intervals,
+        }
+    except (KeyError, RuntimeError, ValueError) as exc:
+        # The review row is canonical. The cross-session index is derived and
+        # can be rebuilt with the CLI if source mapping is temporarily broken.
+        reference_sync = {"status": "needs_resync", "error": repr(exc)}
     return {
         "run_id": run_id,
         "candidate_id": candidate_id,
@@ -114,6 +294,7 @@ def review_identity_candidate(
         "status": str(row["status"]),
         "note": row["note"],
         "updated_at": row["updated_at"],
+        "reference_set": reference_sync,
     }
 
 
@@ -184,6 +365,10 @@ def carry_forward_identity_candidate_reviews(
             )
             existing.add(candidate_id)
             copied += 1
+    if copied:
+        sync_identity_reference_set(
+            database, str(summary["target_identity"])
+        )
     return copied
 
 
@@ -780,6 +965,24 @@ def _sha256_mapping(value: dict[str, Any]) -> str:
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _union_session_ranges_ms(
+    ranges: Sequence[tuple[int, int, int]],
+) -> int:
+    total = 0
+    by_session: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for session_id, start_ms, end_ms in ranges:
+        by_session[int(session_id)].append((int(start_ms), int(end_ms)))
+    for session_ranges in by_session.values():
+        merged: list[list[int]] = []
+        for start_ms, end_ms in sorted(session_ranges):
+            if not merged or start_ms > merged[-1][1]:
+                merged.append([start_ms, end_ms])
+            else:
+                merged[-1][1] = max(merged[-1][1], end_ms)
+        total += sum(end_ms - start_ms for start_ms, end_ms in merged)
+    return total
 
 
 def _json_object(value: str | None) -> dict[str, Any]:
