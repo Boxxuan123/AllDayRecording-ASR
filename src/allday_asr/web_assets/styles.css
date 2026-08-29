@@ -864,6 +864,34 @@ td {
   text-align: right;
 }
 
+.timeline-v2d1-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 18px;
+  align-items: center;
+  padding: 10px 18px;
+  color: #31525b;
+  font-size: 10px;
+  background: #e3f0ee;
+  border-bottom: 1px solid #bdd7d2;
+}
+
+.timeline-v2d1-status strong {
+  color: var(--navy);
+  font-size: 11px;
+}
+
+.timeline-v2d1-status.unavailable {
+  color: var(--muted);
+  background: #eeebe4;
+  border-bottom-color: var(--line);
+}
+
+.timeline-v2d1-policy {
+  flex: 1 1 360px;
+  text-align: right;
+}
+
 .timeline-queue-toolbar {
   display: flex;
   justify-content: space-between;
@@ -1004,6 +1032,11 @@ td {
   gap: 5px 10px;
   color: #53616b;
   font-size: 9px;
+}
+
+.timeline-candidate-facts .possible-fact {
+  color: #945b16;
+  font-weight: 800;
 }
 
 .timeline-candidate-preview {
@@ -1186,6 +1219,55 @@ td {
   bottom: 2px;
   min-width: 2px;
 }
+
+.speech-evidence,
+.source-evidence {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  min-width: 2px;
+}
+
+.speech-evidence.detected {
+  background: #3f8f91;
+}
+
+.speech-evidence.possible {
+  background: repeating-linear-gradient(
+    135deg,
+    #d58b32,
+    #d58b32 4px,
+    #f1c57d 4px,
+    #f1c57d 8px
+  );
+  border-right: 1px solid #8d5718;
+  border-left: 1px solid #8d5718;
+}
+
+.source-evidence.media_playback { background: #8172c6; }
+.source-evidence.live_person { background: #3c946d; }
+.source-evidence.mixed_live_media {
+  background: linear-gradient(90deg, #3c946d 0 50%, #8172c6 50% 100%);
+}
+.source-evidence.unknown { background: #7d8589; }
+
+.evidence-track-row {
+  margin-bottom: 2px;
+}
+
+.evidence-track {
+  background: #f2eee5;
+}
+
+.evidence-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.evidence-swatch.evidence { background: #3f8f91; }
+.evidence-swatch.source { background: #8172c6; }
 
 .speaker-overlap {
   top: 0;

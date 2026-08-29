@@ -130,6 +130,7 @@
             </div>
 
             <div id="speaker-legend" class="speaker-legend" aria-label="说话人图例"></div>
+            <div id="timeline-v2d1-status" class="timeline-v2d1-status" aria-live="polite"></div>
 
             <div class="timeline-queue-toolbar">
               <div class="timeline-queue-tabs" role="tablist" aria-label="试听队列">
@@ -141,6 +142,9 @@
                 </button>
                 <button class="timeline-queue-button" data-timeline-queue="unassigned" role="tab">
                   无归属文字 <span id="timeline-unassigned-group-count">0</span>
+                </button>
+                <button class="timeline-queue-button" data-timeline-queue="possible" role="tab">
+                  可能漏检 <span id="timeline-possible-count">0</span>
                 </button>
               </div>
               <p id="timeline-queue-description">正在整理值得听的片段…</p>

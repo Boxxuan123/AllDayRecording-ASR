@@ -59,6 +59,11 @@ from allday_asr.services.quality_diarization import (
     run_quality_diarization,
     snapshot_quality_diarization,
 )
+from allday_asr.services.quality_diarization_v2d1 import (
+    V2D1Settings,
+    create_source_micro_truth,
+    run_quality_diarization_v2d1,
+)
 from allday_asr.services.review import import_self_review
 from allday_asr.services.sources import (
     audit_all_sources,
@@ -273,6 +278,101 @@ def quality_diarization_snapshot(
         f"{summary.prediction_set_id} | speakers={summary.speaker_predictions} | "
         f"overlap={summary.overlap_predictions} | sha256={summary.content_sha256}"
     )
+
+
+@quality_diarization_app.command(name="refine")
+def quality_diarization_refine(
+    recording_id: int = typer.Argument(..., min=1),
+    diarization_run_id: int | None = typer.Option(
+        None,
+        "--diarization-run",
+        min=1,
+        help="父 V2-D run；默认选择该录音最新完成的一次。",
+    ),
+    bridge_gap_seconds: float = typer.Option(
+        4.0,
+        "--bridge-gap",
+        min=0.0,
+        max=10.0,
+        help="仅用于低置信轨的证据桥接间隔；不会改写正式说话人轨。",
+    ),
+    truth_set_ids: list[int] = typer.Option(
+        [],
+        "--truth-set",
+        min=1,
+        help="可重复提供，用同一真值比较 detected 与 recall-rescue。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """生成 V2-D.1 检测/可能语音双层快照，保留原匿名 speaker。"""
+    database = Database(db)
+    if diarization_run_id is None:
+        candidates = [
+            row
+            for row in database.list_processing_runs(recording_id)
+            if str(row["run_kind"]) == "quality_diarization_v2d"
+            and str(row["status"]) == "completed"
+        ]
+        if not candidates:
+            raise typer.BadParameter("该录音没有已完成的 V2-D run")
+        diarization_run_id = int(candidates[-1]["id"])
+    summary = run_quality_diarization_v2d1(
+        database,
+        recording_id,
+        diarization_run_id=diarization_run_id,
+        settings=V2D1Settings(
+            bridge_gap_ms=round(bridge_gap_seconds * 1000)
+        ),
+        evaluation_truth_set_ids=truth_set_ids,
+    )
+    console.print(
+        f"[green]V2-D.1 完成[/green] run={summary.run_id} | "
+        f"detected={summary.detected_regions}/{summary.detected_ms / 1000:.1f}s | "
+        f"possible={summary.possible_regions}/{summary.possible_ms / 1000:.1f}s | "
+        f"prediction_sets={summary.detected_prediction_set_id}/"
+        f"{summary.rescue_prediction_set_id}"
+    )
+    for truth_set_id, values in summary.evaluations.items():
+        detected = values.get("detected", {}).get("vad", {})
+        rescue = values.get("recall_rescue", {}).get("vad", {})
+        console.print(
+            f"truth={truth_set_id} | detected recall={detected.get('recall')} "
+            f"FA={detected.get('false_alarm_rate')} | rescue recall="
+            f"{rescue.get('recall')} FA={rescue.get('false_alarm_rate')}"
+        )
+    console.print(f"运行清单：{summary.manifest_path.resolve()}")
+
+
+@quality_diarization_app.command(name="source-truth")
+def quality_diarization_source_truth(
+    recording_id: int = typer.Argument(..., min=1),
+    start: str = typer.Option(..., help="范围起点，例如 17:00。"),
+    end: str = typer.Option(..., help="范围终点，例如 17:14。"),
+    source: str = typer.Option(
+        ...,
+        help="live_person、media_playback、mixed_live_media 或 unknown。",
+    ),
+    name: str = typer.Option(..., help="稳定的真值名称，只使用字母、数字、点、横线。"),
+    note: list[str] = typer.Option(
+        [], "--note", help="审计备注，可重复提供；不会作为 speaker 身份真值。"
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """冻结一段来源真值；来源标签不会合并或重命名匿名说话人。"""
+    summary = create_source_micro_truth(
+        Database(db),
+        recording_id,
+        name=name,
+        start_ms=parse_offset(start),
+        end_ms=parse_offset(end),
+        speech_source=source,
+        notes=note,
+    )
+    console.print(
+        f"[green]来源微型真值已冻结[/green] truth_set={summary.truth_set_id} | "
+        f"annotations={summary.annotation_count} | sha256={summary.truth_sha256}"
+    )
+    console.print(f"真值文件：{summary.output_path.resolve()}")
 
 
 @quality_asr_app.command(name="run")

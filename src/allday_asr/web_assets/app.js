@@ -214,7 +214,9 @@ function renderTimelineOverview() {
   $("#timeline-conversation-count").textContent = String(timeline.queues.conversation.count);
   $("#timeline-overlap-count").textContent = String(timeline.queues.overlap.count);
   $("#timeline-unassigned-group-count").textContent = String(timeline.queues.unassigned.count);
+  $("#timeline-possible-count").textContent = String(timeline.queues.possible?.count || 0);
   renderSpeakerLegend();
+  renderTimelineV2D1Status();
   selectTimelineQueue(state.timelineQueue, { preserveSelection: true });
 }
 
@@ -231,6 +233,26 @@ function renderSpeakerLegend() {
   });
   const note = node("p", "speaker-legend-note", "标签是匿名聚类，不代表真实身份；重叠轨使用原始多轨结果。");
   container.append(note);
+}
+
+function renderTimelineV2D1Status() {
+  const container = $("#timeline-v2d1-status");
+  const refinement = state.timeline.v2d1;
+  container.replaceChildren();
+  if (!refinement?.available) {
+    container.classList.add("unavailable");
+    container.append(
+      node("strong", "", "V2-D.1 尚未生成"),
+      node("span", "", refinement?.reason || "当前只显示正式说话人结果。"),
+    );
+    return;
+  }
+  container.classList.remove("unavailable");
+  container.append(
+    node("strong", "", `V2-D.1 · RUN #${refinement.run_id}`),
+    node("span", "", `确定语音 ${formatDuration(refinement.detected_ms)} · 可能语音 ${formatDuration(refinement.possible_ms)}`),
+    node("span", "timeline-v2d1-policy", "来源只是一条独立真值轨；电视中的不同男女声仍保留为不同匿名 speaker。"),
+  );
 }
 
 function selectTimelineQueue(queueName, options = {}) {
@@ -276,6 +298,8 @@ function renderTimelineCandidates() {
     if (item.speaker_count) facts.append(node("span", "", `${item.speaker_count} 人`));
     if (item.speaker_switches !== null) facts.append(node("span", "", `${item.speaker_switches} 次切换`));
     if (item.overlap_ms) facts.append(node("span", "", `重叠 ${(item.overlap_ms / 1000).toFixed(1)}s`));
+    if (item.possible_ms) facts.append(node("span", "possible-fact", `可能 ${(item.possible_ms / 1000).toFixed(1)}s`));
+    if (item.has_rejected_asr) facts.append(node("span", "possible-fact", "含拒绝 ASR 证据"));
     facts.append(node("span", "", `${item.token_count} 词`));
     button.append(facts);
     if (item.preview) button.append(node("span", "timeline-candidate-preview", item.preview));
@@ -335,6 +359,7 @@ function renderTimelineDetail(item, payload) {
   const facts = node("div", "timeline-detail-facts");
   if (item.score !== undefined) facts.append(timelineFact("信息分", item.score));
   if (item.speech_ms !== null) facts.append(timelineFact("有效语音", formatDuration(item.speech_ms)));
+  if (item.possible_ms) facts.append(timelineFact("低置信语音", formatDuration(item.possible_ms)));
   if (item.speaker_switches !== null) facts.append(timelineFact("说话人切换", item.speaker_switches));
   facts.append(timelineFact("重叠", `${(item.overlap_ms / 1000).toFixed(1)}s`));
   facts.append(timelineFact("无归属", item.unassigned_tokens));
@@ -365,9 +390,32 @@ function renderSpeakerTracks(payload) {
   const wrapper = node("section", "speaker-tracks");
   const title = node("div", "timeline-subheading");
   title.append(node("strong", "", "说话人轨道"));
-  title.append(node("span", "", "斜纹区域 = 同时说话"));
+  title.append(node("span", "", "琥珀色 = 可能语音；斜纹 = 同时说话"));
   wrapper.append(title);
   const span = payload.end_ms - payload.start_ms;
+  if (payload.speech_evidence?.length) {
+    const row = evidenceTrackRow("语音证据", "evidence");
+    payload.speech_evidence.forEach((evidence) => {
+      const bar = positionedTrackBar(
+        evidence,
+        payload,
+        `speech-evidence ${evidence.tier === "possible" ? "possible" : "detected"}`,
+      );
+      const evidenceTypes = evidence.evidence_types?.join(" + ") || "上下文桥接";
+      bar.title = `${evidence.tier === "possible" ? "可能语音" : "确定语音"} · ${formatOffset(evidence.source_start_ms)}–${formatOffset(evidence.source_end_ms)} · ${evidenceTypes}`;
+      row.track.append(bar);
+    });
+    wrapper.append(row.container);
+  }
+  if (payload.source_regions?.length) {
+    const row = evidenceTrackRow("来源真值", "source");
+    payload.source_regions.forEach((region) => {
+      const bar = positionedTrackBar(region, payload, `source-evidence ${region.source}`);
+      bar.title = `${speechSourceLabel(region.source)} · 真值集 #${region.truth_set_id} · 不合并 speaker`;
+      row.track.append(bar);
+    });
+    wrapper.append(row.container);
+  }
   const labels = [...new Set(payload.turns.map((turn) => turn.speaker))];
   labels.sort((a, b) => speakerIndex(a) - speakerIndex(b));
   labels.forEach((label) => {
@@ -402,6 +450,33 @@ function renderSpeakerTracks(payload) {
   ruler.append(node("span", "", formatOffset(payload.end_ms)));
   wrapper.append(ruler);
   return wrapper;
+}
+
+function evidenceTrackRow(label, kind) {
+  const container = node("div", `speaker-track-row evidence-track-row ${kind}`);
+  const legend = node("div", "speaker-track-label");
+  const swatch = node("span", `evidence-swatch ${kind}`);
+  legend.append(swatch, node("span", "", label));
+  const track = node("div", "speaker-track evidence-track");
+  container.append(legend, track);
+  return { container, track };
+}
+
+function positionedTrackBar(region, payload, className) {
+  const span = payload.end_ms - payload.start_ms;
+  const bar = node("span", className);
+  bar.style.left = `${((region.start_ms - payload.start_ms) / span) * 100}%`;
+  bar.style.width = `${Math.max(0.2, ((region.end_ms - region.start_ms) / span) * 100)}%`;
+  return bar;
+}
+
+function speechSourceLabel(source) {
+  return {
+    media_playback: "媒体播放",
+    live_person: "现场人物",
+    mixed_live_media: "现场 + 媒体混合",
+    unknown: "来源未知",
+  }[source] || source;
 }
 
 function renderTimelineTranscript(payload, audio) {

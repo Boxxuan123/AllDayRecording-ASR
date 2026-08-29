@@ -110,7 +110,29 @@ run 11 的真实结果被整理成 12 个多人对话候选、68 个重叠候选
 
 每个窗口展示多说话人轨道、重叠斜纹和逐 token 归属。点击 token 可以跳到相应音频位置。试听 WAV 从 V2-A 永久原音的 source graph 按需生成，做响度归一化后写入独立缓存，单次不超过 120 秒；原始 M4A 不会被修改、替换或删除。
 
-## 9. 尚未包含
+## 9. V2-D.1：证据层与来源层解耦
+
+V2-D.1 不尝试把“同属电视节目”的声音强行合并成一个人。电视男声、电视女声和不同节目人物本来就可能是不同人，`SPEAKER_00` 等匿名聚类因此完全沿用 V2-D run 11。新增的是两条正交轨道：
+
+- 语音证据：`detected` 是 Community-1 regular turns 与 V2-C.3 已接受语音的并集；`possible` 是被门控拒绝但仍有对齐 ASR 文字的证据，以及密集语音中不超过 4 秒的短缺口。`possible` 只进入琥珀色试听队列，不生成或改写 speaker 标签。
+- 声音来源：人工可独立标记 `media_playback / live_person / mixed_live_media / unknown`。来源真值不等于人物身份，也不能作为合并匿名 speaker 的依据。
+
+```powershell
+# 冻结用户确认的来源事实；不提供 speaker 身份
+allday-asr diarization-v2 source-truth 1 --start 17:00 --end 17:14 `
+  --source media_playback --name v2d1-candidate01-media-17m
+
+# 从最新 V2-D 生成确定/可能双层预测，并在指定真值上同时评测
+allday-asr diarization-v2 refine 1 --truth-set 2 --truth-set 3
+```
+
+真实 run 12 生成 607 段 `detected`（1,548.125 秒）和 453 段 `possible`（486.932 秒），prediction set 16/17 已冻结。候选 01 的 `17:00–17:14` 来源微型真值为 truth set 3：正式 detected 覆盖 7.111 秒、recall `50.79%`；加上 possible 后覆盖 14 秒、recall `100%`。该微型真值没有负例时间，所以 false alarm 不可定义。
+
+在 truth set 2 的五个开发窗口上，detected/recall-rescue 的 VAD recall 为 `81.28%/98.97%`，false alarm 为 `61.25%/90.22%`。这说明补救层确实找回大量疑似语音，但也非常激进；加上 truth set 2 对电视声并不穷尽，它不能成为正式 speech/speaker 输出，只适合作为人工“可能漏检”队列。网页因此同时展示确定/可能证据、来源真值和原匿名 speaker 三层，避免把证据、媒体来源与人物身份混为一谈。
+
+run 12 完成后再次执行 source audit，79,826,205 字节原始 M4A 状态仍为 `verified`。
+
+## 10. 尚未包含
 
 - Community-1 gated 权重没有随仓库分发。
 - Sortformer backend 尚未安装；协议已经可插拔，只有在同一新真值上比较后才决定是否增加。

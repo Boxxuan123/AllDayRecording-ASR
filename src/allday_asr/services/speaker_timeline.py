@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 from allday_asr.diarization.quality_backends import SpeakerTurn
 from allday_asr.services.quality_diarization import compute_overlap_regions
 from allday_asr.storage.database import Database
-
 
 SPEAKER_COLORS = (
     "#3f8f91",
@@ -53,6 +53,10 @@ def speaker_timeline_overview(
     )
     overlap_candidates = _overlap_candidates(overlaps, tokens, duration_ms)
     unassigned = _unassigned_candidates(tokens, duration_ms)
+    v2d1_run = _latest_v2d1_run(database, recording_id, int(run["id"]))
+    v2d1_summary = _json_object(v2d1_run["summary_json"]) if v2d1_run else {}
+    rescue_rows = _v2d1_prediction_rows(database, v2d1_summary)
+    possible = _possible_candidates(rescue_rows, tokens, duration_ms)
     summary = _json_object(run["summary_json"])
     model = _json_object(run["model_manifest_json"])
     return {
@@ -100,12 +104,24 @@ def speaker_timeline_overview(
                 ),
                 "items": unassigned,
             },
+            "possible": {
+                "label": "可能漏检",
+                "description": (
+                    "琥珀色是低置信召回补救：有被门控拒绝的 ASR 证据，或位于密集语音的短缺口。"
+                    "它不是正式说话人结果，需要试听确认。"
+                ),
+                "count": len(possible),
+                "total_ms": sum(item["possible_ms"] for item in possible),
+                "items": possible,
+            },
         },
+        "v2d1": _v2d1_overview(v2d1_run, v2d1_summary),
         "method": {
             "conversation_window_ms": CONVERSATION_WINDOW_MS,
             "conversation_step_ms": CONVERSATION_STEP_MS,
             "original_audio_immutable": True,
             "listening_audio": "从永久原音按需生成响度归一化缓存，不修改原文件。",
+            "speaker_policy": "来源层与匿名 speaker 独立；不会因同属电视而合并不同节目人物。",
         },
     }
 
@@ -146,6 +162,20 @@ def speaker_timeline_window(
         for token in _attributed_tokens(database, run)
         if token["end_ms"] > start_ms and token["start_ms"] < end_ms
     ]
+    v2d1_run = _latest_v2d1_run(database, recording_id, run_id)
+    v2d1_summary = _json_object(v2d1_run["summary_json"]) if v2d1_run else {}
+    speech_evidence = [
+        _evidence_payload(row, start_ms, end_ms)
+        for row in _v2d1_prediction_rows(database, v2d1_summary)
+        if int(row["session_end_ms"]) > start_ms
+        and int(row["session_start_ms"]) < end_ms
+    ]
+    source_regions = _source_truth_regions(
+        database,
+        int(run["session_id"]),
+        start_ms=start_ms,
+        end_ms=end_ms,
+    )
     return {
         "recording_id": recording_id,
         "run_id": run_id,
@@ -155,11 +185,195 @@ def speaker_timeline_window(
         "turns": turns,
         "overlaps": overlaps,
         "tokens": tokens,
+        "speech_evidence": speech_evidence,
+        "source_regions": source_regions,
         "audio_url": (
             "/api/speaker-timeline/audio"
             f"?recording_id={recording_id}&start_ms={start_ms}&end_ms={end_ms}&v=1"
         ),
     }
+
+
+def _latest_v2d1_run(
+    database: Database, recording_id: int, diarization_run_id: int
+):
+    matches = [
+        row
+        for row in database.list_processing_runs(recording_id)
+        if str(row["run_kind"]) == "quality_diarization_v2d1"
+        and str(row["status"]) == "completed"
+        and int(row["parent_run_id"] or 0) == diarization_run_id
+    ]
+    return matches[-1] if matches else None
+
+
+def _v2d1_prediction_rows(
+    database: Database, summary: dict[str, Any]
+) -> list[Any]:
+    prediction_set_id = int(summary.get("rescue_prediction_set_id") or 0)
+    if not prediction_set_id:
+        return []
+    return database.list_benchmark_predictions(
+        prediction_set_id, prediction_kind="speech"
+    )
+
+
+def _v2d1_overview(run, summary: dict[str, Any]) -> dict[str, Any]:
+    if run is None:
+        return {
+            "available": False,
+            "reason": "尚未生成 V2-D.1 双层语音证据。",
+            "speaker_policy": "来源层不会合并匿名说话人。",
+        }
+    config = _json_object(run["config_json"])
+    return {
+        "available": True,
+        "run_id": int(run["id"]),
+        "detected_regions": int(summary.get("detected_regions") or 0),
+        "possible_regions": int(summary.get("possible_regions") or 0),
+        "detected_ms": int(summary.get("detected_ms") or 0),
+        "possible_ms": int(summary.get("possible_ms") or 0),
+        "bridge_gap_ms": int(config.get("bridge_gap_ms") or 0),
+        "evaluations": summary.get("evaluations") or {},
+        "speaker_policy": str(
+            summary.get("speaker_policy")
+            or "anonymous speakers preserved independently of source"
+        ),
+    }
+
+
+def _possible_candidates(
+    rows: Sequence[Any],
+    tokens: Sequence[dict[str, Any]],
+    duration_ms: int,
+) -> list[dict[str, Any]]:
+    values: list[dict[str, Any]] = []
+    for row in rows:
+        metadata = _json_object(row["metadata_json"])
+        if metadata.get("tier") != "possible":
+            continue
+        focus_start = int(row["session_start_ms"])
+        focus_end = int(row["session_end_ms"])
+        start = max(0, focus_start - 4_000)
+        end = min(duration_ms, focus_end + 4_000)
+        if end - start > MAX_AUDIO_WINDOW_MS:
+            midpoint = (focus_start + focus_end) // 2
+            start = max(0, midpoint - MAX_AUDIO_WINDOW_MS // 2)
+            end = min(duration_ms, start + MAX_AUDIO_WINDOW_MS)
+            start = max(0, end - MAX_AUDIO_WINDOW_MS)
+        window_tokens = _tokens_in_range(tokens, start, end)
+        evidence_types = [str(value) for value in metadata.get("evidence_types", [])]
+        rejected = metadata.get("rejected_candidates") or []
+        score = round(
+            (focus_end - focus_start) / 1000
+            + (4.0 if rejected else 0.0)
+            + min(3.0, len(window_tokens) / 5),
+            2,
+        )
+        values.append(
+            {
+                **_candidate(
+                    candidate_id=f"possible-{int(row['id'])}",
+                    kind="possible",
+                    start_ms=start,
+                    end_ms=end,
+                    title="可能漏检语音",
+                    score=score,
+                    speakers=[],
+                    speech_ms=None,
+                    speaker_switches=None,
+                    overlap_ms=0,
+                    tokens=window_tokens,
+                    unassigned_tokens=sum(
+                        token["primary_kind"] == "none" for token in window_tokens
+                    ),
+                ),
+                "focus_start_ms": focus_start,
+                "focus_end_ms": focus_end,
+                "possible_ms": focus_end - focus_start,
+                "evidence_types": evidence_types,
+                "has_rejected_asr": bool(rejected),
+            }
+        )
+    values.sort(
+        key=lambda item: (
+            -int(item["has_rejected_asr"]),
+            -item["score"],
+            item["focus_start_ms"],
+        )
+    )
+    for index, item in enumerate(values, start=1):
+        item["rank"] = index
+        item["title"] = f"可能漏检语音 {index:03d}"
+    return values
+
+
+def _evidence_payload(
+    row, window_start_ms: int, window_end_ms: int
+) -> dict[str, Any]:
+    metadata = _json_object(row["metadata_json"])
+    return {
+        "id": int(row["id"]),
+        "start_ms": max(window_start_ms, int(row["session_start_ms"])),
+        "end_ms": min(window_end_ms, int(row["session_end_ms"])),
+        "source_start_ms": int(row["session_start_ms"]),
+        "source_end_ms": int(row["session_end_ms"]),
+        "tier": str(metadata.get("tier") or "detected"),
+        "confidence": float(row["confidence"] or 0.0),
+        "evidence_types": list(metadata.get("evidence_types") or []),
+        "reason": metadata.get("reason"),
+    }
+
+
+def _source_truth_regions(
+    database: Database,
+    session_id: int,
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> list[dict[str, Any]]:
+    regions: list[dict[str, Any]] = []
+    seen: set[tuple[int, int, str]] = set()
+    for truth_set in database.list_truth_sets(session_id):
+        if str(truth_set["status"]) != "frozen":
+            continue
+        for row in database.list_truth_annotations(
+            int(truth_set["id"]), annotation_kind="speech"
+        ):
+            row_start = int(row["session_start_ms"])
+            row_end = int(row["session_end_ms"])
+            if row_end <= start_ms or row_start >= end_ms:
+                continue
+            metadata = _json_object(row["metadata_json"])
+            source = str(metadata.get("speech_source") or "")
+            if source not in {
+                "media_playback",
+                "live_person",
+                "mixed_live_media",
+                "unknown",
+            }:
+                continue
+            key = (max(start_ms, row_start), min(end_ms, row_end), source)
+            if key in seen:
+                continue
+            seen.add(key)
+            regions.append(
+                {
+                    "start_ms": key[0],
+                    "end_ms": key[1],
+                    "source_start_ms": row_start,
+                    "source_end_ms": row_end,
+                    "source": source,
+                    "truth_set_id": int(truth_set["id"]),
+                    "speaker_identity_labeled": bool(
+                        metadata.get("speaker_identity_labeled", False)
+                    ),
+                }
+            )
+    return sorted(
+        regions,
+        key=lambda item: (item["start_ms"], item["end_ms"], item["source"]),
+    )
 
 
 def _resolve_run(database: Database, recording_id: int, run_id: int | None):
