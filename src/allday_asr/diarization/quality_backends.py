@@ -71,11 +71,17 @@ class PyannoteCommunityBackend:
         device: str = "auto",
         token_env: str = "HF_TOKEN",
     ) -> None:
+        # Read the standard Hugging Face login before redirecting model caches
+        # into the private project directory. HF_HOME also controls token lookup.
+        from huggingface_hub import get_token
+
+        login_token = get_token()
         configure_model_cache()
         self.model_id = model_id
         self.model_path = model_path.resolve() if model_path is not None else None
         self.device = resolve_device(device)
         self.token_env = token_env
+        self._login_token = login_token
         self.model_revision: str | None = None
         self._pipeline = None
         self._model_source_kind = "unresolved"
@@ -90,7 +96,11 @@ class PyannoteCommunityBackend:
         # Local private recordings must not emit usage telemetry.
         os.environ["PYANNOTE_METRICS_ENABLED"] = "false"
         source = self._resolve_model_source()
-        token = None if isinstance(source, Path) else os.environ.get(self.token_env)
+        token = (
+            None
+            if isinstance(source, Path)
+            else os.environ.get(self.token_env) or self._login_token
+        )
         if not isinstance(source, Path) and not token:
             from huggingface_hub import get_token
 

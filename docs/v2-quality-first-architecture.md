@@ -339,8 +339,9 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 1. [x] 接入本地 pyannote Community-1 backend；Sortformer 保留为同真值候选。
 2. [x] 保存 regular 重叠 turns 和 exclusive ASR 辅助 turns，不再将整段强制压成单一 speaker。
 3. [x] 实现 token-to-speaker 主/重叠/不确定/无归属融合。
-4. [ ] 在真实长录音运行并建立穷尽 speaker/media/overlap 真值。
-5. [ ] 将本人验证从匿名聚类中解耦，完成跨场景阈值校准。
+4. [x] 在真实长录音完成 Community-1 run 11。
+5. [ ] 建立穷尽 speaker/media/overlap 真值。
+6. [ ] 将本人验证从匿名聚类中解耦，完成跨场景阈值校准。
 
 验收：生成标准 DER 报告；重叠讲话不会被数据结构丢失；本人误接受风险可量化。
 
@@ -385,4 +386,4 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 10. 云端语义接口。
 11. Watch chunk 同步。
 
-V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；V2-D 已完成 schema v7、Community-1 backend 和 token-to-speaker 融合，真实运行等待 gated 权重权限。之后在新的穷尽 speaker/media/overlap 真值上决定是否增加 Sortformer 候选。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。
+V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；V2-D 已完成 schema v7、Community-1 backend、token-to-speaker 融合和全量 run 11。之后在新的穷尽 speaker/media/overlap 真值上决定是否增加 Sortformer 候选。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。

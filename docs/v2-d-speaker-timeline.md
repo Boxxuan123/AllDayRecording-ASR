@@ -10,7 +10,7 @@ V2-D 的工程实现采用本地 `pyannote/speaker-diarization-community-1` 作�
 
 新结果只写入 schema v7 的不可变表，不覆盖 V1 的 `speech_segments.speaker_session_id`，也不修改或重编码 Watch 原始 M4A。模型读取的是由 source/session 图临时派生的 16 kHz 单声道 PCM，退出上下文后删除。
 
-当前代码和存储链路已经通过合成重叠回归测试；真实长录音模型运行仍需先在 Hugging Face 接受 Community-1 条款并向当前进程提供 `HF_TOKEN`。这个 token 不写配置、数据库或运行清单。
+代码和存储链路已经通过合成重叠回归测试，并于 2026-08-29 完成现有 2 小时 44 分 35 秒录音的 Community-1 全量 run 11。Hugging Face 凭据只通过标准本机登录缓存或进程环境读取，不写项目配置、数据库或运行清单。
 
 ## 2. 为什么默认选择 Community-1
 
@@ -79,9 +79,26 @@ allday-asr diarization-v2 snapshot <run-id>
 
 目前 V2-C.2 的人工标注刻意只标现场人声，电视节目声音没有完整标注，而且只完成五个短窗口。它不满足“所有说话人活动穷尽 + 跨区间匿名身份一致”的 DER/JER 真值条件，因此 V2-D 不能从这几条标注给出可信 DER/JER，也不能把未标电视声音一律算假阳性。
 
-首个真实 V2-D run 可以先用于发现时间轴、检查重叠和生成后续盲标候选。要形成模型晋级结论，需要另建小而信息密集的说话人真值：在选定用餐对话窗口内穷尽标出现场说话人、电视/媒体声和重叠，并保持同一匿名人物标签一致。电视声可以独立标为 `media_00`，不能静默省略；身份分类仍与匿名 diarization 分开。
+run 11 可以用于发现时间轴、检查重叠和生成后续盲标候选。要形成模型晋级结论，需要另建小而信息密集的说话人真值：在选定用餐对话窗口内穷尽标出现场说话人、电视/媒体声和重叠，并保持同一匿名人物标签一致。电视声可以独立标为 `media_00`，不能静默省略；身份分类仍与匿名 diarization 分开。
 
-## 7. 尚未包含
+## 7. 首次真实全量结果
+
+| 项目 | run 11 |
+| --- | ---: |
+| 模型 revision | `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee` |
+| 处理时间 | 291.792 秒，RTF 约 0.0295 |
+| 观察显存 | 约 2.5 GiB / 8 GiB |
+| 匿名说话人 | 4 |
+| regular / exclusive turns | 989 / 951 |
+| exclusive 语音并集 | 1,056.899 秒，约占全录音 10.70% |
+| 重叠 | 68 个区间、29.412 秒 |
+| token 主归属 / 不确定 / 无归属 | 1,548 / 54 / 590 |
+| 含额外重叠说话人的 token | 116；共 118 条 secondary overlap 归属 |
+| 冻结预测 | prediction set 15；989 speaker + 68 overlap predictions |
+
+1,940 条 regular/exclusive turns 全部具有原始 source 引用，源覆盖长度错误为 0；2,192 个 V2-C committed token 全部有至少一条决定。临时整段 WAV 已删除，79,826,205 字节原始 M4A 的 SHA-256 仍为 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`。
+
+## 8. 尚未包含
 
 - Community-1 gated 权重没有随仓库分发。
 - Sortformer backend 尚未安装；协议已经可插拔，只有在同一新真值上比较后才决定是否增加。

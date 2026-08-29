@@ -252,14 +252,18 @@ class QualityDiarizationTests(unittest.TestCase):
         )
 
     def test_gated_backend_fails_before_network_when_token_is_missing(self) -> None:
-        backend = PyannoteCommunityBackend(token_env="V2D_TEST_HF_TOKEN")
         with (
-            patch.object(backend, "_resolve_model_source", return_value=backend.model_id),
             patch.dict(os.environ, {"V2D_TEST_HF_TOKEN": ""}, clear=False),
             patch("huggingface_hub.get_token", return_value=None),
-            self.assertRaisesRegex(RuntimeError, "尚未缓存"),
         ):
-            backend.ensure_loaded()
+            backend = PyannoteCommunityBackend(token_env="V2D_TEST_HF_TOKEN")
+            with (
+                patch.object(
+                    backend, "_resolve_model_source", return_value=backend.model_id
+                ),
+                self.assertRaisesRegex(RuntimeError, "尚未缓存"),
+            ):
+                backend.ensure_loaded()
 
     def _create_asr_run(self) -> int:
         run_id = self.database.start_processing_run(

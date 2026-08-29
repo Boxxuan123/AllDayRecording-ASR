@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-28  
-> 当前阶段：V1 基线和本地操作台可用；V2-A/V2-B/V2-C.3 已实现，V2-D 的 schema/backend/融合链路已实现，真实 Community-1 长录音运行等待 gated 模型访问权限。V2-C.2 前 5 块是开发真值且未穷尽电视说话人，不能冒充 V2-D DER/JER 真值。
+> 当前阶段：V1 基线和本地操作台可用；V2-A/V2-B/V2-C.3 已实现，V2-D 的 schema/backend/融合链路和 Community-1 全量 run 11 已完成。V2-C.2 前 5 块是开发真值且 `speaker` 完整度为 `none`，不能冒充 V2-D DER/JER 真值。
 
 ## 1. 结论
 
@@ -19,7 +19,7 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 | 录音入库 | V2-A 已完成 | 不可变 source/session、SHA-256 去重、证据字段防修改/删除、完整性审计 |
 | 音频处理 | V2-A 基础完成 | V1 标准化/VAD/断点续跑；V2 逻辑窗口临时解码且不新增长期整段 PCM |
 | ASR | V2-C.3 已实现 | Qwen3-ASR-1.7B、0.6B ForcedAligner、Fun-ASR-Nano、FSMN+Silero 证据门控、padding/core 分离、逐 token 原音追溯；等待新 holdout |
-| 说话人时间轴 | V2-D 工程完成、实跑待权限 | pyannote Community-1 本地 regular/exclusive turns、重叠区间、逐 turn 原音追溯、token 主/重叠/不确定归属 |
+| 说话人时间轴 | V2-D 工程与全量实跑完成 | Community-1 本地 regular/exclusive turns、重叠区间、逐 turn 原音追溯、token 主/重叠/不确定归属；等待穷尽真值 |
 | 匿名说话人 | 原型完成 | CAM++ 聚类、短片段/弱聚类质量门槛、允许 `unknown` |
 | 本人身份 | 原型完成 | 独立多录音登记、片段候选、人工导入、阈值校准 |
 | 人物样本库 | 已完成 V1 | `accepted`、`holdout`、`negative`、会话隔离、清单 |
@@ -67,6 +67,8 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 | V2-C.3 五窗口 run 9 | 161 个候选、147 个接受、14 个拒绝、1,301 个 committed 主模型 token |
 | V2-C.3 全量 run 10 | 33+33 假设、312 个候选、287 个接受、2,192 个 committed 主 token、460.534 秒、8 GB 无 OOM |
 | V2-C 全量运行 | 33+33 假设、6,147 token、16 个分歧、约 8 分 14 秒 |
+| V2-D 全量 run 11 | 4 人、989/951 regular/exclusive turns、68 段重叠共 29.412 秒、291.792 秒、约 2.5 GiB 显存 |
+| V2-D token 归属 | 2,192 个全部有决定：1,548 primary、54 uncertain、590 none；116 个 token 含重叠说话人 |
 | 说话人成对 F1 | 0.543（电视标签语义仍需拆分） |
 | 本人识别真值 | 2 段本人、70 段非本人；样本不足以判断泛化 |
 
@@ -108,7 +110,8 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 - 当前旧真值的 VAD/DER/JER/对齐指标明确为 N/A；合成穷尽真值测试已验证对应指标计算，待人工完成连续覆盖后才报告真实数值。
 - schema v5→v6 升级前已自动备份真实 SQLite；升级后原音再次审计为 `verified`，79,826,205 字节和 SHA-256 均未变化。
 - schema v6→v7 升级前已自动备份真实 SQLite；迁移前后 423 个 V1 片段、17 条身份标注、26 条声纹样本、10 个事件、165 个 ASR hypothesis 和 20,967 个 ASR token 全部不变，原音 SHA-256 仍为 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`。
-- Community-1 未缓存且 `HF_TOKEN` 缺失时会在联网/解码/创建 run 前立即终止；真实库仍为 0 个 V2-D run，没有空结果污染审计记录。
+- Community-1 未缓存且没有标准 HF 登录或 `HF_TOKEN` 时会在联网/解码/创建 run 前立即终止，不产生空 run；登录后已完成 run 11，模型 revision 为 `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`。
+- run 11 的 1,940 条 turns 均有完整原音 source trace，覆盖长度错误为 0；2,192 个 committed token 全部有归属决定，prediction set 15 已冻结。临时整段 WAV 已删除，原音字节数和 SHA-256 不变。
 - Qwen3-ASR-1.7B + Qwen3-ForcedAligner-0.6B 已在当前 8 GB 5070 上以 BF16、batch=1 运行真实 40 秒片段并返回 71 个对齐 token；Fun-ASR-Nano 对同一片段返回独立假设和 90 个 CTC token。
 - 首个完整五分钟 V2-C VAD-utterance 窗口已端到端完成：1 份主假设、1 份第二假设、236 个不可变对齐 token、1 条分歧记录、0 个低覆盖假设；每个 token 均有原始对象 SHA-256 和完整源时间覆盖。
 - 当前 2 小时 44 分 35 秒录音已完成全量 V2-C run 7：33 份 Qwen 主假设、33 份 Fun-ASR 第二假设、6,147 个 token、16 个分歧窗口和 3 个低于 85% 对齐覆盖的非空假设；8 GB BF16 全程未 OOM，端到端耗时约 8 分 14 秒。
@@ -177,4 +180,4 @@ V2-B 已完成 schema v5、连续时间真值格式、旧标注迁移、不可�
 
 V2-C 已完成 schema v6、Qwen3-ASR-1.7B、Qwen3-ForcedAligner-0.6B、Fun-ASR-Nano 第二假设、边界 token 去重、分歧队列、失败续跑和 token 时间 benchmark snapshot。V2-C.3 已增加 FSMN proposal、Silero/相对 SNR/时长证据门控、推理 padding 与提交 core 分离，以及同时含 speech 和 committed token 的 v4 snapshot。默认 `quality-16gb` 使用 BF16 且不量化；当前 8 GB 环境仍以同模型 batch=1 顺序运行，不牺牲模型精度。
 
-当前 V2-C.3 在五块开发集上达到总体 CER `92.27%`、现场 CER `116.18%` 和 VAD-F1 `61.42%`，但这五块已经参与阈值选择。V2-D 已完成数据结构、Community-1 backend、token 融合、CLI 和 snapshot；下一步先取得 gated 权重并完成真实长录音 run，再建立包含现场人物、电视/媒体声和重叠的穷尽小型真值，不能把现有五条人工 speaker 标记包装成 DER/JER。
+当前 V2-C.3 在五块开发集上达到总体 CER `92.27%`、现场 CER `116.18%` 和 VAD-F1 `61.42%`，但这五块已经参与阈值选择。V2-D 已完成数据结构、Community-1 backend、token 融合、CLI、全量 run 11 和 snapshot；下一步建立包含现场人物、电视/媒体声和重叠的穷尽小型真值，不能把现有五条人工标记包装成 DER/JER。

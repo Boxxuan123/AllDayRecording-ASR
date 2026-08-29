@@ -2,7 +2,7 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-C.3 已实现双 VAD 证据门控和核心 token 提交；V2-D 已增加 schema v7、pyannote Community-1 本地重叠/互斥说话人时间轴、逐 turn 原音追溯和 token-to-speaker 融合。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注并不穷尽电视声，不能直接报告 V2-D 的公平 DER/JER。V2 不以实时性或小模型为目标；之后继续做 V2-D 真实运行/真值验证，再接云端 LLM 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-C.3 已实现双 VAD 证据门控和核心 token 提交；V2-D 已完成 schema v7、pyannote Community-1 本地重叠/互斥说话人时间轴、逐 turn 原音追溯和 token-to-speaker 融合，并完成 2 小时 44 分真实运行。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注并不穷尽电视声，不能直接报告 V2-D 的公平 DER/JER。V2 不以实时性或小模型为目标；之后继续做 V2-D 真值验证，再接云端 LLM 和 Watch 同步。
 
 实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)。
 
@@ -96,6 +96,8 @@ allday-asr diarization-v2 snapshot <run-id>
 ```
 
 音频仍只在本地处理，pyannote telemetry 已关闭；HF token 不进入配置或数据库。完整模型选择、融合阈值和评测边界见 [V2-D 指南](docs/v2-d-speaker-timeline.md)。
+
+真实全量 run 11 使用 Community-1 revision `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`：识别 4 个匿名说话人、989 条 regular turns、951 条 exclusive turns、68 个重叠区间（29.412 秒），并为 run 10 的 2,192 个 committed token 全部保存归属决定。处理 run 用时约 291.8 秒，观察显存约 2.5 GiB；prediction set 15 已冻结。现有 truth set 2 的 `speaker` 完整度明确为 `none`，因此仍不报告 DER/JER。
 
 ## V2-C.1/V2-C.2：公平基准
 
@@ -305,4 +307,4 @@ allday-asr action-review 3 --status dismissed
 
 ## 当前边界
 
-V2-A/V2-B/V2-C 的不可变源对象、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现；V2-C.3 的双 VAD 证据门控、committed token 快照和显式 VAD prediction 已实现。V2-D 的 schema v7、Community-1 backend、重叠/互斥 speaker turns、token-to-speaker 融合和 speaker/overlap snapshot 已实现，真实权重运行等待本机提供 gated 模型访问权限。生产默认仍不覆盖 V1。Watch 五分钟分块同步、云端 LLM、V2-D 网页轨道、跨天身份、桌面确认弹窗和真实日历写入尚未实现。
+V2-A/V2-B/V2-C 的不可变源对象、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现；V2-C.3 的双 VAD 证据门控、committed token 快照和显式 VAD prediction 已实现。V2-D 的 schema v7、Community-1 backend、重叠/互斥 speaker turns、token-to-speaker 融合和 speaker/overlap snapshot 已实现并完成全量 run 11；生产默认仍不覆盖 V1。Watch 五分钟分块同步、云端 LLM、V2-D 网页轨道、穷尽 speaker 真值、跨天身份、桌面确认弹窗和真实日历写入尚未实现。
