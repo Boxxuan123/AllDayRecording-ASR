@@ -73,6 +73,24 @@ def speaker_timeline_overview(
     }
     for speaker in speakers:
         speaker["identity_audit"] = audits_by_speaker.get(speaker["label"])
+    v2d3_run = _latest_v2d3_run(database, recording_id, int(run["id"]))
+    v2d3_summary = _json_object(v2d3_run["summary_json"]) if v2d3_run else {}
+    v2d3_review_rows = (
+        database.list_identity_candidate_reviews(int(v2d3_run["id"]))
+        if v2d3_run
+        else []
+    )
+    v2d3_reviews = {
+        str(row["candidate_id"]): row for row in v2d3_review_rows
+    }
+    identity_expansion = [
+        dict(item) for item in v2d3_summary.get("candidates") or []
+    ]
+    for item in identity_expansion:
+        review = v2d3_reviews.get(str(item["id"]))
+        item["review_status"] = str(review["status"]) if review else None
+        item["review_note"] = review["note"] if review else None
+        item["reviewed_at"] = review["updated_at"] if review else None
     summary = _json_object(run["summary_json"])
     model = _json_object(run["model_manifest_json"])
     return {
@@ -130,9 +148,19 @@ def speaker_timeline_overview(
                 "total_ms": sum(item["possible_ms"] for item in possible),
                 "items": possible,
             },
+            "identity_expansion": {
+                "label": "身份扩样",
+                "description": (
+                    "用稀疏人工身份作为弱种子，并同时与电视、其他人物做负对照。"
+                    "它只决定试听顺序，分数不是身份概率，也不会自动认人。"
+                ),
+                "count": len(identity_expansion),
+                "items": identity_expansion,
+            },
         },
         "v2d1": _v2d1_overview(v2d1_run, v2d1_summary),
         "v2d2": _v2d2_overview(v2d2_run, v2d2_summary),
+        "v2d3": _v2d3_overview(v2d3_run, v2d3_summary, v2d3_review_rows),
         "method": {
             "conversation_window_ms": CONVERSATION_WINDOW_MS,
             "conversation_step_ms": CONVERSATION_STEP_MS,
@@ -140,6 +168,7 @@ def speaker_timeline_overview(
             "listening_audio": "从永久原音按需生成响度归一化缓存，不修改原文件。",
             "speaker_policy": "来源层与匿名 speaker 独立；不会因同属电视而合并不同节目人物。",
             "identity_policy": "人工身份只做短区间审计，不把整个匿名簇重命名为人物。",
+            "identity_expansion_policy": "弱种子候选只供人工试听，不写身份或声纹。",
         },
     }
 
@@ -256,6 +285,19 @@ def _latest_v2d2_run(
     return matches[-1] if matches else None
 
 
+def _latest_v2d3_run(
+    database: Database, recording_id: int, diarization_run_id: int
+):
+    matches = [
+        row
+        for row in database.list_processing_runs(recording_id)
+        if str(row["run_kind"]) == "quality_diarization_v2d3"
+        and str(row["status"]) == "completed"
+        and int(row["parent_run_id"] or 0) == diarization_run_id
+    ]
+    return matches[-1] if matches else None
+
+
 def _v2d1_prediction_rows(
     database: Database, summary: dict[str, Any]
 ) -> list[Any]:
@@ -315,6 +357,50 @@ def _v2d2_overview(run, summary: dict[str, Any]) -> dict[str, Any]:
         "identity_policy": str(
             summary.get("identity_policy")
             or "audit-only interval evidence; model speaker labels remain immutable"
+        ),
+    }
+
+
+def _v2d3_overview(
+    run, summary: dict[str, Any], reviews: Sequence[Any]
+) -> dict[str, Any]:
+    if run is None:
+        return {
+            "available": False,
+            "reason": "尚未生成 V2-D.3 身份扩样候选。",
+            "identity_policy": "没有候选会被自动写成人物身份。",
+        }
+    review_counts = {
+        status: sum(str(row["status"]) == status for row in reviews)
+        for status in ("confirmed_target", "rejected", "uncertain")
+    }
+    confirmed_ms = sum(
+        int(row["session_end_ms"]) - int(row["session_start_ms"])
+        for row in reviews
+        if str(row["status"]) == "confirmed_target"
+    )
+    return {
+        "available": True,
+        "run_id": int(run["id"]),
+        "truth_set_id": int(summary.get("truth_set_id") or 0),
+        "target_identity": str(summary.get("target_identity") or ""),
+        "seed_quality": str(summary.get("seed_quality") or "weak"),
+        "enrollment_ready": bool(summary.get("enrollment_ready")),
+        "target_truth_ms": int(summary.get("target_truth_ms") or 0),
+        "target_embedding_count": int(
+            summary.get("target_embedding_count") or 0
+        ),
+        "negative_identities": list(summary.get("negative_identities") or []),
+        "scored_candidate_windows": int(
+            summary.get("scored_candidate_windows") or 0
+        ),
+        "selected_candidates": int(summary.get("selected_candidates") or 0),
+        "reviewed_candidates": len(reviews),
+        "review_counts": review_counts,
+        "confirmed_ms": confirmed_ms,
+        "identity_policy": str(
+            summary.get("identity_policy")
+            or "review-only weak-seed ranking; no automatic identity assignment"
         ),
     }
 

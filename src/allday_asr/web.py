@@ -24,6 +24,9 @@ from allday_asr.services.evaluation import (
     load_evaluation_truth,
     update_evaluation_truth_segment,
 )
+from allday_asr.services.quality_diarization_v2d3 import (
+    review_identity_candidate,
+)
 from allday_asr.services.sources import (
     LogicalWindow,
     logical_window_cache_key,
@@ -205,6 +208,27 @@ class WebApplication:
             run_id=run_id,
             start_ms=start_ms,
             end_ms=end_ms,
+        )
+
+    def review_identity_expansion(
+        self,
+        recording_id: int,
+        *,
+        run_id: int,
+        candidate_id: str,
+        status: str,
+        note: str | None = None,
+    ) -> dict:
+        database = self.database()
+        run = database.get_processing_run(run_id)
+        if int(run["recording_id"]) != recording_id:
+            raise ValueError("V2-D.3 run 不属于当前录音")
+        return review_identity_candidate(
+            database,
+            run_id,
+            candidate_id=candidate_id,
+            status=status,
+            note=note,
         )
 
     def start_daily_run(self, recording_id: int) -> dict:
@@ -491,6 +515,18 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
             recording_id = int(body["recording_id"])
             self._send_json(
                 HTTPStatus.ACCEPTED, self.application.start_daily_run(recording_id)
+            )
+            return
+        if parsed.path == "/api/speaker-timeline/identity-review":
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.review_identity_expansion(
+                    int(body["recording_id"]),
+                    run_id=int(body["run_id"]),
+                    candidate_id=str(body["candidate_id"]),
+                    status=str(body["status"]),
+                    note=str(body["note"]) if body.get("note") is not None else None,
+                ),
             )
             return
         evaluation_match = _match_path(

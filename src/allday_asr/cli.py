@@ -67,6 +67,10 @@ from allday_asr.services.quality_diarization_v2d1 import (
 from allday_asr.services.quality_diarization_v2d2 import (
     run_identity_contamination_audit,
 )
+from allday_asr.services.quality_diarization_v2d3 import (
+    V2D3Settings,
+    run_identity_candidate_mining,
+)
 from allday_asr.services.review import import_self_review
 from allday_asr.services.sources import (
     audit_all_sources,
@@ -427,6 +431,80 @@ def quality_diarization_identity_audit(
             f"human={item['identity']} | truth={item['truth_ms'] / 1000:.3f}s | "
             f"covered={item['coverage']:.2%} | {mapping or 'no model speaker'}"
         )
+    console.print(f"运行清单：{summary.manifest_path.resolve()}")
+
+
+@quality_diarization_app.command(name="mine-identities")
+def quality_diarization_mine_identities(
+    recording_id: int = typer.Argument(..., min=1),
+    truth_set_id: int = typer.Option(
+        ...,
+        "--truth-set",
+        min=1,
+        help="包含目标人物和电视/其他人物负对照的冻结真值集。",
+    ),
+    identity: str = typer.Option(
+        ...,
+        "--identity",
+        help="要扩样的人工身份标签，例如 father 或 mother。",
+    ),
+    diarization_run_id: int | None = typer.Option(
+        None,
+        "--diarization-run",
+        min=1,
+        help="父 V2-D run；默认选择该录音最新完成的一次。",
+    ),
+    max_candidates: int = typer.Option(
+        12,
+        "--max-candidates",
+        min=1,
+        max=100,
+        help="写入试听队列的候选上限。",
+    ),
+    device: str = typer.Option("auto", help="auto、cuda:0 或 cpu。"),
+    model_path: Path | None = typer.Option(
+        None,
+        "--model-path",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
+        help="可选的本地 Community-1 snapshot 路径。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """用 Community-1 声纹和人工负对照生成 V2-D.3 弱种子试听队列。"""
+    database = Database(db)
+    if diarization_run_id is None:
+        candidates = [
+            row
+            for row in database.list_processing_runs(recording_id)
+            if str(row["run_kind"]) == "quality_diarization_v2d"
+            and str(row["status"]) == "completed"
+        ]
+        if not candidates:
+            raise typer.BadParameter("该录音没有已完成的 V2-D run")
+        diarization_run_id = int(candidates[-1]["id"])
+    summary = run_identity_candidate_mining(
+        database,
+        recording_id,
+        diarization_run_id=diarization_run_id,
+        truth_set_id=truth_set_id,
+        target_identity=identity,
+        settings=V2D3Settings(max_candidates=max_candidates),
+        device=device,
+        model_path=model_path,
+    )
+    console.print(
+        f"[green]V2-D.3 弱种子候选完成[/green] run={summary.run_id} | "
+        f"identity={summary.target_identity} | seed={summary.target_truth_ms / 1000:.3f}s/"
+        f"{summary.target_embedding_count} embeddings | quality={summary.seed_quality} | "
+        f"selected={summary.selected_candidates}/{summary.scored_candidate_windows}"
+    )
+    console.print(
+        "[yellow]这些分数未经身份阈值校准，只用于决定先听哪一段；"
+        "没有写入任何人物身份或正式声纹。[/yellow]"
+    )
     console.print(f"运行清单：{summary.manifest_path.resolve()}")
 
 

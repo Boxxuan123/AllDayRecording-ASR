@@ -132,6 +132,7 @@
             <div id="speaker-legend" class="speaker-legend" aria-label="说话人图例"></div>
             <div id="timeline-v2d1-status" class="timeline-v2d1-status" aria-live="polite"></div>
             <div id="timeline-v2d2-status" class="timeline-v2d2-status" aria-live="polite"></div>
+            <div id="timeline-v2d3-status" class="timeline-v2d3-status" aria-live="polite"></div>
             <section id="timeline-identity-audit" class="timeline-identity-audit hidden" aria-label="身份污染审计"></section>
 
             <div class="timeline-queue-toolbar">
@@ -147,6 +148,9 @@
                 </button>
                 <button class="timeline-queue-button" data-timeline-queue="possible" role="tab">
                   可能漏检 <span id="timeline-possible-count">0</span>
+                </button>
+                <button class="timeline-queue-button" data-timeline-queue="identity_expansion" role="tab">
+                  身份扩样 <span id="timeline-identity-expansion-count">0</span>
                 </button>
               </div>
               <p id="timeline-queue-description">正在整理值得听的片段…</p>

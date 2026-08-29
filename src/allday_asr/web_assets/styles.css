@@ -919,6 +919,22 @@ td {
 .timeline-v2d2-status.unavailable { color: var(--muted); background: #eeebe4; }
 .timeline-v2d2-warning.active { color: #9b3f2f; font-weight: 800; }
 
+.timeline-v2d3-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 11px 14px;
+  border: 1px solid #c7d8d2;
+  border-radius: 12px;
+  background: #edf6f2;
+  font-size: 10px;
+}
+
+.timeline-v2d3-status strong { color: var(--navy); }
+.timeline-v2d3-status.unavailable { color: var(--muted); background: #eeebe4; }
+.timeline-v2d3-negatives { color: #526d67; }
+
 .timeline-identity-audit {
   padding: 13px 18px 16px;
   background: #f8f5ef;
@@ -1239,6 +1255,61 @@ td {
   color: var(--muted);
   font-size: 9px;
 }
+
+.identity-expansion-notice {
+  padding: 12px 14px;
+  border: 1px solid #d5aa76;
+  border-radius: 12px;
+  background: #fff8e9;
+  color: #6d4c25;
+}
+
+.identity-expansion-notice strong { display: block; margin-bottom: 5px; }
+.identity-expansion-notice p { margin: 0; font-size: 10px; line-height: 1.55; }
+.identity-expansion-notice.high_contrast { border-color: #91b9aa; background: #eef8f4; color: #315f50; }
+
+.identity-review-badge {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-weight: 800;
+}
+
+.identity-review-badge.confirmed_target { color: #28715a; }
+.identity-review-badge.rejected { color: #9b3f2f; }
+.identity-review-badge.uncertain { color: #8b6a2c; }
+
+.identity-review-controls {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.identity-review-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.identity-review-heading span { color: var(--muted); font-size: 9px; }
+.identity-review-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.identity-review-button {
+  padding: 8px 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #f5f2ec;
+  color: var(--navy);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 800;
+}
+.identity-review-button.confirmed_target.active { border-color: #28715a; color: #1d5f4b; background: #e7f4ef; }
+.identity-review-button.rejected.active { border-color: #9b3f2f; color: #8a3428; background: #fff0eb; }
+.identity-review-button.uncertain.active { border-color: #a47b30; color: #7b5c25; background: #fff7e6; }
+.identity-review-controls > p { margin: 9px 0 0; color: var(--muted); font-size: 9px; }
 
 .timeline-subheading {
   display: flex;

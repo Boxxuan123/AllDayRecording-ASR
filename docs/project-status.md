@@ -73,6 +73,8 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 | 候选 01 前 14 秒 | truth set 3 = `media_playback`；detected recall 50.79%，recall-rescue 100%（无负例，FA 不可定义） |
 | V2-D.2 run 13 | 72 条身份区间、100.450 秒；模型覆盖 67.27%；02=电视/父亲/母亲/本人污染簇 |
 | 父亲稀疏真值 | 5.970 秒，覆盖 88.59%；02=3.487s、01=1.768s，主要是错簇而非 VAD 漏检 |
+| V2-D.3 run 16 | Community-1 WeSpeaker；父亲 2 个弱种子；378 个未见短窗中展示 12 个 |
+| V2-D.3 负对照 | 母亲 39.040s、本人 2.070s、电视 52.800s；候选不自动写身份 |
 | 说话人成对 F1 | 0.543（电视标签语义仍需拆分） |
 | 本人识别真值 | 2 段本人、70 段非本人；样本不足以判断泛化 |
 
@@ -98,14 +100,14 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 3. `daily-run` 已能安全编排现有阶段，但还缺少一份可公开提交、不含隐私的小音频集成样本。
 4. 时间线仍然只是时间间隔规则聚合，还没有“我今天做了什么”的日级摘要；行动候选目前只覆盖明确日期、时间和本人承诺的严格格式。
 5. 固定人物可以登记，但尚无通用的跨天人物候选匹配和人工确认流程。
-6. schema v7 已新增 diarization turns/source trace/token attribution；后续结构变化必须继续新增 migration，不能修改既有版本。
+6. schema v7 已新增 diarization turns/source trace/token attribution；schema v8 新增可变的身份候选人工审核覆盖层，完成 run 和原始模型输出仍不可变。后续结构变化必须继续新增 migration，不能修改既有版本。
 7. `daily-run` 已使用统一配置；旧的分步命令仍保留各自参数，后续可逐步接入同一配置层。
 8. 已建立 Git 基线提交 `d9e9377` 和一键日记提交 `57cbe2e`；后续能力继续按可验证功能独立提交。
 
 ## 6. 本次盘点验证
 
 - `doctor` 全部通过：Python 3.12.10、FFmpeg/FFprobe、FunASR 1.4.4、ModelScope 1.39.1、pyannote.audio 4.0.7、PyTorch/torchaudio 2.9.1+cu128 和 RTX 5070 CUDA 实算正常。
-- 全量 48 个单元测试通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution 防篡改、跨源引用、V2-C.1/V2-C.2 盲标约束、非连续 review-region、Oracle 快照、双 CER、paired bootstrap、VAD/DER/JER、V2-C.3 门控、V2-D 同时说话，以及 V2-D.1 speaker/source 解耦和召回补救。
+- 全量 50 个单元测试通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution 防篡改、跨源引用、V2-C.1/V2-C.2 盲标约束、非连续 review-region、Oracle 快照、双 CER、paired bootstrap、VAD/DER/JER、V2-C.3 门控、V2-D 同时说话、V2-D.1 speaker/source 解耦和召回补救，以及 V2-D.3 弱种子负对照排序与人工审核覆盖层。
 - 真实库已从 schema v3 升级到 v4，升级前自动保存一份 schema v3 SQLite 备份。迁移前后 V1 各表计数一致：423 个语音段、17 条人工身份标注、26 条声纹样本、10 个事件和 3 个历史 run 均保留。
 - 当前 79,826,205 字节 Watch M4A 完整性状态为 `verified`；迁移和真实逻辑窗口解码前后 SHA-256 均为 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`。
 - 当前长录音可规划为 33 个无空洞的 5 分钟核心窗口并带 5 秒边界上下文；真实 10 秒核心窗口临时解码为 11 秒 WAV，退出后缓存已删除。
@@ -117,6 +119,8 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 - Community-1 未缓存且没有标准 HF 登录或 `HF_TOKEN` 时会在联网/解码/创建 run 前立即终止，不产生空 run；登录后已完成 run 11，模型 revision 为 `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`。
 - run 11 的 1,940 条 turns 均有完整原音 source trace，覆盖长度错误为 0；2,192 个 committed token 全部有归属决定，prediction set 15 已冻结。临时整段 WAV 已删除，原音字节数和 SHA-256 不变。
 - V2-D.1 run 12 保留 run 11 的四个匿名 speaker 不变，truth set 3 只冻结 `17:00–17:14 = media_playback` 来源事实且不提供身份；原音再次审计为 `verified`。
+- V2-D.3 run 16 用父亲 5.970 秒真值生成 2 个弱种子 embedding，并以母亲、本人和电视作显式负对照；排除所有已标区间及前后 500 ms 后评分 378 个窗口，默认只展示前 12 个，主要落在 14–28 分钟吃饭对话范围。
+- schema v7→v8 升级前已自动备份真实 SQLite；身份候选审核只写 `identity_candidate_reviews` 覆盖层，不改完成 run，不持久化 embedding。run 16 后永久原音仍为 79,826,205 字节且 SHA-256 不变。
 - Qwen3-ASR-1.7B + Qwen3-ForcedAligner-0.6B 已在当前 8 GB 5070 上以 BF16、batch=1 运行真实 40 秒片段并返回 71 个对齐 token；Fun-ASR-Nano 对同一片段返回独立假设和 90 个 CTC token。
 - 首个完整五分钟 V2-C VAD-utterance 窗口已端到端完成：1 份主假设、1 份第二假设、236 个不可变对齐 token、1 条分歧记录、0 个低覆盖假设；每个 token 均有原始对象 SHA-256 和完整源时间覆盖。
 - 当前 2 小时 44 分 35 秒录音已完成全量 V2-C run 7：33 份 Qwen 主假设、33 份 Fun-ASR 第二假设、6,147 个 token、16 个分歧窗口和 3 个低于 85% 对齐覆盖的非空假设；8 GB BF16 全程未 OOM，端到端耗时约 8 分 14 秒。
@@ -160,7 +164,7 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 2. Qwen3-ForcedAligner-0.6B 输出字符/词级时间戳。
 3. Fun-ASR-Nano-2512 生成第二假设和关键字段分歧队列。
 4. Community-1 已生成可保存的重叠/exclusive speaker turns；Sortformer 因 4 人上限和非英语风险保留为待同真值比较的可插拔候选。
-5. token 与说话人时间轴融合已实现；下一步是独立本人/媒体来源验证。
+5. token 与说话人时间轴融合、来源审计和弱种子身份扩样队列已实现；下一步是把人工确认的干净人物语音积累到正式登记门槛，再做独立 holdout 验证。
 
 ### P3：云端语义和 Watch 同步
 

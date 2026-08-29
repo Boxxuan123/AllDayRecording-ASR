@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS conversation_events (
 );
 """
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -817,6 +817,28 @@ MIGRATIONS: dict[int, str] = {
         BEFORE DELETE ON token_speaker_attributions BEGIN
             SELECT RAISE(ABORT, 'token speaker attribution cannot be deleted');
         END;
+    """,
+    8: """
+        CREATE TABLE IF NOT EXISTS identity_candidate_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            candidate_id TEXT NOT NULL,
+            target_identity TEXT NOT NULL,
+            session_start_ms INTEGER NOT NULL,
+            session_end_ms INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(
+                status IN ('confirmed_target', 'rejected', 'uncertain')
+            ),
+            note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(run_id, candidate_id),
+            CHECK(session_end_ms > session_start_ms),
+            FOREIGN KEY (run_id) REFERENCES processing_runs(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_identity_candidate_reviews_run_status
+        ON identity_candidate_reviews(run_id, status, session_start_ms);
     """,
 }
 
@@ -1689,6 +1711,69 @@ class Database:
                     WHERE recording_id = ? ORDER BY id
                     """,
                     (recording_id,),
+                )
+            )
+
+    def upsert_identity_candidate_review(
+        self, run_id: int, values: dict[str, Any]
+    ) -> sqlite3.Row:
+        run = self.get_processing_run(run_id)
+        if str(run["run_kind"]) != "quality_diarization_v2d3":
+            raise ValueError("身份候选审核只适用于 V2-D.3 run")
+        if str(run["status"]) != "completed":
+            raise ValueError("只能审核已完成的 V2-D.3 run")
+        status = str(values["status"])
+        if status not in {"confirmed_target", "rejected", "uncertain"}:
+            raise ValueError("身份候选审核状态无效")
+        start_ms = int(values["session_start_ms"])
+        end_ms = int(values["session_end_ms"])
+        if start_ms < 0 or end_ms <= start_ms:
+            raise ValueError("身份候选审核时间范围无效")
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO identity_candidate_reviews (
+                    run_id, candidate_id, target_identity, session_start_ms,
+                    session_end_ms, status, note, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, candidate_id) DO UPDATE SET
+                    status = excluded.status,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    run_id,
+                    str(values["candidate_id"]),
+                    str(values["target_identity"]),
+                    start_ms,
+                    end_ms,
+                    status,
+                    values.get("note"),
+                    now,
+                    now,
+                ),
+            )
+            return connection.execute(
+                """
+                SELECT * FROM identity_candidate_reviews
+                WHERE run_id = ? AND candidate_id = ?
+                """,
+                (run_id, str(values["candidate_id"])),
+            ).fetchone()
+
+    def list_identity_candidate_reviews(self, run_id: int) -> list[sqlite3.Row]:
+        run = self.get_processing_run(run_id)
+        if str(run["run_kind"]) != "quality_diarization_v2d3":
+            raise ValueError("身份候选审核只适用于 V2-D.3 run")
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM identity_candidate_reviews
+                    WHERE run_id = ? ORDER BY session_start_ms, id
+                    """,
+                    (run_id,),
                 )
             )
 

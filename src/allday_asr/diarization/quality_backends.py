@@ -120,11 +120,17 @@ class PyannoteCommunityBackend:
 
         set_telemetry_metrics(False)
         try:
-            pipeline = Pipeline.from_pretrained(
-                source,
-                token=token,
-                cache_dir=MODEL_DIR / "huggingface" / "hub",
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", message=r"std\(\): degrees of freedom is <= 0.*"
+                )
+                pipeline = Pipeline.from_pretrained(
+                    source,
+                    token=token,
+                    cache_dir=MODEL_DIR / "huggingface" / "hub",
+                )
+                if pipeline is not None:
+                    pipeline.to(torch.device(self.device))
         except Exception as exc:
             raise RuntimeError(
                 "无法加载 pyannote Community-1，请检查本地模型和依赖。若模型尚未缓存，"
@@ -136,7 +142,6 @@ class PyannoteCommunityBackend:
             raise RuntimeError(
                 "pyannote Community-1 返回空 pipeline；请确认已接受模型条款并有读取权限"
             )
-        pipeline.to(torch.device(self.device))
         self._pipeline = pipeline
         if isinstance(source, Path):
             self.model_revision = source.name
@@ -195,6 +200,41 @@ class PyannoteCommunityBackend:
                 "has_speaker_embeddings": output.speaker_embeddings is not None,
             },
         )
+
+    def extract_speaker_embeddings(
+        self, samples: list[np.ndarray], *, batch_size: int = 32
+    ) -> np.ndarray:
+        """Extract Community-1's own WeSpeaker embeddings from equal-length 16 kHz audio."""
+        if not samples:
+            return np.empty((0, 256), dtype=np.float32)
+        self.ensure_loaded()
+        lengths = {len(np.asarray(item)) for item in samples}
+        if len(lengths) != 1:
+            raise ValueError("Community-1 embedding 输入必须是等长的 16 kHz 波形")
+        sample_count = next(iter(lengths))
+        embedding_backend = self._pipeline._embedding
+        if sample_count < int(embedding_backend.min_num_samples):
+            raise ValueError("Community-1 embedding 输入过短")
+
+        import torch
+
+        outputs: list[np.ndarray] = []
+        for offset in range(0, len(samples), batch_size):
+            batch = np.stack(
+                [
+                    np.asarray(item, dtype=np.float32)
+                    for item in samples[offset : offset + batch_size]
+                ]
+            )
+            waveforms = torch.from_numpy(np.ascontiguousarray(batch)).unsqueeze(1)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", message=r"std\(\): degrees of freedom is <= 0.*"
+                )
+                outputs.append(
+                    np.asarray(embedding_backend(waveforms), dtype=np.float32)
+                )
+        return np.vstack(outputs)
 
     def parameters(self) -> dict[str, Any]:
         return {

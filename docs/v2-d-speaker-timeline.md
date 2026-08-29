@@ -159,3 +159,33 @@ allday-asr diarization-v2 identity-audit 1 --truth-set 1
 - Sortformer backend 尚未安装；协议已经可插拔，只有在同一新真值上比较后才决定是否增加。
 - `SPEAKER_00` 等只是单次会话内匿名标签，不等于本人、父母或电视；跨天身份与本人验证是下一层。
 - V2-D.2 的人工角标只覆盖已有稀疏真值；未标区间仍不能自动对应本人、家人或电视。
+
+## 12. V2-D.3：弱种子身份扩样队列
+
+V2-D.3 不会拿 5.97 秒父亲真值直接生成正式声纹。它先把真值覆盖的音频按身份拼成固定 3 秒输入，复用 Community-1 snapshot 自带的 `WeSpeakerResNet34` embedding；父亲是目标弱种子，母亲、本人和电视分别形成负对照质心。候选排序使用：
+
+```text
+contrastive_margin = father_similarity - max(mother, self, tv similarity)
+```
+
+这个差值未经身份阈值校准，不是“是父亲”的概率。所有已标真值及前后 500 ms 都从候选中排除，避免把种子原样检索回来造成数据泄漏；匿名 exclusive turns 会先合并相邻短段，再切成 1.2–3 秒固定窗口。embedding 只在本次进程内存在，不写磁盘或数据库。
+
+```powershell
+allday-asr diarization-v2 mine-identities 1 `
+  --truth-set 1 --identity father --diarization-run 11
+```
+
+真实 run 16 的输入和结果：
+
+| 项目 | 结果 |
+| --- | ---: |
+| 父亲人工真值 | 6 条、5.970 秒 |
+| 父亲弱种子 embedding | 2 |
+| 负对照 | 母亲 39.040s / 本人 2.070s / 电视 52.800s |
+| 排除已标区间后可评分窗口 | 378 |
+| 网页默认候选 | 12 |
+| 候选集中时间 | 约 00:14–00:28；与吃饭对话场景相符 |
+
+网页“身份扩样”页签显示目标相似度、最强负对照、对照差值和对应短音频，并提供“是父亲 / 不是 / 听不清”三个按钮。schema v8 的 `identity_candidate_reviews` 只保存人工审核覆盖层；完成的 V2-D.3 run 及其 manifest 保持不变。确认“是”也不会自动创建人物档案或正式声纹。只有经人工确认后的累计干净语音达到至少 30 秒、至少 6 个一致 embedding，才进入下一阶段的正式 enrollment/holdout 验证。
+
+run 16 后再次审计永久原音：79,826,205 字节、SHA-256 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`，状态仍为 `verified`。

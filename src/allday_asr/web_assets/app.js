@@ -215,9 +215,11 @@ function renderTimelineOverview() {
   $("#timeline-overlap-count").textContent = String(timeline.queues.overlap.count);
   $("#timeline-unassigned-group-count").textContent = String(timeline.queues.unassigned.count);
   $("#timeline-possible-count").textContent = String(timeline.queues.possible?.count || 0);
+  $("#timeline-identity-expansion-count").textContent = String(timeline.queues.identity_expansion?.count || 0);
   renderSpeakerLegend();
   renderTimelineV2D1Status();
   renderTimelineV2D2Status();
+  renderTimelineV2D3Status();
   selectTimelineQueue(state.timelineQueue, { preserveSelection: true });
 }
 
@@ -333,6 +335,40 @@ function renderTimelineV2D2Status() {
   auditPanel.append(table);
 }
 
+function renderTimelineV2D3Status() {
+  const container = $("#timeline-v2d3-status");
+  const expansion = state.timeline.v2d3;
+  container.replaceChildren();
+  if (!expansion?.available) {
+    container.classList.add("unavailable");
+    container.append(
+      node("strong", "", "V2-D.3 尚未生成"),
+      node("span", "", expansion?.reason || "当前没有身份扩样候选。"),
+    );
+    return;
+  }
+  container.classList.remove("unavailable");
+  const negatives = expansion.negative_identities.map(identityLabel).join(" / ") || "无";
+  container.append(
+    node("strong", "", `V2-D.3 · RUN #${expansion.run_id}`),
+    node(
+      "span",
+      "",
+      `${identityLabel(expansion.target_identity)}种子 ${formatDuration(expansion.target_truth_ms)}`
+      + ` · ${expansion.target_embedding_count} 个 embedding · ${expansion.selected_candidates} 个候选`
+      + ` · 已审 ${expansion.reviewed_candidates || 0}`,
+    ),
+    node("span", "timeline-v2d3-negatives", `负对照：${negatives}`),
+    node(
+      "span",
+      expansion.enrollment_ready ? "audit-ok" : "timeline-v2d2-warning active",
+      expansion.enrollment_ready
+        ? "种子已达到登记时长门槛；候选仍需人工确认"
+        : "弱种子：未达到正式声纹登记门槛，所有分数只用于排序",
+    ),
+  );
+}
+
 function selectTimelineQueue(queueName, options = {}) {
   if (!state.timeline?.available || !state.timeline.queues[queueName]) return;
   state.timelineQueue = queueName;
@@ -380,6 +416,11 @@ function renderTimelineCandidates() {
     if (item.has_rejected_asr) facts.append(node("span", "possible-fact", "含拒绝 ASR 证据"));
     if (item.identity_labels?.length) {
       facts.append(node("span", "identity-fact", `人工：${item.identity_labels.map(identityLabel).join(" / ")}`));
+    }
+    if (item.kind === "identity_expansion") {
+      facts.append(node("span", "identity-fact", `目标 ${Number(item.target_similarity).toFixed(3)}`));
+      facts.append(node("span", item.contrastive_margin >= 0 ? "identity-fact" : "possible-fact", `对照差 ${Number(item.contrastive_margin).toFixed(3)}`));
+      if (item.review_status) facts.append(node("span", `identity-review-badge ${item.review_status}`, identityReviewLabel(item.review_status)));
     }
     facts.append(node("span", "", `${item.token_count} 词`));
     button.append(facts);
@@ -442,10 +483,30 @@ function renderTimelineDetail(item, payload) {
   if (item.speech_ms !== null) facts.append(timelineFact("有效语音", formatDuration(item.speech_ms)));
   if (item.possible_ms) facts.append(timelineFact("低置信语音", formatDuration(item.possible_ms)));
   if (item.identity_truth_ms) facts.append(timelineFact("人工身份真值", formatDuration(item.identity_truth_ms)));
+  if (item.kind === "identity_expansion") {
+    facts.append(timelineFact(`${identityLabel(item.target_identity)}相似度`, Number(item.target_similarity).toFixed(3)));
+    facts.append(timelineFact(`最强负对照 · ${identityLabel(item.negative_identity)}`, Number(item.negative_similarity).toFixed(3)));
+    facts.append(timelineFact("对照差值", Number(item.contrastive_margin).toFixed(3)));
+  }
   if (item.speaker_switches !== null) facts.append(timelineFact("说话人切换", item.speaker_switches));
   facts.append(timelineFact("重叠", `${(item.overlap_ms / 1000).toFixed(1)}s`));
   facts.append(timelineFact("无归属", item.unassigned_tokens));
   detail.append(facts);
+
+  if (item.kind === "identity_expansion") {
+    const notice = node("div", `identity-expansion-notice ${item.review_tier || "exploratory"}`);
+    notice.append(
+      node("strong", "", "弱种子候选，不是身份结论"),
+      node(
+        "p",
+        "",
+        `该段只是比最强负对照“${identityLabel(item.negative_identity)}”高 ${Number(item.contrastive_margin).toFixed(3)}。`
+        + "分数未经身份阈值校准；试听后也不会自动写入人物或正式声纹。",
+      ),
+    );
+    detail.append(notice);
+    detail.append(renderIdentityReviewControls(item, payload));
+  }
 
   const audioBlock = node("div", "timeline-audio-block");
   audioBlock.append(node("strong", "", "响度增强试听（派生缓存）"));
@@ -460,6 +521,72 @@ function renderTimelineDetail(item, payload) {
 
   detail.append(renderSpeakerTracks(payload));
   detail.append(renderTimelineTranscript(payload, audio));
+}
+
+function renderIdentityReviewControls(item, payload) {
+  const wrapper = node("section", "identity-review-controls");
+  const heading = node("div", "identity-review-heading");
+  heading.append(
+    node("strong", "", `试听后判断是不是${identityLabel(item.target_identity)}`),
+    node("span", "", item.review_status ? `当前：${identityReviewLabel(item.review_status)}` : "尚未判断"),
+  );
+  wrapper.append(heading);
+  const actions = node("div", "identity-review-actions");
+  [
+    ["confirmed_target", `是${identityLabel(item.target_identity)}`],
+    ["rejected", "不是"],
+    ["uncertain", "听不清"],
+  ].forEach(([status, label]) => {
+    const button = node("button", `identity-review-button ${status} ${item.review_status === status ? "active" : ""}`, label);
+    button.type = "button";
+    button.addEventListener("click", () => submitIdentityReview(item, status, payload, actions));
+    actions.append(button);
+  });
+  wrapper.append(actions);
+  wrapper.append(node("p", "", "这里只保存人工审核覆盖层；即使选择“是”，也不会自动登记人物或写入正式声纹。"));
+  return wrapper;
+}
+
+async function submitIdentityReview(item, status, payload, actions) {
+  actions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+  try {
+    const review = await api("/api/speaker-timeline/identity-review", {
+      method: "POST",
+      body: JSON.stringify({
+        recording_id: state.recordingId,
+        run_id: state.timeline.v2d3.run_id,
+        candidate_id: item.id,
+        status,
+      }),
+    });
+    item.review_status = review.status;
+    item.reviewed_at = review.updated_at;
+    const reviewed = state.timeline.queues.identity_expansion.items.filter((candidate) => candidate.review_status);
+    state.timeline.v2d3.reviewed_candidates = reviewed.length;
+    state.timeline.v2d3.review_counts = {
+      confirmed_target: reviewed.filter((candidate) => candidate.review_status === "confirmed_target").length,
+      rejected: reviewed.filter((candidate) => candidate.review_status === "rejected").length,
+      uncertain: reviewed.filter((candidate) => candidate.review_status === "uncertain").length,
+    };
+    state.timeline.v2d3.confirmed_ms = reviewed
+      .filter((candidate) => candidate.review_status === "confirmed_target")
+      .reduce((total, candidate) => total + candidate.end_ms - candidate.start_ms, 0);
+    renderTimelineCandidates();
+    renderTimelineV2D3Status();
+    renderTimelineDetail(item, payload);
+    toast(`${item.title}：${identityReviewLabel(status)}`);
+  } catch (error) {
+    actions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+    toast(error.message, "error");
+  }
+}
+
+function identityReviewLabel(status) {
+  return {
+    confirmed_target: "确认是目标人物",
+    rejected: "确认不是",
+    uncertain: "听不清",
+  }[status] || "尚未判断";
 }
 
 function timelineFact(label, value) {

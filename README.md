@@ -96,11 +96,14 @@ allday-asr diarization-v2 snapshot <run-id>
 allday-asr diarization-v2 source-truth 1 --start 17:00 --end 17:14 --source media_playback --name v2d1-candidate01-media-17m
 allday-asr diarization-v2 refine 1 --truth-set 2 --truth-set 3
 allday-asr diarization-v2 identity-audit 1 --truth-set 1
+allday-asr diarization-v2 mine-identities 1 --truth-set 1 --identity father
 ```
 
 音频仍只在本地处理，pyannote telemetry 已关闭；HF token 不进入配置或数据库。完整模型选择、融合阈值和评测边界见 [V2-D 指南](docs/v2-d-speaker-timeline.md)。
 
-真实全量 run 11 使用 Community-1 revision `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`：识别 4 个匿名说话人、989 条 regular turns、951 条 exclusive turns、68 个重叠区间（29.412 秒）。V2-D.1 run 12 冻结 607 段确定语音和 453 段可能语音。V2-D.2 run 13 对 truth set 1 的 100.450 秒稀疏身份真值做污染审计，确认 02 同时含电视 71.72%、父亲 13.09%、母亲 8.84% 和本人 6.35%；父亲真值覆盖率 88.59%，问题主要是错簇而非漏检。稀疏真值仍不能支持公平 DER/JER。
+真实全量 run 11 使用 Community-1 revision `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`：识别 4 个匿名说话人、989 条 regular turns、951 条 exclusive turns、68 个重叠区间（29.412 秒）。V2-D.1 run 12 冻结 607 段确定语音和 453 段可能语音。V2-D.2 run 13 对 truth set 1 的 100.450 秒稀疏身份真值做污染审计，确认 02 同时含电视 71.72%、父亲 13.09%、母亲 8.84% 和本人 6.35%；父亲真值覆盖率 88.59%，问题主要是错簇而非漏检。
+
+V2-D.3 run 16 复用 Community-1 内置 WeSpeaker ResNet34，把父亲 5.970 秒稀疏真值组成 2 个弱种子 embedding，同时以母亲、本人和电视作负对照；378 个未见短窗中只展示前 12 条。网页可一键记录“是父亲 / 不是 / 听不清”，审核保存在 schema v8 的独立覆盖层，不修改完成 run、不自动登记身份，也不持久化生物特征 embedding。稀疏真值仍不能支持公平 DER/JER。
 
 ## V2-C.1/V2-C.2：公平基准
 
