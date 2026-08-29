@@ -106,9 +106,9 @@ allday-asr diarization-v2 sync-identity-references --identity father
 
 V2-D.3 run 17 复用 Community-1 内置 WeSpeaker ResNet34，把父亲 5.970 秒稀疏真值组成 2 个弱种子 embedding，同时以母亲、本人和电视作负对照；378 个未见短窗中只展示前 12 条。首轮人工审核为 11/12 命中：高对照 7/7、中对照 4/4、探索项 0/1；新排序因此优先高/中对照，并把同一音频区间的人工结论继承到等价新 run。网页审核保存在 schema v8 的独立覆盖层，不修改完成 run、不自动登记身份，也不持久化生物特征 embedding。稀疏真值仍不能支持公平 DER/JER。
 
-## V2-E.0.1：完整对话优先的本地语义证据层
+## V2-E.0.2：Episode 语义证据层
 
-schema v10 将 V2-C committed token、V2-D token-to-speaker、不确定性和永久原音坐标组织成供应商无关的本地证据底账，再单独生成不含音频、路径、原音哈希和数据库 token ID 的最小化 provider payload。语义单元是无固定时长上限的完整对话；120 秒只用于网页回听。纯“嗯”等低信息块保留在本地但不发送。当前 `local_mock` 不联网、不运行 LLM，事实和行动候选刻意保持为空。请求、响应和基础候选不可修改，网页人工确认/驳回以追加 revision 保存。
+schema v10 将 V2-C committed token、V2-D 匿名声簇、冻结的现场/电视来源、区间级真实身份和永久原音坐标组织成供应商无关的本地证据底账。启发式长容器只叫 episode，不再假装是完整对话；utterance 是 provider 唯一主文本，scene/claim/action 才是 LLM 输出。匿名声簇永远不是人物身份，120 秒只用于网页回听。当前先以 Codex manual record/replay 验收同一请求/响应契约，项目运行时不调用云端 API。
 
 ```powershell
 allday-asr semantic-v2 build 1
@@ -116,7 +116,7 @@ allday-asr semantic-v2 status 1
 allday-asr web
 ```
 
-真实 run 20 以 V2-C run 10 和 V2-D run 11 为输入，把 2,192 个 committed token 整理为 2 个完整对话、7 个本地低信息块和 3 个候选；最长对话为 37 分 19 秒，只对应一个语义实体和 19 个播放器回听片。两个完整对话合成 1 个 98,600 字节的计划请求，原 M4A 的字节数与 SHA-256 前后不变。A–D 边界审计、完整契约、隐私边界和 V2-E.1 进入条件见 [V2-E.0.1 指南](docs/v2-e0-semantic-evidence.md)。
+run 20 修复了 120 秒硬切，但把 37 分钟声学容器误称为“完整对话”，且尚未把 source/identity 送入语义层。V2-E.0.2 将在同一 2,192 个 committed token 上重建 episode 输入和 Codex 人工语义响应；历史 run 不删除。稳定实体、验证规则、隐私边界和 V2-E.1 进入条件见 [V2-E.0.2 指南](docs/v2-e0-semantic-evidence.md)。
 
 ## V2-C.1/V2-C.2：公平基准
 

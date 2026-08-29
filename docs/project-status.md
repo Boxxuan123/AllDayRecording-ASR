@@ -177,7 +177,7 @@ V2-E.0.1 已把 committed token、说话人归属、不确定性和原音坐标�
 
 ### P3：云端语义和 Watch 同步
 
-1. [x] V2-E.0.1 定义完整对话优先、供应商无关、带证据的本地语义交换，不让 LLM 覆盖原始 ASR。
+1. [x] V2-E.0.2 定义 episode/utterance/scene、四轨归属证据和供应商无关交换，不让 LLM 覆盖原始 ASR。
 2. [ ] V2-E.1 在单独授权后接入真实云端 provider，评测事实一致性、遗漏、幻觉和行动项精度。
 3. Watch 同步完成后接入 5 分钟 chunk manifest、幂等上传和跨块连续性检查。
 4. 自动上传和手动点击同步共用同一协议；同步不阻塞既有本地音频与证据层。
@@ -201,4 +201,4 @@ V2-C 已完成 schema v6、Qwen3-ASR-1.7B、Qwen3-ForcedAligner-0.6B、Fun-ASR-N
 
 当前 V2-C.3 在五块开发集上达到总体 CER `92.27%`、现场 CER `116.18%` 和 VAD-F1 `61.42%`，但这五块已经参与阈值选择。V2-D 已完成数据结构、Community-1 backend、token 融合、CLI、全量 run 11 和 snapshot；下一步建立包含现场人物、电视/媒体声和重叠的穷尽小型真值，不能把现有五条人工标记包装成 DER/JER。
 
-V2-E.0.1 已完成 schema v10、本地 mock provider、完整对话/传输 job/回听片分层、低信息本地留存、最小化 provider payload、超限分片重聚合、不可变交换/候选、追加式人工修订、CLI/API 和网页证据审核。下一步不是把 mock 文案当成日记，而是先确定真实云端供应商、模型上下文与隐私策略，再以同一证据契约实现 V2-E.1，并建立人工审核集衡量事实一致性、遗漏和幻觉。
+V2-E.0.2 已冻结设计：启发式容器改称 episode，utterance 成为 provider 唯一主文本，ASR/匿名声簇/source/identity 四轨证据互不替代，LLM 只生成带 utterance 引用的 scene/claim/action。当前实现目标是先用 Codex manual record/replay 验证同一契约；之后再确定真实云端供应商、模型上下文与隐私策略，实现 V2-E.1 并建立人工审核集衡量场景覆盖、事实一致性、人物归属、媒体误纳入、遗漏和幻觉。
