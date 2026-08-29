@@ -169,9 +169,14 @@ scene 可以引用 source/identity 均未知的 utterance，但必须在 summary
 | 18 | 错把 120 秒播放器限制变成 35 个语义事件；保留为不可变偏差记录 |
 | 19 | 传输分片未完整重聚合，被验证器拒绝，没有 semantic exchange |
 | 20 | 修复 120 秒硬切，形成 2 个无时长上限容器；但误称“完整对话”，且 payload 尚未接入 source/identity |
-| V2-E.0.2 | 将容器正名为 episode，utterance 成为唯一主文本，接入四轨证据，并支持 Codex 人工 response record/replay |
+| 21 | 首次 Codex manual record/replay；语义结果通过验证，随后发现 provider 请求还应内嵌逐字段响应契约 |
+| 22 | 补全自描述响应契约后的最终 V2-E.0.2 replay；2 个 episode、9 个 scene、1 个 claim、0 个 action、7 个 unresolved |
 
 run 20 的 98,600 字节中，主 episode 实际 transcript 只有 2,131 个汉字（约 6.4 KB）；288 个结构化 utterance 约 70 KB，8 个窗口级双 ASR 备选约 18.6 KB。V2-E.0.2 优化的是语义清晰度和注意力重复，不以压缩成本为目标。
+
+run 22 的脱敏 provider 请求把同一批 committed token 组织为 2 个 episode、292 个主 utterance 和 9 个双 ASR 备选窗口。第一 episode 的来源分布为 `live_person=48`、`media_playback=39`、`unknown=201`，身份分布为 `father=13`、`mother=18`、`self=2`、`unknown=255`。Codex 只把 `mother` 身份区间直接支撑的“不能吃螃蟹，只能吃虾和鱼”保存为个人 claim；纯媒体段没有生成个人事实，整段没有硬凑 action。后半段来源区间缺失但文字像电视旁白的内容只生成低置信 scene，并在摘要中保留不确定性。第二 episode 的四个短句与备选 ASR 不一致，完整保留在 unresolved。
+
+校验器已实际验证：episode 超过 120 秒仍不被当作多个语义场景；匿名 voice cluster 即使被 D.2 标记为污染也不能成为身份；无区间身份支撑的具体人物会被拒绝；纯媒体证据生成个人事实会被拒绝；action 必须标记人工确认。网页展示 episode 容器与 scene/claim/action 候选为两层，不再把容器标题冒充语义结果。
 
 ## 8. V2-E.1 API 接入条件
 

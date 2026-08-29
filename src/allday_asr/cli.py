@@ -73,9 +73,11 @@ from allday_asr.services.quality_diarization_v2d3 import (
     sync_identity_reference_set,
 )
 from allday_asr.services.review import import_self_review
-from allday_asr.services.semantic_v2e01 import (
-    SemanticV2E01Settings,
-    run_semantic_v2e01,
+from allday_asr.services.semantic_v2e02 import (
+    ReplaySemanticProvider,
+    SemanticV2E02Settings,
+    export_manual_semantic_bundle,
+    run_semantic_v2e02,
     semantic_overview,
 )
 from allday_asr.services.sources import (
@@ -558,12 +560,12 @@ def semantic_v2_build(
         min=1,
         help="V2-D run；默认使用最新完成的一次。",
     ),
-    conversation_gap_seconds: float = typer.Option(
+    episode_gap_seconds: float = typer.Option(
         180.0,
-        "--conversation-gap-seconds",
+        "--episode-gap-seconds",
         min=30.0,
         max=900.0,
-        help="超过该无文字间隔时开始新对话候选；不限制对话总时长。",
+        help="超过该无文字间隔时开始新 episode；不限制 episode 总时长。",
     ),
     min_informative_chars: int = typer.Option(
         4,
@@ -576,32 +578,99 @@ def semantic_v2_build(
         200_000,
         "--max-llm-request-chars",
         min=4_000,
-        help="仅用于传输规划；超限才按说话轮次重叠分块，不切断对话实体。",
+        help="仅用于传输规划；超限才按说话轮次重叠分块，不切断 episode。",
     ),
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
-    """生成完整对话优先、不联网的 V2-E.0.1 语义传输计划。"""
-    summary = run_semantic_v2e01(
+    """生成四轨证据分离、不联网的 V2-E.0.2 episode 传输计划。"""
+    summary = run_semantic_v2e02(
         Database(db),
         recording_id,
         asr_run_id=asr_run_id,
         diarization_run_id=diarization_run_id,
-        settings=SemanticV2E01Settings(
-            conversation_gap_ms=round(conversation_gap_seconds * 1_000),
+        settings=SemanticV2E02Settings(
+            episode_gap_ms=round(episode_gap_seconds * 1_000),
             min_informative_chars=min_informative_chars,
             max_llm_request_chars=max_llm_request_chars,
         ),
     )
     console.print(
-        f"[green]V2-E.0.1 完整对话传输计划完成[/green] run={summary.run_id} | "
+        f"[green]V2-E.0.2 Episode 证据计划完成[/green] run={summary.run_id} | "
         f"ASR={summary.asr_run_id} | D={summary.diarization_run_id or 'none'} | "
-        f"conversations={summary.conversation_count} | "
+        f"episodes={summary.episode_count} | "
         f"excluded={summary.excluded_block_count} | jobs={summary.llm_job_count} | "
         f"tokens={summary.token_count}"
     )
     console.print(
         "[yellow]本轮没有网络请求，没有上传文字或音频；"
-        "完整对话不受 120 秒回听上限切割，标题也不是 LLM 事实。[/yellow]"
+        "episode 不是场景，匿名声纹也不是身份，mock 没有做语义推理。[/yellow]"
+    )
+    console.print(f"运行清单：{summary.manifest_path.resolve()}")
+
+
+@semantic_app.command(name="export")
+def semantic_v2_export(
+    recording_id: int = typer.Argument(..., min=1),
+    output: Path = typer.Argument(..., help="写入脱敏后的 provider 请求 JSON。"),
+    asr_run_id: int | None = typer.Option(None, "--asr-run", min=1),
+    diarization_run_id: int | None = typer.Option(
+        None, "--diarization-run", min=1
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """导出给当前 Codex 会话手工评估的脱敏 episode 请求。"""
+    payload = export_manual_semantic_bundle(
+        Database(db),
+        recording_id,
+        output,
+        asr_run_id=asr_run_id,
+        diarization_run_id=diarization_run_id,
+    )
+    console.print(
+        "[green]V2-E.0.2 手工评估包已导出[/green] | "
+        f"sha256={payload['provider_request_sha256']}"
+    )
+    console.print(
+        "[yellow]文件只含脱敏文字证据；项目没有调用 API，也没有发送音频。[/yellow]"
+    )
+    console.print(f"评估包：{output.resolve()}")
+
+
+@semantic_app.command(name="replay")
+def semantic_v2_replay(
+    recording_id: int = typer.Argument(..., min=1),
+    response: Path = typer.Argument(
+        ...,
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="当前 Codex 会话按导出包生成的语义响应 JSON。",
+    ),
+    asr_run_id: int | None = typer.Option(None, "--asr-run", min=1),
+    diarization_run_id: int | None = typer.Option(
+        None, "--diarization-run", min=1
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """校验并回放一次离线 Codex 手工语义评估。"""
+    parsed = json.loads(response.read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict):
+        raise typer.BadParameter("语义响应 JSON 顶层必须是对象")
+    summary = run_semantic_v2e02(
+        Database(db),
+        recording_id,
+        asr_run_id=asr_run_id,
+        diarization_run_id=diarization_run_id,
+        provider=ReplaySemanticProvider(parsed),
+    )
+    console.print(
+        f"[green]Codex 手工语义响应已校验并入库[/green] run={summary.run_id} | "
+        f"episodes={summary.episode_count} | scenes={summary.scene_count} | "
+        f"claims={summary.claim_count} | actions={summary.action_count} | "
+        f"unresolved={summary.unresolved_count}"
+    )
+    console.print(
+        "[yellow]这是当前 Codex 会话的记录/回放结果，不代表已接入可复现的运行时 API。[/yellow]"
     )
     console.print(f"运行清单：{summary.manifest_path.resolve()}")
 
@@ -617,7 +686,15 @@ def semantic_v2_status(
         console.print(f"[yellow]{payload['reason']}[/yellow]")
         return
     summary = payload["summary"]
-    if payload.get("version") == "v2-e.0.1":
+    if payload.get("version") == "v2-e.0.2":
+        console.print(
+            f"run={payload['run']['id']} | provider={payload['run']['provider']} | "
+            f"episodes={summary['episode_count']} | scenes={summary['scene_count']} | "
+            f"claims={summary['claim_count']} | actions={summary['action_count']} | "
+            f"unresolved={summary['unresolved_count']} | "
+            f"reviewed={payload['reviewed_candidates']}/{len(payload['candidates'])}"
+        )
+    elif payload.get("version") == "v2-e.0.1":
         console.print(
             f"run={payload['run']['id']} | provider={payload['run']['provider']} | "
             f"conversations={summary['conversation_count']} | "

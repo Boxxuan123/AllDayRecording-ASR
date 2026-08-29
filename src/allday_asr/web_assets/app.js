@@ -1122,30 +1122,74 @@ function renderSemantic() {
   workspace.classList.remove("hidden");
   generate.disabled = false;
   const summary = payload.summary || {};
-  const conversationCount = summary.conversation_count ?? summary.event_count ?? 0;
+  const episodeCount = summary.episode_count ?? summary.conversation_count ?? summary.event_count ?? 0;
+  const sceneCount = summary.scene_count ?? 0;
+  const claimCount = summary.claim_count ?? summary.facts ?? 0;
+  const actionCount = summary.action_count ?? summary.actions ?? 0;
+  const unresolvedCount = summary.unresolved_count ?? 0;
   const excludedCount = summary.excluded_block_count ?? 0;
   const jobCount = summary.llm_job_count ?? 0;
-  $("#semantic-conversation-count").textContent = String(conversationCount);
+  $("#semantic-episode-count").textContent = String(episodeCount);
+  $("#semantic-scene-count").textContent = String(sceneCount);
+  $("#semantic-claim-count").textContent = String(claimCount);
+  $("#semantic-action-count").textContent = String(actionCount);
+  $("#semantic-unresolved-count").textContent = String(unresolvedCount);
   $("#semantic-excluded-count").textContent = String(excludedCount);
   $("#semantic-job-count").textContent = jobCount ? String(jobCount) : "旧版";
   $("#semantic-token-count").textContent = Number(summary.token_count || 0).toLocaleString("zh-CN");
   $("#semantic-reviewed-count").textContent = `${payload.reviewed_candidates} / ${payload.candidates.length}`;
-  $("#semantic-provider").textContent = payload.run.provider === "local_mock" ? "本地 mock" : payload.run.provider;
+  $("#semantic-provider").textContent = payload.run.manual_eval
+    ? "Codex 手工回放"
+    : payload.run.provider === "local_mock" ? "本地契约 mock" : payload.run.provider;
   $("#semantic-run-note").textContent = (
     `RUN #${payload.run.id} · ASR #${payload.run.asr_run_id}`
     + `${payload.run.diarization_run_id ? ` · DIARIZATION #${payload.run.diarization_run_id}` : ""}`
     + ` · REQUEST ${payload.run.request_sha256.slice(0, 12)}`
   );
   const transport = payload.transport || {};
-  $("#semantic-transport-note").textContent = payload.version === "v2-e.0.1"
-    ? `${conversationCount} 个完整对话 → ${jobCount} 个计划请求；对话无时长硬切，${Math.round((transport.review_clip_ms || 120000) / 1000)} 秒仅是播放器切片。`
-    : "这是旧版 120 秒证据分组；重新生成后会升级为完整对话传输计划。";
+  $("#semantic-transport-note").textContent = payload.version === "v2-e.0.2"
+    ? `${episodeCount} 个上下文 Episode → ${jobCount} 个传输任务 → ${sceneCount} 个语义场景；Episode 无时长硬切，${Math.round((transport.review_clip_ms || 120000) / 1000)} 秒仅是播放器切片。`
+    : payload.version === "v2-e.0.1"
+      ? `${episodeCount} 个旧版完整对话 → ${jobCount} 个计划请求；重新生成后会升级为四轨 Episode 证据。`
+      : "这是旧版 120 秒证据分组；重新生成后会升级为四轨 Episode 证据。";
+  renderSemanticEpisodes(payload.episodes || []);
   renderSemanticExcluded(payload.excluded_blocks || []);
   const pending = payload.candidates.filter((item) => !item.review_status).length;
   updateSemanticBadge(pending);
   const container = $("#semantic-candidate-list");
   container.replaceChildren();
   payload.candidates.forEach((candidate) => container.append(renderSemanticCard(candidate)));
+}
+
+function renderSemanticEpisodes(items) {
+  const panel = $("#semantic-episode-panel");
+  const container = $("#semantic-episode-list");
+  container.replaceChildren();
+  panel.classList.toggle("hidden", items.length === 0);
+  items.forEach((item) => {
+    const sources = Object.entries(item.source_counts || {})
+      .map(([label, count]) => `${label} ${count}`)
+      .join(" · ") || "来源未定";
+    const identities = Object.entries(item.identity_counts || {})
+      .map(([label, count]) => `${label} ${count}`)
+      .join(" · ") || "身份未定";
+    const contaminated = (item.voice_clusters || [])
+      .filter((cluster) => cluster.contaminated)
+      .map((cluster) => cluster.label)
+      .join("、");
+    const row = node("div", "semantic-excluded-item semantic-episode-item");
+    row.append(
+      node("strong", "", `${formatOffset(item.start_ms)}–${formatOffset(item.end_ms)}`),
+      node("span", "", item.transcript_preview || "（无文字预览）"),
+      node(
+        "small",
+        "",
+        `${item.utterance_count} 说话轮次 · ${sources} · ${identities}`
+          + (contaminated ? ` · 污染声纹 ${contaminated}` : ""),
+      ),
+    );
+    container.append(row);
+  });
 }
 
 function renderSemanticExcluded(items) {
@@ -1174,8 +1218,14 @@ function renderSemanticCard(candidate) {
   const card = node("article", `semantic-card ${candidate.type} ${candidate.review_status || "pending"}`);
   const header = node("header", "semantic-card-header");
   const meta = node("div", "semantic-card-meta");
-  const isConversation = candidate.semantic_unit === "conversation";
-  meta.append(node("span", "segment-id", candidate.type === "daily_summary" ? "DAY EVIDENCE" : isConversation ? "FULL CONVERSATION" : "EVENT EVIDENCE"));
+  const unitLabels = {
+    day: "DAY SUMMARY",
+    scene: "SEMANTIC SCENE",
+    claim: "GROUNDED CLAIM",
+    action: "ACTION CANDIDATE",
+    conversation: "LEGACY CONVERSATION",
+  };
+  meta.append(node("span", "segment-id", unitLabels[candidate.semantic_unit] || "SEMANTIC EVIDENCE"));
   meta.append(node("span", "time-chip", `${formatOffset(candidate.start_ms)}–${formatOffset(candidate.end_ms)}`));
   const status = node(
     "span",
@@ -1195,23 +1245,34 @@ function renderSemanticCard(candidate) {
   body.setAttribute("aria-label", "语义候选内容");
   card.append(title, body);
 
-  if (isConversation && candidate.review_clips?.length) {
-    card.append(renderConversationReviewPlayer(candidate));
+  if (candidate.review_clips?.length > 1) {
+    card.append(renderSemanticReviewPlayer(candidate));
   } else if (candidate.audio_url) {
     card.append(renderAudioPlayer("本地原音证据", candidate.audio_url, `播放语义证据 ${candidate.id}`, "exact"));
   }
   const evidence = node("div", "semantic-evidence-row");
   if (candidate.type === "daily_summary") {
-    evidence.append(node("span", "semantic-evidence-chip", `${candidate.evidence.conversation_keys?.length || candidate.evidence.event_keys?.length || 0} 个对话引用`));
+    evidence.append(node(
+      "span",
+      "semantic-evidence-chip",
+      `${candidate.evidence.scene_ids?.length || candidate.evidence.conversation_keys?.length || candidate.evidence.event_keys?.length || 0} 个场景引用`,
+    ));
   } else {
     const uncertainty = candidate.evidence.uncertainty || {};
     evidence.append(
       node("span", "semantic-evidence-chip", `${candidate.evidence.token_ids?.length || 0} tokens`),
-      node("span", "semantic-evidence-chip", `${candidate.evidence.utterance_keys?.length || 0} 说话轮次`),
+      node("span", "semantic-evidence-chip", `${candidate.evidence.utterance_ids?.length || candidate.evidence.utterance_keys?.length || 0} 说话轮次`),
       node("span", "semantic-evidence-chip", `${candidate.review_clips?.length || 1} 个回听切片`),
-      node("span", "semantic-evidence-chip warning", `${uncertainty.unassigned_tokens || 0} 无归属`),
-      node("span", "semantic-evidence-chip warning", `${candidate.evidence.asr_alternative_windows || uncertainty.disagreement_ids?.length || 0} 模型分歧`),
     );
+    if (candidate.evidence.source_labels?.length) {
+      evidence.append(node("span", "semantic-evidence-chip", `来源 ${candidate.evidence.source_labels.join(" / ")}`));
+    }
+    if (candidate.evidence.identity_labels?.length) {
+      evidence.append(node("span", "semantic-evidence-chip", `身份 ${candidate.evidence.identity_labels.join(" / ")}`));
+    }
+    if (uncertainty.unassigned_tokens) {
+      evidence.append(node("span", "semantic-evidence-chip warning", `${uncertainty.unassigned_tokens} 无归属`));
+    }
   }
   card.append(evidence);
 
@@ -1232,10 +1293,10 @@ function renderSemanticCard(candidate) {
   return card;
 }
 
-function renderConversationReviewPlayer(candidate) {
+function renderSemanticReviewPlayer(candidate) {
   const wrapper = node("div", "semantic-review-player");
   const label = node("label", "semantic-clip-select");
-  label.append(node("span", "", "本地回听切片（不会切断发送给 LLM 的对话）"));
+  label.append(node("span", "", "本地回听切片（不会改变 Episode 或场景边界）"));
   const select = node("select");
   candidate.review_clips.forEach((clip) => {
     const option = node("option", "", `片段 ${clip.index} · ${formatOffset(clip.start_ms)}–${formatOffset(clip.end_ms)}`);
@@ -1243,7 +1304,7 @@ function renderConversationReviewPlayer(candidate) {
     select.append(option);
   });
   label.append(select);
-  const player = renderAudioPlayer("当前切片", candidate.review_clips[0].audio_url, `播放完整对话 ${candidate.id} 的回听切片`, "exact");
+  const player = renderAudioPlayer("当前切片", candidate.review_clips[0].audio_url, `播放语义证据 ${candidate.id} 的回听切片`, "exact");
   const audio = player.querySelector("audio");
   select.addEventListener("change", () => {
     audio.src = select.value;
@@ -1263,7 +1324,7 @@ async function generateSemantic() {
       method: "POST",
       body: JSON.stringify({ recording_id: state.recordingId }),
     });
-    toast(`V2-E.0.1 run #${result.run_id}：${result.conversation_count} 个完整对话，${result.excluded_block_count} 个低信息块不发送`);
+    toast(`V2-E.0.2 run #${result.run_id}：${result.episode_count} 个 Episode；当前本地 mock 不生成场景`);
     state.semantic = await api(`/api/semantic?recording_id=${state.recordingId}`);
     renderSemantic();
   } catch (error) {

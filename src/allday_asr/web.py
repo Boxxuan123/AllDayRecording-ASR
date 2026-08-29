@@ -28,8 +28,8 @@ from allday_asr.services.quality_diarization_v2d3 import (
     review_identity_candidate,
 )
 from allday_asr.services.semantic_v2e0 import review_semantic_candidate
-from allday_asr.services.semantic_v2e01 import (
-    run_semantic_v2e01,
+from allday_asr.services.semantic_v2e02 import (
+    run_semantic_v2e02,
     semantic_overview,
 )
 from allday_asr.services.sources import (
@@ -44,7 +44,6 @@ from allday_asr.services.speaker_timeline import (
     speaker_timeline_window,
 )
 from allday_asr.storage.database import Database
-
 
 ASSET_ROOT = Path(__file__).parent / "web_assets"
 MAX_JSON_BODY = 1024 * 1024
@@ -240,19 +239,24 @@ class WebApplication:
         return semantic_overview(self.database(), recording_id)
 
     def generate_semantic(self, recording_id: int) -> dict[str, Any]:
-        summary = run_semantic_v2e01(self.database(), recording_id)
+        summary = run_semantic_v2e02(self.database(), recording_id)
         return {
             "run_id": summary.run_id,
             "recording_id": recording_id,
             "asr_run_id": summary.asr_run_id,
             "diarization_run_id": summary.diarization_run_id,
-            "conversation_count": summary.conversation_count,
+            "episode_count": summary.episode_count,
             "excluded_block_count": summary.excluded_block_count,
             "llm_job_count": summary.llm_job_count,
             "llm_payload_bytes": summary.llm_payload_bytes,
             "token_count": summary.token_count,
             "candidate_count": summary.candidate_count,
+            "scene_count": summary.scene_count,
+            "claim_count": summary.claim_count,
+            "action_count": summary.action_count,
+            "unresolved_count": summary.unresolved_count,
             "request_sha256": summary.request_sha256,
+            "provider_request_sha256": summary.provider_request_sha256,
             "response_sha256": summary.response_sha256,
         }
 

@@ -2,9 +2,9 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-D 已完成 Community-1 重叠/互斥时间轴和 token-to-speaker；V2-D.1 把确定/可能语音、媒体来源和匿名 speaker 解耦；V2-D.2 又恢复稀疏人工 `mother/father/tv` 真值，按短区间揭示匿名簇污染而不全局改名。V2-E.0.1 已实现“完整对话优先”的不联网语义证据契约：完整对话、provider 传输任务和 120 秒回听片互不混用；真实云端 LLM 尚未接入。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。V2 不以实时性或小模型为目标；之后需补充干净父母声纹样本，再接真实云端 provider 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-D 已完成 Community-1 重叠/互斥时间轴和 token-to-speaker；V2-D.1 把确定/可能语音、媒体来源和匿名 speaker 解耦；V2-D.2 又恢复稀疏人工 `mother/father/tv` 真值，按短区间揭示匿名簇污染而不全局改名。V2-E.0.2 已实现 episode/utterance/scene 分层和 ASR、匿名声纹、现场/媒体来源、人物身份四轨证据；真实 run 22 已由当前 Codex 会话完成一次离线 record/replay 验收，项目运行时仍未接入云端 LLM。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。V2 不以实时性或小模型为目标；之后需补充干净父母声纹样本，再接真实云端 provider 和 Watch 同步。
 
-实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0.1 完整对话优先证据层](docs/v2-e0-semantic-evidence.md)。
+实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0.2 Episode 证据层](docs/v2-e0-semantic-evidence.md)。
 
 ## 已验证环境
 
@@ -112,11 +112,13 @@ schema v10 将 V2-C committed token、V2-D 匿名声簇、冻结的现场/电视
 
 ```powershell
 allday-asr semantic-v2 build 1
+allday-asr semantic-v2 export 1 state\evaluations\session-000001\v2e02-request.json
+allday-asr semantic-v2 replay 1 state\evaluations\session-000001\v2e02-response.json
 allday-asr semantic-v2 status 1
 allday-asr web
 ```
 
-run 20 修复了 120 秒硬切，但把 37 分钟声学容器误称为“完整对话”，且尚未把 source/identity 送入语义层。V2-E.0.2 将在同一 2,192 个 committed token 上重建 episode 输入和 Codex 人工语义响应；历史 run 不删除。稳定实体、验证规则、隐私边界和 V2-E.1 进入条件见 [V2-E.0.2 指南](docs/v2-e0-semantic-evidence.md)。
+run 20 修复了 120 秒硬切，但把 37 分钟声学容器误称为“完整对话”，且尚未把 source/identity 送入语义层。最终 run 22 在同一 2,192 个 committed token 上重建为 2 个 episode，并由当前 Codex 会话保守提取 9 个 scene、1 个有身份区间支撑的 claim、0 个 action 和 7 个 unresolved；历史 run 均未删除。该结果是不可变的手工 LLM 记录/回放，不冒充已接入的固定模型 API。稳定实体、验证规则、隐私边界和 V2-E.1 进入条件见 [V2-E.0.2 指南](docs/v2-e0-semantic-evidence.md)。
 
 ## V2-C.1/V2-C.2：公平基准
 
@@ -195,7 +197,7 @@ allday-asr web
 
 - 选择已入库录音，查看转写、身份标注、事件和运行概览。
 - 查看 V2-D 多说话人轨道，并优先试听自动排序的多人对话、重叠说话和成组无归属文字。
-- 查看 V2-E.0.1 本地语义证据包，按完整对话切换短回听片、编辑并追加确认或驳回记录。
+- 查看 V2-E.0.2 episode 与 LLM scene/claim/action，按短回听片审核证据，并追加确认或驳回记录。
 - 逐段播放原音，填写准确文字、真实说话人、本人身份与关键事实。
 - 直接生成 CER、说话人成对 F1、本人识别和关键事实评测报告。
 - 确认或忽略日程/待办候选；不会写入真实日历。

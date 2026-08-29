@@ -353,7 +353,7 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 4. [x] 本地底账保留 token/source 原音证据，provider payload 不暴露本地路径、音频字节、原音哈希或数据库 token ID。
 5. [x] episode、provider 传输 job 和最多 120 秒的网页回听片分层；只有实际上下文超限时才按 utterance 重叠分片并重新聚合。
 6. [x] scene/claim/action 必须引用 utterance；人物事实、媒体过滤和行动确认由验证器约束。
-7. [ ] 用当前 Codex 任务完成一次明确标注为 manual eval 的 record/replay 验收。
+7. [x] 用当前 Codex 任务完成一次明确标注为 manual eval 的 record/replay 验收；最终真实 run 22 为 2 episode、9 scene、1 claim、0 action、7 unresolved。
 8. [ ] V2-E.1 接入真实云端 provider，并在相同契约上评测 scene、事实、归属、媒体过滤和行动项。
 9. [ ] 保持人工确认后才能写入外部系统的原则。
 
@@ -391,4 +391,4 @@ schema v4 建立不可变 source/session、run 输入快照和派生产物基础
 10. 云端语义接口。
 11. Watch chunk 同步。
 
-V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；V2-D 已完成 schema v7、Community-1 backend、token-to-speaker 融合和全量 run 11；V2-E.0.2 已冻结 episode/utterance/scene 契约，正在接入区间级 source/identity 和 Codex manual record/replay。之后在新的穷尽 speaker/media/overlap 真值上决定是否增加 Sortformer 候选，并在单独授权后为同一 V2-E 契约增加真实云端 provider。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。
+V2-A/V2-B/V2-C.1/V2-C.2/V2-C.3 工具链已完成；V2-D 已完成 schema v7、Community-1 backend、token-to-speaker 融合和全量 run 11；V2-E.0.2 已完成 episode/utterance/scene 契约、区间级 source/identity、响应验证器、CLI/网页以及 Codex manual run 22。之后在新的穷尽 speaker/media/overlap 真值上决定是否增加 Sortformer 候选，并在单独授权后为同一 V2-E 契约增加真实云端 provider。现有生产表中的 SenseVoice 转写和匿名 speaker 标签仍不被替换，所有新模型继续先写入独立 run 并在冻结真值上比较。
