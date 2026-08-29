@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS conversation_events (
 );
 """
 
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 11
 
 MIGRATIONS: dict[int, str] = {
     2: """
@@ -968,6 +968,383 @@ MIGRATIONS: dict[int, str] = {
             SELECT RAISE(ABORT, 'semantic revision cannot be deleted');
         END;
     """,
+    11: """
+        PRAGMA foreign_keys = OFF;
+        BEGIN IMMEDIATE;
+
+        CREATE TABLE source_instances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instance_key TEXT NOT NULL UNIQUE,
+            source_object_id INTEGER NOT NULL,
+            source_path TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            byte_size INTEGER NOT NULL,
+            recorded_at TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            device TEXT,
+            ingest_method TEXT NOT NULL CHECK(
+                ingest_method IN ('manual_file', 'watch_auto', 'watch_manual_sync')
+            ),
+            sample_rate INTEGER,
+            sample_count INTEGER,
+            integrity_status TEXT NOT NULL DEFAULT 'unverified' CHECK(
+                integrity_status IN ('unverified', 'verified', 'missing', 'mismatch', 'error')
+            ),
+            last_verified_at TEXT,
+            backup_status TEXT NOT NULL DEFAULT 'not_configured' CHECK(
+                backup_status IN ('not_configured', 'pending', 'verified', 'failed')
+            ),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK(sample_rate IS NULL OR sample_rate > 0),
+            CHECK(sample_count IS NULL OR sample_count > 0),
+            FOREIGN KEY (source_object_id) REFERENCES source_objects(id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX idx_source_instances_object
+        ON source_instances(source_object_id, id);
+
+        CREATE INDEX idx_source_instances_integrity
+        ON source_instances(integrity_status, id);
+
+        INSERT INTO source_instances (
+            instance_key, source_object_id, source_path, original_filename,
+            byte_size, recorded_at, timezone, device, ingest_method,
+            sample_rate, sample_count, integrity_status, last_verified_at,
+            backup_status, created_at, updated_at
+        )
+        SELECT
+            'legacy-session:' || ss.session_id || ':chunk:' || ss.chunk_index,
+            so.id, so.source_path, so.original_filename, COALESCE(so.byte_size, 0),
+            so.recorded_at, so.timezone, so.device, so.ingest_method,
+            so.sample_rate,
+            CASE
+                WHEN so.sample_rate IS NOT NULL
+                THEN CAST(ROUND(so.duration_ms * so.sample_rate / 1000.0) AS INTEGER)
+                ELSE NULL
+            END,
+            so.integrity_status, so.last_verified_at, so.backup_status,
+            ss.created_at, ss.created_at
+        FROM session_sources ss
+        JOIN source_objects so ON so.id = ss.source_object_id
+        ORDER BY ss.session_id, ss.chunk_index;
+
+        CREATE TABLE session_sources_v11 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            source_object_id INTEGER NOT NULL,
+            source_instance_id INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            session_start_ms INTEGER NOT NULL,
+            session_end_ms INTEGER NOT NULL,
+            source_start_ms INTEGER NOT NULL DEFAULT 0,
+            source_end_ms INTEGER NOT NULL,
+            session_start_sample INTEGER,
+            session_end_sample INTEGER,
+            source_start_sample INTEGER,
+            source_end_sample INTEGER,
+            timeline_sample_rate INTEGER,
+            continuity_status TEXT NOT NULL DEFAULT 'unchecked' CHECK(
+                continuity_status IN ('single', 'unchecked', 'continuous', 'gap', 'overlap')
+            ),
+            created_at TEXT NOT NULL,
+            UNIQUE(session_id, chunk_index),
+            CHECK(session_end_ms > session_start_ms),
+            CHECK(source_end_ms > source_start_ms),
+            CHECK(timeline_sample_rate IS NULL OR timeline_sample_rate > 0),
+            FOREIGN KEY (session_id) REFERENCES recording_sessions(id) ON DELETE RESTRICT,
+            FOREIGN KEY (source_object_id) REFERENCES source_objects(id) ON DELETE RESTRICT,
+            FOREIGN KEY (source_instance_id) REFERENCES source_instances(id) ON DELETE RESTRICT
+        );
+
+        INSERT INTO session_sources_v11 (
+            id, session_id, source_object_id, source_instance_id, chunk_index,
+            session_start_ms, session_end_ms, source_start_ms, source_end_ms,
+            continuity_status, created_at
+        )
+        SELECT
+            ss.id, ss.session_id, ss.source_object_id, si.id, ss.chunk_index,
+            ss.session_start_ms, ss.session_end_ms,
+            ss.source_start_ms, ss.source_end_ms,
+            ss.continuity_status, ss.created_at
+        FROM session_sources ss
+        JOIN source_instances si
+          ON si.instance_key = (
+              'legacy-session:' || ss.session_id || ':chunk:' || ss.chunk_index
+          );
+
+        DROP TABLE session_sources;
+        ALTER TABLE session_sources_v11 RENAME TO session_sources;
+
+        CREATE INDEX idx_session_sources_time
+        ON session_sources(session_id, session_start_ms, session_end_ms);
+
+        CREATE INDEX idx_session_sources_instance
+        ON session_sources(source_instance_id, session_id);
+
+        CREATE TABLE session_manifests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL UNIQUE,
+            manifest_format TEXT NOT NULL,
+            manifest_path TEXT NOT NULL,
+            manifest_sha256 TEXT NOT NULL UNIQUE,
+            byte_size INTEGER NOT NULL,
+            parser_version TEXT NOT NULL,
+            summary_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES recording_sessions(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE processing_runs_v11 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER,
+            session_id INTEGER,
+            run_kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            config_sha256 TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            error TEXT,
+            summary_json TEXT,
+            artifacts_json TEXT,
+            input_fingerprint TEXT,
+            model_manifest_json TEXT NOT NULL DEFAULT '{}',
+            pipeline_version TEXT,
+            code_version TEXT,
+            parent_run_id INTEGER,
+            CHECK(recording_id IS NOT NULL OR session_id IS NOT NULL),
+            FOREIGN KEY (recording_id) REFERENCES recordings(id) ON DELETE SET NULL,
+            FOREIGN KEY (session_id) REFERENCES recording_sessions(id) ON DELETE RESTRICT
+        );
+
+        INSERT INTO processing_runs_v11 (
+            id, recording_id, session_id, run_kind, status, config_json,
+            config_sha256, started_at, completed_at, error, summary_json,
+            artifacts_json, input_fingerprint, model_manifest_json,
+            pipeline_version, code_version, parent_run_id
+        )
+        SELECT
+            id, recording_id, session_id, run_kind, status, config_json,
+            config_sha256, started_at, completed_at, error, summary_json,
+            artifacts_json, input_fingerprint, model_manifest_json,
+            pipeline_version, code_version, parent_run_id
+        FROM processing_runs;
+
+        DROP TABLE processing_runs;
+        ALTER TABLE processing_runs_v11 RENAME TO processing_runs;
+
+        CREATE INDEX idx_processing_runs_recording
+        ON processing_runs(recording_id, id);
+
+        CREATE INDEX idx_processing_runs_session
+        ON processing_runs(session_id, id);
+
+        ALTER TABLE processing_run_inputs
+        ADD COLUMN source_instance_id INTEGER REFERENCES source_instances(id);
+
+        ALTER TABLE asr_token_sources
+        ADD COLUMN source_instance_id INTEGER REFERENCES source_instances(id);
+
+        ALTER TABLE diarization_turn_sources
+        ADD COLUMN source_instance_id INTEGER REFERENCES source_instances(id);
+
+        ALTER TABLE truth_annotation_sources
+        ADD COLUMN source_instance_id INTEGER REFERENCES source_instances(id);
+
+        CREATE TABLE identity_reference_intervals_v11 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reference_key TEXT NOT NULL UNIQUE,
+            identity_label TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK(
+                decision IN ('confirmed_target', 'rejected', 'uncertain')
+            ),
+            session_id INTEGER NOT NULL,
+            session_start_ms INTEGER NOT NULL,
+            session_end_ms INTEGER NOT NULL,
+            source_object_id INTEGER NOT NULL,
+            source_instance_id INTEGER NOT NULL,
+            source_sha256 TEXT NOT NULL,
+            source_start_ms INTEGER NOT NULL,
+            source_end_ms INTEGER NOT NULL,
+            provenance_kind TEXT NOT NULL CHECK(
+                provenance_kind IN ('truth', 'v2d3_review')
+            ),
+            provenance_id INTEGER NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK(session_end_ms > session_start_ms),
+            CHECK(source_end_ms > source_start_ms),
+            UNIQUE(
+                identity_label, session_id, source_instance_id,
+                source_start_ms, source_end_ms
+            ),
+            FOREIGN KEY (session_id) REFERENCES recording_sessions(id) ON DELETE RESTRICT,
+            FOREIGN KEY (source_object_id) REFERENCES source_objects(id) ON DELETE RESTRICT,
+            FOREIGN KEY (source_instance_id) REFERENCES source_instances(id) ON DELETE RESTRICT
+        );
+
+        INSERT INTO identity_reference_intervals_v11 (
+            id, reference_key, identity_label, decision, session_id,
+            session_start_ms, session_end_ms, source_object_id,
+            source_instance_id, source_sha256, source_start_ms, source_end_ms,
+            provenance_kind, provenance_id, metadata_json, created_at, updated_at
+        )
+        SELECT
+            id, reference_key, identity_label, decision, session_id,
+            session_start_ms, session_end_ms, source_object_id,
+            (
+                SELECT ss.source_instance_id
+                FROM session_sources ss
+                WHERE ss.session_id = identity_reference_intervals.session_id
+                  AND ss.source_object_id = identity_reference_intervals.source_object_id
+                  AND identity_reference_intervals.source_start_ms >= ss.source_start_ms
+                  AND identity_reference_intervals.source_end_ms <= ss.source_end_ms
+                LIMIT 1
+            ),
+            source_sha256, source_start_ms, source_end_ms,
+            provenance_kind, provenance_id, metadata_json, created_at, updated_at
+        FROM identity_reference_intervals;
+
+        DROP TABLE identity_reference_intervals;
+        ALTER TABLE identity_reference_intervals_v11
+        RENAME TO identity_reference_intervals;
+
+        CREATE INDEX idx_identity_reference_label_decision
+        ON identity_reference_intervals(
+            identity_label, decision, session_id, session_start_ms
+        );
+
+        UPDATE processing_run_inputs
+        SET source_instance_id = (
+            SELECT ss.source_instance_id
+            FROM processing_runs pr
+            JOIN session_sources ss ON ss.session_id = pr.session_id
+            WHERE pr.id = processing_run_inputs.run_id
+              AND ss.source_object_id = processing_run_inputs.source_object_id
+              AND ss.session_start_ms = processing_run_inputs.session_start_ms
+              AND ss.session_end_ms = processing_run_inputs.session_end_ms
+              AND ss.source_start_ms = processing_run_inputs.source_start_ms
+              AND ss.source_end_ms = processing_run_inputs.source_end_ms
+            LIMIT 1
+        );
+
+        UPDATE asr_token_sources
+        SET source_instance_id = (
+            SELECT ss.source_instance_id
+            FROM asr_alignment_tokens token
+            JOIN asr_hypotheses hypothesis ON hypothesis.id = token.hypothesis_id
+            JOIN session_sources ss ON ss.session_id = hypothesis.session_id
+            WHERE token.id = asr_token_sources.token_id
+              AND ss.source_object_id = asr_token_sources.source_object_id
+              AND asr_token_sources.source_start_ms >= ss.source_start_ms
+              AND asr_token_sources.source_end_ms <= ss.source_end_ms
+            LIMIT 1
+        );
+
+        UPDATE diarization_turn_sources
+        SET source_instance_id = (
+            SELECT ss.source_instance_id
+            FROM diarization_turns turn
+            JOIN session_sources ss ON ss.session_id = turn.session_id
+            WHERE turn.id = diarization_turn_sources.turn_id
+              AND ss.source_object_id = diarization_turn_sources.source_object_id
+              AND diarization_turn_sources.source_start_ms >= ss.source_start_ms
+              AND diarization_turn_sources.source_end_ms <= ss.source_end_ms
+            LIMIT 1
+        );
+
+        UPDATE truth_annotation_sources
+        SET source_instance_id = (
+            SELECT ss.source_instance_id
+            FROM truth_annotations annotation
+            JOIN truth_sets truth_set ON truth_set.id = annotation.truth_set_id
+            JOIN session_sources ss ON ss.session_id = truth_set.session_id
+            WHERE annotation.id = truth_annotation_sources.annotation_id
+              AND ss.source_object_id = truth_annotation_sources.source_object_id
+              AND truth_annotation_sources.source_start_ms >= ss.source_start_ms
+              AND truth_annotation_sources.source_end_ms <= ss.source_end_ms
+            LIMIT 1
+        );
+
+        UPDATE identity_reference_intervals
+        SET source_instance_id = (
+            SELECT ss.source_instance_id
+            FROM session_sources ss
+            WHERE ss.session_id = identity_reference_intervals.session_id
+              AND ss.source_object_id = identity_reference_intervals.source_object_id
+              AND identity_reference_intervals.source_start_ms >= ss.source_start_ms
+              AND identity_reference_intervals.source_end_ms <= ss.source_end_ms
+            LIMIT 1
+        );
+
+        CREATE TRIGGER protect_source_instances_immutable_fields
+        BEFORE UPDATE OF
+            instance_key, source_object_id, source_path, original_filename,
+            byte_size, recorded_at, timezone, device, ingest_method,
+            sample_rate, sample_count, created_at
+        ON source_instances
+        BEGIN
+            SELECT RAISE(ABORT, 'immutable source instance metadata cannot be changed');
+        END;
+
+        CREATE TRIGGER protect_source_instances_from_delete
+        BEFORE DELETE ON source_instances
+        BEGIN
+            SELECT RAISE(ABORT, 'immutable source instance cannot be deleted');
+        END;
+
+        CREATE TRIGGER protect_session_sources_from_update
+        BEFORE UPDATE ON session_sources
+        BEGIN
+            SELECT RAISE(ABORT, 'session source mapping cannot be changed');
+        END;
+
+        CREATE TRIGGER protect_session_sources_from_delete
+        BEFORE DELETE ON session_sources
+        BEGIN
+            SELECT RAISE(ABORT, 'session source mapping cannot be deleted');
+        END;
+
+        CREATE TRIGGER protect_closed_session_from_source_insert
+        BEFORE INSERT ON session_sources
+        WHEN (SELECT status FROM recording_sessions WHERE id = NEW.session_id) != 'active'
+        BEGIN
+            SELECT RAISE(ABORT, 'cannot append source to a closed session');
+        END;
+
+        CREATE TRIGGER protect_closed_session_immutable_fields
+        BEFORE UPDATE OF
+            session_key, legacy_recording_id, device, recorded_at,
+            timezone, duration_ms, status, created_at
+        ON recording_sessions
+        WHEN OLD.status = 'closed'
+        BEGIN
+            SELECT RAISE(ABORT, 'closed recording session cannot be changed');
+        END;
+
+        CREATE TRIGGER protect_recording_sessions_from_delete
+        BEFORE DELETE ON recording_sessions
+        BEGIN
+            SELECT RAISE(ABORT, 'recording session cannot be deleted');
+        END;
+
+        CREATE TRIGGER protect_session_manifests_from_update
+        BEFORE UPDATE ON session_manifests
+        BEGIN
+            SELECT RAISE(ABORT, 'session manifest cannot be changed');
+        END;
+
+        CREATE TRIGGER protect_session_manifests_from_delete
+        BEFORE DELETE ON session_manifests
+        BEGIN
+            SELECT RAISE(ABORT, 'session manifest cannot be deleted');
+        END;
+
+        COMMIT;
+        PRAGMA foreign_keys = ON;
+    """,
 }
 
 V4_PROCESSING_RUN_COLUMNS = {
@@ -1076,11 +1453,18 @@ def _canonical_source_fingerprint(rows: Sequence[sqlite3.Row]) -> str:
         {
             "position": position,
             "source_object_id": int(row["source_object_id"]),
+            "source_instance_id": int(row["source_instance_id"]),
+            "instance_key": str(row["instance_key"]),
             "sha256": str(row["sha256"]),
             "session_start_ms": int(row["session_start_ms"]),
             "session_end_ms": int(row["session_end_ms"]),
             "source_start_ms": int(row["source_start_ms"]),
             "source_end_ms": int(row["source_end_ms"]),
+            "session_start_sample": row["session_start_sample"],
+            "session_end_sample": row["session_end_sample"],
+            "source_start_sample": row["source_start_sample"],
+            "source_end_sample": row["source_end_sample"],
+            "timeline_sample_rate": row["timeline_sample_rate"],
         }
         for position, row in enumerate(rows)
     ]
@@ -1164,7 +1548,7 @@ def _backfill_v2_source_graph(
             INSERT INTO recording_sessions (
                 session_key, legacy_recording_id, device, recorded_at, timezone,
                 duration_ms, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'closed', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
             ON CONFLICT(session_key) DO NOTHING
             """,
             (
@@ -1181,23 +1565,81 @@ def _backfill_v2_source_graph(
         session = connection.execute(
             "SELECT * FROM recording_sessions WHERE session_key = ?", (session_key,)
         ).fetchone()
-        connection.execute(
+        existing_mapping = connection.execute(
             """
-            INSERT INTO session_sources (
-                session_id, source_object_id, chunk_index, session_start_ms,
-                session_end_ms, source_start_ms, source_end_ms,
-                continuity_status, created_at
-            ) VALUES (?, ?, 0, 0, ?, 0, ?, 'single', ?)
-            ON CONFLICT(session_id, chunk_index) DO NOTHING
+            SELECT id, source_instance_id FROM session_sources
+            WHERE session_id = ? AND chunk_index = 0
             """,
-            (
-                session["id"],
-                source["id"],
-                recording["duration_ms"],
-                recording["duration_ms"],
-                now,
-            ),
-        )
+            (session["id"],),
+        ).fetchone()
+        if existing_mapping is None:
+            instance_key = f"legacy-recording:{int(recording['id'])}"
+            connection.execute(
+                """
+                INSERT INTO source_instances (
+                    instance_key, source_object_id, source_path, original_filename,
+                    byte_size, recorded_at, timezone, device, ingest_method,
+                    sample_rate, sample_count, integrity_status, last_verified_at,
+                    backup_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual_file', ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(instance_key) DO NOTHING
+                """,
+                (
+                    instance_key,
+                    source["id"],
+                    recording["source_path"],
+                    path.name,
+                    byte_size or 0,
+                    recording["recorded_at"],
+                    recording["timezone"],
+                    recording["device"],
+                    recording["sample_rate"],
+                    (
+                        round(
+                            int(recording["duration_ms"])
+                            * int(recording["sample_rate"])
+                            / 1000
+                        )
+                        if recording["sample_rate"] is not None
+                        else None
+                    ),
+                    source["integrity_status"],
+                    source["last_verified_at"],
+                    source["backup_status"],
+                    recording["created_at"] or now,
+                    now,
+                ),
+            )
+            source_instance = connection.execute(
+                "SELECT * FROM source_instances WHERE instance_key = ?",
+                (instance_key,),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO session_sources (
+                    session_id, source_object_id, source_instance_id,
+                    chunk_index, session_start_ms, session_end_ms,
+                    source_start_ms, source_end_ms, continuity_status, created_at
+                ) VALUES (?, ?, ?, 0, 0, ?, 0, ?, 'single', ?)
+                """,
+                (
+                    session["id"],
+                    source["id"],
+                    source_instance["id"],
+                    recording["duration_ms"],
+                    recording["duration_ms"],
+                    now,
+                ),
+            )
+        if str(session["status"]) == "active":
+            connection.execute(
+                """
+                UPDATE recording_sessions
+                SET status = 'closed', updated_at = ?
+                WHERE id = ?
+                """,
+                (now, session["id"]),
+            )
 
     runs = list(
         connection.execute(
@@ -1213,9 +1655,10 @@ def _backfill_v2_source_graph(
         inputs = list(
             connection.execute(
                 """
-                SELECT ss.*, so.sha256
+                SELECT ss.*, so.sha256, si.instance_key
                 FROM session_sources ss
                 JOIN source_objects so ON so.id = ss.source_object_id
+                JOIN source_instances si ON si.id = ss.source_instance_id
                 WHERE ss.session_id = ?
                 ORDER BY ss.chunk_index
                 """,
@@ -1237,9 +1680,9 @@ def _backfill_v2_source_graph(
         connection.executemany(
             """
             INSERT INTO processing_run_inputs (
-                run_id, position, source_object_id, source_sha256,
+                run_id, position, source_object_id, source_instance_id, source_sha256,
                 session_start_ms, session_end_ms, source_start_ms, source_end_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, position) DO NOTHING
             """,
             [
@@ -1247,6 +1690,7 @@ def _backfill_v2_source_graph(
                     run["run_id"],
                     position,
                     row["source_object_id"],
+                    row["source_instance_id"],
                     row["sha256"],
                     row["session_start_ms"],
                     row["session_end_ms"],
@@ -1310,6 +1754,11 @@ class Database:
             for version in range(2, LATEST_SCHEMA_VERSION + 1):
                 if version in versions:
                     continue
+                if version == 11:
+                    # V4 columns were historically added by an idempotent helper
+                    # after the migration loop. V11 rebuilds processing_runs, so a
+                    # database upgrading across several versions needs them first.
+                    _ensure_v4_processing_run_columns(connection)
                 connection.executescript(MIGRATIONS[version])
                 connection.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
@@ -1428,6 +1877,65 @@ class Database:
         with self.connect() as connection:
             return list(connection.execute("SELECT * FROM source_objects ORDER BY id"))
 
+    def get_source_instance(self, source_instance_id: int) -> sqlite3.Row:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM source_instances WHERE id = ?", (source_instance_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"原始音频实例 {source_instance_id} 不存在")
+        return row
+
+    def list_source_instances(self, session_id: int | None = None) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            if session_id is None:
+                return list(
+                    connection.execute(
+                        """
+                        SELECT si.*, so.sha256, so.codec, so.channels, so.container
+                        FROM source_instances si
+                        JOIN source_objects so ON so.id = si.source_object_id
+                        ORDER BY si.id
+                        """
+                    )
+                )
+            return list(
+                connection.execute(
+                    """
+                    SELECT si.*, so.sha256, so.codec, so.channels, so.container,
+                           ss.chunk_index, ss.session_start_ms, ss.session_end_ms,
+                           ss.continuity_status
+                    FROM session_sources ss
+                    JOIN source_instances si ON si.id = ss.source_instance_id
+                    JOIN source_objects so ON so.id = si.source_object_id
+                    WHERE ss.session_id = ?
+                    ORDER BY ss.chunk_index
+                    """,
+                    (session_id,),
+                )
+            )
+
+    def update_source_instance_integrity(
+        self,
+        source_instance_id: int,
+        *,
+        status: str,
+        verified_at: str | None,
+    ) -> None:
+        if status not in {"unverified", "verified", "missing", "mismatch", "error"}:
+            raise ValueError(f"无效的原始音频实例完整性状态：{status}")
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE source_instances
+                SET integrity_status = ?, last_verified_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, verified_at, utc_now(), source_instance_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"原始音频实例 {source_instance_id} 不存在")
+
     def create_source_object(self, values: dict[str, Any]) -> sqlite3.Row:
         with self.connect() as connection:
             existing = connection.execute(
@@ -1481,6 +1989,26 @@ class Database:
             raise KeyError(f"录音会话 {session_id} 不存在")
         return row
 
+    def find_recording_session(self, session_key: str) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT * FROM recording_sessions WHERE session_key = ?", (session_key,)
+            ).fetchone()
+
+    def get_session_manifest(self, session_id: int) -> sqlite3.Row | None:
+        self.get_recording_session(session_id)
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT * FROM session_manifests WHERE session_id = ?", (session_id,)
+            ).fetchone()
+
+    def find_session_manifest_by_hash(self, manifest_sha256: str) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT * FROM session_manifests WHERE manifest_sha256 = ?",
+                (manifest_sha256,),
+            ).fetchone()
+
     def get_session_for_recording(self, recording_id: int) -> sqlite3.Row:
         self.get_recording(recording_id)
         with self.connect() as connection:
@@ -1527,26 +2055,95 @@ class Database:
             ).fetchone()
 
     def add_session_source(self, values: dict[str, Any]) -> sqlite3.Row:
-        self.get_recording_session(int(values["session_id"]))
-        self.get_source_object(int(values["source_object_id"]))
+        session = self.get_recording_session(int(values["session_id"]))
+        if str(session["status"]) != "active":
+            raise ValueError("关闭的录音会话不能追加原始音频")
+        source = self.get_source_object(int(values["source_object_id"]))
         created_at = utc_now()
         with self.connect() as connection:
+            source_instance_id = values.get("source_instance_id")
+            if source_instance_id is None:
+                instance_key = str(
+                    values.get("instance_key")
+                    or (
+                        f"manual-session:{int(values['session_id'])}:"
+                        f"chunk:{int(values['chunk_index'])}"
+                    )
+                )
+                existing_instance = connection.execute(
+                    "SELECT * FROM source_instances WHERE instance_key = ?",
+                    (instance_key,),
+                ).fetchone()
+                if existing_instance is None:
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO source_instances (
+                            instance_key, source_object_id, source_path,
+                            original_filename, byte_size, recorded_at, timezone,
+                            device, ingest_method, sample_rate, sample_count,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            instance_key,
+                            source["id"],
+                            source["source_path"],
+                            source["original_filename"],
+                            int(source["byte_size"] or 0),
+                            source["recorded_at"],
+                            source["timezone"],
+                            source["device"],
+                            source["ingest_method"],
+                            source["sample_rate"],
+                            (
+                                round(
+                                    int(source["duration_ms"])
+                                    * int(source["sample_rate"])
+                                    / 1000
+                                )
+                                if source["sample_rate"] is not None
+                                else None
+                            ),
+                            created_at,
+                            created_at,
+                        ),
+                    )
+                    source_instance_id = int(cursor.lastrowid)
+                else:
+                    source_instance_id = int(existing_instance["id"])
+            else:
+                instance = connection.execute(
+                    "SELECT * FROM source_instances WHERE id = ?",
+                    (source_instance_id,),
+                ).fetchone()
+                if instance is None:
+                    raise KeyError(f"原始音频实例 {source_instance_id} 不存在")
+                if int(instance["source_object_id"]) != int(source["id"]):
+                    raise ValueError("原始音频实例与内容对象不匹配")
             cursor = connection.execute(
                 """
                 INSERT INTO session_sources (
-                    session_id, source_object_id, chunk_index, session_start_ms,
-                    session_end_ms, source_start_ms, source_end_ms,
+                    session_id, source_object_id, source_instance_id, chunk_index,
+                    session_start_ms, session_end_ms, source_start_ms,
+                    source_end_ms, session_start_sample, session_end_sample,
+                    source_start_sample, source_end_sample, timeline_sample_rate,
                     continuity_status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     values["session_id"],
                     values["source_object_id"],
+                    source_instance_id,
                     values["chunk_index"],
                     values["session_start_ms"],
                     values["session_end_ms"],
                     values.get("source_start_ms", 0),
                     values["source_end_ms"],
+                    values.get("session_start_sample"),
+                    values.get("session_end_sample"),
+                    values.get("source_start_sample"),
+                    values.get("source_end_sample"),
+                    values.get("timeline_sample_rate"),
                     values.get("continuity_status", "unchecked"),
                     created_at,
                 ),
@@ -1570,10 +2167,16 @@ class Database:
             return list(
                 connection.execute(
                     """
-                    SELECT ss.*, so.sha256, so.source_path, so.original_filename,
-                           so.integrity_status, so.duration_ms AS source_duration_ms
+                    SELECT ss.*, so.sha256,
+                           si.source_path AS source_path,
+                           si.original_filename AS original_filename,
+                           si.byte_size AS instance_byte_size,
+                           si.instance_key,
+                           si.integrity_status,
+                           so.duration_ms AS source_duration_ms
                     FROM session_sources ss
                     JOIN source_objects so ON so.id = ss.source_object_id
+                    JOIN source_instances si ON si.id = ss.source_instance_id
                     WHERE ss.session_id = ?
                     ORDER BY ss.chunk_index
                     """,
@@ -1586,6 +2189,210 @@ class Database:
         if not rows:
             raise RuntimeError(f"录音会话 {session_id} 没有原始音频对象")
         return _canonical_source_fingerprint(rows)
+
+    def import_closed_session(
+        self,
+        session_values: dict[str, Any],
+        manifest_values: dict[str, Any],
+        chunks: Sequence[dict[str, Any]],
+    ) -> tuple[sqlite3.Row, bool]:
+        """Atomically register a validated immutable manifest and all source instances."""
+        if not chunks:
+            raise ValueError("录音会话清单没有音频分片")
+        session_key = str(session_values["session_key"])
+        manifest_sha256 = str(manifest_values["manifest_sha256"])
+        now = utc_now()
+        with self.connect() as connection:
+            existing_manifest = connection.execute(
+                """
+                SELECT sm.*, rs.session_key
+                FROM session_manifests sm
+                JOIN recording_sessions rs ON rs.id = sm.session_id
+                WHERE sm.manifest_sha256 = ?
+                """,
+                (manifest_sha256,),
+            ).fetchone()
+            if existing_manifest is not None:
+                if str(existing_manifest["session_key"]) != session_key:
+                    raise ValueError("相同清单哈希已经属于另一个录音会话")
+                session = connection.execute(
+                    "SELECT * FROM recording_sessions WHERE id = ?",
+                    (existing_manifest["session_id"],),
+                ).fetchone()
+                return session, False
+
+            existing_session = connection.execute(
+                "SELECT * FROM recording_sessions WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+            if existing_session is not None:
+                raise ValueError("录音会话键已存在，但清单哈希不同")
+
+            cursor = connection.execute(
+                """
+                INSERT INTO recording_sessions (
+                    session_key, legacy_recording_id, device, recorded_at,
+                    timezone, duration_ms, status, created_at, updated_at
+                ) VALUES (?, NULL, ?, ?, ?, ?, 'active', ?, ?)
+                """,
+                (
+                    session_key,
+                    session_values.get("device"),
+                    session_values["recorded_at"],
+                    session_values["timezone"],
+                    session_values["duration_ms"],
+                    now,
+                    now,
+                ),
+            )
+            session_id = int(cursor.lastrowid)
+
+            for chunk in chunks:
+                source_values = dict(chunk["source"])
+                instance_values = dict(chunk["instance"])
+                mapping = dict(chunk["mapping"])
+                source = connection.execute(
+                    "SELECT * FROM source_objects WHERE sha256 = ?",
+                    (source_values["sha256"],),
+                ).fetchone()
+                if source is None:
+                    source_cursor = connection.execute(
+                        """
+                        INSERT INTO source_objects (
+                            sha256, source_path, original_filename, byte_size,
+                            container, codec, sample_rate, channels, bit_rate,
+                            encoder, device, recorded_at, timezone, duration_ms,
+                            ingest_method, storage_class, integrity_status,
+                            last_verified_at, backup_status, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                  'original_permanent', 'verified', ?,
+                                  'not_configured', ?, ?)
+                        """,
+                        (
+                            source_values["sha256"],
+                            source_values["source_path"],
+                            source_values["original_filename"],
+                            source_values["byte_size"],
+                            source_values.get("container"),
+                            source_values.get("codec"),
+                            source_values.get("sample_rate"),
+                            source_values.get("channels"),
+                            source_values.get("bit_rate"),
+                            source_values.get("encoder"),
+                            source_values.get("device"),
+                            source_values["recorded_at"],
+                            source_values["timezone"],
+                            source_values["duration_ms"],
+                            source_values.get("ingest_method", "watch_manual_sync"),
+                            now,
+                            now,
+                            now,
+                        ),
+                    )
+                    source = connection.execute(
+                        "SELECT * FROM source_objects WHERE id = ?",
+                        (int(source_cursor.lastrowid),),
+                    ).fetchone()
+                instance_key = str(instance_values["instance_key"])
+                if connection.execute(
+                    "SELECT 1 FROM source_instances WHERE instance_key = ?",
+                    (instance_key,),
+                ).fetchone() is not None:
+                    raise ValueError(f"原始音频实例键重复：{instance_key}")
+                instance_cursor = connection.execute(
+                    """
+                    INSERT INTO source_instances (
+                        instance_key, source_object_id, source_path,
+                        original_filename, byte_size, recorded_at, timezone,
+                        device, ingest_method, sample_rate, sample_count,
+                        integrity_status, last_verified_at, backup_status,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'verified', ?,
+                              'not_configured', ?, ?)
+                    """,
+                    (
+                        instance_key,
+                        source["id"],
+                        instance_values["source_path"],
+                        instance_values["original_filename"],
+                        instance_values["byte_size"],
+                        instance_values["recorded_at"],
+                        instance_values["timezone"],
+                        instance_values.get("device"),
+                        instance_values.get("ingest_method", "watch_manual_sync"),
+                        instance_values.get("sample_rate"),
+                        instance_values.get("sample_count"),
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                source_instance_id = int(instance_cursor.lastrowid)
+                connection.execute(
+                    """
+                    INSERT INTO session_sources (
+                        session_id, source_object_id, source_instance_id,
+                        chunk_index, session_start_ms, session_end_ms,
+                        source_start_ms, source_end_ms,
+                        session_start_sample, session_end_sample,
+                        source_start_sample, source_end_sample,
+                        timeline_sample_rate, continuity_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        source["id"],
+                        source_instance_id,
+                        mapping["chunk_index"],
+                        mapping["session_start_ms"],
+                        mapping["session_end_ms"],
+                        mapping.get("source_start_ms", 0),
+                        mapping["source_end_ms"],
+                        mapping.get("session_start_sample"),
+                        mapping.get("session_end_sample"),
+                        mapping.get("source_start_sample", 0),
+                        mapping.get("source_end_sample"),
+                        mapping.get("timeline_sample_rate"),
+                        mapping.get("continuity_status", "unchecked"),
+                        now,
+                    ),
+                )
+
+            connection.execute(
+                """
+                INSERT INTO session_manifests (
+                    session_id, manifest_format, manifest_path,
+                    manifest_sha256, byte_size, parser_version,
+                    summary_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    manifest_values["manifest_format"],
+                    manifest_values["manifest_path"],
+                    manifest_sha256,
+                    manifest_values["byte_size"],
+                    manifest_values["parser_version"],
+                    json.dumps(
+                        manifest_values.get("summary", {}),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE recording_sessions
+                SET status = 'closed', updated_at = ?
+                WHERE id = ?
+                """,
+                (now, session_id),
+            )
+            session = connection.execute(
+                "SELECT * FROM recording_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            return session, True
 
     def record_source_integrity_audit(
         self,
@@ -1724,8 +2531,9 @@ class Database:
 
     def start_processing_run(
         self,
-        recording_id: int,
+        recording_id: int | None,
         *,
+        session_id: int | None = None,
         run_kind: str,
         config: dict[str, Any],
         config_sha256: str,
@@ -1734,8 +2542,22 @@ class Database:
         code_version: str | None = None,
         parent_run_id: int | None = None,
     ) -> int:
-        self.get_recording(recording_id)
-        session = self.get_session_for_recording(recording_id)
+        if recording_id is None and session_id is None:
+            raise ValueError("处理运行必须指定 recording_id 或 session_id")
+        if recording_id is not None:
+            self.get_recording(recording_id)
+        if session_id is None:
+            session = self.get_session_for_recording(int(recording_id))
+            session_id = int(session["id"])
+        else:
+            session = self.get_recording_session(session_id)
+            legacy_recording_id = session["legacy_recording_id"]
+            if (
+                recording_id is not None
+                and legacy_recording_id is not None
+                and int(legacy_recording_id) != recording_id
+            ):
+                raise ValueError("recording_id 与 session_id 不属于同一录音会话")
         inputs = self.list_session_sources(int(session["id"]))
         input_fingerprint = _canonical_source_fingerprint(inputs)
         model_manifest = model_manifest or {}
@@ -1750,7 +2572,7 @@ class Database:
                 """,
                 (
                     recording_id,
-                    session["id"],
+                    session_id,
                     run_kind,
                     json.dumps(config, ensure_ascii=False, sort_keys=True),
                     config_sha256,
@@ -1766,15 +2588,17 @@ class Database:
             connection.executemany(
                 """
                 INSERT INTO processing_run_inputs (
-                    run_id, position, source_object_id, source_sha256,
+                    run_id, position, source_object_id, source_instance_id,
+                    source_sha256,
                     session_start_ms, session_end_ms, source_start_ms, source_end_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         run_id,
                         position,
                         row["source_object_id"],
+                        row["source_instance_id"],
                         row["sha256"],
                         row["session_start_ms"],
                         row["session_end_ms"],
@@ -1815,6 +2639,21 @@ class Database:
             if cursor.rowcount != 1:
                 raise KeyError(f"处理运行 {run_id} 不存在")
 
+    def update_processing_run_progress(
+        self, run_id: int, summary: dict[str, Any]
+    ) -> None:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE processing_runs
+                SET summary_json = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (json.dumps(summary, ensure_ascii=False, sort_keys=True), run_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("只能更新运行中的处理任务进度")
+
     def resume_processing_run(self, run_id: int) -> sqlite3.Row:
         run = self.get_processing_run(run_id)
         if str(run["run_kind"]) != "quality_asr_v2c":
@@ -1841,6 +2680,19 @@ class Database:
                     WHERE recording_id = ? ORDER BY id
                     """,
                     (recording_id,),
+                )
+            )
+
+    def list_session_processing_runs(self, session_id: int) -> list[sqlite3.Row]:
+        self.get_recording_session(session_id)
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT * FROM processing_runs
+                    WHERE session_id = ? ORDER BY id
+                    """,
+                    (session_id,),
                 )
             )
 
@@ -2205,24 +3057,31 @@ class Database:
         session_end = int(values["session_end_ms"])
         source_start = int(values["source_start_ms"])
         source_end = int(values["source_end_ms"])
+        source_instance_id = values.get("source_instance_id")
         if session_start < 0 or session_end <= session_start:
             raise ValueError("人物参考会话时间范围无效")
         if source_start < 0 or source_end <= source_start:
             raise ValueError("人物参考原音时间范围无效")
         now = utc_now()
         with self.connect() as connection:
-            source = connection.execute(
+            source_matches = list(connection.execute(
                 """
-                SELECT so.sha256, ss.session_start_ms, ss.session_end_ms,
+                SELECT so.sha256, ss.source_instance_id,
+                       ss.session_start_ms, ss.session_end_ms,
                        ss.source_start_ms, ss.source_end_ms
                 FROM source_objects so
                 JOIN session_sources ss ON ss.source_object_id = so.id
                 WHERE so.id = ? AND ss.session_id = ?
+                  AND (? IS NULL OR ss.source_instance_id = ?)
                 """,
-                (source_object_id, session_id),
-            ).fetchone()
-            if source is None:
+                (source_object_id, session_id, source_instance_id, source_instance_id),
+            ))
+            if not source_matches:
                 raise ValueError("人物参考原音不属于指定录音会话")
+            if len(source_matches) > 1:
+                raise ValueError("人物参考原音实例不明确")
+            source = source_matches[0]
+            source_instance_id = int(source["source_instance_id"])
             if str(source["sha256"]) != str(values["source_sha256"]):
                 raise ValueError("人物参考原音 SHA-256 不一致")
             if (
@@ -2240,13 +3099,13 @@ class Database:
                 """
                 INSERT INTO identity_reference_intervals (
                     reference_key, identity_label, decision, session_id,
-                    session_start_ms, session_end_ms, source_object_id,
+                    session_start_ms, session_end_ms, source_object_id, source_instance_id,
                     source_sha256, source_start_ms, source_end_ms,
                     provenance_kind, provenance_id, metadata_json,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(
-                    identity_label, session_id, source_object_id,
+                    identity_label, session_id, source_instance_id,
                     source_start_ms, source_end_ms
                 ) DO UPDATE SET
                     decision = excluded.decision,
@@ -2263,6 +3122,7 @@ class Database:
                     session_start,
                     session_end,
                     source_object_id,
+                    source_instance_id,
                     str(values["source_sha256"]),
                     source_start,
                     source_end,
@@ -2455,18 +3315,30 @@ class Database:
                 mapped_ms = 0
                 mapped_cursor = token_start
                 for position, source_ref in enumerate(source_refs):
-                    source = connection.execute(
+                    source_instance_id = source_ref.get("source_instance_id")
+                    source_matches = list(connection.execute(
                         """
-                        SELECT so.sha256, ss.session_start_ms, ss.session_end_ms,
+                        SELECT so.sha256, ss.source_instance_id,
+                               ss.session_start_ms, ss.session_end_ms,
                                ss.source_start_ms, ss.source_end_ms
                         FROM source_objects so
                         JOIN session_sources ss ON ss.source_object_id = so.id
                         WHERE so.id = ? AND ss.session_id = ?
+                          AND (? IS NULL OR ss.source_instance_id = ?)
                         """,
-                        (source_ref["source_object_id"], session_id),
-                    ).fetchone()
-                    if source is None:
+                        (
+                            source_ref["source_object_id"],
+                            session_id,
+                            source_instance_id,
+                            source_instance_id,
+                        ),
+                    ))
+                    if not source_matches:
                         raise ValueError("ASR token references a source outside its session")
+                    if len(source_matches) > 1:
+                        raise ValueError("ASR token source instance is ambiguous")
+                    source = source_matches[0]
+                    source_instance_id = int(source["source_instance_id"])
                     if str(source["sha256"]) != str(source_ref["source_sha256"]):
                         raise ValueError("ASR token source SHA-256 mismatch")
                     source_start = int(source_ref["source_start_ms"])
@@ -2488,14 +3360,16 @@ class Database:
                     connection.execute(
                         """
                         INSERT INTO asr_token_sources (
-                            token_id, position, source_object_id, source_sha256,
+                            token_id, position, source_object_id,
+                            source_instance_id, source_sha256,
                             source_start_ms, source_end_ms
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             token_id,
                             position,
                             source_ref["source_object_id"],
+                            source_instance_id,
                             source_ref["source_sha256"],
                             source_start,
                             source_end,
@@ -2663,18 +3537,30 @@ class Database:
                 mapped_cursor = start_ms
                 mapped_ms = 0
                 for position, source_ref in enumerate(source_refs):
-                    source = connection.execute(
+                    source_instance_id = source_ref.get("source_instance_id")
+                    source_matches = list(connection.execute(
                         """
-                        SELECT so.sha256, ss.session_start_ms, ss.session_end_ms,
+                        SELECT so.sha256, ss.source_instance_id,
+                               ss.session_start_ms, ss.session_end_ms,
                                ss.source_start_ms, ss.source_end_ms
                         FROM source_objects so
                         JOIN session_sources ss ON ss.source_object_id = so.id
                         WHERE so.id = ? AND ss.session_id = ?
+                          AND (? IS NULL OR ss.source_instance_id = ?)
                         """,
-                        (source_ref["source_object_id"], session_id),
-                    ).fetchone()
-                    if source is None:
+                        (
+                            source_ref["source_object_id"],
+                            session_id,
+                            source_instance_id,
+                            source_instance_id,
+                        ),
+                    ))
+                    if not source_matches:
                         raise ValueError("speaker turn references a source outside its session")
+                    if len(source_matches) > 1:
+                        raise ValueError("speaker turn source instance is ambiguous")
+                    source = source_matches[0]
+                    source_instance_id = int(source["source_instance_id"])
                     if str(source["sha256"]) != str(source_ref["source_sha256"]):
                         raise ValueError("speaker turn source SHA-256 mismatch")
                     source_start = int(source_ref["source_start_ms"])
@@ -2696,14 +3582,16 @@ class Database:
                     connection.execute(
                         """
                         INSERT INTO diarization_turn_sources (
-                            turn_id, position, source_object_id, source_sha256,
+                            turn_id, position, source_object_id,
+                            source_instance_id, source_sha256,
                             source_start_ms, source_end_ms
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             turn_id,
                             position,
                             source_ref["source_object_id"],
+                            source_instance_id,
                             source_ref["source_sha256"],
                             source_start,
                             source_end,
@@ -3592,20 +4480,32 @@ class Database:
                 annotation_id = int(annotation_cursor.lastrowid)
                 mapped_cursor = annotation_start
                 for position, source_ref in enumerate(source_refs):
-                    source = connection.execute(
+                    source_instance_id = source_ref.get("source_instance_id")
+                    source_matches = list(connection.execute(
                         """
-                        SELECT so.sha256, ss.session_start_ms, ss.session_end_ms,
+                        SELECT so.sha256, ss.source_instance_id,
+                               ss.session_start_ms, ss.session_end_ms,
                                ss.source_start_ms, ss.source_end_ms
                         FROM source_objects so
                         JOIN session_sources ss ON ss.source_object_id = so.id
                         WHERE so.id = ? AND ss.session_id = ?
+                          AND (? IS NULL OR ss.source_instance_id = ?)
                         """,
-                        (source_ref["source_object_id"], session_id),
-                    ).fetchone()
-                    if source is None:
+                        (
+                            source_ref["source_object_id"],
+                            session_id,
+                            source_instance_id,
+                            source_instance_id,
+                        ),
+                    ))
+                    if not source_matches:
                         raise KeyError(
                             f"原始音频对象 {source_ref['source_object_id']} 不属于当前会话"
                         )
+                    if len(source_matches) > 1:
+                        raise ValueError("真值源引用的原始音频实例不明确")
+                    source = source_matches[0]
+                    source_instance_id = int(source["source_instance_id"])
                     if str(source["sha256"]) != str(source_ref["source_sha256"]):
                         raise ValueError("真值源引用的 SHA-256 与不可变源对象不一致")
                     source_start = int(source_ref["source_start_ms"])
@@ -3626,14 +4526,15 @@ class Database:
                     connection.execute(
                         """
                         INSERT INTO truth_annotation_sources (
-                            annotation_id, position, source_object_id,
+                            annotation_id, position, source_object_id, source_instance_id,
                             source_sha256, source_start_ms, source_end_ms
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             annotation_id,
                             position,
                             source_ref["source_object_id"],
+                            source_instance_id,
                             source_ref["source_sha256"],
                             source_start,
                             source_end,

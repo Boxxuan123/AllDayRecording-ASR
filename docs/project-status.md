@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-29
-> 当前阶段：V1 基线和本地操作台可用；V2-D Community-1 与身份参考层已完成；V2-E.0.2 四轨 Episode 证据、响应验证器、CLI/网页和 Codex manual run 22 已完成。V2-C.2 前 5 块是开发真值且 `speaker` 完整度为 `none`，不能冒充 V2-D DER/JER 真值；真实云端 LLM 尚未接入。
+> 当前阶段：V2-A.1 多分片准入与 V2-W.0 session-native 持久工作流已完成代码和合成数据回归；真实新增音频尚未进行模型分析。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
 
 ## 1. 结论
 
@@ -11,14 +11,14 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 
 V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来源、区间身份和原音坐标冻结成供应商无关的本地底账，并把 episode、provider 传输任务、LLM scene/claim/action 和 120 秒回听片分层。run 22 由当前 Codex 会话在脱敏 provider payload 上完成一次人工 LLM record/replay：没有项目运行时网络调用，没有音频上传，也不冒充可复现的固定模型 API。
 
-新的硬约束是：Watch 原始 M4A 永久保存且永不修改；当前继续面向已有 2 小时 44 分长录音开发；未来 5 分钟音频块通过同一虚拟时间轴进入核心管线；本地不运行通用 LLM，语义阶段之后使用可替换云端接口。实时 ASR 不再是既定里程碑。
+新的硬约束是：每个 Watch 原始文件永久保存且永不修改；五分钟或更短分片通过同一虚拟时间轴进入核心管线；流程代码不得针对某一批新音频写特例；本地不运行通用 LLM，语义阶段之后使用可替换云端接口。实时 ASR 不再是既定里程碑。
 
 ## 2. 已实现能力
 
 | 模块 | 状态 | 当前能力 |
 | --- | --- | --- |
 | 环境自检 | 已完成 | 检查 Python、FFmpeg、依赖和真实 CUDA 运算 |
-| 录音入库 | V2-A 已完成 | 不可变 source/session、SHA-256 去重、证据字段防修改/删除、完整性审计 |
+| 录音入库 | V2-A.1 已完成 | schema v11；内容对象/真实文件实例分离、原子幂等清单导入、整数采样坐标、关闭会话冻结、逐实例完整性状态 |
 | 音频处理 | V2-A 基础完成 | V1 标准化/VAD/断点续跑；V2 逻辑窗口临时解码且不新增长期整段 PCM |
 | ASR | V2-C.3 已实现 | Qwen3-ASR-1.7B、0.6B ForcedAligner、Fun-ASR-Nano、FSMN+Silero 证据门控、padding/core 分离、逐 token 原音追溯；等待新 holdout |
 | 说话人时间轴 | V2-D.2 已完成 | 在 D.1 证据/来源分层上增加稀疏人工身份轨、簇污染矩阵和 token 人工角标；审计不改写匿名 speaker；等待干净父母声纹与穷尽真值 |
@@ -28,9 +28,9 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 | 固定人物登记 | 基础完成 | 经同意可建立 `known_person` 档案；V2-D.3 人工参考区间可跨录音积累，尚无跨天自动匹配 |
 | 时间线 | 原型完成 | 规则聚合事件、Markdown/JSON、原音区间追溯 |
 | 语义证据 | V2-E.0.2 已完成 | episode/utterance/scene 分层、ASR/匿名声纹/source/identity 四轨证据、最小化 provider payload、严格响应校验、Codex manual record/replay、追加式审核和分片回听；真实云端 provider 待接入 |
-| 数据库迁移 | V2-E.0 已完成 | schema v10；保留不可变 diarization/source/semantic 证据、审核覆盖层和跨录音人物参考索引，升级前自动备份且不覆盖 V1 |
+| 数据库迁移 | V2-A.1 已完成 | 最新 schema v11；`processing_runs.recording_id` 对 session-native V2 可空，所有历史证据保留，升级前自动备份 |
 | 统一配置 | 已完成 V1 | TOML 校验、配置哈希、每次运行完整快照 |
-| 一键日处理 | 已完成 V1 | 幂等 `daily-run`、人工审核保护、运行清单 |
+| 一键日处理 | V1/V2 分离 | V1 保留 `daily-run`；V2 使用 `workflow-v2`，先复核原音与连续性，再持久编排 C→D→E，本地停在 `semantic_ready` |
 | 人工评测 | V2-B 已完成 | 连续 session/source 真值、预测快照、CER、VAD、DER/JER、对齐、实体和多 run 对比；保留 V1 兼容入口 |
 | 行动建议 | 已完成规则 V1 | 明确日期/时间/行动、本人承诺、证据链、确认/忽略；不写真实日历 |
 | 本地网页 | V2-E.0.2 已扩展 | 逐段试听标注、说话人时间轴、episode 容器与 scene/claim/action 分层审核、短片回听、评测、一键运行和历史；只监听回环地址 |
@@ -108,17 +108,17 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 
 1. 首个 15 分钟标注已迁移为连续时间事实，但 46/46 文字边界都来自 V1 segment，模板可见 V1 hypothesis，且不是穷尽式 VAD/说话人真值；它只允许作 V1 条件化诊断。V2-C.1 均匀连续盲块又偶然落在近静音场景，只用于环境误报轨道。V2-C.2a 的五个已完成窗口足以把 Qwen 选为下一版主模型，但属于人工受限的预备开发证据；V2-C.3 调参后必须新建未见 holdout，不能把这五块再次宣称为最终测试集。
 2. V1 diarization 仍把说话人映射到整条 VAD 片段；V2-D 已用独立重叠时间轴修复数据表达，但现有人工标注刻意漏标电视声且 speaker 身份不穷尽，真实 DER/JER 暂时必须为 N/A。
-3. `daily-run` 已能安全编排现有阶段，但还缺少一份可公开提交、不含隐私的小音频集成样本。
+3. `workflow-v2` 已持久编排 C→D→E 并与 V1 `daily-run` 分开；网页仍主要暴露 V1 一键入口，尚未加入原生分片会话选择和 V2 恢复按钮。
 4. V2-E.0.2 已完成一次 Codex manual eval，但它不是可复现的固定模型质量基准；真实云端模型、数据保留策略、上下文上限和独立的幻觉/遗漏评测仍需在 V2-E.1 明确后才能调用。
 5. 固定人物可以登记，但尚无通用的跨天人物候选匹配和人工确认流程。
-6. schema v10 已新增不可变 semantic exchange/candidate 和追加式 revision；完成 run、原始模型输出和语义基础候选仍不可变。后续结构变化必须继续新增 migration，不能修改既有版本。
+6. schema v11 已新增不可变文件实例、清单和 session-native run；完成 run、原始模型输出和语义基础候选仍不可变。后续结构变化必须继续新增 migration，不能修改既有版本。
 7. `daily-run` 已使用统一配置；旧的分步命令仍保留各自参数，后续可逐步接入同一配置层。
 8. 已建立 Git 基线提交 `d9e9377` 和一键日记提交 `57cbe2e`；后续能力继续按可验证功能独立提交。
 
 ## 6. 本次盘点验证
 
 - `doctor` 全部通过：Python 3.12.10、FFmpeg/FFprobe、FunASR 1.4.4、ModelScope 1.39.1、pyannote.audio 4.0.7、PyTorch/torchaudio 2.9.1+cu128 和 RTX 5070 CUDA 实算正常。
-- 全量 58 个单元测试通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution/semantic 防篡改、跨源引用、V2-C.1/V2-C.2 盲标约束、非连续 review-region、Oracle 快照、双 CER、paired bootstrap、VAD/DER/JER、V2-C.3 门控、V2-D 同时说话与身份审核，以及 V2-E.0.2 四轨分离、长 episode、超限传输重聚合、人物/媒体响应拒绝、低信息空输入和追加修订。
+- 全量 70 个单元测试通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution/semantic 防篡改、跨源引用、v10→v11 身份证据迁移、分片清单事务、相同静音内容的不同实例、session-native run、原音篡改预阻断、阶段复用、持久工作流、V2-C/D/E 与既有评测逻辑。V2-A.1/V2-W.0 新测试只使用临时合成 WAV，没有读取或运行新增真实音频。
 - 真实库已从 schema v3 升级到 v4，升级前自动保存一份 schema v3 SQLite 备份。迁移前后 V1 各表计数一致：423 个语音段、17 条人工身份标注、26 条声纹样本、10 个事件和 3 个历史 run 均保留。
 - 当前 79,826,205 字节 Watch M4A 完整性状态为 `verified`；迁移和真实逻辑窗口解码前后 SHA-256 均为 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`。
 - 当前长录音可规划为 33 个无空洞的 5 分钟核心窗口并带 5 秒边界上下文；真实 10 秒核心窗口临时解码为 11 秒 WAV，退出后缓存已删除。
@@ -184,12 +184,12 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 
 1. [x] V2-E.0.2 定义 episode/utterance/scene、四轨归属证据和供应商无关交换，不让 LLM 覆盖原始 ASR。
 2. [ ] V2-E.1 在单独授权后接入真实云端 provider，评测事实一致性、遗漏、幻觉和行动项精度。
-3. Watch 同步完成后接入 5 分钟 chunk manifest、幂等上传和跨块连续性检查。
+3. [x] 通用 5 分钟/任意长度 chunk manifest、幂等导入和跨块连续性检查；Watch 上传与断点传输客户端仍待实现。
 4. 自动上传和手动点击同步共用同一协议；同步不阻塞既有本地音频与证据层。
 
 ## 8. V2-A 至 V2-E.0 交付结果与下一轮目标
 
-V2-A：**“不可变原始对象、schema v4 与长文件逻辑窗口”** 已完成。
+V2-A/V2-A.1：**“不可变原始对象、schema v11、多分片清单与逻辑窗口”** 已完成。
 
 完成条件：
 
@@ -198,11 +198,14 @@ V2-A：**“不可变原始对象、schema v4 与长文件逻辑窗口”** 已�
 - [x] 同一输入可以创建带输入指纹、模型清单、代码版本和配置哈希的独立 run。
 - [x] 长录音可按逻辑窗口读取，不新增长期整段 PCM。
 - [x] 临时窗口删除后可以只依靠原始 M4A 和数据库重新生成。
-- [x] 为未来 5 分钟音频块保留统一的 session/source 接口，但不实现同步客户端。
+- [x] 五分钟或任意长度分片可通过清单适配器原子导入；相同内容哈希不再吞掉不同时间的真实静音实例。
+- [x] V2-C/D/E 与 `processing_runs` 可只使用 `session_id`，不制造虚假的代表录音。
+- [x] V2-W.0 在模型前复核清单/逐实例哈希并拒绝 gap、overlap 或篡改，进度和失败状态保存在 SQLite。
+- [ ] 原音独立第二份存储与恢复演练；这仍是从本地影子流程进入无人值守正式流程的门槛。
 
 V2-B 已完成 schema v5、连续时间真值格式、旧标注迁移、不可变预测快照、VAD/DER/JER/对齐/实体指标和多 run 对比。当前标注的覆盖等级被真实保留，没有把稀疏 V1 标注误报为穷尽真值。
 
-V2-C 已完成 schema v6、Qwen3-ASR-1.7B、Qwen3-ForcedAligner-0.6B、Fun-ASR-Nano 第二假设、边界 token 去重、分歧队列、失败续跑和 token 时间 benchmark snapshot。V2-C.3 已增加 FSMN proposal、Silero/相对 SNR/时长证据门控、推理 padding 与提交 core 分离，以及同时含 speech 和 committed token 的 v4 snapshot。默认 `quality-16gb` 使用 BF16 且不量化；当前 8 GB 环境仍以同模型 batch=1 顺序运行，不牺牲模型精度。
+V2-C 已完成 schema v6、Qwen3-ASR-1.7B、Qwen3-ForcedAligner-0.6B、Fun-ASR-Nano 第二假设、边界 token 去重、分歧队列、失败续跑和 token 时间 benchmark snapshot。V2-C.3 已增加 FSMN proposal、Silero/相对 SNR/时长证据门控、推理 padding 与提交 core 分离，以及同时含 speech 和 committed token 的 v4 snapshot。默认 `auto` 会在 8 GB 上选择 batch=1、在不少于 14 GiB 时选择较高 batch；模型和 BF16 精度不变。
 
 当前 V2-C.3 在五块开发集上达到总体 CER `92.27%`、现场 CER `116.18%` 和 VAD-F1 `61.42%`，但这五块已经参与阈值选择。V2-D 已完成数据结构、Community-1 backend、token 融合、CLI、全量 run 11 和 snapshot；下一步建立包含现场人物、电视/媒体声和重叠的穷尽小型真值，不能把现有五条人工标记包装成 DER/JER。
 

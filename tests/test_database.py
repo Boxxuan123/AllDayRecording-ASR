@@ -43,6 +43,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(source["storage_class"], "original_permanent")
             self.assertEqual(session["session_key"], "legacy-recording:1")
             self.assertEqual(len(session_sources), 1)
+            self.assertEqual(len(database.list_source_instances(session["id"])), 1)
             self.assertEqual(session_sources[0]["session_end_ms"], 10_000)
             with self.assertRaises(sqlite3.IntegrityError):
                 with database.connect() as connection:
@@ -187,6 +188,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(source["sha256"], digest)
             self.assertEqual(source["source_path"], str(source_path.resolve()))
             self.assertEqual(session["duration_ms"], 5000)
+            self.assertEqual(len(database.list_source_instances(session["id"])), 1)
             backup_paths = list(
                 root.glob(
                     f"migration-{token}.schema-v3-to-v{LATEST_SCHEMA_VERSION}.*.sqlite3"
@@ -267,6 +269,109 @@ class DatabaseTests(unittest.TestCase):
                 )
             finally:
                 backup.close()
+        finally:
+            for candidate in [
+                database_path,
+                Path(f"{database_path}-shm"),
+                Path(f"{database_path}-wal"),
+                *root.glob(backup_pattern),
+            ]:
+                candidate.unlink(missing_ok=True)
+
+    def test_schema_v10_identity_reference_is_mapped_to_source_instance(self) -> None:
+        root = Path(__file__).parent
+        token = uuid4().hex
+        database_path = root / f"v11-migration-{token}.sqlite3"
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.executescript(SCHEMA)
+            connection.execute(
+                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO schema_migrations VALUES (1, '2026-08-29T00:00:00+00:00')"
+            )
+            for version in range(2, 11):
+                connection.executescript(MIGRATIONS[version])
+                connection.execute(
+                    "INSERT INTO schema_migrations VALUES (?, '2026-08-29T00:00:00+00:00')",
+                    (version,),
+                )
+            connection.execute(
+                """
+                INSERT INTO source_objects (
+                    sha256, source_path, original_filename, byte_size,
+                    container, codec, sample_rate, channels, bit_rate,
+                    device, recorded_at, timezone, duration_ms, ingest_method,
+                    storage_class, integrity_status, backup_status,
+                    created_at, updated_at
+                ) VALUES (
+                    'same-content', 'synthetic.wav', 'synthetic.wav', 32044,
+                    'wav', 'pcm_s16le', 16000, 1, 256000,
+                    'test', '2026-08-29T00:00:00+00:00', 'Asia/Singapore',
+                    1000, 'watch_manual_sync', 'original_permanent', 'verified',
+                    'not_configured', '2026-08-29T00:00:00+00:00',
+                    '2026-08-29T00:00:00+00:00'
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO recording_sessions (
+                    session_key, device, recorded_at, timezone, duration_ms,
+                    status, created_at, updated_at
+                ) VALUES (
+                    'v10-session', 'test', '2026-08-29T00:00:00+00:00',
+                    'Asia/Singapore', 1000, 'closed',
+                    '2026-08-29T00:00:00+00:00', '2026-08-29T00:00:00+00:00'
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO session_sources (
+                    session_id, source_object_id, chunk_index,
+                    session_start_ms, session_end_ms, source_start_ms,
+                    source_end_ms, continuity_status, created_at
+                ) VALUES (
+                    1, 1, 0, 0, 1000, 0, 1000, 'single',
+                    '2026-08-29T00:00:00+00:00'
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO identity_reference_intervals (
+                    reference_key, identity_label, decision, session_id,
+                    session_start_ms, session_end_ms, source_object_id,
+                    source_sha256, source_start_ms, source_end_ms,
+                    provenance_kind, provenance_id, metadata_json,
+                    created_at, updated_at
+                ) VALUES (
+                    'reference-1', 'mother', 'confirmed_target', 1,
+                    100, 300, 1, 'same-content', 100, 300,
+                    'truth', 1, '{}', '2026-08-29T00:00:00+00:00',
+                    '2026-08-29T00:00:00+00:00'
+                )
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        backup_pattern = (
+            f"v11-migration-{token}.schema-v10-to-v{LATEST_SCHEMA_VERSION}.*.sqlite3"
+        )
+        try:
+            database = Database(database_path)
+            reference = database.list_identity_reference_intervals(
+                identity_label="mother"
+            )[0]
+            self.assertIsNotNone(reference["source_instance_id"])
+            self.assertEqual(len(database.list_source_instances(1)), 1)
+            with database.connect() as migrated:
+                self.assertEqual(list(migrated.execute("PRAGMA foreign_key_check")), [])
+            self.assertEqual(len(list(root.glob(backup_pattern))), 1)
         finally:
             for candidate in [
                 database_path,

@@ -935,10 +935,16 @@ def import_continuous_truth(
             raise ValueError(f"标注 {key} 超出真值范围")
         expected_refs = _source_refs(database, session_id, start_ms, end_ms)
         supplied_refs = row.get("source_refs")
-        if supplied_refs is not None and _canonical_refs(supplied_refs) != _canonical_refs(
-            expected_refs
-        ):
-            raise ValueError(f"标注 {key} 的原始音频范围引用不正确")
+        if supplied_refs is not None:
+            include_instances = all(
+                item.get("source_instance_id") is not None for item in supplied_refs
+            )
+            if _canonical_refs(
+                supplied_refs, include_instances=include_instances
+            ) != _canonical_refs(
+                expected_refs, include_instances=include_instances
+            ):
+                raise ValueError(f"标注 {key} 的原始音频范围引用不正确")
         annotations.append(
             _annotation(
                 key,
@@ -2060,6 +2066,7 @@ def _source_refs(
     return [
         {
             "source_object_id": item.source_object_id,
+            "source_instance_id": item.source_instance_id,
             "source_sha256": item.source_sha256,
             "source_start_ms": item.source_start_ms,
             "source_end_ms": item.source_end_ms,
@@ -2509,10 +2516,17 @@ def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _canonical_refs(refs: Sequence[dict[str, Any]]) -> list[tuple[Any, ...]]:
+def _canonical_refs(
+    refs: Sequence[dict[str, Any]], *, include_instances: bool
+) -> list[tuple[Any, ...]]:
     return [
         (
             int(item["source_object_id"]),
+            *(
+                (int(item["source_instance_id"]),)
+                if include_instances
+                else ()
+            ),
             str(item["source_sha256"]),
             int(item["source_start_ms"]),
             int(item["source_end_ms"]),

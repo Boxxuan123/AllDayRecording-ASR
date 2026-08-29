@@ -32,7 +32,7 @@ class AsrConfig:
     primary_model: str = "Qwen/Qwen3-ASR-1.7B"
     forced_aligner_model: str = "Qwen/Qwen3-ForcedAligner-0.6B"
     secondary_model: str = "FunAudioLLM/Fun-ASR-Nano-2512"
-    vram_profile: str = "quality-16gb"
+    vram_profile: str = "auto"
     window_seconds: float = 300.0
     context_seconds: float = 5.0
     max_new_tokens: int = 4096
@@ -268,8 +268,10 @@ def _validate(config: AppConfig) -> None:
     for field in ("primary_model", "forced_aligner_model", "secondary_model"):
         if not getattr(asr, field).strip():
             raise ConfigError(f"asr.{field} 不能为空")
-    if asr.vram_profile not in {"quality-16gb", "compatible-8gb"}:
-        raise ConfigError("asr.vram_profile 必须是 quality-16gb 或 compatible-8gb")
+    if asr.vram_profile not in {"auto", "quality-16gb", "compatible-8gb"}:
+        raise ConfigError(
+            "asr.vram_profile 必须是 auto、quality-16gb 或 compatible-8gb"
+        )
     if asr.window_seconds <= 0:
         raise ConfigError("asr.window_seconds 必须大于 0")
     if asr.context_seconds < 0:

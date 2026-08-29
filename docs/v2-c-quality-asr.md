@@ -44,22 +44,21 @@ V2-C.3 在这条基础上增加独立 Silero、相对 SNR 和候选时长证据�
 
 ## 4. 运行配置
 
-默认 `allday-asr.toml` 明确选择 `quality-16gb`：
+默认 `allday-asr.toml` 选择 `auto`。启动时读取实际 CUDA 显存：不少于 14 GiB 使用 `quality-16gb`，否则使用 `compatible-8gb`。两个档位都保持：
 
-- BF16，无量化。
-- Qwen batch=4。
+- BF16、无量化和同一组模型；只调整 Qwen batch。
 - 300 秒 core + 5 秒上传边界 context；内部为 30 秒以内的 VAD utterance + 750 ms 声学 context。
 - `max_new_tokens=4096`。
 
-当前 8 GB 5070 使用 `compatible-8gb`：模型和精度完全相同，只把 Qwen batch 降为 1。管线先完成全部 Qwen+Aligner 窗口并释放 CUDA，再加载 Fun-ASR-Nano，避免两套 ASR 同时常驻。
+当前 8 GB 5070 会自动使用 `compatible-8gb`（batch=1）；16 GB 方案会自动使用 `quality-16gb`（默认 batch=4）。管线先完成全部 Qwen+Aligner 窗口并释放 CUDA，再加载 Fun-ASR-Nano，避免两套 ASR 同时常驻。
 
 ```powershell
 # 8 GB 机器先做一个真实五分钟 smoke test
 allday-asr asr-v2 run 1 --profile compatible-8gb --max-windows 1
 
-# 8 GB 全量；16 GB 机器省略 --profile 即使用默认质量档
-allday-asr asr-v2 run 1 --profile compatible-8gb
+# 全量默认自动选择；也可显式固定档位用于复现
 allday-asr asr-v2 run 1
+allday-asr asr-v2 run 1 --profile compatible-8gb
 
 # 查看逐窗口证据和分歧
 allday-asr asr-v2 status <run-id>

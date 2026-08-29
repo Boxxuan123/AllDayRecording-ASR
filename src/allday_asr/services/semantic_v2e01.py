@@ -31,6 +31,7 @@ FORBIDDEN_PROVIDER_KEYS = frozenset(
         "audio",
         "audio_bytes",
         "source_object_id",
+        "source_instance_id",
         "source_path",
         "source_refs",
         "source_sha256",
@@ -1119,10 +1120,15 @@ def _deduplicate_source_refs(
     refs: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    seen: set[tuple[int, str, int, int]] = set()
+    seen: set[tuple[int, int | None, str, int, int]] = set()
     for ref in refs:
         key = (
             int(ref["source_object_id"]),
+            (
+                int(ref["source_instance_id"])
+                if ref.get("source_instance_id") is not None
+                else None
+            ),
             str(ref["source_sha256"]),
             int(ref["source_start_ms"]),
             int(ref["source_end_ms"]),
@@ -1133,9 +1139,10 @@ def _deduplicate_source_refs(
         output.append(
             {
                 "source_object_id": key[0],
-                "source_sha256": key[1],
-                "source_start_ms": key[2],
-                "source_end_ms": key[3],
+                "source_instance_id": key[1],
+                "source_sha256": key[2],
+                "source_start_ms": key[3],
+                "source_end_ms": key[4],
             }
         )
     return output

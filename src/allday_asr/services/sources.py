@@ -31,6 +31,7 @@ class SourceIntegrityResult:
 @dataclass(frozen=True)
 class SourceSlice:
     source_object_id: int
+    source_instance_id: int
     source_path: Path
     source_sha256: str
     session_start_ms: int
@@ -206,6 +207,7 @@ def logical_window_cache_key(
         "slices": [
             {
                 "source_object_id": item.source_object_id,
+                "source_instance_id": item.source_instance_id,
                 "sha256": item.source_sha256,
                 "source_start_ms": item.source_start_ms,
                 "source_end_ms": item.source_end_ms,
@@ -315,6 +317,7 @@ def _resolve_source_slices(
         slices.append(
             SourceSlice(
                 source_object_id=int(row["source_object_id"]),
+                source_instance_id=int(row["source_instance_id"]),
                 source_path=Path(str(row["source_path"])),
                 source_sha256=str(row["sha256"]),
                 session_start_ms=overlap_start,

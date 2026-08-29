@@ -41,6 +41,7 @@ FORBIDDEN_PROVIDER_KEYS = frozenset(
         "audio",
         "audio_bytes",
         "source_object_id",
+        "source_instance_id",
         "source_path",
         "source_refs",
         "source_sha256",
@@ -184,7 +185,7 @@ class ReplaySemanticProvider:
 
 @dataclass(frozen=True)
 class PreparedSemanticInput:
-    recording_id: int
+    recording_id: int | None
     session_id: int
     duration_ms: int
     asr_run_id: int
@@ -197,8 +198,9 @@ class PreparedSemanticInput:
 
 def prepare_semantic_v2e02(
     database: Database,
-    recording_id: int,
+    recording_id: int | None,
     *,
+    session_id: int | None = None,
     asr_run_id: int | None = None,
     diarization_run_id: int | None = None,
     settings: SemanticV2E02Settings | None = None,
@@ -208,11 +210,17 @@ def prepare_semantic_v2e02(
     asr_run, diarization_run = resolve_semantic_input_runs(
         database,
         recording_id,
+        session_id=session_id,
         asr_run_id=asr_run_id,
         diarization_run_id=diarization_run_id,
     )
-    session = database.get_session_for_recording(recording_id)
-    session_id = int(session["id"])
+    if session_id is None:
+        if recording_id is None:
+            raise ValueError("V2-E.0.2 必须指定 recording_id 或 session_id")
+        session = database.get_session_for_recording(recording_id)
+        session_id = int(session["id"])
+    else:
+        session = database.get_recording_session(session_id)
     resolved_diarization_id = (
         int(diarization_run["id"]) if diarization_run is not None else None
     )
@@ -253,9 +261,10 @@ def prepare_semantic_v2e02(
 
 def export_manual_semantic_bundle(
     database: Database,
-    recording_id: int,
+    recording_id: int | None,
     output_path: Path,
     *,
+    session_id: int | None = None,
     asr_run_id: int | None = None,
     diarization_run_id: int | None = None,
     settings: SemanticV2E02Settings | None = None,
@@ -263,6 +272,7 @@ def export_manual_semantic_bundle(
     prepared = prepare_semantic_v2e02(
         database,
         recording_id,
+        session_id=session_id,
         asr_run_id=asr_run_id,
         diarization_run_id=diarization_run_id,
         settings=settings,
@@ -285,8 +295,9 @@ def export_manual_semantic_bundle(
 
 def run_semantic_v2e02(
     database: Database,
-    recording_id: int,
+    recording_id: int | None,
     *,
+    session_id: int | None = None,
     asr_run_id: int | None = None,
     diarization_run_id: int | None = None,
     settings: SemanticV2E02Settings | None = None,
@@ -300,6 +311,7 @@ def run_semantic_v2e02(
     prepared = prepare_semantic_v2e02(
         database,
         recording_id,
+        session_id=session_id,
         asr_run_id=asr_run_id,
         diarization_run_id=diarization_run_id,
         settings=settings,
@@ -330,6 +342,7 @@ def run_semantic_v2e02(
     }
     run_id = database.start_processing_run(
         recording_id,
+        session_id=prepared.session_id,
         run_kind="semantic_v2e0",
         config=config,
         config_sha256=_sha256_json(config),
@@ -591,7 +604,6 @@ def build_evidence_ledger(
     *,
     settings: SemanticV2E02Settings,
 ) -> dict[str, Any]:
-    recording = database.get_recording(prepared.recording_id)
     session = database.get_recording_session(prepared.session_id)
     return {
         "format": EVIDENCE_LEDGER_FORMAT,
@@ -601,7 +613,7 @@ def build_evidence_ledger(
             "recorded_at": str(session["recorded_at"]),
             "timezone": str(session["timezone"]),
             "duration_ms": int(session["duration_ms"]),
-            "device": recording["device"],
+            "device": session["device"],
         },
         "inputs": {
             "asr_run_id": prepared.asr_run_id,
@@ -1199,7 +1211,7 @@ def _contaminated_voice_clusters(
         return set()
     matches = []
     run = database.get_processing_run(diarization_run_id)
-    for row in database.list_processing_runs(int(run["recording_id"])):
+    for row in database.list_session_processing_runs(int(run["session_id"])):
         if (
             str(row["run_kind"]) != "quality_diarization_v2d2"
             or str(row["status"]) != "completed"
@@ -1700,10 +1712,15 @@ def _deduplicate_source_refs(
     refs: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     output = []
-    seen: set[tuple[int, str, int, int]] = set()
+    seen: set[tuple[int, int | None, str, int, int]] = set()
     for ref in refs:
         key = (
             int(ref["source_object_id"]),
+            (
+                int(ref["source_instance_id"])
+                if ref.get("source_instance_id") is not None
+                else None
+            ),
             str(ref["source_sha256"]),
             int(ref["source_start_ms"]),
             int(ref["source_end_ms"]),
@@ -1714,9 +1731,10 @@ def _deduplicate_source_refs(
         output.append(
             {
                 "source_object_id": key[0],
-                "source_sha256": key[1],
-                "source_start_ms": key[2],
-                "source_end_ms": key[3],
+                "source_instance_id": key[1],
+                "source_sha256": key[2],
+                "source_start_ms": key[3],
+                "source_end_ms": key[4],
             }
         )
     return output

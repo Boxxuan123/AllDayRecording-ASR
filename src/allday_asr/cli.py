@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Optional
@@ -72,7 +73,10 @@ from allday_asr.services.quality_diarization_v2d3 import (
     run_identity_candidate_mining,
     sync_identity_reference_set,
 )
+from allday_asr.services.quality_workflow import run_quality_workflow
 from allday_asr.services.review import import_self_review
+from allday_asr.services.runtime_profile import resolve_vram_profile
+from allday_asr.services.session_ingest import ingest_session_manifest
 from allday_asr.services.semantic_v2e02 import (
     ReplaySemanticProvider,
     SemanticV2E02Settings,
@@ -132,11 +136,334 @@ semantic_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(semantic_app, name="semantic-v2")
+session_app = typer.Typer(
+    help="导入和检查由多个不可变原始分片组成的录音会话。",
+    no_args_is_help=True,
+)
+app.add_typer(session_app, name="session")
+workflow_app = typer.Typer(
+    help="按会话持久编排 V2-C、V2-D 和本地 V2-E.0.2。",
+    no_args_is_help=True,
+)
+app.add_typer(workflow_app, name="workflow-v2")
+
+
+def _resolve_v2_target(
+    database: Database,
+    recording_id: int | None,
+    session_id: int | None,
+) -> tuple[int | None, int]:
+    if recording_id is None and session_id is None:
+        raise typer.BadParameter("必须提供 recording_id，或使用 --session 指定会话")
+    if session_id is None:
+        session = database.get_session_for_recording(int(recording_id))
+        return recording_id, int(session["id"])
+    session = database.get_recording_session(session_id)
+    legacy = session["legacy_recording_id"]
+    if recording_id is not None and legacy is not None and int(legacy) != recording_id:
+        raise typer.BadParameter("recording_id 与 --session 不属于同一会话")
+    return recording_id, session_id
+
+
+def _runtime_signature(values: dict[str, object]) -> str:
+    canonical = json.dumps(
+        values, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _quality_asr_runtime(
+    resolved,
+    *,
+    requested_profile: str | None,
+    max_windows: int | None = None,
+):
+    selected_profile = resolve_vram_profile(
+        requested_profile or resolved.asr.vram_profile,
+        device=resolved.runtime.device,
+    )
+    batch_size = (
+        resolved.asr.primary_batch_size_16gb
+        if selected_profile == "quality-16gb"
+        else resolved.asr.primary_batch_size_8gb
+    )
+    model_signature = _runtime_signature(
+        {
+            "primary_model": resolved.asr.primary_model,
+            "forced_aligner_model": resolved.asr.forced_aligner_model,
+            "secondary_model": resolved.asr.secondary_model,
+            "device": resolved.runtime.device,
+            "profile": selected_profile,
+            "primary_batch_size": batch_size,
+            "max_new_tokens": resolved.asr.max_new_tokens,
+            "precision": {"primary": "bfloat16", "secondary": "bf16"},
+        }
+    )
+    settings = QualityAsrSettings(
+        language=resolved.asr.language,
+        window_ms=round(resolved.asr.window_seconds * 1000),
+        context_ms=round(resolved.asr.context_seconds * 1000),
+        vram_profile=selected_profile,
+        model_signature=model_signature,
+        max_windows=max_windows,
+        speech_gate_fsmn_merge_gap_ms=resolved.asr.speech_gate_fsmn_merge_gap_ms,
+        speech_gate_max_utterance_ms=resolved.asr.speech_gate_max_utterance_ms,
+        speech_gate_inference_padding_ms=(
+            resolved.asr.speech_gate_inference_padding_ms
+        ),
+        speech_gate_output_padding_ms=resolved.asr.speech_gate_output_padding_ms,
+        speech_gate_min_candidate_ms=resolved.asr.speech_gate_min_candidate_ms,
+        speech_gate_min_snr_db=resolved.asr.speech_gate_min_snr_db,
+        speech_gate_silero_threshold=resolved.asr.speech_gate_silero_threshold,
+        speech_gate_silero_min_speech_ms=(
+            resolved.asr.speech_gate_silero_min_speech_ms
+        ),
+        speech_gate_silero_min_silence_ms=(
+            resolved.asr.speech_gate_silero_min_silence_ms
+        ),
+        speech_gate_min_silero_overlap_ms=(
+            resolved.asr.speech_gate_min_silero_overlap_ms
+        ),
+    )
+    speech_gate = SpeechGateSettings(
+        fsmn_merge_gap_ms=settings.speech_gate_fsmn_merge_gap_ms,
+        max_utterance_ms=settings.speech_gate_max_utterance_ms,
+        inference_padding_ms=settings.speech_gate_inference_padding_ms,
+        speech_output_padding_ms=settings.speech_gate_output_padding_ms,
+        min_candidate_ms=settings.speech_gate_min_candidate_ms,
+        min_snr_db=settings.speech_gate_min_snr_db,
+        silero_threshold=settings.speech_gate_silero_threshold,
+        silero_min_speech_ms=settings.speech_gate_silero_min_speech_ms,
+        silero_min_silence_ms=settings.speech_gate_silero_min_silence_ms,
+        min_silero_overlap_ms=settings.speech_gate_min_silero_overlap_ms,
+    )
+    return (
+        settings,
+        lambda: Qwen3AsrBackend(
+            model_id=resolved.asr.primary_model,
+            aligner_model_id=resolved.asr.forced_aligner_model,
+            device=resolved.runtime.device,
+            batch_size=batch_size,
+            max_new_tokens=resolved.asr.max_new_tokens,
+            speech_gate=speech_gate,
+        ),
+        lambda: FunAsrNanoBackend(
+            model_id=resolved.asr.secondary_model,
+            device=resolved.runtime.device,
+        ),
+    )
+
+
+def _quality_diarization_runtime(
+    resolved,
+    *,
+    model_path: Path | None,
+    num_speakers: int | None = None,
+    min_speakers: int | None = None,
+    max_speakers: int | None = None,
+):
+    quality = resolved.quality_diarization
+    selected_model_path = model_path or (
+        Path(quality.model_path).resolve() if quality.model_path else None
+    )
+    model_signature = _runtime_signature(
+        {
+            "backend": quality.backend,
+            "model_id": quality.model_id,
+            "model_path": str(selected_model_path) if selected_model_path else None,
+            "device": resolved.runtime.device,
+        }
+    )
+    settings = QualityDiarizationSettings(
+        num_speakers=num_speakers if num_speakers is not None else quality.num_speakers,
+        min_speakers=min_speakers if min_speakers is not None else quality.min_speakers,
+        max_speakers=max_speakers if max_speakers is not None else quality.max_speakers,
+        min_primary_overlap_ratio=quality.min_primary_overlap_ratio,
+        min_secondary_overlap_ratio=quality.min_secondary_overlap_ratio,
+        min_primary_margin=quality.min_primary_margin,
+        model_signature=model_signature,
+    )
+    return settings, lambda: PyannoteCommunityBackend(
+        model_id=quality.model_id,
+        model_path=selected_model_path,
+        device=resolved.runtime.device,
+        token_env=quality.token_env,
+    )
+
+
+@session_app.command(name="import-manifest")
+def session_import_manifest(
+    manifest: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="采集端生成的会话 JSON 清单。",
+    ),
+    method: str = typer.Option(
+        "watch_manual_sync",
+        "--method",
+        help="watch_manual_sync 或 watch_auto。",
+    ),
+    config: Path = typer.Option(
+        DEFAULT_CONFIG_PATH,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="TOML 配置文件。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """完整预检所有分片后，在一个事务中创建并关闭不可变会话。"""
+    resolved = load_config(config)
+    summary = ingest_session_manifest(
+        Database(db),
+        manifest,
+        device=resolved.ingest.device,
+        timezone_name=resolved.ingest.timezone,
+        ingest_method=method,
+    )
+    state = "已创建" if summary.created else "已存在（清单哈希一致）"
+    console.print(
+        f"[green]{state}[/green] session_id={summary.session_id} | "
+        f"chunks={summary.chunk_count} | duration={summary.duration_ms / 1000:.3f}s | "
+        f"gaps={summary.gap_count} | overlaps={summary.overlap_count}"
+    )
+    console.print(f"input_fingerprint={summary.input_fingerprint}")
+    console.print(f"manifest_sha256={summary.manifest_sha256}")
+
+
+@session_app.command(name="list")
+def session_list(
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """列出单文件兼容会话和原生多分片会话。"""
+    database = Database(db)
+    table = Table("Session", "Kind", "Status", "Duration", "Chunks", "Key")
+    for session in database.list_recording_sessions():
+        session_id = int(session["id"])
+        manifest = database.get_session_manifest(session_id)
+        table.add_row(
+            str(session_id),
+            "manifest" if manifest is not None else "legacy-file",
+            str(session["status"]),
+            f"{int(session['duration_ms']) / 1000:.3f}s",
+            str(len(database.list_session_sources(session_id))),
+            str(session["session_key"]),
+        )
+    console.print(table)
+
+
+@workflow_app.command(name="run")
+def quality_workflow_run(
+    recording_id: Optional[int] = typer.Argument(
+        None, min=1, help="旧单文件 recording_id；原生分片会话改用 --session。"
+    ),
+    session_id: Optional[int] = typer.Option(
+        None, "--session", min=1, help="已经关闭并冻结的录音会话 ID。"
+    ),
+    profile: Optional[str] = typer.Option(
+        None, help="auto、quality-16gb 或 compatible-8gb。"
+    ),
+    diarization_model_path: Optional[Path] = typer.Option(
+        None,
+        "--diarization-model-path",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
+        help="已经下载好的 Community-1 本地 snapshot。",
+    ),
+    config: Path = typer.Option(
+        DEFAULT_CONFIG_PATH,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="TOML 配置文件。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """完整性复核后顺序运行质量 ASR、说话人时间轴和本地语义证据。"""
+    resolved = load_config(config)
+    database = Database(db)
+    recording_id, session_id = _resolve_v2_target(
+        database, recording_id, session_id
+    )
+    try:
+        asr_settings, primary_factory, secondary_factory = _quality_asr_runtime(
+            resolved,
+            requested_profile=profile,
+        )
+        diarization_settings, diarization_factory = _quality_diarization_runtime(
+            resolved,
+            model_path=diarization_model_path,
+        )
+        summary = run_quality_workflow(
+            database,
+            recording_id,
+            session_id=session_id,
+            asr_settings=asr_settings,
+            diarization_settings=diarization_settings,
+            semantic_settings=SemanticV2E02Settings(),
+            primary_factory=primary_factory,
+            secondary_factory=secondary_factory,
+            diarization_factory=diarization_factory,
+            progress=lambda stage, detail: console.print(
+                f"[cyan]{stage}[/cyan] {detail}"
+            ),
+        )
+    except (RuntimeError, ValueError) as exc:
+        console.print(f"[red]V2 工作流未完成[/red]：{exc}")
+        raise typer.Exit(code=2) from exc
+    console.print(
+        f"[green]V2 工作流完成[/green] workflow_run={summary.workflow_run_id} | "
+        f"state={summary.state} | ASR={summary.asr_run_id} | "
+        f"D={summary.diarization_run_id} | E={summary.semantic_run_id or 'skipped'}"
+    )
+    if summary.reused_stages:
+        console.print(f"复用阶段：{', '.join(summary.reused_stages)}")
+    console.print(
+        "[yellow]已停在本地 semantic_ready 边界；没有调用云端 LLM，"
+        "也没有修改或生成替代原音。[/yellow]"
+    )
+
+
+@workflow_app.command(name="status")
+def quality_workflow_status(
+    session_id: int = typer.Argument(..., min=1, help="录音会话 ID。"),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """显示 SQLite 中持久保存的 V2 工作流状态。"""
+    database = Database(db)
+    rows = [
+        row
+        for row in database.list_session_processing_runs(session_id)
+        if str(row["run_kind"]) == "quality_workflow_v2"
+    ]
+    table = Table("Run", "Status", "Workflow state", "Started", "Completed")
+    for row in rows:
+        summary = json.loads(str(row["summary_json"] or "{}"))
+        table.add_row(
+            str(row["id"]),
+            str(row["status"]),
+            str(summary.get("workflow_state") or "unknown"),
+            str(row["started_at"]),
+            str(row["completed_at"] or "-"),
+        )
+    console.print(table)
 
 
 @quality_diarization_app.command(name="run")
 def quality_diarization_run(
-    recording_id: int = typer.Argument(..., min=1),
+    recording_id: Optional[int] = typer.Argument(
+        None, min=1, help="旧单文件 recording_id；原生分片会话改用 --session。"
+    ),
+    session_id: Optional[int] = typer.Option(
+        None, "--session", min=1, help="原生 V2 录音会话 ID。"
+    ),
     asr_run_id: Optional[int] = typer.Option(
         None,
         "--asr-run",
@@ -169,40 +496,34 @@ def quality_diarization_run(
     """在整段原始会话派生的临时 PCM 上运行本地 Community-1。"""
     resolved = load_config(config)
     database = Database(db)
+    recording_id, session_id = _resolve_v2_target(
+        database, recording_id, session_id
+    )
     if asr_run_id is None:
         candidates = [
             row
-            for row in database.list_processing_runs(recording_id)
+            for row in database.list_session_processing_runs(session_id)
             if str(row["run_kind"]) == "quality_asr_v2c"
             and str(row["status"]) == "completed"
         ]
         if not candidates:
             raise typer.BadParameter("该录音没有已完成的 V2-C ASR run")
         asr_run_id = int(candidates[-1]["id"])
-    quality = resolved.quality_diarization
-    settings = QualityDiarizationSettings(
-        num_speakers=num_speakers if num_speakers is not None else quality.num_speakers,
-        min_speakers=min_speakers if min_speakers is not None else quality.min_speakers,
-        max_speakers=max_speakers if max_speakers is not None else quality.max_speakers,
-        min_primary_overlap_ratio=quality.min_primary_overlap_ratio,
-        min_secondary_overlap_ratio=quality.min_secondary_overlap_ratio,
-        min_primary_margin=quality.min_primary_margin,
-    )
-    selected_model_path = model_path or (
-        Path(quality.model_path).resolve() if quality.model_path else None
+    settings, backend_factory = _quality_diarization_runtime(
+        resolved,
+        model_path=model_path,
+        num_speakers=num_speakers,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
     )
     try:
         summary = run_quality_diarization(
             database,
             recording_id,
+            session_id=session_id,
             asr_run_id=asr_run_id,
             settings=settings,
-            backend_factory=lambda: PyannoteCommunityBackend(
-                model_id=quality.model_id,
-                model_path=selected_model_path,
-                device=resolved.runtime.device,
-                token_env=quality.token_env,
-            ),
+            backend_factory=backend_factory,
         )
     except RuntimeError as exc:
         console.print(f"[red]V2-D 未完成[/red]：{exc}")
@@ -547,7 +868,12 @@ def quality_diarization_sync_identity_references(
 
 @semantic_app.command(name="build")
 def semantic_v2_build(
-    recording_id: int = typer.Argument(..., min=1),
+    recording_id: Optional[int] = typer.Argument(
+        None, min=1, help="旧单文件 recording_id；原生分片会话改用 --session。"
+    ),
+    session_id: Optional[int] = typer.Option(
+        None, "--session", min=1, help="原生 V2 录音会话 ID。"
+    ),
     asr_run_id: int | None = typer.Option(
         None,
         "--asr-run",
@@ -583,9 +909,14 @@ def semantic_v2_build(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """生成四轨证据分离、不联网的 V2-E.0.2 episode 传输计划。"""
+    database = Database(db)
+    recording_id, session_id = _resolve_v2_target(
+        database, recording_id, session_id
+    )
     summary = run_semantic_v2e02(
-        Database(db),
+        database,
         recording_id,
+        session_id=session_id,
         asr_run_id=asr_run_id,
         diarization_run_id=diarization_run_id,
         settings=SemanticV2E02Settings(
@@ -712,9 +1043,14 @@ def semantic_v2_status(
 
 @quality_asr_app.command(name="run")
 def quality_asr_run(
-    recording_id: int = typer.Argument(..., min=1),
+    recording_id: Optional[int] = typer.Argument(
+        None, min=1, help="旧单文件 recording_id；原生分片会话改用 --session。"
+    ),
+    session_id: Optional[int] = typer.Option(
+        None, "--session", min=1, help="原生 V2 录音会话 ID。"
+    ),
     profile: Optional[str] = typer.Option(
-        None, help="quality-16gb（默认目标）或 compatible-8gb。"
+        None, help="auto、quality-16gb 或 compatible-8gb。"
     ),
     max_windows: Optional[int] = typer.Option(
         None, min=1, help="只处理前 N 个五分钟窗口；仅用于 smoke test。"
@@ -734,67 +1070,25 @@ def quality_asr_run(
 ) -> None:
     """顺序运行最大 Qwen ASR+Aligner 和 Fun-ASR-Nano，避免同时占用显存。"""
     resolved = load_config(config)
-    selected_profile = profile or resolved.asr.vram_profile
-    if selected_profile not in {"quality-16gb", "compatible-8gb"}:
-        raise typer.BadParameter("profile 必须是 quality-16gb 或 compatible-8gb")
-    batch_size = (
-        resolved.asr.primary_batch_size_16gb
-        if selected_profile == "quality-16gb"
-        else resolved.asr.primary_batch_size_8gb
+    database = Database(db)
+    recording_id, session_id = _resolve_v2_target(
+        database, recording_id, session_id
     )
-    settings = QualityAsrSettings(
-        language=resolved.asr.language,
-        window_ms=round(resolved.asr.window_seconds * 1000),
-        context_ms=round(resolved.asr.context_seconds * 1000),
-        vram_profile=selected_profile,
-        max_windows=max_windows,
-        speech_gate_fsmn_merge_gap_ms=resolved.asr.speech_gate_fsmn_merge_gap_ms,
-        speech_gate_max_utterance_ms=resolved.asr.speech_gate_max_utterance_ms,
-        speech_gate_inference_padding_ms=(
-            resolved.asr.speech_gate_inference_padding_ms
-        ),
-        speech_gate_output_padding_ms=resolved.asr.speech_gate_output_padding_ms,
-        speech_gate_min_candidate_ms=resolved.asr.speech_gate_min_candidate_ms,
-        speech_gate_min_snr_db=resolved.asr.speech_gate_min_snr_db,
-        speech_gate_silero_threshold=resolved.asr.speech_gate_silero_threshold,
-        speech_gate_silero_min_speech_ms=(
-            resolved.asr.speech_gate_silero_min_speech_ms
-        ),
-        speech_gate_silero_min_silence_ms=(
-            resolved.asr.speech_gate_silero_min_silence_ms
-        ),
-        speech_gate_min_silero_overlap_ms=(
-            resolved.asr.speech_gate_min_silero_overlap_ms
-        ),
-    )
-    speech_gate = SpeechGateSettings(
-        fsmn_merge_gap_ms=settings.speech_gate_fsmn_merge_gap_ms,
-        max_utterance_ms=settings.speech_gate_max_utterance_ms,
-        inference_padding_ms=settings.speech_gate_inference_padding_ms,
-        speech_output_padding_ms=settings.speech_gate_output_padding_ms,
-        min_candidate_ms=settings.speech_gate_min_candidate_ms,
-        min_snr_db=settings.speech_gate_min_snr_db,
-        silero_threshold=settings.speech_gate_silero_threshold,
-        silero_min_speech_ms=settings.speech_gate_silero_min_speech_ms,
-        silero_min_silence_ms=settings.speech_gate_silero_min_silence_ms,
-        min_silero_overlap_ms=settings.speech_gate_min_silero_overlap_ms,
-    )
+    try:
+        settings, primary_factory, secondary_factory = _quality_asr_runtime(
+            resolved,
+            requested_profile=profile,
+            max_windows=max_windows,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     summary = run_quality_asr(
-        Database(db),
+        database,
         recording_id,
+        session_id=session_id,
         settings=settings,
-        primary_factory=lambda: Qwen3AsrBackend(
-            model_id=resolved.asr.primary_model,
-            aligner_model_id=resolved.asr.forced_aligner_model,
-            device=resolved.runtime.device,
-            batch_size=batch_size,
-            max_new_tokens=resolved.asr.max_new_tokens,
-            speech_gate=speech_gate,
-        ),
-        secondary_factory=lambda: FunAsrNanoBackend(
-            model_id=resolved.asr.secondary_model,
-            device=resolved.runtime.device,
-        ),
+        primary_factory=primary_factory,
+        secondary_factory=secondary_factory,
         resume_run_id=resume_run_id,
     )
     console.print(

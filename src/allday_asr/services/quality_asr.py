@@ -25,6 +25,7 @@ class QualityAsrSettings:
     window_ms: int = 300_000
     context_ms: int = 5_000
     vram_profile: str = "quality-16gb"
+    model_signature: str = ""
     pipeline_revision: str = "v2c3-dual-vad-evidence-gate-v2"
     max_windows: int | None = None
     speech_gate_fsmn_merge_gap_ms: int = 600
@@ -77,15 +78,27 @@ BackendFactory = Callable[[], QualityAsrBackend]
 
 def run_quality_asr(
     database: Database,
-    recording_id: int,
+    recording_id: int | None,
     *,
+    session_id: int | None = None,
     settings: QualityAsrSettings,
     primary_factory: BackendFactory,
     secondary_factory: BackendFactory,
     resume_run_id: int | None = None,
 ) -> QualityAsrSummary:
-    session = database.get_session_for_recording(recording_id)
-    session_id = int(session["id"])
+    if session_id is None:
+        if recording_id is None:
+            raise ValueError("V2-C 必须指定 recording_id 或 session_id")
+        session = database.get_session_for_recording(recording_id)
+        session_id = int(session["id"])
+    else:
+        session = database.get_recording_session(session_id)
+        if (
+            recording_id is not None
+            and session["legacy_recording_id"] is not None
+            and int(session["legacy_recording_id"]) != recording_id
+        ):
+            raise ValueError("recording_id 与 session_id 不属于同一会话")
     windows = plan_logical_windows(
         database,
         session_id,
@@ -111,6 +124,7 @@ def run_quality_asr(
             _close_backend(secondary_probe)
         run_id = database.start_processing_run(
             recording_id,
+            session_id=session_id,
             run_kind="quality_asr_v2c",
             config=settings.to_dict(),
             config_sha256=settings.sha256(),
@@ -119,8 +133,8 @@ def run_quality_asr(
         )
     else:
         run = database.get_processing_run(resume_run_id)
-        if int(run["recording_id"]) != recording_id:
-            raise ValueError("resume run belongs to a different recording")
+        if int(run["session_id"]) != session_id:
+            raise ValueError("resume run belongs to a different recording session")
         if str(run["config_sha256"]) != settings.sha256():
             raise ValueError("resume settings do not match the original run")
         database.resume_processing_run(resume_run_id)
@@ -513,9 +527,10 @@ def _trace_tokens(database, window, backend, aligned_tokens) -> list[dict[str, A
                     ),
                 },
                 "source_refs": [
-                    {
-                        "source_object_id": item.source_object_id,
-                        "source_sha256": item.source_sha256,
+                        {
+                            "source_object_id": item.source_object_id,
+                            "source_instance_id": item.source_instance_id,
+                            "source_sha256": item.source_sha256,
                         "source_start_ms": item.source_start_ms,
                         "source_end_ms": item.source_end_ms,
                     }

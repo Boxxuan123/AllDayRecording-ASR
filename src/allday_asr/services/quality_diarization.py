@@ -28,6 +28,7 @@ class QualityDiarizationSettings:
     min_primary_overlap_ratio: float = 0.50
     min_secondary_overlap_ratio: float = 0.30
     min_primary_margin: float = 0.15
+    model_signature: str = ""
     pipeline_revision: str = "v2d-overlap-speaker-timeline-v1"
 
     def __post_init__(self) -> None:
@@ -91,14 +92,26 @@ BackendFactory = Callable[[], QualityDiarizationBackend]
 
 def run_quality_diarization(
     database: Database,
-    recording_id: int,
+    recording_id: int | None,
     *,
+    session_id: int | None = None,
     asr_run_id: int,
     settings: QualityDiarizationSettings,
     backend_factory: BackendFactory,
 ) -> QualityDiarizationSummary:
-    session = database.get_session_for_recording(recording_id)
-    session_id = int(session["id"])
+    if session_id is None:
+        if recording_id is None:
+            raise ValueError("V2-D 必须指定 recording_id 或 session_id")
+        session = database.get_session_for_recording(recording_id)
+        session_id = int(session["id"])
+    else:
+        session = database.get_recording_session(session_id)
+        if (
+            recording_id is not None
+            and session["legacy_recording_id"] is not None
+            and int(session["legacy_recording_id"]) != recording_id
+        ):
+            raise ValueError("recording_id 与 session_id 不属于同一会话")
     duration_ms = int(session["duration_ms"])
     asr_run = database.get_processing_run(asr_run_id)
     if str(asr_run["run_kind"]) != "quality_asr_v2c":
@@ -131,6 +144,7 @@ def run_quality_diarization(
         run_config = {**settings.to_dict(), "asr_run_id": asr_run_id}
         run_id = database.start_processing_run(
             recording_id,
+            session_id=session_id,
             run_kind="quality_diarization_v2d",
             config=run_config,
             config_sha256=_sha256_mapping(run_config),
@@ -538,6 +552,7 @@ def _trace_turns(
                     "source_refs": [
                         {
                             "source_object_id": item.source_object_id,
+                            "source_instance_id": item.source_instance_id,
                             "source_sha256": item.source_sha256,
                             "source_start_ms": item.source_start_ms,
                             "source_end_ms": item.source_end_ms,

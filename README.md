@@ -2,9 +2,9 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-D 已完成 Community-1 重叠/互斥时间轴和 token-to-speaker；V2-D.1 把确定/可能语音、媒体来源和匿名 speaker 解耦；V2-D.2 又恢复稀疏人工 `mother/father/tv` 真值，按短区间揭示匿名簇污染而不全局改名。V2-E.0.2 已实现 episode/utterance/scene 分层和 ASR、匿名声纹、现场/媒体来源、人物身份四轨证据；真实 run 22 已由当前 Codex 会话完成一次离线 record/replay 验收，项目运行时仍未接入云端 LLM。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。V2 不以实时性或小模型为目标；之后需补充干净父母声纹样本，再接真实云端 provider 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A.1/V2-W.0 已补上通用多分片清单准入、内容对象与文件实例分离、session-native C/D/E、自动显存档位和 SQLite 持久工作流。V2-C 已完成 Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设；V2-D 已完成 Community-1 重叠/互斥时间轴和 token-to-speaker；V2-E.0.2 已实现 episode/utterance/scene 与四轨证据。项目运行时仍未接入云端 LLM。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。V2 不以实时性或小模型为目标；之后需补充原音独立备份、日级说话人处理，再接真实云端 provider 和 Watch 同步。
 
-实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0.2 Episode 证据层](docs/v2-e0-semantic-evidence.md)。
+实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，新分片正式使用前的堵点和准入顺序见 [新音频正式使用前准入审计](docs/new-audio-production-readiness.md)。V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0.2 Episode 证据层](docs/v2-e0-semantic-evidence.md)。
 
 ## 已验证环境
 
@@ -24,9 +24,9 @@ python -m pip install -e . --no-deps
 allday-asr doctor
 ```
 
-## V2-A：不可变原音与逻辑窗口
+## V2-A/V2-A.1：不可变原音、分片会话与逻辑窗口
 
-schema v4 会把既有长录音无损映射为 `source_object`、`recording_session` 和 `session_source`。从 schema v3 首次升级前会自动创建 SQLite 备份；原始音频不移动、不改名、不重编码。不可变证据字段受到数据库触发器保护，完整性审计只记录新结果，不会用当前文件状态覆盖首次入库的 SHA-256。
+schema v11 在原有 source/session 图上增加 `source_instance` 和不可变 `session_manifest`：SHA-256 相同的静音分片可共享内容对象，但每次真实采集仍有独立文件实例和时间位置。清单先完整检查所有文件、采样坐标、格式和哈希，再在单个事务中创建关闭会话；任何一条失败都不会留下半个会话。原始音频不移动、不改名、不重编码，关闭后的清单、会话和映射均受触发器保护。
 
 ```powershell
 # 查看永久原始对象和对应会话
@@ -37,6 +37,10 @@ allday-asr source-audit
 
 # 为会话 1 规划 5 分钟核心窗口和两侧 5 秒上下文；只规划，不落盘 PCM
 allday-asr session-windows 1 --window-seconds 300 --context-seconds 5
+
+# 导入采集端清单；重复导入同一清单返回同一个 session_id
+allday-asr session import-manifest <session-manifest.json>
+allday-asr session list
 ```
 
 逻辑窗口可以跨越多个未来 Watch 5 分钟块；只有模型真正运行时才临时解码当前窗口，退出后立即删除。当前 V1 已有的整段标准化 WAV 保留用于兼容和复现，但 V2-A 不再创建新的长期整段 PCM。
@@ -70,11 +74,12 @@ schema v6 为每个五分钟窗口不可变保存 Qwen3-ASR-1.7B 主假设、Qwe
 V2-C.3 全量 run 10 也已在 8 GB 上完成：33+33 份假设、312 个门控候选、287 个接受、25 个拒绝、2,192 个 committed 主 token，耗时 460.534 秒且未 OOM。旧 run 7 的全部 6,147 个审计 token 数量不变，新管线通过元数据决定哪些 token 可以提交，不删除旧证据。
 
 ```powershell
-# 当前 8 GB 5070：模型精度不变，batch=1 且两套模型顺序加载
-allday-asr asr-v2 run 1 --profile compatible-8gb
-
-# 默认 quality-16gb：BF16、无量化、较高 batch
+# 默认 auto：按实际显存选择 batch；模型、BF16 精度和证据规则不变
 allday-asr asr-v2 run 1
+
+# 需要时也可以显式固定档位
+allday-asr asr-v2 run 1 --profile compatible-8gb
+allday-asr asr-v2 run 1 --profile quality-16gb
 
 # 冻结主假设并与 truth set 1 / V1 基线比较
 allday-asr asr-v2 snapshot <run-id> --name qwen3-asr-1.7b-v2c
@@ -162,7 +167,20 @@ V2-C.2 对整段不可变 PCM 只计算 100 ms RMS 活动、持续活动、P90/R
 
 当前人工在前五块停止，系统将其冻结为明确的 V2-C.2a 预备子集，没有伪装成完整十分钟 holdout。同一人工边界上，18 段现场人声的 SenseVoice/Qwen/Fun-ASR raw CER 分别为 `49.02%/32.35%/54.41%`；Qwen 相对 SenseVoice 的 20 万次 paired bootstrap 95% 区间为 `[-29.61, -8.12]` 个百分点，确认 Qwen 是当前主识别模型。旧完整流水线五块 CER 为 `109.94%`，V2-C.3 降为 `92.27%`；排除唯一纯电视窗口后从 `154.90%` 降为 `116.18%`，确认提升来自现场人声而不是电视样本。由于同一五块已参与阈值选择，这只是开发证据，下一步必须使用新 holdout。完整结果见 [V2-C.3 指南](docs/v2-c3-speech-gating.md)。
 
-## 推荐：一键离线日记
+## V2-W.0：分片会话质量工作流
+
+新录音不需要伪造一条“代表整个会话”的 `recording`。导入清单得到 `session_id` 后，V2 工作流会重新读取并核对原始清单及每个文件实例的字节数和 SHA-256，拒绝活动会话、缺片、重叠或已改变的原音，然后顺序编排 V2-C → V2-D → V2-E.0.2：
+
+```powershell
+allday-asr workflow-v2 run --session <session-id>
+allday-asr workflow-v2 status <session-id>
+```
+
+阶段状态和子 run ID 持久保存在 SQLite；进程退出后仍可检查。输入指纹、阶段配置和本地模型签名一致时才复用完成阶段，V2-C 的失败 run 可按既有窗口 checkpoint 续跑。没有 committed token 时工作流以 `semantic_ready_empty` 正常结束；有文字时生成本地 `semantic_ready` 证据。两种情况都不调用云端 LLM，也不把临时拼接 PCM 当作原音保存。
+
+这是可用于新录音的本地影子工作流。进入无人值守正式日常流程前，仍需配置并验证原音第二份存储、让 V2-D 按连续语音岛处理日级录音，以及把网页的 V1/V2 操作明确分开。
+
+## V1 兼容：一键离线日记
 
 所有一键参数集中在 [allday-asr.toml](allday-asr.toml)。先校验配置和数据库版本：
 
@@ -177,7 +195,7 @@ allday-asr daily-run data\watch_new.m4a
 allday-asr daily-run 1
 ```
 
-`daily-run` 会安全执行 ingest → process → diarization → 本人候选 → timeline → export，并生成 `daily-run.md/json`。重复运行时：
+`daily-run` 是旧单文件 V1 兼容入口，会安全执行 ingest → process → diarization → 本人候选 → timeline → export，并生成 `daily-run.md/json`。它不是上面的 V2 分片会话工作流。重复运行时：
 
 - 复用已经完成的 ASR，不重复计算。
 - 复用已有说话人标签，避免清除人工身份。
@@ -330,4 +348,4 @@ allday-asr action-review 3 --status dismissed
 
 ## 当前边界
 
-V2-A/V2-B/V2-C 的不可变源对象、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现；V2-C.3 的双 VAD 证据门控、committed token 快照和显式 VAD prediction 已实现。V2-D 的 schema v7、Community-1 backend、重叠/互斥 speaker turns、token-to-speaker 融合、speaker/overlap snapshot 和本地网页轨道已实现并完成全量 run 11；生产默认仍不覆盖 V1。Watch 五分钟分块同步、云端 LLM、穷尽 speaker 真值、跨天身份、桌面确认弹窗和真实日历写入尚未实现。
+V2-A.1 的 schema v11、原子清单导入、重复静音文件实例、冻结会话和 session-native C/D/E 已实现；V2-W.0 的自动显存档位、输入复核、阶段复用和持久工作流也已实现。V2-C.3 双 VAD、V2-D Community-1 与 V2-E.0.2 本地语义证据继续作为质量主链。尚未实现的是 Watch 传输客户端、原音第二份存储验证、日级/缺口感知 V2-D、真实云端 LLM、独立新 holdout、跨天身份和真实日历写入；因此当前适合本地影子运行，不应宣称无人值守生产完成。
