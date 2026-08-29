@@ -19,7 +19,7 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 | 录音入库 | V2-A 已完成 | 不可变 source/session、SHA-256 去重、证据字段防修改/删除、完整性审计 |
 | 音频处理 | V2-A 基础完成 | V1 标准化/VAD/断点续跑；V2 逻辑窗口临时解码且不新增长期整段 PCM |
 | ASR | V2-C.3 已实现 | Qwen3-ASR-1.7B、0.6B ForcedAligner、Fun-ASR-Nano、FSMN+Silero 证据门控、padding/core 分离、逐 token 原音追溯；等待新 holdout |
-| 说话人时间轴 | V2-D 工程与全量实跑完成 | Community-1 本地 regular/exclusive turns、重叠区间、逐 turn 原音追溯、token 主/重叠/不确定归属；等待穷尽真值 |
+| 说话人时间轴 | V2-D 工程、全量实跑与本地网页完成 | Community-1 regular/exclusive turns、重叠区间、逐 turn 原音追溯、token 归属；网页按多人对话/重叠/无归属分队列；等待穷尽真值 |
 | 匿名说话人 | 原型完成 | CAM++ 聚类、短片段/弱聚类质量门槛、允许 `unknown` |
 | 本人身份 | 原型完成 | 独立多录音登记、片段候选、人工导入、阈值校准 |
 | 人物样本库 | 已完成 V1 | `accepted`、`holdout`、`negative`、会话隔离、清单 |
@@ -101,7 +101,7 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 ## 6. 本次盘点验证
 
 - `doctor` 全部通过：Python 3.12.10、FFmpeg/FFprobe、FunASR 1.4.4、ModelScope 1.39.1、pyannote.audio 4.0.7、PyTorch/torchaudio 2.9.1+cu128 和 RTX 5070 CUDA 实算正常。
-- 全量 45 个单元测试通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution 防篡改、跨源引用、V2-C.1/V2-C.2 盲标约束、非连续 review-region、Oracle 快照、双 CER、paired bootstrap、VAD/DER/JER、V2-C.3 门控，以及 V2-D 同时说话判定和 token 多说话人归属。
+- 全量 47 个单元测试通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution 防篡改、跨源引用、V2-C.1/V2-C.2 盲标约束、非连续 review-region、Oracle 快照、双 CER、paired bootstrap、VAD/DER/JER、V2-C.3 门控，以及 V2-D 同时说话、token 多说话人归属、网页候选排序/聚合和只读派生试听。
 - 真实库已从 schema v3 升级到 v4，升级前自动保存一份 schema v3 SQLite 备份。迁移前后 V1 各表计数一致：423 个语音段、17 条人工身份标注、26 条声纹样本、10 个事件和 3 个历史 run 均保留。
 - 当前 79,826,205 字节 Watch M4A 完整性状态为 `verified`；迁移和真实逻辑窗口解码前后 SHA-256 均为 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`。
 - 当前长录音可规划为 33 个无空洞的 5 分钟核心窗口并带 5 秒边界上下文；真实 10 秒核心窗口临时解码为 11 秒 WAV，退出后缓存已删除。

@@ -9,10 +9,14 @@ const state = {
   evaluation: null,
   actions: [],
   runs: [],
+  timeline: null,
+  timelineQueue: "conversation",
+  timelineSelectedId: null,
+  timelineWindow: null,
   filter: "all",
   page: 1,
   pageSize: 8,
-  activeView: "evaluation",
+  activeView: "timeline",
   jobTimer: null,
 };
 
@@ -109,6 +113,9 @@ function bindNavigation() {
       renderEvaluationSegments();
     });
   });
+  $$(".timeline-queue-button").forEach((button) => {
+    button.addEventListener("click", () => selectTimelineQueue(button.dataset.timelineQueue));
+  });
 }
 
 function bindToolbar() {
@@ -116,6 +123,9 @@ function bindToolbar() {
     state.recordingId = Number(event.target.value);
     state.evaluationName = null;
     state.evaluation = null;
+    state.timeline = null;
+    state.timelineSelectedId = null;
+    state.timelineWindow = null;
     state.page = 1;
     await loadRecordingWorkspace();
   });
@@ -130,7 +140,12 @@ function bindToolbar() {
 
 function switchView(view) {
   state.activeView = view;
-  const titles = { evaluation: "评测标注", actions: "行动候选", runs: "运行记录" };
+  const titles = {
+    timeline: "说话人时间轴",
+    evaluation: "评测标注",
+    actions: "行动候选",
+    runs: "运行记录",
+  };
   $("#page-title").textContent = titles[view] || "日记工作台";
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   $$(".view").forEach((item) => item.classList.toggle("active-view", item.id === `view-${view}`));
@@ -153,24 +168,290 @@ function renderRecordingOptions() {
 async function loadRecordingWorkspace() {
   if (!state.recordingId) return;
   try {
-    const [dashboard, templates, actions, runs] = await Promise.all([
+    const [dashboard, templates, actions, runs, timeline] = await Promise.all([
       api(`/api/dashboard?recording_id=${state.recordingId}`),
       api(`/api/evaluations?recording_id=${state.recordingId}`),
       api(`/api/actions?recording_id=${state.recordingId}`),
       api(`/api/runs?recording_id=${state.recordingId}`),
+      api(`/api/speaker-timeline?recording_id=${state.recordingId}`),
     ]);
     state.dashboard = dashboard;
     state.templates = templates.evaluations;
     state.actions = actions.actions;
     state.runs = runs.runs;
+    state.timeline = timeline;
     renderDashboard();
     renderEvaluationOptions();
     renderActions();
     renderRuns();
+    renderTimelineOverview();
     await loadEvaluation();
   } catch (error) {
     toast(error.message, "error");
   }
+}
+
+function renderTimelineOverview() {
+  const timeline = state.timeline;
+  const empty = $("#timeline-empty");
+  const workspace = $("#timeline-workspace");
+  if (!timeline?.available) {
+    empty.classList.remove("hidden");
+    workspace.classList.add("hidden");
+    $("#timeline-empty-copy").textContent = timeline?.reason || "请先完成 V2-D 说话人运行。";
+    $("#timeline-run-chip").textContent = "V2-D 不可用";
+    return;
+  }
+
+  empty.classList.add("hidden");
+  workspace.classList.remove("hidden");
+  const revision = timeline.run.model_revision ? timeline.run.model_revision.slice(0, 8) : "local";
+  $("#timeline-run-chip").textContent = `RUN #${timeline.run.id} · ${revision}`;
+  $("#timeline-speaker-count").textContent = String(timeline.speakers.length);
+  $("#timeline-speech-duration").textContent = formatDuration(timeline.speech_ms || 0);
+  $("#timeline-overlap-duration").textContent = formatDuration(timeline.queues.overlap.total_ms || 0);
+  $("#timeline-unassigned-count").textContent = String(timeline.queues.unassigned.token_count || 0);
+  $("#timeline-conversation-count").textContent = String(timeline.queues.conversation.count);
+  $("#timeline-overlap-count").textContent = String(timeline.queues.overlap.count);
+  $("#timeline-unassigned-group-count").textContent = String(timeline.queues.unassigned.count);
+  renderSpeakerLegend();
+  selectTimelineQueue(state.timelineQueue, { preserveSelection: true });
+}
+
+function renderSpeakerLegend() {
+  const container = $("#speaker-legend");
+  container.replaceChildren();
+  state.timeline.speakers.forEach((speaker) => {
+    const item = node("div", "speaker-legend-item");
+    const swatch = node("span", "speaker-swatch");
+    swatch.style.backgroundColor = speaker.color;
+    item.append(swatch, node("strong", "", speaker.label));
+    item.append(node("small", "", `${formatDuration(speaker.speech_ms)} · ${speaker.turn_count} 段`));
+    container.append(item);
+  });
+  const note = node("p", "speaker-legend-note", "标签是匿名聚类，不代表真实身份；重叠轨使用原始多轨结果。");
+  container.append(note);
+}
+
+function selectTimelineQueue(queueName, options = {}) {
+  if (!state.timeline?.available || !state.timeline.queues[queueName]) return;
+  state.timelineQueue = queueName;
+  const queue = state.timeline.queues[queueName];
+  $$(".timeline-queue-button").forEach((button) => {
+    const active = button.dataset.timelineQueue === queueName;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  $("#timeline-queue-title").textContent = queue.label;
+  $("#timeline-queue-description").textContent = queue.description;
+  const selectionExists = queue.items.some((item) => item.id === state.timelineSelectedId);
+  if (!options.preserveSelection || !selectionExists) {
+    state.timelineSelectedId = queue.items[0]?.id || null;
+    state.timelineWindow = null;
+  }
+  renderTimelineCandidates();
+  if (state.timelineSelectedId) {
+    loadTimelineCandidate(state.timelineSelectedId);
+  } else {
+    renderTimelineDetailEmpty("这个队列没有候选片段。", "换一个队列继续查看。");
+  }
+}
+
+function renderTimelineCandidates() {
+  const queue = state.timeline.queues[state.timelineQueue];
+  const container = $("#timeline-candidate-list");
+  container.replaceChildren();
+  queue.items.forEach((item, index) => {
+    const button = node(
+      "button",
+      `timeline-candidate ${item.id === state.timelineSelectedId ? "active" : ""}`,
+    );
+    button.type = "button";
+    button.dataset.candidateId = item.id;
+    const header = node("span", "timeline-candidate-title");
+    header.append(node("strong", "", item.title));
+    header.append(node("span", "", `${formatOffset(item.start_ms)}–${formatOffset(item.end_ms)}`));
+    button.append(header);
+    const facts = node("span", "timeline-candidate-facts");
+    if (item.speaker_count) facts.append(node("span", "", `${item.speaker_count} 人`));
+    if (item.speaker_switches !== null) facts.append(node("span", "", `${item.speaker_switches} 次切换`));
+    if (item.overlap_ms) facts.append(node("span", "", `重叠 ${(item.overlap_ms / 1000).toFixed(1)}s`));
+    facts.append(node("span", "", `${item.token_count} 词`));
+    button.append(facts);
+    if (item.preview) button.append(node("span", "timeline-candidate-preview", item.preview));
+    button.addEventListener("click", () => loadTimelineCandidate(item.id));
+    container.append(button);
+    if (item.id === state.timelineSelectedId) {
+      $("#timeline-queue-position").textContent = `${index + 1} / ${queue.items.length}`;
+    }
+  });
+  if (!queue.items.length) $("#timeline-queue-position").textContent = "0 / 0";
+}
+
+async function loadTimelineCandidate(candidateId) {
+  const queue = state.timeline.queues[state.timelineQueue];
+  const item = queue.items.find((candidate) => candidate.id === candidateId);
+  if (!item) return;
+  state.timelineSelectedId = candidateId;
+  renderTimelineCandidates();
+  const detail = $("#timeline-detail");
+  detail.replaceChildren(node("div", "timeline-loading", "正在读取时间轴…"));
+  try {
+    const payload = await api(
+      `/api/speaker-timeline/window?recording_id=${state.recordingId}`
+      + `&run_id=${state.timeline.run.id}&start_ms=${item.start_ms}&end_ms=${item.end_ms}`,
+    );
+    if (state.timelineSelectedId !== candidateId) return;
+    state.timelineWindow = payload;
+    renderTimelineDetail(item, payload);
+  } catch (error) {
+    renderTimelineDetailEmpty("时间轴读取失败", error.message);
+    toast(error.message, "error");
+  }
+}
+
+function renderTimelineDetail(item, payload) {
+  const detail = $("#timeline-detail");
+  detail.replaceChildren();
+  const header = node("header", "timeline-detail-header");
+  const heading = node("div");
+  heading.append(node("span", "segment-id", item.kind.toUpperCase()));
+  heading.append(node("h4", "", item.title));
+  heading.append(node("p", "", `${formatOffset(item.start_ms)}–${formatOffset(item.end_ms)} · ${formatDuration(item.end_ms - item.start_ms)}`));
+  header.append(heading);
+  const navigation = node("div", "timeline-detail-navigation");
+  const queue = state.timeline.queues[state.timelineQueue];
+  const index = queue.items.findIndex((candidate) => candidate.id === item.id);
+  const previous = node("button", "secondary-button", "上一个");
+  const next = node("button", "primary-button", "下一个");
+  previous.disabled = index <= 0;
+  next.disabled = index < 0 || index >= queue.items.length - 1;
+  previous.addEventListener("click", () => loadTimelineCandidate(queue.items[index - 1].id));
+  next.addEventListener("click", () => loadTimelineCandidate(queue.items[index + 1].id));
+  navigation.append(previous, next);
+  header.append(navigation);
+  detail.append(header);
+
+  const facts = node("div", "timeline-detail-facts");
+  if (item.score !== undefined) facts.append(timelineFact("信息分", item.score));
+  if (item.speech_ms !== null) facts.append(timelineFact("有效语音", formatDuration(item.speech_ms)));
+  if (item.speaker_switches !== null) facts.append(timelineFact("说话人切换", item.speaker_switches));
+  facts.append(timelineFact("重叠", `${(item.overlap_ms / 1000).toFixed(1)}s`));
+  facts.append(timelineFact("无归属", item.unassigned_tokens));
+  detail.append(facts);
+
+  const audioBlock = node("div", "timeline-audio-block");
+  audioBlock.append(node("strong", "", "响度增强试听（派生缓存）"));
+  audioBlock.append(node("p", "", "只从永久原音读取这一小段；不会修改或替换原始文件。"));
+  const audio = node("audio");
+  audio.controls = true;
+  audio.preload = "metadata";
+  audio.src = payload.audio_url;
+  audio.setAttribute("aria-label", `播放 ${item.title}`);
+  audioBlock.append(audio);
+  detail.append(audioBlock);
+
+  detail.append(renderSpeakerTracks(payload));
+  detail.append(renderTimelineTranscript(payload, audio));
+}
+
+function timelineFact(label, value) {
+  const item = node("div", "timeline-fact");
+  item.append(node("span", "", label), node("strong", "", value));
+  return item;
+}
+
+function renderSpeakerTracks(payload) {
+  const wrapper = node("section", "speaker-tracks");
+  const title = node("div", "timeline-subheading");
+  title.append(node("strong", "", "说话人轨道"));
+  title.append(node("span", "", "斜纹区域 = 同时说话"));
+  wrapper.append(title);
+  const span = payload.end_ms - payload.start_ms;
+  const labels = [...new Set(payload.turns.map((turn) => turn.speaker))];
+  labels.sort((a, b) => speakerIndex(a) - speakerIndex(b));
+  labels.forEach((label) => {
+    const row = node("div", "speaker-track-row");
+    const legend = node("div", "speaker-track-label");
+    const swatch = node("span", "speaker-swatch");
+    swatch.style.backgroundColor = speakerColor(label);
+    legend.append(swatch, node("span", "", label));
+    row.append(legend);
+    const track = node("div", "speaker-track");
+    payload.turns.filter((turn) => turn.speaker === label).forEach((turn) => {
+      const bar = node("span", "speaker-turn");
+      bar.style.left = `${((turn.start_ms - payload.start_ms) / span) * 100}%`;
+      bar.style.width = `${Math.max(0.2, ((turn.end_ms - turn.start_ms) / span) * 100)}%`;
+      bar.style.backgroundColor = speakerColor(label);
+      bar.title = `${label} · ${formatOffset(turn.source_start_ms)}–${formatOffset(turn.source_end_ms)}`;
+      track.append(bar);
+    });
+    payload.overlaps.forEach((overlap) => {
+      if (!overlap.speakers.includes(label)) return;
+      const stripe = node("span", "speaker-overlap");
+      stripe.style.left = `${((overlap.start_ms - payload.start_ms) / span) * 100}%`;
+      stripe.style.width = `${Math.max(0.25, ((overlap.end_ms - overlap.start_ms) / span) * 100)}%`;
+      track.append(stripe);
+    });
+    row.append(track);
+    wrapper.append(row);
+  });
+  const ruler = node("div", "timeline-ruler");
+  ruler.append(node("span", "", formatOffset(payload.start_ms)));
+  ruler.append(node("span", "", formatOffset(payload.start_ms + Math.round(span / 2))));
+  ruler.append(node("span", "", formatOffset(payload.end_ms)));
+  wrapper.append(ruler);
+  return wrapper;
+}
+
+function renderTimelineTranscript(payload, audio) {
+  const wrapper = node("section", "timeline-transcript");
+  const title = node("div", "timeline-subheading");
+  title.append(node("strong", "", "对齐文字"));
+  title.append(node("span", "", "点击任一词跳到对应时间；红色虚线 = 无归属"));
+  wrapper.append(title);
+  const tokens = node("div", "timeline-token-list");
+  payload.tokens.forEach((token) => {
+    const button = node("button", "timeline-token", token.text || "·");
+    button.type = "button";
+    const label = token.primary_speaker;
+    if (token.primary_kind === "none") {
+      button.classList.add("unassigned");
+    } else if (label) {
+      button.style.setProperty("--token-color", speakerColor(label));
+    }
+    if (token.attributions.some((item) => item.kind === "overlap")) {
+      button.classList.add("overlap");
+    }
+    const decisions = token.attributions
+      .map((item) => `${item.kind}: ${item.speaker || "无"}`)
+      .join(" / ");
+    button.title = `${formatOffset(token.start_ms)} · ${decisions || "无归属"}`;
+    button.addEventListener("click", () => {
+      audio.currentTime = Math.max(0, (token.start_ms - payload.start_ms) / 1000);
+      audio.play().catch(() => {});
+    });
+    tokens.append(button);
+  });
+  if (!payload.tokens.length) tokens.append(node("p", "timeline-no-tokens", "这个窗口没有 ASR 对齐文字。"));
+  wrapper.append(tokens);
+  return wrapper;
+}
+
+function speakerIndex(label) {
+  return state.timeline.speakers.findIndex((speaker) => speaker.label === label);
+}
+
+function speakerColor(label) {
+  return state.timeline.speakers.find((speaker) => speaker.label === label)?.color || "#65717d";
+}
+
+function renderTimelineDetailEmpty(title, copy) {
+  const detail = $("#timeline-detail");
+  detail.replaceChildren();
+  const empty = node("div", "timeline-detail-empty");
+  empty.append(node("strong", "", title), node("p", "", copy));
+  detail.append(empty);
 }
 
 function renderDashboard() {

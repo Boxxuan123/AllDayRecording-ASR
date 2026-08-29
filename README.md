@@ -175,6 +175,7 @@ allday-asr web
 命令会自动打开一个带临时令牌的本机地址。网页目前可以：
 
 - 选择已入库录音，查看转写、身份标注、事件和运行概览。
+- 查看 V2-D 多说话人轨道，并优先试听自动排序的多人对话、重叠说话和成组无归属文字。
 - 逐段播放原音，填写准确文字、真实说话人、本人身份与关键事实。
 - 直接生成 CER、说话人成对 F1、本人识别和关键事实评测报告。
 - 确认或忽略日程/待办候选；不会写入真实日历。
@@ -307,4 +308,4 @@ allday-asr action-review 3 --status dismissed
 
 ## 当前边界
 
-V2-A/V2-B/V2-C 的不可变源对象、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现；V2-C.3 的双 VAD 证据门控、committed token 快照和显式 VAD prediction 已实现。V2-D 的 schema v7、Community-1 backend、重叠/互斥 speaker turns、token-to-speaker 融合和 speaker/overlap snapshot 已实现并完成全量 run 11；生产默认仍不覆盖 V1。Watch 五分钟分块同步、云端 LLM、V2-D 网页轨道、穷尽 speaker 真值、跨天身份、桌面确认弹窗和真实日历写入尚未实现。
+V2-A/V2-B/V2-C 的不可变源对象、输入指纹、连续真值、多 run benchmark、Qwen/Fun 双假设、强制对齐和逐 token 源追溯已经实现；V2-C.3 的双 VAD 证据门控、committed token 快照和显式 VAD prediction 已实现。V2-D 的 schema v7、Community-1 backend、重叠/互斥 speaker turns、token-to-speaker 融合、speaker/overlap snapshot 和本地网页轨道已实现并完成全量 run 11；生产默认仍不覆盖 V1。Watch 五分钟分块同步、云端 LLM、穷尽 speaker 真值、跨天身份、桌面确认弹窗和真实日历写入尚未实现。

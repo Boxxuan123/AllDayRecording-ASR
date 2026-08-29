@@ -24,6 +24,17 @@ from allday_asr.services.evaluation import (
     load_evaluation_truth,
     update_evaluation_truth_segment,
 )
+from allday_asr.services.sources import (
+    LogicalWindow,
+    logical_window_cache_key,
+    materialize_logical_window,
+    resolve_session_slices,
+)
+from allday_asr.services.speaker_timeline import (
+    MAX_AUDIO_WINDOW_MS,
+    speaker_timeline_overview,
+    speaker_timeline_window,
+)
 from allday_asr.storage.database import Database
 
 
@@ -173,6 +184,29 @@ class WebApplication:
             for row in reversed(self.database().list_processing_runs(recording_id))
         ]
 
+    def speaker_timeline(
+        self, recording_id: int, *, run_id: int | None = None
+    ) -> dict:
+        return speaker_timeline_overview(
+            self.database(), recording_id, run_id=run_id
+        )
+
+    def speaker_timeline_window(
+        self,
+        recording_id: int,
+        *,
+        run_id: int,
+        start_ms: int,
+        end_ms: int,
+    ) -> dict:
+        return speaker_timeline_window(
+            self.database(),
+            recording_id,
+            run_id=run_id,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+
     def start_daily_run(self, recording_id: int) -> dict:
         self.database().get_recording(recording_id)
         job_id = uuid.uuid4().hex
@@ -277,6 +311,46 @@ class WebApplication:
                 )
         return destination
 
+    def speaker_timeline_audio_clip(
+        self, recording_id: int, *, start_ms: int, end_ms: int
+    ) -> Path:
+        database = self.database()
+        database.get_recording(recording_id)
+        session = database.get_session_for_recording(recording_id)
+        duration_ms = int(session["duration_ms"])
+        if start_ms < 0 or end_ms <= start_ms or end_ms > duration_ms:
+            raise ValueError("试听时间范围无效")
+        if end_ms - start_ms > MAX_AUDIO_WINDOW_MS:
+            raise ValueError("单次试听不能超过 120 秒")
+        slices, gaps = resolve_session_slices(
+            database, int(session["id"]), start_ms, end_ms
+        )
+        window = LogicalWindow(
+            session_id=int(session["id"]),
+            index=0,
+            core_start_ms=start_ms,
+            core_end_ms=end_ms,
+            analysis_start_ms=start_ms,
+            analysis_end_ms=end_ms,
+            slices=slices,
+            uncovered_ranges=gaps,
+        )
+        transform = "pcm16-16khz-mono-loudnorm-i18-v1"
+        fingerprint = logical_window_cache_key(window, transform=transform)[:16]
+        destination = (
+            recording_output_dir(recording_id)
+            / "web-speaker-timeline-audio-v1"
+            / f"range-{start_ms}-{end_ms}-{fingerprint}.wav"
+        )
+        with self.audio_lock:
+            if not destination.is_file():
+                materialize_logical_window(
+                    window,
+                    destination,
+                    audio_filter="loudnorm=I=-18:LRA=7:TP=-2",
+                )
+        return destination
+
 
 class AllDayRequestHandler(BaseHTTPRequestHandler):
     server: "AllDayHTTPServer"
@@ -361,6 +435,35 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
             recording_id = _query_int(parsed.query, "recording_id")
             self._send_json(
                 HTTPStatus.OK, {"runs": self.application.runs(recording_id)}
+            )
+            return
+        if parsed.path == "/api/speaker-timeline":
+            recording_id = _query_int(parsed.query, "recording_id")
+            run_id = _query_optional_int(parsed.query, "run_id")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.speaker_timeline(recording_id, run_id=run_id),
+            )
+            return
+        if parsed.path == "/api/speaker-timeline/window":
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.speaker_timeline_window(
+                    _query_int(parsed.query, "recording_id"),
+                    run_id=_query_int(parsed.query, "run_id"),
+                    start_ms=_query_nonnegative_int(parsed.query, "start_ms"),
+                    end_ms=_query_int(parsed.query, "end_ms"),
+                ),
+            )
+            return
+        if parsed.path == "/api/speaker-timeline/audio":
+            self._send_file(
+                self.application.speaker_timeline_audio_clip(
+                    _query_int(parsed.query, "recording_id"),
+                    start_ms=_query_nonnegative_int(parsed.query, "start_ms"),
+                    end_ms=_query_int(parsed.query, "end_ms"),
+                ),
+                "audio/wav",
             )
             return
         job_match = _match_path(parsed.path, r"/api/jobs/(?P<job_id>[a-f0-9]+)")
@@ -600,6 +703,32 @@ def _query_int(query: str, name: str) -> int:
     value = int(values[0])
     if value < 1:
         raise ValueError(f"{name} 必须大于 0")
+    return value
+
+
+def _query_optional_int(query: str, name: str) -> int | None:
+    values = parse_qs(query).get(name)
+    if not values:
+        return None
+    try:
+        value = int(values[0])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"查询参数 {name} 必须是整数") from exc
+    if value < 1:
+        raise ValueError(f"{name} 必须大于 0")
+    return value
+
+
+def _query_nonnegative_int(query: str, name: str) -> int:
+    values = parse_qs(query).get(name)
+    if not values:
+        raise ValueError(f"缺少查询参数 {name}")
+    try:
+        value = int(values[0])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"查询参数 {name} 必须是整数") from exc
+    if value < 0:
+        raise ValueError(f"查询参数 {name} 不能为负数")
     return value
 
 
