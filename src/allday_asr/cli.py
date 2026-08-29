@@ -64,6 +64,9 @@ from allday_asr.services.quality_diarization_v2d1 import (
     create_source_micro_truth,
     run_quality_diarization_v2d1,
 )
+from allday_asr.services.quality_diarization_v2d2 import (
+    run_identity_contamination_audit,
+)
 from allday_asr.services.review import import_self_review
 from allday_asr.services.sources import (
     audit_all_sources,
@@ -373,6 +376,58 @@ def quality_diarization_source_truth(
         f"annotations={summary.annotation_count} | sha256={summary.truth_sha256}"
     )
     console.print(f"真值文件：{summary.output_path.resolve()}")
+
+
+@quality_diarization_app.command(name="identity-audit")
+def quality_diarization_identity_audit(
+    recording_id: int = typer.Argument(..., min=1),
+    truth_set_id: int = typer.Option(
+        ...,
+        "--truth-set",
+        min=1,
+        help="包含人工 speaker 标签的冻结真值集。",
+    ),
+    diarization_run_id: int | None = typer.Option(
+        None,
+        "--diarization-run",
+        min=1,
+        help="父 V2-D run；默认选择该录音最新完成的一次。",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
+) -> None:
+    """生成 V2-D.2 人工身份到匿名 speaker 的污染审计。"""
+    database = Database(db)
+    if diarization_run_id is None:
+        candidates = [
+            row
+            for row in database.list_processing_runs(recording_id)
+            if str(row["run_kind"]) == "quality_diarization_v2d"
+            and str(row["status"]) == "completed"
+        ]
+        if not candidates:
+            raise typer.BadParameter("该录音没有已完成的 V2-D run")
+        diarization_run_id = int(candidates[-1]["id"])
+    summary = run_identity_contamination_audit(
+        database,
+        recording_id,
+        diarization_run_id=diarization_run_id,
+        truth_set_id=truth_set_id,
+    )
+    console.print(
+        f"[green]V2-D.2 身份审计完成[/green] run={summary.run_id} | "
+        f"truth={summary.truth_set_id} | coverage={summary.coverage:.2%} | "
+        f"contaminated={','.join(summary.contaminated_speakers) or 'none'}"
+    )
+    for item in summary.human_speakers:
+        mapping = ", ".join(
+            f"{value['speaker']}={value['overlap_ms'] / 1000:.3f}s"
+            for value in item["model_speakers"]
+        )
+        console.print(
+            f"human={item['identity']} | truth={item['truth_ms'] / 1000:.3f}s | "
+            f"covered={item['coverage']:.2%} | {mapping or 'no model speaker'}"
+        )
+    console.print(f"运行清单：{summary.manifest_path.resolve()}")
 
 
 @quality_asr_app.command(name="run")

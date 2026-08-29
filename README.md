@@ -2,7 +2,7 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-C.3 已实现双 VAD 证据门控和核心 token 提交；V2-D 已完成 schema v7、pyannote Community-1 本地重叠/互斥说话人时间轴、逐 turn 原音追溯和 token-to-speaker 融合。V2-D.1 进一步把 `detected/possible` 语音证据、媒体/现场来源真值和匿名 speaker 三层解耦，电视中的不同人物不会被强行合并。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注并不穷尽电视声，不能直接报告 V2-D 的公平 DER/JER。V2 不以实时性或小模型为目标；之后继续做穷尽真值验证，再接云端 LLM 和 Watch 同步。
+当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A/V2-B/V2-C 已完成不可变原音、逻辑窗口、连续时间真值、多 run benchmark、Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设。V2-D 已完成 Community-1 重叠/互斥时间轴和 token-to-speaker；V2-D.1 把确定/可能语音、媒体来源和匿名 speaker 解耦；V2-D.2 又恢复稀疏人工 `mother/father/tv` 真值，按短区间揭示匿名簇污染而不全局改名。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。V2 不以实时性或小模型为目标；之后需补充干净父母声纹样本，再接云端 LLM 和 Watch 同步。
 
 实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)。
 
@@ -95,11 +95,12 @@ allday-asr diarization-v2 status <run-id>
 allday-asr diarization-v2 snapshot <run-id>
 allday-asr diarization-v2 source-truth 1 --start 17:00 --end 17:14 --source media_playback --name v2d1-candidate01-media-17m
 allday-asr diarization-v2 refine 1 --truth-set 2 --truth-set 3
+allday-asr diarization-v2 identity-audit 1 --truth-set 1
 ```
 
 音频仍只在本地处理，pyannote telemetry 已关闭；HF token 不进入配置或数据库。完整模型选择、融合阈值和评测边界见 [V2-D 指南](docs/v2-d-speaker-timeline.md)。
 
-真实全量 run 11 使用 Community-1 revision `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`：识别 4 个匿名说话人、989 条 regular turns、951 条 exclusive turns、68 个重叠区间（29.412 秒），并为 run 10 的 2,192 个 committed token 全部保存归属决定。V2-D.1 run 12 在不改写这些 speaker 的前提下冻结 607 段确定语音和 453 段可能语音；用户确认的候选 01 前 14 秒媒体声由 detected 的 `50.79%` 召回提高到补救层的 `100%`。补救层在开发真值上的 false alarm 很高，只作为试听队列，不冒充正式 diarization。现有 truth set 2 的 `speaker` 完整度明确为 `none`，因此仍不报告 DER/JER。
+真实全量 run 11 使用 Community-1 revision `3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`：识别 4 个匿名说话人、989 条 regular turns、951 条 exclusive turns、68 个重叠区间（29.412 秒）。V2-D.1 run 12 冻结 607 段确定语音和 453 段可能语音。V2-D.2 run 13 对 truth set 1 的 100.450 秒稀疏身份真值做污染审计，确认 02 同时含电视 71.72%、父亲 13.09%、母亲 8.84% 和本人 6.35%；父亲真值覆盖率 88.59%，问题主要是错簇而非漏检。稀疏真值仍不能支持公平 DER/JER。
 
 ## V2-C.1/V2-C.2：公平基准
 

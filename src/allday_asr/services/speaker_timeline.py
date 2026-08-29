@@ -57,6 +57,22 @@ def speaker_timeline_overview(
     v2d1_summary = _json_object(v2d1_run["summary_json"]) if v2d1_run else {}
     rescue_rows = _v2d1_prediction_rows(database, v2d1_summary)
     possible = _possible_candidates(rescue_rows, tokens, duration_ms)
+    v2d2_run = _latest_v2d2_run(database, recording_id, int(run["id"]))
+    v2d2_summary = _json_object(v2d2_run["summary_json"]) if v2d2_run else {}
+    identity_regions = _identity_truth_regions(
+        database,
+        int(v2d2_summary.get("truth_set_id") or 0),
+        start_ms=0,
+        end_ms=duration_ms,
+    )
+    for queue in (conversation, overlap_candidates, unassigned, possible):
+        _enrich_candidates_with_identity(queue, identity_regions)
+    audits_by_speaker = {
+        str(item["speaker"]): item
+        for item in v2d2_summary.get("model_speakers") or []
+    }
+    for speaker in speakers:
+        speaker["identity_audit"] = audits_by_speaker.get(speaker["label"])
     summary = _json_object(run["summary_json"])
     model = _json_object(run["model_manifest_json"])
     return {
@@ -116,12 +132,14 @@ def speaker_timeline_overview(
             },
         },
         "v2d1": _v2d1_overview(v2d1_run, v2d1_summary),
+        "v2d2": _v2d2_overview(v2d2_run, v2d2_summary),
         "method": {
             "conversation_window_ms": CONVERSATION_WINDOW_MS,
             "conversation_step_ms": CONVERSATION_STEP_MS,
             "original_audio_immutable": True,
             "listening_audio": "从永久原音按需生成响度归一化缓存，不修改原文件。",
             "speaker_policy": "来源层与匿名 speaker 独立；不会因同属电视而合并不同节目人物。",
+            "identity_policy": "人工身份只做短区间审计，不把整个匿名簇重命名为人物。",
         },
     }
 
@@ -176,6 +194,22 @@ def speaker_timeline_window(
         start_ms=start_ms,
         end_ms=end_ms,
     )
+    v2d2_run = _latest_v2d2_run(database, recording_id, run_id)
+    v2d2_summary = _json_object(v2d2_run["summary_json"]) if v2d2_run else {}
+    identity_regions = _identity_truth_regions(
+        database,
+        int(v2d2_summary.get("truth_set_id") or 0),
+        start_ms=start_ms,
+        end_ms=end_ms,
+    )
+    for turn in turns:
+        turn["identity_evidence"] = _identity_evidence(
+            int(turn["start_ms"]), int(turn["end_ms"]), identity_regions
+        )
+    for token in tokens:
+        token["identity_evidence"] = _identity_evidence(
+            int(token["start_ms"]), int(token["end_ms"]), identity_regions
+        )
     return {
         "recording_id": recording_id,
         "run_id": run_id,
@@ -187,6 +221,8 @@ def speaker_timeline_window(
         "tokens": tokens,
         "speech_evidence": speech_evidence,
         "source_regions": source_regions,
+        "identity_regions": identity_regions,
+        "v2d2": _v2d2_overview(v2d2_run, v2d2_summary),
         "audio_url": (
             "/api/speaker-timeline/audio"
             f"?recording_id={recording_id}&start_ms={start_ms}&end_ms={end_ms}&v=1"
@@ -201,6 +237,19 @@ def _latest_v2d1_run(
         row
         for row in database.list_processing_runs(recording_id)
         if str(row["run_kind"]) == "quality_diarization_v2d1"
+        and str(row["status"]) == "completed"
+        and int(row["parent_run_id"] or 0) == diarization_run_id
+    ]
+    return matches[-1] if matches else None
+
+
+def _latest_v2d2_run(
+    database: Database, recording_id: int, diarization_run_id: int
+):
+    matches = [
+        row
+        for row in database.list_processing_runs(recording_id)
+        if str(row["run_kind"]) == "quality_diarization_v2d2"
         and str(row["status"]) == "completed"
         and int(row["parent_run_id"] or 0) == diarization_run_id
     ]
@@ -240,6 +289,155 @@ def _v2d1_overview(run, summary: dict[str, Any]) -> dict[str, Any]:
             or "anonymous speakers preserved independently of source"
         ),
     }
+
+
+def _v2d2_overview(run, summary: dict[str, Any]) -> dict[str, Any]:
+    if run is None:
+        return {
+            "available": False,
+            "reason": "尚未生成 V2-D.2 人工身份污染审计。",
+            "identity_policy": "人工身份不会全局覆盖匿名 speaker。",
+        }
+    return {
+        "available": True,
+        "run_id": int(run["id"]),
+        "truth_set_id": int(summary.get("truth_set_id") or 0),
+        "truth_name": str(summary.get("truth_name") or ""),
+        "annotation_regions": int(summary.get("annotation_regions") or 0),
+        "reviewed_truth_ms": int(summary.get("reviewed_truth_ms") or 0),
+        "covered_truth_ms": int(summary.get("covered_truth_ms") or 0),
+        "coverage": float(summary.get("coverage") or 0.0),
+        "human_speakers": list(summary.get("human_speakers") or []),
+        "model_speakers": list(summary.get("model_speakers") or []),
+        "contaminated_speakers": list(
+            summary.get("contaminated_speakers") or []
+        ),
+        "identity_policy": str(
+            summary.get("identity_policy")
+            or "audit-only interval evidence; model speaker labels remain immutable"
+        ),
+    }
+
+
+def _identity_truth_regions(
+    database: Database,
+    truth_set_id: int,
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> list[dict[str, Any]]:
+    if not truth_set_id:
+        return []
+    truth_set = database.get_truth_set(truth_set_id)
+    if str(truth_set["status"]) != "frozen":
+        return []
+    regions = []
+    for row in database.list_truth_annotations(
+        truth_set_id, annotation_kind="speaker"
+    ):
+        row_start = int(row["session_start_ms"])
+        row_end = int(row["session_end_ms"])
+        identity = str(row["label"] or "").strip()
+        if not identity or row_end <= start_ms or row_start >= end_ms:
+            continue
+        regions.append(
+            {
+                "annotation_id": int(row["id"]),
+                "truth_set_id": truth_set_id,
+                "start_ms": max(start_ms, row_start),
+                "end_ms": min(end_ms, row_end),
+                "source_start_ms": row_start,
+                "source_end_ms": row_end,
+                "identity": identity,
+                "metadata": _json_object(row["metadata_json"]),
+                "audit_only": True,
+            }
+        )
+    return sorted(
+        regions,
+        key=lambda item: (item["start_ms"], item["end_ms"], item["identity"]),
+    )
+
+
+def _identity_evidence(
+    start_ms: int,
+    end_ms: int,
+    regions: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    duration_ms = max(1, end_ms - start_ms)
+    grouped: dict[str, int] = defaultdict(int)
+    for region in regions:
+        overlap_ms = _intersection_ms(
+            start_ms,
+            end_ms,
+            int(region["start_ms"]),
+            int(region["end_ms"]),
+        )
+        if overlap_ms:
+            grouped[str(region["identity"])] += overlap_ms
+    ordered = sorted(grouped.items(), key=lambda item: (-item[1], item[0]))
+    evidence = [
+        {
+            "identity": identity,
+            "overlap_ms": overlap_ms,
+            "overlap_ratio": overlap_ms / duration_ms,
+        }
+        for identity, overlap_ms in ordered
+    ]
+    if not evidence:
+        return {
+            "kind": "none",
+            "primary_identity": None,
+            "evidence": [],
+            "audit_only": True,
+        }
+    first = evidence[0]
+    second_ratio = evidence[1]["overlap_ratio"] if len(evidence) > 1 else 0.0
+    certain = (
+        first["overlap_ratio"] >= 0.5
+        and first["overlap_ratio"] - second_ratio >= 0.15
+    )
+    return {
+        "kind": "human_truth_overlap" if certain else "ambiguous_human_truth",
+        "primary_identity": first["identity"] if certain else None,
+        "evidence": evidence,
+        "audit_only": True,
+    }
+
+
+def _enrich_candidates_with_identity(
+    candidates: Sequence[dict[str, Any]],
+    regions: Sequence[dict[str, Any]],
+) -> None:
+    for candidate in candidates:
+        grouped: dict[str, int] = defaultdict(int)
+        for region in regions:
+            overlap_ms = _intersection_ms(
+                int(candidate["start_ms"]),
+                int(candidate["end_ms"]),
+                int(region["start_ms"]),
+                int(region["end_ms"]),
+            )
+            if overlap_ms:
+                grouped[str(region["identity"])] += overlap_ms
+        identity_priority = {
+            "mother": 0,
+            "father": 1,
+            "self": 2,
+            "me": 2,
+            "tv": 3,
+            "unknown": 4,
+        }
+        ordered = sorted(
+            grouped.items(),
+            key=lambda item: (
+                identity_priority.get(item[0], 5),
+                -item[1],
+                item[0],
+            ),
+        )
+        candidate["identity_labels"] = [identity for identity, _ in ordered]
+        candidate["identity_truth_ms"] = sum(grouped.values())
 
 
 def _possible_candidates(

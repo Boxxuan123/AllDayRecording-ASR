@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-29
-> 当前阶段：V1 基线和本地操作台可用；V2-A/V2-B/V2-C.3 已实现，V2-D Community-1 全量 run 11 与 V2-D.1 证据/来源分层 run 12 已完成。V2-C.2 前 5 块是开发真值且 `speaker` 完整度为 `none`，不能冒充 V2-D DER/JER 真值。
+> 当前阶段：V1 基线和本地操作台可用；V2-D Community-1 run 11、证据/来源分层 run 12 和稀疏身份污染审计 run 13 已完成。V2-C.2 前 5 块是开发真值且 `speaker` 完整度为 `none`，不能冒充 V2-D DER/JER 真值。
 
 ## 1. 结论
 
@@ -19,7 +19,7 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 | 录音入库 | V2-A 已完成 | 不可变 source/session、SHA-256 去重、证据字段防修改/删除、完整性审计 |
 | 音频处理 | V2-A 基础完成 | V1 标准化/VAD/断点续跑；V2 逻辑窗口临时解码且不新增长期整段 PCM |
 | ASR | V2-C.3 已实现 | Qwen3-ASR-1.7B、0.6B ForcedAligner、Fun-ASR-Nano、FSMN+Silero 证据门控、padding/core 分离、逐 token 原音追溯；等待新 holdout |
-| 说话人时间轴 | V2-D.1 已完成 | Community-1 regular/exclusive turns、重叠、token 归属；新增 detected/possible、可能漏检队列和独立来源真值轨，来源不合并匿名 speaker；等待穷尽真值 |
+| 说话人时间轴 | V2-D.2 已完成 | 在 D.1 证据/来源分层上增加稀疏人工身份轨、簇污染矩阵和 token 人工角标；审计不改写匿名 speaker；等待干净父母声纹与穷尽真值 |
 | 匿名说话人 | 原型完成 | CAM++ 聚类、短片段/弱聚类质量门槛、允许 `unknown` |
 | 本人身份 | 原型完成 | 独立多录音登记、片段候选、人工导入、阈值校准 |
 | 人物样本库 | 已完成 V1 | `accepted`、`holdout`、`negative`、会话隔离、清单 |
@@ -71,6 +71,8 @@ V1 证明了工程闭环，但其“VAD 段即转写段和单一说话人”的�
 | V2-D token 归属 | 2,192 个全部有决定：1,548 primary、54 uncertain、590 none；116 个 token 含重叠说话人 |
 | V2-D.1 run 12 | 607 段确定语音 1,548.125 秒；453 段可能语音 486.932 秒；prediction set 16/17 |
 | 候选 01 前 14 秒 | truth set 3 = `media_playback`；detected recall 50.79%，recall-rescue 100%（无负例，FA 不可定义） |
+| V2-D.2 run 13 | 72 条身份区间、100.450 秒；模型覆盖 67.27%；02=电视/父亲/母亲/本人污染簇 |
+| 父亲稀疏真值 | 5.970 秒，覆盖 88.59%；02=3.487s、01=1.768s，主要是错簇而非 VAD 漏检 |
 | 说话人成对 F1 | 0.543（电视标签语义仍需拆分） |
 | 本人识别真值 | 2 段本人、70 段非本人；样本不足以判断泛化 |
 

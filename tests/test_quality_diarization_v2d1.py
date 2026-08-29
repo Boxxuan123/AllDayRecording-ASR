@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
+from allday_asr.services.benchmark import (
+    CONTINUOUS_TRUTH_FORMAT,
+    import_continuous_truth,
+)
 from allday_asr.services.quality_diarization_v2d1 import (
     V2D1Settings,
     create_source_micro_truth,
     run_quality_diarization_v2d1,
+)
+from allday_asr.services.quality_diarization_v2d2 import (
+    run_identity_contamination_audit,
 )
 from allday_asr.services.speaker_timeline import (
     speaker_timeline_overview,
@@ -118,9 +126,36 @@ class QualityDiarizationV2D1Tests(unittest.TestCase):
         truth_row = self.database.list_truth_annotations(truth.truth_set_id)[0]
         self.assertIn("media_playback", str(truth_row["metadata_json"]))
 
+        identity_truth = self._create_identity_truth()
+        with patch(
+            "allday_asr.services.quality_diarization_v2d2.OUTPUT_DIR",
+            self.output_dir,
+        ):
+            identity_audit = run_identity_contamination_audit(
+                self.database,
+                self.recording_id,
+                diarization_run_id=self.diarization_run_id,
+                truth_set_id=identity_truth,
+            )
+        self.assertEqual(
+            identity_audit.contaminated_speakers,
+            ["SPEAKER_TV_MALE"],
+        )
+        male_audit = next(
+            item
+            for item in identity_audit.model_speakers
+            if item["speaker"] == "SPEAKER_TV_MALE"
+        )
+        self.assertEqual(
+            {item["identity"] for item in male_audit["identities"]},
+            {"mother", "tv"},
+        )
+
         overview = speaker_timeline_overview(self.database, self.recording_id)
         self.assertTrue(overview["v2d1"]["available"])
         self.assertEqual(overview["v2d1"]["run_id"], summary.run_id)
+        self.assertTrue(overview["v2d2"]["available"])
+        self.assertEqual(overview["v2d2"]["run_id"], identity_audit.run_id)
         self.assertEqual(overview["queues"]["possible"]["count"], 1)
         window = speaker_timeline_window(
             self.database,
@@ -141,7 +176,74 @@ class QualityDiarizationV2D1Tests(unittest.TestCase):
             {item["source"] for item in window["source_regions"]},
             {"media_playback"},
         )
+        self.assertEqual(
+            {item["identity"] for item in window["identity_regions"]},
+            {"mother", "tv", "father"},
+        )
+        male_turn = next(
+            item
+            for item in window["turns"]
+            if item["speaker"] == "SPEAKER_TV_MALE"
+        )
+        self.assertEqual(
+            {
+                item["identity"]
+                for item in male_turn["identity_evidence"]["evidence"]
+            },
+            {"mother", "tv"},
+        )
         self.assertEqual(self.source_path.read_bytes(), self.source_bytes)
+
+    def _create_identity_truth(self) -> int:
+        path = self.evaluation_dir / f"v2d2-identities-{self.token}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {
+                "type": "metadata",
+                "format": CONTINUOUS_TRUTH_FORMAT,
+                "name": f"v2d2-identities-{self.token}",
+                "session_id": int(self.session["id"]),
+                "scope_start_ms": 0,
+                "scope_end_ms": 4_000,
+                "input_fingerprint": self.database.session_input_fingerprint(
+                    int(self.session["id"])
+                ),
+                "completeness": {
+                    "vad": "none",
+                    "transcript": "none",
+                    "speaker": "sparse",
+                    "identity": "sparse",
+                    "overlap": "none",
+                    "alignment": "none",
+                    "entities": "none",
+                },
+                "provenance": {"kind": "synthetic-v2d2-test"},
+            },
+            *[
+                {
+                    "type": "annotation",
+                    "key": f"identity:{index}",
+                    "kind": "speaker",
+                    "session_start_ms": start_ms,
+                    "session_end_ms": end_ms,
+                    "label": label,
+                    "text": None,
+                    "metadata": {"reviewed": True},
+                }
+                for index, (start_ms, end_ms, label) in enumerate(
+                    (
+                        (0, 400, "mother"),
+                        (400, 1_000, "tv"),
+                        (3_000, 4_000, "father"),
+                    )
+                )
+            ],
+        ]
+        path.write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        return import_continuous_truth(self.database, path).truth_set_id
 
     def _create_asr_run(self) -> int:
         run_id = self.database.start_processing_run(

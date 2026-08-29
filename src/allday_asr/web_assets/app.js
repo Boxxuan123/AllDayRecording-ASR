@@ -217,6 +217,7 @@ function renderTimelineOverview() {
   $("#timeline-possible-count").textContent = String(timeline.queues.possible?.count || 0);
   renderSpeakerLegend();
   renderTimelineV2D1Status();
+  renderTimelineV2D2Status();
   selectTimelineQueue(state.timelineQueue, { preserveSelection: true });
 }
 
@@ -229,6 +230,17 @@ function renderSpeakerLegend() {
     swatch.style.backgroundColor = speaker.color;
     item.append(swatch, node("strong", "", speaker.label));
     item.append(node("small", "", `${formatDuration(speaker.speech_ms)} · ${speaker.turn_count} 段`));
+    if (speaker.identity_audit) {
+      const identities = speaker.identity_audit.identities
+        .map((value) => `${identityLabel(value.identity)} ${formatDuration(value.overlap_ms)}`)
+        .join(" / ");
+      item.classList.toggle("contaminated", speaker.identity_audit.contaminated);
+      item.append(node(
+        "small",
+        "speaker-identity-audit",
+        `${speaker.identity_audit.contaminated ? "污染簇 · " : "人工重叠 · "}${identities}`,
+      ));
+    }
     container.append(item);
   });
   const note = node("p", "speaker-legend-note", "标签是匿名聚类，不代表真实身份；重叠轨使用原始多轨结果。");
@@ -253,6 +265,72 @@ function renderTimelineV2D1Status() {
     node("span", "", `确定语音 ${formatDuration(refinement.detected_ms)} · 可能语音 ${formatDuration(refinement.possible_ms)}`),
     node("span", "timeline-v2d1-policy", "来源只是一条独立真值轨；电视中的不同男女声仍保留为不同匿名 speaker。"),
   );
+}
+
+function renderTimelineV2D2Status() {
+  const container = $("#timeline-v2d2-status");
+  const auditPanel = $("#timeline-identity-audit");
+  const audit = state.timeline.v2d2;
+  container.replaceChildren();
+  auditPanel.replaceChildren();
+  if (!audit?.available) {
+    container.classList.add("unavailable");
+    container.append(
+      node("strong", "", "V2-D.2 尚未生成"),
+      node("span", "", audit?.reason || "当前没有人工身份污染审计。"),
+    );
+    auditPanel.classList.add("hidden");
+    return;
+  }
+  container.classList.remove("unavailable");
+  container.append(
+    node("strong", "", `V2-D.2 · RUN #${audit.run_id}`),
+    node("span", "", `人工身份 ${formatDuration(audit.reviewed_truth_ms)} · 模型覆盖 ${(audit.coverage * 100).toFixed(1)}%`),
+    node(
+      "span",
+      `timeline-v2d2-warning ${audit.contaminated_speakers.length ? "active" : ""}`,
+      audit.contaminated_speakers.length
+        ? `污染簇：${audit.contaminated_speakers.join("、")}`
+        : "当前已审计范围未发现污染簇",
+    ),
+    node("span", "timeline-v2d1-policy", "只标注真值覆盖的短区间，不把整个匿名簇改名。"),
+  );
+  auditPanel.classList.remove("hidden");
+  const header = node("header", "identity-audit-heading");
+  header.append(
+    node("strong", "", "匿名 speaker 污染矩阵"),
+    node("span", "", `冻结真值 #${audit.truth_set_id} · ${audit.truth_name}`),
+  );
+  auditPanel.append(header);
+  const table = node("table", "identity-audit-table");
+  const thead = node("thead");
+  const headerRow = node("tr");
+  ["匿名 speaker", "人工身份重叠", "主身份纯度", "结论"].forEach((label) => {
+    headerRow.append(node("th", "", label));
+  });
+  thead.append(headerRow);
+  table.append(thead);
+  const body = node("tbody");
+  audit.model_speakers.forEach((speaker) => {
+    const row = node("tr", speaker.contaminated ? "contaminated" : "");
+    const label = node("td", "identity-model-speaker");
+    const swatch = node("span", "speaker-swatch");
+    swatch.style.backgroundColor = speakerColor(speaker.speaker);
+    label.append(swatch, node("strong", "", speaker.speaker));
+    row.append(label);
+    const identities = node("td", "identity-audit-mix");
+    speaker.identities.forEach((value) => {
+      const chip = node("span", "identity-chip", `${identityLabel(value.identity)} ${formatDuration(value.overlap_ms)}`);
+      chip.style.setProperty("--identity-color", identityColor(value.identity));
+      identities.append(chip);
+    });
+    row.append(identities);
+    row.append(node("td", "", `${(speaker.purity * 100).toFixed(1)}%`));
+    row.append(node("td", speaker.contaminated ? "audit-danger" : "audit-ok", speaker.contaminated ? "人物混入同簇" : "审计范围内单一"));
+    body.append(row);
+  });
+  table.append(body);
+  auditPanel.append(table);
 }
 
 function selectTimelineQueue(queueName, options = {}) {
@@ -300,6 +378,9 @@ function renderTimelineCandidates() {
     if (item.overlap_ms) facts.append(node("span", "", `重叠 ${(item.overlap_ms / 1000).toFixed(1)}s`));
     if (item.possible_ms) facts.append(node("span", "possible-fact", `可能 ${(item.possible_ms / 1000).toFixed(1)}s`));
     if (item.has_rejected_asr) facts.append(node("span", "possible-fact", "含拒绝 ASR 证据"));
+    if (item.identity_labels?.length) {
+      facts.append(node("span", "identity-fact", `人工：${item.identity_labels.map(identityLabel).join(" / ")}`));
+    }
     facts.append(node("span", "", `${item.token_count} 词`));
     button.append(facts);
     if (item.preview) button.append(node("span", "timeline-candidate-preview", item.preview));
@@ -360,6 +441,7 @@ function renderTimelineDetail(item, payload) {
   if (item.score !== undefined) facts.append(timelineFact("信息分", item.score));
   if (item.speech_ms !== null) facts.append(timelineFact("有效语音", formatDuration(item.speech_ms)));
   if (item.possible_ms) facts.append(timelineFact("低置信语音", formatDuration(item.possible_ms)));
+  if (item.identity_truth_ms) facts.append(timelineFact("人工身份真值", formatDuration(item.identity_truth_ms)));
   if (item.speaker_switches !== null) facts.append(timelineFact("说话人切换", item.speaker_switches));
   facts.append(timelineFact("重叠", `${(item.overlap_ms / 1000).toFixed(1)}s`));
   facts.append(timelineFact("无归属", item.unassigned_tokens));
@@ -407,6 +489,16 @@ function renderSpeakerTracks(payload) {
     });
     wrapper.append(row.container);
   }
+  if (payload.identity_regions?.length) {
+    const row = evidenceTrackRow("人工身份", "identity");
+    payload.identity_regions.forEach((region) => {
+      const bar = positionedTrackBar(region, payload, "manual-identity-evidence");
+      bar.style.backgroundColor = identityColor(region.identity);
+      bar.title = `${identityLabel(region.identity)} · ${formatOffset(region.source_start_ms)}–${formatOffset(region.source_end_ms)} · 人工真值，只审计短区间`;
+      row.track.append(bar);
+    });
+    wrapper.append(row.container);
+  }
   if (payload.source_regions?.length) {
     const row = evidenceTrackRow("来源真值", "source");
     payload.source_regions.forEach((region) => {
@@ -431,7 +523,10 @@ function renderSpeakerTracks(payload) {
       bar.style.left = `${((turn.start_ms - payload.start_ms) / span) * 100}%`;
       bar.style.width = `${Math.max(0.2, ((turn.end_ms - turn.start_ms) / span) * 100)}%`;
       bar.style.backgroundColor = speakerColor(label);
-      bar.title = `${label} · ${formatOffset(turn.source_start_ms)}–${formatOffset(turn.source_end_ms)}`;
+      const truth = turn.identity_evidence?.evidence
+        ?.map((value) => `${identityLabel(value.identity)} ${(value.overlap_ratio * 100).toFixed(0)}%`)
+        .join(" / ");
+      bar.title = `${label} · ${formatOffset(turn.source_start_ms)}–${formatOffset(turn.source_end_ms)}${truth ? ` · 人工重叠 ${truth}` : ""}`;
       track.append(bar);
     });
     payload.overlaps.forEach((overlap) => {
@@ -479,6 +574,26 @@ function speechSourceLabel(source) {
   }[source] || source;
 }
 
+function identityLabel(identity) {
+  return {
+    mother: "母亲",
+    father: "父亲",
+    tv: "电视",
+    self: "本人",
+    me: "本人",
+  }[identity] || identity;
+}
+
+function identityColor(identity) {
+  return {
+    mother: "#c95f56",
+    father: "#5f7fa9",
+    tv: "#8172c6",
+    self: "#3f8f91",
+    me: "#3f8f91",
+  }[identity] || "#7d8589";
+}
+
 function renderTimelineTranscript(payload, audio) {
   const wrapper = node("section", "timeline-transcript");
   const title = node("div", "timeline-subheading");
@@ -498,10 +613,20 @@ function renderTimelineTranscript(payload, audio) {
     if (token.attributions.some((item) => item.kind === "overlap")) {
       button.classList.add("overlap");
     }
+    const identity = token.identity_evidence?.primary_identity;
+    if (identity) {
+      const truthBadge = node("span", "timeline-token-identity", identityLabel(identity));
+      truthBadge.style.setProperty("--identity-color", identityColor(identity));
+      button.append(truthBadge);
+      button.classList.add("has-identity-truth");
+    }
     const decisions = token.attributions
       .map((item) => `${item.kind}: ${item.speaker || "无"}`)
       .join(" / ");
-    button.title = `${formatOffset(token.start_ms)} · ${decisions || "无归属"}`;
+    const identityEvidence = token.identity_evidence?.evidence
+      ?.map((value) => `${identityLabel(value.identity)} ${(value.overlap_ratio * 100).toFixed(0)}%`)
+      .join(" / ");
+    button.title = `${formatOffset(token.start_ms)} · ${decisions || "无归属"}${identityEvidence ? ` · 人工真值 ${identityEvidence}` : ""}`;
     button.addEventListener("click", () => {
       audio.currentTime = Math.max(0, (token.start_ms - payload.start_ms) / 1000);
       audio.play().catch(() => {});
