@@ -117,6 +117,76 @@ def review_identity_candidate(
     }
 
 
+def carry_forward_identity_candidate_reviews(
+    database: Database, run_id: int
+) -> int:
+    """Carry human interval decisions to an equivalent newer candidate run."""
+    run = database.get_processing_run(run_id)
+    if str(run["run_kind"]) != "quality_diarization_v2d3":
+        raise ValueError("审核继承只适用于 V2-D.3 run")
+    if str(run["status"]) != "completed":
+        raise ValueError("审核继承需要已完成的 V2-D.3 run")
+    summary = _json_object(run["summary_json"])
+    current_candidates = {
+        str(item["id"]): item for item in summary.get("candidates") or []
+    }
+    existing = {
+        str(row["candidate_id"])
+        for row in database.list_identity_candidate_reviews(run_id)
+    }
+    copied = 0
+    previous_runs = reversed(
+        [
+            row
+            for row in database.list_processing_runs(int(run["recording_id"]))
+            if int(row["id"]) < run_id
+            and str(row["run_kind"]) == "quality_diarization_v2d3"
+            and str(row["status"]) == "completed"
+            and int(row["parent_run_id"] or 0) == int(run["parent_run_id"] or 0)
+            and str(row["input_fingerprint"]) == str(run["input_fingerprint"])
+        ]
+    )
+    for previous_run in previous_runs:
+        previous_summary = _json_object(previous_run["summary_json"])
+        if (
+            str(previous_summary.get("target_identity"))
+            != str(summary.get("target_identity"))
+            or int(previous_summary.get("truth_set_id") or 0)
+            != int(summary.get("truth_set_id") or 0)
+        ):
+            continue
+        previous_candidates = {
+            str(item["id"]): item
+            for item in previous_summary.get("candidates") or []
+        }
+        for review in database.list_identity_candidate_reviews(
+            int(previous_run["id"])
+        ):
+            candidate_id = str(review["candidate_id"])
+            if candidate_id in existing or candidate_id not in current_candidates:
+                continue
+            current = current_candidates[candidate_id]
+            previous = previous_candidates.get(candidate_id)
+            if previous is None or (
+                int(previous["start_ms"]), int(previous["end_ms"])
+            ) != (int(current["start_ms"]), int(current["end_ms"])):
+                continue
+            database.upsert_identity_candidate_review(
+                run_id,
+                {
+                    "candidate_id": candidate_id,
+                    "target_identity": str(summary["target_identity"]),
+                    "session_start_ms": int(current["start_ms"]),
+                    "session_end_ms": int(current["end_ms"]),
+                    "status": str(review["status"]),
+                    "note": review["note"],
+                },
+            )
+            existing.add(candidate_id)
+            copied += 1
+    return copied
+
+
 def run_identity_candidate_mining(
     database: Database,
     recording_id: int,
@@ -375,6 +445,7 @@ def run_identity_candidate_mining(
             summary=summary_payload,
             artifacts={"manifest": str(manifest_path.resolve())},
         )
+        carry_forward_identity_candidate_reviews(database, run_id)
         return V2D3Summary(
             run_id=run_id,
             manifest_path=manifest_path,
@@ -549,9 +620,11 @@ def score_identity_candidates(
                 "auto_assigned": False,
             }
         )
+    tier_priority = {"high_contrast": 0, "medium_contrast": 1, "exploratory": 2}
     return sorted(
         output,
         key=lambda item: (
+            tier_priority[str(item["review_tier"])],
             -float(item["contrastive_margin"]),
             -float(item["target_similarity"]),
             int(item["start_ms"]),

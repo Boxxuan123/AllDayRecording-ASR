@@ -149,6 +149,22 @@ class QualityDiarizationV2D3Tests(unittest.TestCase):
             self.database.get_processing_run(summary.run_id)["summary_json"],
             sealed_summary,
         )
+        with patch(
+            "allday_asr.services.quality_diarization_v2d3.OUTPUT_DIR",
+            self.output_dir,
+        ):
+            repeated = run_identity_candidate_mining(
+                self.database,
+                self.recording_id,
+                diarization_run_id=self.diarization_run_id,
+                truth_set_id=self.truth_set_id,
+                target_identity="father",
+                settings=V2D3Settings(max_candidates=2),
+                embedding_backend=FakeCommunityEmbeddingBackend(),
+            )
+        inherited = self.database.list_identity_candidate_reviews(repeated.run_id)
+        self.assertEqual(len(inherited), 1)
+        self.assertEqual(inherited[0]["status"], "confirmed_target")
         overview = speaker_timeline_overview(self.database, self.recording_id)
         self.assertTrue(overview["v2d3"]["available"])
         self.assertEqual(overview["queues"]["identity_expansion"]["count"], 2)
@@ -192,17 +208,25 @@ class QualityDiarizationV2D3Tests(unittest.TestCase):
         self.assertEqual([(item["start_ms"], item["end_ms"]) for item in windows], [(0, 2_000)])
         scored = score_identity_candidates(
             [
-                {"id": "target", "start_ms": 0},
-                {"id": "negative", "start_ms": 1},
+                {"id": "high", "start_ms": 0},
+                {"id": "medium", "start_ms": 1},
+                {"id": "exploratory", "start_ms": 2},
+                {"id": "negative", "start_ms": 3},
             ],
-            np.asarray(((1.0, 0.0), (0.0, 1.0)), dtype=np.float32),
+            np.asarray(
+                ((1.0, 0.0), (0.31, 0.27), (0.25, 0.05), (0.0, 1.0)),
+                dtype=np.float32,
+            ),
             {
                 "father": np.asarray((1.0, 0.0), dtype=np.float32),
                 "tv": np.asarray((0.0, 1.0), dtype=np.float32),
             },
             target_identity="father",
         )
-        self.assertEqual([item["id"] for item in scored], ["target", "negative"])
+        self.assertEqual(
+            [item["id"] for item in scored],
+            ["high", "medium", "exploratory", "negative"],
+        )
         self.assertGreater(scored[0]["contrastive_margin"], 0)
 
     def _create_diarization_run(self) -> int:
