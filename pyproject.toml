@@ -55,6 +55,7 @@ select = ["E4", "E7", "E9", "F", "B"]
 [tool.ruff.lint.per-file-ignores]
 # Typer declares CLI metadata through calls in parameter defaults by design.
 "src/allday_asr/cli.py" = ["B008"]
+"src/allday_asr/interfaces/cli/commands/*.py" = ["B008"]
 # Existing zip behavior is preserved during the characterization phase.
 "src/allday_asr/services/benchmark.py" = ["B905"]
 "src/allday_asr/services/quality_asr.py" = ["B905"]

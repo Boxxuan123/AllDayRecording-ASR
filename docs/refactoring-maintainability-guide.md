@@ -3,7 +3,7 @@
 > 状态：执行中；阶段 0、阶段 1、阶段 2A、阶段 2B、阶段 2C、阶段 3 已于 2026-08-30 完成
 > 编写日期：2026-08-30  
 > 适用范围：`src/allday_asr/`、`tests/` 与相关工程文档  
-> 当前回归基线：134 个单元测试通过
+> 当前回归基线：144 个单元测试通过
 
 ## 1. 目的与结论
 
@@ -545,6 +545,30 @@ interfaces/cli/
 - 模型工厂可在测试中替换，不需要导入或加载真实模型。
 - 单个命令模块不需要导入全部业务服务。
 - 根 `cli.py` 变为兼容入口或薄转发文件。
+
+阶段 6A 已于 2026-08-30 完成运行时装配接缝：ASR/diarization 的 settings、
+模型签名与 backend factory 已迁入 `interfaces/cli/runtime.py`，具体模型构造器延迟
+导入并可整体替换；workflow、V2 ASR 和 V2 diarization 命令均消费显式 runtime
+dataclass。新增测试不加载真实模型即可验证全部构造参数，全量 138 个测试及 Ruff
+通过。详细记录见 [阶段 6A CLI runtime 记录](refactoring-phase-6a-cli-runtime.md)。
+
+阶段 6B 已于 2026-08-30 完成第一批 command 分组：session、workflow-v2、
+asr-v2、diarization-v2 和 semantic-v2 共 22 个命令已迁入
+`interfaces/cli/commands/`；共享 recording/session 目标解析迁入 `targets.py`。
+子命令名称、关键选项、help 和错误语义均有回归测试，各模块只导入自己的 service
+家族。根 `cli.py` 已由阶段开始前的 2467 行降至 1239 行，全量 143 个测试及 Ruff
+通过。详细记录见
+[阶段 6B command 分组记录](refactoring-phase-6b-cli-command-groups.md)。
+
+阶段 6C 已于 2026-08-30 完成 CLI 模块化收尾：benchmark、evaluation、
+voice-library、utility 和 legacy 命令均已迁入独立模块，`interfaces/cli/app.py`
+统一注册全部 63 个命令；oracle 模型工厂也改为 runtime 内延迟导入。根 `cli.py`
+由阶段开始前的 2467 行收缩为 9 行兼容入口，项目脚本路径保持不变。全部命令组、
+代表性 help/选项、参数错误、退出码、依赖边界和工厂导入时机均有回归测试；全量
+144 个测试及 Ruff 通过。详细记录见
+[阶段 6C CLI 收尾记录](refactoring-phase-6c-cli-completion.md)。
+
+阶段 6 已整体完成，下一步进入阶段 7。
 
 ### 阶段 7：显式路径、配置与跨层 DTO
 

@@ -53,7 +53,10 @@ class CliSmokeTests(unittest.TestCase):
             ok=False,
             detail="synthetic failure",
         )
-        with patch("allday_asr.cli.run_checks", return_value=[failed_check]):
+        with patch(
+            "allday_asr.interfaces.cli.commands.legacy.run_checks",
+            return_value=[failed_check],
+        ):
             result = self.runner.invoke(app, ["doctor"])
 
         self.assertEqual(result.exit_code, 1, result.output)
