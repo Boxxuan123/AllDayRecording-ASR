@@ -89,8 +89,13 @@ class SpeakerTimelineTests(unittest.TestCase):
             self.database_path, self.root / "unused.toml", token="test-token"
         )
         with (
-            patch("allday_asr.web.recording_output_dir", return_value=self.output_path),
-            patch("allday_asr.web.materialize_logical_window") as materialize,
+            patch(
+                "allday_asr.interfaces.web.use_cases.media.recording_output_dir",
+                return_value=self.output_path,
+            ),
+            patch(
+                "allday_asr.interfaces.web.use_cases.media.materialize_logical_window"
+            ) as materialize,
         ):
             destination = application.speaker_timeline_audio_clip(
                 self.recording_id, start_ms=120_000, end_ms=210_000

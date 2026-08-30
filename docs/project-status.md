@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-30
-> 当前阶段：可维护性重构阶段 0、阶段 1、阶段 2A/2B/2C 及阶段 3 已完成；八个核心业务 repository 和显式数据库生命周期已建立，质量工作流已拆为七个具体 stage runner、薄编排器与兼容入口。下一步进入阶段 4，拆分 Web 后端和前端。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一轮没有读取或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
+> 当前阶段：可维护性重构阶段 0、阶段 1、阶段 2A/2B/2C、阶段 3 和阶段 4 已完成；八个核心业务 repository、显式数据库生命周期、七段式质量工作流、Vue 3/Vite 前端和模块化 Web 接口层均已建立。下一步进入阶段 5，收拢版本化 semantic 与 diarization 代码。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；本轮浏览器冒烟读取既有本地会话并按页面既有行为请求派生试听缓存，没有修改数据库、运行 ASR/说话人模型或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
 
 ## 1. 结论
 
@@ -34,7 +34,7 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 | 一键日处理 | V1/V2 分离 | V1 保留 `daily-run`；V2 默认要求 `production_ready` 后持久编排 C→D→E，本地停在 `semantic_ready`；`--shadow` 是显式实验模式 |
 | 人工评测 | V2-B 已完成 | 连续 session/source 真值、预测快照、CER、VAD、DER/JER、对齐、实体和多 run 对比；保留 V1 兼容入口 |
 | 行动建议 | 已完成规则 V1 | 明确日期/时间/行动、本人承诺、证据链、确认/忽略；不写真实日历 |
-| 本地网页 | V2-E.0.2 已扩展 | 逐段试听标注、说话人时间轴、episode 容器与 scene/claim/action 分层审核、短片回听、评测、一键运行和历史；只监听回环地址 |
+| 本地网页 | 重构阶段 4 已完成 | Vue 3/Vite 源码按 API/state/audio 与五个视图拆分；Python 后端按 server/auth/responses/routes/presenters/jobs/use cases 拆分，保留原 URL、认证、盲标台和全部 API；只监听回环地址 |
 | 实时能力 | 未开始 | 尚无流式识别、弹窗或日历写入 |
 
 ## 3. 当前真实测试结果
@@ -118,6 +118,7 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 
 ## 6. 本次盘点验证
 
+- 可维护性重构阶段 4 见 [Vue 前端迁移记录](refactoring-phase-4a-vue-frontend.md) 和 [Web 后端模块化记录](refactoring-phase-4b-web-backend.md)：前端迁入 Vue 3/Vite，后端拆为协议、资源路由、presenter、job registry 与六类 application use case；原 URL、认证、payload 和盲标台兼容；全量 123 个 Python 测试、4 个前端测试、Vite 构建、Ruff 和浏览器五视图冒烟通过。
 - 可维护性重构阶段 3 见 [显式质量工作流记录](refactoring-phase-3-quality-workflow.md)：七个 runner、显式 context/result/review reason 和薄编排器已建立；原 service 保留兼容导出；ASR 续跑、D.1/D.2 非阻断失败、编排顺序和 Web/CLI JSON 兼容均有测试；全量 116 个测试及 Ruff 通过。
 - 可维护性重构阶段 2C 见 [显式数据库生命周期记录](refactoring-phase-2c-explicit-database-lifecycle.md)：`Database(path)` 只装配对象，`initialize()`/`open()` 显式承担目录与 migration I/O；86 个 CLI、Web 和测试入口已迁移；构造无副作用、显式初始化、重复打开和入口约束均有测试；全量 110 个测试及 Ruff 通过。
 - 可维护性重构阶段 2B 见 [Repository 接缝记录](refactoring-phase-2b-repository-seams.md)：八个核心业务 repository 已提取，96 个门面方法只保留原签名转发；真实 SQLite 覆盖门面一致性、关键事务回滚及第二批五类入口；全量 106 个测试及 Ruff 通过。

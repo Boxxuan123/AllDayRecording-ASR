@@ -7,11 +7,14 @@ import uuid
 import webbrowser
 from datetime import datetime, timezone
 from http import HTTPStatus
-from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import unquote, urlparse
+
+from allday_asr.interfaces.web.audio import AudioRangeResponseMixin
+from allday_asr.interfaces.web.auth import TokenAuthMixin
+from allday_asr.interfaces.web.responses import LocalResponseMixin
 
 from allday_asr.services.benchmark import (
     ACOUSTIC_BLIND_PROTOCOL_FORMAT,
@@ -23,7 +26,6 @@ from allday_asr.services.benchmark import (
 )
 
 BLIND_ASSET_ROOT = Path(__file__).parent / "web_assets"
-MAX_JSON_BODY = 1024 * 1024
 FORBIDDEN_BLIND_FIELDS = {
     "asr_output",
     "hypothesis_text",
@@ -511,7 +513,14 @@ class BlindAnnotationApplication:
         raise KeyError(f"盲标窗口 {window_index} 不存在")
 
 
-class BlindAnnotationRequestHandler(BaseHTTPRequestHandler):
+class BlindAnnotationRequestHandler(
+    TokenAuthMixin,
+    AudioRangeResponseMixin,
+    LocalResponseMixin,
+    BaseHTTPRequestHandler,
+):
+    asset_root = BLIND_ASSET_ROOT
+    session_cookie_name = "allday_blind_session"
     server: "BlindAnnotationHTTPServer"
 
     @property
@@ -554,17 +563,17 @@ class BlindAnnotationRequestHandler(BaseHTTPRequestHandler):
             self._send_asset("blind.html", "text/html; charset=utf-8")
             return
         if parsed.path == "/assets/blind.js":
-            self._send_asset("blind.js", "text/javascript; charset=utf-8")
+            self._send_asset("assets/blind.js", "text/javascript; charset=utf-8")
             return
         if parsed.path == "/assets/blind.css":
-            self._send_asset("blind.css", "text/css; charset=utf-8")
+            self._send_asset("assets/blind.css", "text/css; charset=utf-8")
             return
         if parsed.path == "/api/task":
             self._send_json(HTTPStatus.OK, self.application.task_payload())
             return
         audio_match = _match_path(parsed.path, r"/audio/(?P<window_index>\d+)")
         if audio_match:
-            self._send_audio(
+            self._send_audio_range(
                 self.application.audio_path(int(audio_match["window_index"]))
             )
             return
@@ -606,138 +615,6 @@ class BlindAnnotationRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "接口不存在"})
 
-    def _consume_token(self, parsed) -> bool:
-        token = parse_qs(parsed.query).get("token", [None])[0]
-        if token is None:
-            return False
-        if not secrets.compare_digest(token, self.application.token):
-            self._send_json(HTTPStatus.FORBIDDEN, {"error": "安全链接已失效"})
-            return True
-        self.send_response(HTTPStatus.SEE_OTHER)
-        self.send_header("Location", "/")
-        self.send_header(
-            "Set-Cookie",
-            f"allday_blind_session={self.application.token}; Path=/; HttpOnly; SameSite=Strict",
-        )
-        self._security_headers()
-        self.end_headers()
-        return True
-
-    def _authenticated(self) -> bool:
-        header_token = self.headers.get("X-AllDay-Token")
-        if header_token and secrets.compare_digest(header_token, self.application.token):
-            return True
-        cookie = SimpleCookie(self.headers.get("Cookie", ""))
-        session = cookie.get("allday_blind_session")
-        return bool(
-            session and secrets.compare_digest(session.value, self.application.token)
-        )
-
-    def _authorized_mutation(self) -> bool:
-        if not self._authenticated():
-            self._send_json(HTTPStatus.FORBIDDEN, {"error": "未授权"})
-            return False
-        origin = self.headers.get("Origin")
-        if origin and origin not in {
-            self.application.base_url,
-            f"http://localhost:{self.application.port}",
-        }:
-            self._send_json(HTTPStatus.FORBIDDEN, {"error": "拒绝跨站请求"})
-            return False
-        return True
-
-    def _read_json(self) -> dict[str, Any]:
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError as exc:
-            raise ValueError("Content-Length 无效") from exc
-        if length <= 0 or length > MAX_JSON_BODY:
-            raise ValueError("请求正文大小无效")
-        try:
-            payload = json.loads(self.rfile.read(length))
-        except json.JSONDecodeError as exc:
-            raise ValueError("请求正文不是有效 JSON") from exc
-        if not isinstance(payload, dict):
-            raise ValueError("请求正文必须是 JSON 对象")
-        return payload
-
-    def _send_asset(self, filename: str, content_type: str) -> None:
-        path = BLIND_ASSET_ROOT / filename
-        if not path.is_file():
-            raise FileNotFoundError(f"网页资源不存在：{filename}")
-        self._send_bytes(HTTPStatus.OK, path.read_bytes(), content_type)
-
-    def _send_audio(self, path: Path) -> None:
-        size = path.stat().st_size
-        start = 0
-        end = size - 1
-        status = HTTPStatus.OK
-        range_header = self.headers.get("Range")
-        if range_header:
-            if not range_header.startswith("bytes=") or "," in range_header:
-                raise ValueError("只支持单个音频 byte range")
-            raw_start, _, raw_end = range_header[6:].partition("-")
-            if not raw_start:
-                suffix_length = int(raw_end)
-                start = max(0, size - suffix_length)
-            else:
-                start = int(raw_start)
-                end = int(raw_end) if raw_end else end
-            if start < 0 or end < start or start >= size:
-                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
-                self.send_header("Content-Range", f"bytes */{size}")
-                self._security_headers()
-                self.end_headers()
-                return
-            end = min(end, size - 1)
-            status = HTTPStatus.PARTIAL_CONTENT
-        length = end - start + 1
-        self.send_response(status)
-        self.send_header("Content-Type", "audio/wav")
-        self.send_header("Content-Length", str(length))
-        self.send_header("Accept-Ranges", "bytes")
-        if status == HTTPStatus.PARTIAL_CONTENT:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        self.send_header("Cache-Control", "private, max-age=3600")
-        self._security_headers()
-        self.end_headers()
-        with path.open("rb") as handle:
-            handle.seek(start)
-            remaining = length
-            while remaining:
-                chunk = handle.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                remaining -= len(chunk)
-
-    def _send_json(self, status: HTTPStatus, payload: Any) -> None:
-        self._send_bytes(
-            status,
-            json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"),
-            "application/json; charset=utf-8",
-        )
-
-    def _send_bytes(
-        self, status: HTTPStatus, data: bytes, content_type: str
-    ) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self._security_headers()
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _security_headers(self) -> None:
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "connect-src 'self'; media-src 'self'; img-src 'self'; frame-ancestors 'none'",
-        )
 
     def log_message(self, format: str, *args) -> None:
         print(f"[blind-web] {self.address_string()} {format % args}")

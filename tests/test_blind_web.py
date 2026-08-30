@@ -132,6 +132,12 @@ class BlindAnnotationWebTests(unittest.TestCase):
                 html = response.read().decode("utf-8")
             self.assertIn("V2-C 独立盲标台", html)
             self.assertNotIn("hypothesis", html)
+            with opener.open(f"{base_url}/assets/blind.js", timeout=3) as response:
+                javascript = response.read().decode("utf-8")
+            self.assertIn("DOMContentLoaded", javascript)
+            with opener.open(f"{base_url}/assets/blind.css", timeout=3) as response:
+                stylesheet = response.read().decode("utf-8")
+            self.assertIn(".utterance-card", stylesheet)
 
             with opener.open(f"{base_url}/api/task", timeout=3) as response:
                 task = json.load(response)
@@ -146,6 +152,29 @@ class BlindAnnotationWebTests(unittest.TestCase):
             with opener.open(range_request, timeout=3) as response:
                 self.assertEqual(response.status, 206)
                 self.assertEqual(response.read(), b"RIFF")
+                self.assertEqual(
+                    response.headers["Content-Range"],
+                    f"bytes 0-3/{len(audio_bytes)}",
+                )
+
+            suffix_request = urllib.request.Request(
+                f"{base_url}/audio/0", headers={"Range": "bytes=-4"}
+            )
+            with opener.open(suffix_request, timeout=3) as response:
+                self.assertEqual(response.status, 206)
+                self.assertEqual(response.read(), audio_bytes[-4:])
+
+            unsatisfiable_request = urllib.request.Request(
+                f"{base_url}/audio/0",
+                headers={"Range": f"bytes={len(audio_bytes)}-"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as unsatisfiable:
+                opener.open(unsatisfiable_request, timeout=3)
+            self.assertEqual(unsatisfiable.exception.code, 416)
+            self.assertEqual(
+                unsatisfiable.exception.headers["Content-Range"],
+                f"bytes */{len(audio_bytes)}",
+            )
 
             utterance = self._post(
                 f"{base_url}/api/utterances",

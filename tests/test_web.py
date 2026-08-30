@@ -90,10 +90,12 @@ class WebConsoleTests(unittest.TestCase):
                 )
                 with (
                     patch(
-                        "allday_asr.web.recording_output_dir",
+                        "allday_asr.interfaces.web.use_cases.media.recording_output_dir",
                         return_value=web_output,
                     ),
-                    patch("allday_asr.web.extract_clip") as extract_clip,
+                    patch(
+                        "allday_asr.interfaces.web.use_cases.media.extract_clip"
+                    ) as extract_clip,
                 ):
                     listening_clip = server.application.audio_clip(segment_id)
                     context_clip = server.application.audio_clip(
@@ -120,6 +122,30 @@ class WebConsoleTests(unittest.TestCase):
                     urllib.request.urlopen(f"{base_url}/api/recordings", timeout=3)
                 self.assertEqual(denied.exception.code, 403)
 
+                unauthenticated_mutation = urllib.request.Request(
+                    f"{base_url}/api/daily-run",
+                    data=json.dumps({"recording_id": recording_id}).encode("utf-8"),
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as denied_mutation:
+                    urllib.request.urlopen(unauthenticated_mutation, timeout=3)
+                self.assertEqual(denied_mutation.exception.code, 403)
+
+                cross_origin_mutation = urllib.request.Request(
+                    f"{base_url}/api/daily-run",
+                    data=json.dumps({"recording_id": recording_id}).encode("utf-8"),
+                    method="POST",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Origin": "https://example.invalid",
+                        "X-AllDay-Token": "test-token",
+                    },
+                )
+                with self.assertRaises(urllib.error.HTTPError) as cross_origin:
+                    urllib.request.urlopen(cross_origin_mutation, timeout=3)
+                self.assertEqual(cross_origin.exception.code, 403)
+
                 cookie_jar = http.cookiejar.CookieJar()
                 opener = urllib.request.build_opener(
                     urllib.request.HTTPCookieProcessor(cookie_jar)
@@ -127,20 +153,41 @@ class WebConsoleTests(unittest.TestCase):
                 with opener.open(f"{base_url}/?token=test-token", timeout=3) as response:
                     html = response.read().decode("utf-8")
                 self.assertIn("<title>AllDay · 本地日记工作台</title>", html)
-                self.assertIn("说话人时间轴", html)
-                self.assertIn("语义证据", html)
+                self.assertIn('<div id="app"></div>', html)
+                self.assertIn('/assets/app.js', html)
                 with opener.open(f"{base_url}/assets/app.js", timeout=3) as response:
                     javascript = response.read().decode("utf-8")
-                self.assertIn("DOMContentLoaded", javascript)
-                self.assertIn("renderTimelineOverview", javascript)
-                self.assertIn("renderSemantic", javascript)
-                self.assertIn("loadSessionWorkspace", javascript)
+                self.assertIn("/api/sessions", javascript)
+                self.assertIn("说话人时间轴", javascript)
+                self.assertIn("语义证据", javascript)
+                with opener.open(f"{base_url}/assets/styles.css", timeout=3) as response:
+                    stylesheet = response.read().decode("utf-8")
+                self.assertIn(".timeline-review-grid", stylesheet)
+
+                with self.assertRaises(urllib.error.HTTPError) as escaped_asset:
+                    opener.open(
+                        f"{base_url}/assets/%2e%2e/%2e%2e/__init__.py",
+                        timeout=3,
+                    )
+                self.assertEqual(escaped_asset.exception.code, 404)
 
                 with opener.open(f"{base_url}/api/sessions", timeout=3) as response:
                     sessions = json.load(response)["sessions"]
                 self.assertEqual(sessions[0]["id"], int(native_session["id"]))
                 self.assertEqual(sessions[0]["recording_id"], None)
                 self.assertEqual(sessions[0]["kind"], "session")
+
+                with self.assertRaises(urllib.error.HTTPError) as bad_parameter:
+                    opener.open(f"{base_url}/api/dashboard?recording_id=bad", timeout=3)
+                self.assertEqual(bad_parameter.exception.code, 400)
+
+                with self.assertRaises(urllib.error.HTTPError) as missing_resource:
+                    opener.open(f"{base_url}/api/jobs/deadbeef", timeout=3)
+                self.assertEqual(missing_resource.exception.code, 404)
+
+                with self.assertRaises(urllib.error.HTTPError) as missing_route:
+                    opener.open(f"{base_url}/api/not-a-resource", timeout=3)
+                self.assertEqual(missing_route.exception.code, 404)
 
                 with opener.open(
                     f"{base_url}/api/session-dashboard?session_id={int(native_session['id'])}",

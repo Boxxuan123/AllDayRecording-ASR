@@ -241,6 +241,24 @@ manifest 分片音频完成 V2 后会直接出现在会话下拉框和概览中�
 
 服务固定监听 `127.0.0.1`，不会对局域网开放；录音和真值不会上传。完整说明见 [本地网页工作台](docs/web-console.md)。
 
+工作台源码位于 `all_day_recording_front/`，使用 Vue 3、TypeScript 与 Vite。日常运行
+`allday-asr web` 不需要 Node：仓库同时保存 Vite 生成到
+`src/allday_asr/web_assets/` 的生产产物，Python wheel 也会携带这些文件。只有修改前端时
+才需要执行：
+
+```powershell
+cd all_day_recording_front
+npm test
+npm run build
+```
+
+构建保持 `/`、`/assets/app.js`、`/assets/styles.css`、认证 cookie 和全部 `/api/*`
+协议不变；独立盲标台的 `blind.html/js/css` 也由同一前端工程发布。
+
+Python 侧的 `allday_asr.web` 是兼容入口；实际实现位于
+`src/allday_asr/interfaces/web/`，HTTP server、认证/响应、资源路由、presenter、
+后台任务和 application use case 可以分别测试与维护。
+
 ## 分步离线流程
 
 ```powershell

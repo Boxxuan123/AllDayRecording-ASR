@@ -368,53 +368,79 @@ class ReviewReason:
 
 #### 后端
 
-建议拆为：
+阶段 4B 已于 2026-08-30 完成，实际结构为：
 
 ```text
 interfaces/web/
+  application.py
   server.py
   router.py
   auth.py
   responses.py
+  params.py
   jobs.py
+  audio.py
+  presenters.py
   routes/
-    recordings.py
-    sessions.py
+    assets.py
+    workspace.py
     timeline.py
-    identity.py
     semantic.py
     evaluation.py
     actions.py
-  presenters/
+    audio.py
+  use_cases/
+    workspace.py
+    evaluation.py
+    timeline.py
+    semantic.py
+    background.py
+    media.py
 ```
 
-- route 负责读取参数、调用 use case、映射异常和返回 JSON。
-- presenter 负责把 DTO 转成稳定 API payload。
-- job registry 负责线程状态和进度，不承担业务计算。
-- 音频 range/clip 响应与普通 JSON 路由分开。
-- 保留现有 HTTP server 也可以；本阶段不要求更换框架。
+- route 只读取参数、调用 use case 并返回稳定 JSON；server 统一映射异常。
+- presenter 把数据库行和 DTO 转成稳定 API payload。
+- job registry 只保存线程安全的状态和进度，不承担业务计算。
+- 音频 Range、普通文件和 JSON 响应已分开；主工作台与盲标台复用安全接缝。
+- `allday_asr.web` 保留原有公开入口，HTTP server 框架和 URL 不变。
 
 #### 前端
 
-建议使用无需构建步骤的原生 ES Modules：
+阶段 4A 已于 2026-08-30 使用项目内已有的 Vue 3/Vite 骨架完成。源码结构为：
 
 ```text
-web_assets/
-  app.js
-  api.js
-  state.js
-  audio.js
-  format.js
+all_day_recording_front/src/
+  api/client.js
+  state/workspace.js
+  audio/playback.js
+  utils/format.js
+  workspace/
+    controller.js
+    dom.js
+    reload.js
+  components/
+    layout/
+    views/
   views/
-    workspace.js
     timeline.js
-    identity.js
     semantic.js
     evaluation.js
     actions.js
+    runs.js
+    dashboard.js
+    sessions.js
 ```
 
-`app.js` 最终只负责初始化、导航和高层事件连接。每个 view 接收明确状态并返回/更新自己的 DOM 区域，不直接修改其他 view 的内部状态。
+`controller.js` 只负责初始化、导航、高层事件连接和会话聚合；SFC 负责稳定页面区域，
+各 view 模块负责自己的动态内容。Vite 使用稳定产物名生成到
+`src/allday_asr/web_assets/`，构建产物提交并随 Python 包发布，因此最终用户运行
+`allday-asr web` 仍不依赖 Node。旧盲标页面也移入前端工程的 `public/`，由同一次
+构建发布。
+
+阶段 4A 的详细迁移记录见
+[Vue 前端迁移记录](refactoring-phase-4a-vue-frontend.md)，阶段 4B 见
+[Web 后端模块化记录](refactoring-phase-4b-web-backend.md)。阶段 4 已整体完成，
+下一步进入阶段 5。
 
 验收条件：
 
@@ -424,6 +450,9 @@ web_assets/
 - 音频 Range 请求继续返回正确的 `206` 和边界。
 - 浏览器仍可在无 Node 构建流程的情况下直接打开工作台。
 - 前端至少为纯格式化、区间计算和状态转换函数增加测试。
+
+以上条件均已通过：Python 全量 123 个测试、前端 4 个测试、Vite 生产构建和浏览器
+五视图冒烟均成功，控制台无 warning/error。
 
 ### 阶段 5：收拢版本化 semantic 与 diarization 代码
 

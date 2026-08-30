@@ -37,7 +37,12 @@ allday-asr = "allday_asr.cli:app"
 where = ["src"]
 
 [tool.setuptools.package-data]
-allday_asr = ["web_assets/*.html", "web_assets/*.css", "web_assets/*.js"]
+allday_asr = [
+    "web_assets/*.html",
+    "web_assets/*.svg",
+    "web_assets/assets/*.css",
+    "web_assets/assets/*.js",
+]
 
 [tool.ruff]
 target-version = "py312"
