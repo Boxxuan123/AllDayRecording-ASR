@@ -11,7 +11,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from allday_asr.asr.funasr_backend import resolve_device
-from allday_asr.paths import MODEL_DIR, configure_model_cache
+from allday_asr.paths import AppPaths, DEFAULT_PATHS, configure_model_cache
 
 
 PYANNOTE_COMMUNITY_MODEL_ID = "pyannote/speaker-diarization-community-1"
@@ -70,18 +70,15 @@ class PyannoteCommunityBackend:
         model_path: Path | None = None,
         device: str = "auto",
         token_env: str = "HF_TOKEN",
+        paths: AppPaths | None = None,
     ) -> None:
-        # Read the standard Hugging Face login before redirecting model caches
-        # into the private project directory. HF_HOME also controls token lookup.
-        from huggingface_hub import get_token
-
-        login_token = get_token()
-        configure_model_cache()
+        self.paths = paths or DEFAULT_PATHS
         self.model_id = model_id
         self.model_path = model_path.resolve() if model_path is not None else None
         self.device = resolve_device(device)
         self.token_env = token_env
-        self._login_token = login_token
+        self._login_token: str | None = None
+        self._login_token_resolved = False
         self.model_revision: str | None = None
         self._pipeline = None
         self._model_source_kind = "unresolved"
@@ -93,6 +90,14 @@ class PyannoteCommunityBackend:
     def ensure_loaded(self) -> None:
         if self._pipeline is not None:
             return
+        # Read the standard Hugging Face login before redirecting model caches.
+        # HF_HOME also controls token lookup, so the order is intentional.
+        from huggingface_hub import get_token
+
+        if not self._login_token_resolved:
+            self._login_token = get_token()
+            self._login_token_resolved = True
+        configure_model_cache(self.paths)
         # Local private recordings must not emit usage telemetry.
         os.environ["PYANNOTE_METRICS_ENABLED"] = "false"
         source = self._resolve_model_source()
@@ -127,7 +132,7 @@ class PyannoteCommunityBackend:
                 pipeline = Pipeline.from_pretrained(
                     source,
                     token=token,
-                    cache_dir=MODEL_DIR / "huggingface" / "hub",
+                    cache_dir=self.paths.model_dir / "huggingface" / "hub",
                 )
                 if pipeline is not None:
                     pipeline.to(torch.device(self.device))
@@ -271,7 +276,7 @@ class PyannoteCommunityBackend:
 
     def _latest_cached_snapshot(self) -> Path | None:
         root = (
-            MODEL_DIR
+            self.paths.model_dir
             / "huggingface"
             / "hub"
             / f"models--{self.model_id.replace('/', '--')}"

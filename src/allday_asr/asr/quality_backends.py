@@ -10,7 +10,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from allday_asr.asr.funasr_backend import _cached_model_or_id, resolve_device
-from allday_asr.paths import MODEL_DIR, configure_model_cache
+from allday_asr.paths import AppPaths, DEFAULT_PATHS, configure_model_cache
 
 QWEN_ASR_MODEL_ID = "Qwen/Qwen3-ASR-1.7B"
 QWEN_ALIGNER_MODEL_ID = "Qwen/Qwen3-ForcedAligner-0.6B"
@@ -111,10 +111,11 @@ class Qwen3AsrBackend:
         max_new_tokens: int = 4096,
         dtype: str = "bfloat16",
         speech_gate: SpeechGateSettings | None = None,
+        paths: AppPaths | None = None,
     ):
         if batch_size < 1:
             raise ValueError("batch_size must be at least 1")
-        configure_model_cache()
+        self.paths = paths or DEFAULT_PATHS
         self.model_id = model_id
         self.alignment_model_id = aligner_model_id
         self.device = resolve_device(device)
@@ -130,12 +131,17 @@ class Qwen3AsrBackend:
     def ensure_loaded(self) -> None:
         if self._model is not None:
             return
+        configure_model_cache(self.paths)
         import torch
         from qwen_asr import Qwen3ASRModel
 
         dtype = getattr(torch, self.dtype_name)
-        model_path = _cached_huggingface_or_id(self.model_id)
-        aligner_path = _cached_huggingface_or_id(self.alignment_model_id)
+        model_path = _cached_huggingface_or_id(
+            self.model_id, model_dir=self.paths.model_dir
+        )
+        aligner_path = _cached_huggingface_or_id(
+            self.alignment_model_id, model_dir=self.paths.model_dir
+        )
         self._model = Qwen3ASRModel.from_pretrained(
             model_path,
             dtype=dtype,
@@ -285,11 +291,14 @@ class Qwen3AsrBackend:
     def _detect_fsmn_speech(
         self, audio_path: Path, duration_ms: int
     ) -> list[tuple[int, int]]:
-        from funasr import AutoModel
-
         if self._vad_model is None:
+            configure_model_cache(self.paths)
+            from funasr import AutoModel
+
             self._vad_model = AutoModel(
-                model=_cached_model_or_id("fsmn-vad"),
+                model=_cached_model_or_id(
+                    "fsmn-vad", model_dir=self.paths.model_dir
+                ),
                 device="cpu",
                 disable_update=True,
                 disable_pbar=True,
@@ -317,6 +326,8 @@ class Qwen3AsrBackend:
     def _detect_silero_speech(
         self, waveform: np.ndarray, sample_rate: int
     ) -> list[tuple[int, int]]:
+        if self._silero_model is None:
+            configure_model_cache(self.paths)
         import torch
         from silero_vad import get_speech_timestamps, load_silero_vad
 
@@ -378,8 +389,9 @@ class FunAsrNanoBackend:
         model_id: str = FUN_ASR_MODEL_ID,
         device: str = "auto",
         dtype: str = "bf16",
+        paths: AppPaths | None = None,
     ):
-        configure_model_cache()
+        self.paths = paths or DEFAULT_PATHS
         self.model_id = model_id
         self.alignment_model_id = f"{model_id}:ctc"
         self.device = resolve_device(device)
@@ -390,15 +402,20 @@ class FunAsrNanoBackend:
     def ensure_loaded(self) -> None:
         if self._model is not None:
             return
+        configure_model_cache(self.paths)
         from funasr import AutoModel
 
-        model_path = _cached_modelscope_or_id(self.model_id)
+        model_path = _cached_modelscope_or_id(
+            self.model_id, model_dir=self.paths.model_dir
+        )
         self._model = AutoModel(
             model=model_path,
             device=self.device,
             dtype=self.dtype_name,
             trust_remote_code=True,
-            vad_model=_cached_model_or_id("fsmn-vad"),
+            vad_model=_cached_model_or_id(
+                "fsmn-vad", model_dir=self.paths.model_dir
+            ),
             vad_kwargs={"max_single_segment_time": 30_000},
             disable_update=True,
             disable_pbar=True,
@@ -497,8 +514,17 @@ def _json_safe(value: Any) -> Any:
         return {"repr": repr(value)}
 
 
-def _cached_modelscope_or_id(model_id: str) -> str:
-    root = MODEL_DIR / "modelscope" / "models" / model_id.replace("/", "--") / "snapshots"
+def _cached_modelscope_or_id(
+    model_id: str, *, model_dir: Path | None = None
+) -> str:
+    cache_root = model_dir or DEFAULT_PATHS.model_dir
+    root = (
+        cache_root
+        / "modelscope"
+        / "models"
+        / model_id.replace("/", "--")
+        / "snapshots"
+    )
     if root.is_dir():
         snapshots = sorted(
             (path for path in root.iterdir() if path.is_dir()),
@@ -510,8 +536,17 @@ def _cached_modelscope_or_id(model_id: str) -> str:
     return model_id
 
 
-def _cached_huggingface_or_id(model_id: str) -> str:
-    root = MODEL_DIR / "huggingface" / "hub" / f"models--{model_id.replace('/', '--')}" / "snapshots"
+def _cached_huggingface_or_id(
+    model_id: str, *, model_dir: Path | None = None
+) -> str:
+    cache_root = model_dir or DEFAULT_PATHS.model_dir
+    root = (
+        cache_root
+        / "huggingface"
+        / "hub"
+        / f"models--{model_id.replace('/', '--')}"
+        / "snapshots"
+    )
     if root.is_dir():
         snapshots = sorted(
             (path for path in root.iterdir() if path.is_dir()),
@@ -520,7 +555,7 @@ def _cached_huggingface_or_id(model_id: str) -> str:
         )
         if snapshots:
             return str(snapshots[0])
-    modelscope_path = _cached_modelscope_or_id(model_id)
+    modelscope_path = _cached_modelscope_or_id(model_id, model_dir=cache_root)
     if modelscope_path != model_id:
         return modelscope_path
     return model_id

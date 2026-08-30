@@ -20,7 +20,7 @@ from allday_asr.asr.quality_backends import (
     _qwen_language,
     _release_cuda,
 )
-from allday_asr.paths import configure_model_cache
+from allday_asr.paths import AppPaths, DEFAULT_PATHS, configure_model_cache
 
 
 @dataclass(frozen=True)
@@ -52,8 +52,10 @@ class SenseVoiceOracleBackend:
     backend_name = "funasr-sensevoice-oracle-boundary"
     model_revision: str | None = None
 
-    def __init__(self, *, device: str = "auto"):
-        self._backend = FunASRBackend(device=device)
+    def __init__(
+        self, *, device: str = "auto", paths: AppPaths | None = None
+    ):
+        self._backend = FunASRBackend(device=device, paths=paths)
 
     def transcribe(self, audio_path: Path, *, language: str | None) -> OracleTranscript:
         import soundfile as sf
@@ -96,8 +98,9 @@ class QwenOracleBackend:
         device: str = "auto",
         dtype: str = "bfloat16",
         max_new_tokens: int = 4096,
+        paths: AppPaths | None = None,
     ):
-        configure_model_cache()
+        self.paths = paths or DEFAULT_PATHS
         self.model_id = model_id
         self.device = resolve_device(device)
         self.dtype_name = dtype
@@ -108,12 +111,15 @@ class QwenOracleBackend:
     def ensure_loaded(self) -> None:
         if self._model is not None:
             return
+        configure_model_cache(self.paths)
         import torch
         from qwen_asr import Qwen3ASRModel
 
         dtype = getattr(torch, self.dtype_name)
         self._model = Qwen3ASRModel.from_pretrained(
-            _cached_huggingface_or_id(self.model_id),
+            _cached_huggingface_or_id(
+                self.model_id, model_dir=self.paths.model_dir
+            ),
             dtype=dtype,
             device_map=self.device,
             max_inference_batch_size=1,
@@ -167,8 +173,9 @@ class FunAsrNanoOracleBackend:
         model_id: str = FUN_ASR_MODEL_ID,
         device: str = "auto",
         dtype: str = "bf16",
+        paths: AppPaths | None = None,
     ):
-        configure_model_cache()
+        self.paths = paths or DEFAULT_PATHS
         self.model_id = model_id
         self.device = resolve_device(device)
         self.dtype_name = dtype
@@ -178,10 +185,13 @@ class FunAsrNanoOracleBackend:
     def ensure_loaded(self) -> None:
         if self._model is not None:
             return
+        configure_model_cache(self.paths)
         from funasr import AutoModel
 
         self._model = AutoModel(
-            model=_cached_modelscope_or_id(self.model_id),
+            model=_cached_modelscope_or_id(
+                self.model_id, model_dir=self.paths.model_dir
+            ),
             device=self.device,
             dtype=self.dtype_name,
             trust_remote_code=True,
@@ -220,12 +230,14 @@ class FunAsrNanoOracleBackend:
         _release_cuda()
 
 
-def create_oracle_backend(name: str, *, device: str = "auto") -> OracleAsrBackend:
+def create_oracle_backend(
+    name: str, *, device: str = "auto", paths: AppPaths | None = None
+) -> OracleAsrBackend:
     normalized = name.strip().lower()
     if normalized == "sensevoice":
-        return SenseVoiceOracleBackend(device=device)
+        return SenseVoiceOracleBackend(device=device, paths=paths)
     if normalized == "qwen":
-        return QwenOracleBackend(device=device)
+        return QwenOracleBackend(device=device, paths=paths)
     if normalized in {"fun", "funasr", "fun-asr-nano"}:
-        return FunAsrNanoOracleBackend(device=device)
+        return FunAsrNanoOracleBackend(device=device, paths=paths)
     raise ValueError("model 必须是 sensevoice、qwen 或 fun")

@@ -9,6 +9,7 @@ from typing import Any
 
 from allday_asr.application.diarization.base import QualityDiarizationSettings
 from allday_asr.config import AppConfig
+from allday_asr.paths import AppPaths
 from allday_asr.services.quality_asr import QualityAsrSettings
 from allday_asr.services.runtime_profile import resolve_vram_profile
 
@@ -55,10 +56,15 @@ def default_backend_builders() -> RuntimeBackendBuilders:
     )
 
 
-def build_oracle_backend(model: str, *, device: str) -> object:
+def build_oracle_backend(
+    model: str, *, device: str, paths: AppPaths | None = None
+) -> object:
     from allday_asr.asr.oracle_backends import create_oracle_backend
 
-    return create_oracle_backend(model, device=device)
+    kwargs: dict[str, object] = {"device": device}
+    if paths is not None:
+        kwargs["paths"] = paths
+    return create_oracle_backend(model, **kwargs)
 
 
 def runtime_signature(values: Mapping[str, Any]) -> str:
@@ -75,6 +81,7 @@ def build_quality_asr_runtime(
     max_windows: int | None = None,
     builders: RuntimeBackendBuilders | None = None,
     profile_resolver: ProfileResolver = resolve_vram_profile,
+    paths: AppPaths | None = None,
 ) -> QualityAsrRuntime:
     selected_profile = profile_resolver(
         requested_profile or resolved.asr.vram_profile,
@@ -138,20 +145,26 @@ def build_quality_asr_runtime(
     )
 
     def primary_factory() -> object:
-        return selected_builders.primary_asr(
-            model_id=resolved.asr.primary_model,
-            aligner_model_id=resolved.asr.forced_aligner_model,
-            device=resolved.runtime.device,
-            batch_size=batch_size,
-            max_new_tokens=resolved.asr.max_new_tokens,
-            speech_gate=speech_gate,
-        )
+        kwargs: dict[str, object] = {
+            "model_id": resolved.asr.primary_model,
+            "aligner_model_id": resolved.asr.forced_aligner_model,
+            "device": resolved.runtime.device,
+            "batch_size": batch_size,
+            "max_new_tokens": resolved.asr.max_new_tokens,
+            "speech_gate": speech_gate,
+        }
+        if paths is not None:
+            kwargs["paths"] = paths
+        return selected_builders.primary_asr(**kwargs)
 
     def secondary_factory() -> object:
-        return selected_builders.secondary_asr(
-            model_id=resolved.asr.secondary_model,
-            device=resolved.runtime.device,
-        )
+        kwargs: dict[str, object] = {
+            "model_id": resolved.asr.secondary_model,
+            "device": resolved.runtime.device,
+        }
+        if paths is not None:
+            kwargs["paths"] = paths
+        return selected_builders.secondary_asr(**kwargs)
 
     return QualityAsrRuntime(
         settings=settings,
@@ -168,6 +181,7 @@ def build_quality_diarization_runtime(
     min_speakers: int | None = None,
     max_speakers: int | None = None,
     builders: RuntimeBackendBuilders | None = None,
+    paths: AppPaths | None = None,
 ) -> QualityDiarizationRuntime:
     quality = resolved.quality_diarization
     selected_model_path = model_path or (
@@ -193,12 +207,15 @@ def build_quality_diarization_runtime(
     selected_builders = builders or default_backend_builders()
 
     def backend_factory() -> object:
-        return selected_builders.diarization(
-            model_id=quality.model_id,
-            model_path=selected_model_path,
-            device=resolved.runtime.device,
-            token_env=quality.token_env,
-        )
+        kwargs: dict[str, object] = {
+            "model_id": quality.model_id,
+            "model_path": selected_model_path,
+            "device": resolved.runtime.device,
+            "token_env": quality.token_env,
+        }
+        if paths is not None:
+            kwargs["paths"] = paths
+        return selected_builders.diarization(**kwargs)
 
     return QualityDiarizationRuntime(
         settings=settings,

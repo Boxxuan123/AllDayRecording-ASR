@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from allday_asr.paths import DEFAULT_CONFIG_PATH
+from allday_asr.paths import AppPaths, DEFAULT_PATHS
 
 
 class ConfigError(ValueError):
@@ -118,8 +118,10 @@ class AppConfig:
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 
 
-def load_config(path: Path | None = None) -> AppConfig:
-    config_path = (path or DEFAULT_CONFIG_PATH).resolve()
+def load_config(
+    path: Path | None = None, *, paths: AppPaths | None = None
+) -> AppConfig:
+    config_path = (path or (paths or DEFAULT_PATHS).config_path).resolve()
     if not config_path.is_file():
         raise ConfigError(f"配置文件不存在：{config_path}")
     try:

@@ -605,6 +605,16 @@ DTO 优先用于以下边界：
 - 关键跨模块结构具备静态字段检查。
 - JSON 序列化边界集中在 presenter/transport 层。
 
+阶段 7 已于 2026-08-30 完成：新增可按环境映射构造并可注入的 `AppPaths`，
+配置加载器、CLI runtime 和模型 backend 均可使用显式路径；七类模型对象的构造期
+不再创建缓存目录或修改模型缓存/遥测环境变量，相关配置延后到实际模型加载。
+Web presenter 为 processing run、dashboard、action 和 daily job 建立 `TypedDict`，
+daily job 的 JSON-ready 序列化也已集中到 presenter。旧路径常量和 helper 仅作为
+兼容入口委托给 `DEFAULT_PATHS`。全量 151 个测试、Ruff 和 diff 检查通过。详细记录
+见[阶段 7 显式路径与 DTO 记录](refactoring-phase-7-explicit-paths-and-dtos.md)。
+
+至此，本指南定义的阶段 0 至阶段 7 已全部完成。
+
 ## 6. 测试策略
 
 重构遵循“先刻画、后移动、再收紧”的测试顺序。

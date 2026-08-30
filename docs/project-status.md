@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-30
-> 当前阶段：可维护性重构阶段 0 至阶段 6 已完成；CLI 已具备统一 app、可替换的运行时工厂、十个职责化 command 模块和 9 行兼容入口。semantic/diarization 已具备稳定入口、显式版本 dispatcher、历史实现归档、职责化 diarization 实现和旧 service 兼容层。八个核心业务 repository、显式数据库生命周期、七段式质量工作流、Vue 3/Vite 前端和模块化 Web 接口层均已建立，下一步进入阶段 7 的显式路径、配置与跨层 DTO。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一次浏览器冒烟读取既有本地会话并按页面既有行为请求派生试听缓存，没有修改数据库、运行 ASR/说话人模型或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
+> 当前阶段：可维护性重构阶段 0 至阶段 7 已全部完成；项目已有统一 CLI composition root、稳定 semantic/diarization 入口、八个核心 repository、显式数据库生命周期、七段式质量工作流、Vue 3/Vite 前端和模块化 Web 接口层。`AppPaths` 可按环境映射构造并注入配置加载器与模型 runtime，模型对象构造不再创建缓存目录或修改缓存环境，关键 Web payload 已具备静态 DTO。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一次浏览器冒烟读取既有本地会话并按页面既有行为请求派生试听缓存，没有修改数据库、运行 ASR/说话人模型或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
 
 ## 1. 结论
 
@@ -118,6 +118,7 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 
 ## 6. 本次盘点验证
 
+- 可维护性重构阶段 7 见 [显式路径与 DTO 记录](refactoring-phase-7-explicit-paths-and-dtos.md)：`AppPaths`、配置加载器和 CLI runtime 支持显式路径注入；七类模型 backend 构造期不再创建缓存或写环境变量；五类 Web `TypedDict` 固化关键 payload，daily job 序列化集中到 presenter。全量 151 个测试、Ruff 和 diff 检查通过，指南定义的阶段 0 至 7 已全部完成。
 - 可维护性重构阶段 6C 见 [CLI 收尾记录](refactoring-phase-6c-cli-completion.md)：benchmark/evaluation/library/utility/legacy 命令全部迁移，统一 app 注册 63 个命令，oracle 工厂延迟导入，根 CLI 从 2467 行收缩为 9 行兼容入口。全量 144 个测试、Ruff 和 diff 检查通过，阶段 6 已完成。
 - 可维护性重构阶段 6B 见 [command 分组记录](refactoring-phase-6b-cli-command-groups.md)：session/workflow-v2/asr-v2/diarization-v2/semantic-v2 共 22 个命令已迁入五个独立模块，共享 target 校验单独提取；命令名、关键选项、help、错误语义和 service 依赖隔离均有测试。根 CLI 由 2467 行降至 1239 行，全量 143 个测试、Ruff 和 diff 检查通过。
 - 可维护性重构阶段 6A 见 [CLI runtime 记录](refactoring-phase-6a-cli-runtime.md)：模型签名、settings 和 Qwen/FunASR/Pyannote backend factory 已移出根 CLI，默认具体构造器延迟导入且可在测试中整体替换；workflow/V2 ASR/V2 diarization 命令使用显式 runtime dataclass。全量 138 个测试、Ruff 和 diff 检查通过。

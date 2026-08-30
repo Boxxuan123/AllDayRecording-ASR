@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from allday_asr.paths import MODEL_DIR, configure_model_cache
+from allday_asr.paths import AppPaths, DEFAULT_PATHS, configure_model_cache
 
 
 VAD_MODEL_ID = "fsmn-vad"
@@ -43,8 +43,8 @@ def resolve_device(requested: str) -> str:
 
 
 class FunASRBackend:
-    def __init__(self, device: str = "auto"):
-        configure_model_cache()
+    def __init__(self, device: str = "auto", *, paths: AppPaths | None = None):
+        self.paths = paths or DEFAULT_PATHS
         self.device = resolve_device(device)
         self._vad_model = None
         self._asr_model = None
@@ -55,11 +55,12 @@ class FunASRBackend:
         return importlib.metadata.version("funasr")
 
     def detect_speech(self, audio_path: Path) -> list[tuple[int, int]]:
-        from funasr import AutoModel
-
         if self._vad_model is None:
+            configure_model_cache(self.paths)
+            from funasr import AutoModel
+
             self._vad_model = AutoModel(
-                model=_cached_model_or_id(VAD_MODEL_ID),
+                model=_cached_model_or_id(VAD_MODEL_ID, model_dir=self.paths.model_dir),
                 device=self.device,
                 disable_update=True,
                 disable_pbar=True,
@@ -83,20 +84,21 @@ class FunASRBackend:
 
     def ensure_asr_loaded(self) -> None:
         """Download and load the ASR model before changing any segment state."""
-        from funasr import AutoModel
-
         if self._asr_model is None:
+            configure_model_cache(self.paths)
+            from funasr import AutoModel
+
             self._asr_model = AutoModel(
-                model=_cached_model_or_id(ASR_MODEL_ID),
+                model=_cached_model_or_id(ASR_MODEL_ID, model_dir=self.paths.model_dir),
                 device=self.device,
                 disable_update=True,
                 disable_pbar=True,
             )
 
     def transcribe(self, samples: np.ndarray, language: str = "zh") -> Transcript:
+        self.ensure_asr_loaded()
         from funasr.utils.postprocess_utils import rich_transcription_postprocess
 
-        self.ensure_asr_loaded()
         result = self._asr_model.generate(
             input=samples,
             batch_size=1,
@@ -110,11 +112,14 @@ class FunASRBackend:
         return Transcript(raw_text=raw_text, display_text=display_text, language=language)
 
     def ensure_speaker_loaded(self) -> None:
-        from funasr import AutoModel
-
         if self._speaker_model is None:
+            configure_model_cache(self.paths)
+            from funasr import AutoModel
+
             self._speaker_model = AutoModel(
-                model=_cached_model_or_id(SPEAKER_MODEL_ID),
+                model=_cached_model_or_id(
+                    SPEAKER_MODEL_ID, model_dir=self.paths.model_dir
+                ),
                 device=self.device,
                 disable_update=True,
                 disable_pbar=True,
@@ -155,12 +160,15 @@ class FunASRBackend:
         self, audio_path: Path, preset_speakers: int | None = None
     ) -> DiarizationResult:
         """Run the supported FunASR VAD + SenseVoice + CAM++ meeting pipeline."""
+        configure_model_cache(self.paths)
         from funasr import AutoModel
 
         pipeline = AutoModel(
-            model=_cached_model_or_id(ASR_MODEL_ID),
-            vad_model=_cached_model_or_id(VAD_MODEL_ID),
-            spk_model=_cached_model_or_id(SPEAKER_MODEL_ID),
+            model=_cached_model_or_id(ASR_MODEL_ID, model_dir=self.paths.model_dir),
+            vad_model=_cached_model_or_id(VAD_MODEL_ID, model_dir=self.paths.model_dir),
+            spk_model=_cached_model_or_id(
+                SPEAKER_MODEL_ID, model_dir=self.paths.model_dir
+            ),
             device=self.device,
             spk_mode="vad_segment",
             vad_kwargs={"max_single_segment_time": 30_000},
@@ -196,10 +204,13 @@ def _extract_language(text: str) -> str | None:
     return None
 
 
-def _cached_model_or_id(model_id: str) -> str:
+def _cached_model_or_id(model_id: str, *, model_dir: Path | None = None) -> str:
     """Use an already downloaded ModelScope snapshot without a network check."""
     cache_id = MODEL_CACHE_IDS.get(model_id, model_id)
-    model_root = MODEL_DIR / "modelscope" / "models" / cache_id.replace("/", "--") / "snapshots"
+    cache_root = model_dir or DEFAULT_PATHS.model_dir
+    model_root = (
+        cache_root / "modelscope" / "models" / cache_id.replace("/", "--") / "snapshots"
+    )
     preferred = model_root / "master"
     if _is_model_snapshot(preferred):
         return str(preferred)

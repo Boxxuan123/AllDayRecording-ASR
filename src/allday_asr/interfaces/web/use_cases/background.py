@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
 from allday_asr.config import load_config
+from allday_asr.interfaces.web.presenters import daily_summary_payload
 from allday_asr.services.daily import run_daily
 
 
@@ -29,16 +29,7 @@ class BackgroundJobUseCases:
                     load_config(self.config_path),
                     progress=progress,
                 )
-                result = {
-                    "run_id": summary.run_id,
-                    "recording_id": summary.recording_id,
-                    "status": summary.status,
-                    "steps": [asdict(step) for step in summary.steps],
-                    "review_actions": summary.review_actions,
-                    "manifest_markdown_path": str(
-                        summary.manifest_markdown_path.resolve()
-                    ),
-                }
+                result = daily_summary_payload(summary)
                 self._update_job(
                     job_id,
                     status="completed",

@@ -12,6 +12,7 @@ from allday_asr.interfaces.cli.runtime import (
     build_quality_diarization_runtime,
     runtime_signature,
 )
+from allday_asr.paths import AppPaths
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +104,31 @@ class CliRuntimeCompositionTests(unittest.TestCase):
             runtime_signature({"b": 2, "a": 1}),
             runtime_signature({"a": 1, "b": 2}),
         )
+
+    def test_explicit_paths_are_forwarded_to_model_factories(self) -> None:
+        config = AppConfig()
+        paths = AppPaths.from_environment({}, project_root=PROJECT_ROOT / "isolated")
+        asr_runtime = build_quality_asr_runtime(
+            config,
+            requested_profile="compatible-8gb",
+            builders=self.builders,
+            profile_resolver=MagicMock(return_value="compatible-8gb"),
+            paths=paths,
+        )
+        diarization_runtime = build_quality_diarization_runtime(
+            config,
+            model_path=None,
+            builders=self.builders,
+            paths=paths,
+        )
+
+        asr_runtime.primary_factory()
+        asr_runtime.secondary_factory()
+        diarization_runtime.backend_factory()
+
+        self.assertIs(self.primary.call_args.kwargs["paths"], paths)
+        self.assertIs(self.secondary.call_args.kwargs["paths"], paths)
+        self.assertIs(self.diarization.call_args.kwargs["paths"], paths)
 
     def test_concrete_model_factories_are_not_top_level_cli_imports(self) -> None:
         forbidden = {
