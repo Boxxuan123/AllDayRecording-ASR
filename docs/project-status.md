@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
-> 盘点日期：2026-08-29
-> 当前阶段：V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一轮没有读取或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
+> 盘点日期：2026-08-30
+> 当前阶段：可维护性重构阶段 0 已建立测试、CLI、Web、workflow、Ruff 与依赖审查基线；尚未移动生产代码。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一轮没有读取或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
 
 ## 1. 结论
 
@@ -118,8 +118,9 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 
 ## 6. 本次盘点验证
 
+- 可维护性重构阶段 0 的行为与依赖基线见 [阶段 0 基线](refactoring-phase-0-baseline.md)：重构前 79 个测试通过；新增 CLI smoke 和架构约束后 86 个测试通过，且 Ruff 对 `src`/`tests` 通过。本阶段没有加载真实模型或读取真实录音。
 - `doctor` 全部通过：Python 3.12.10、FFmpeg/FFprobe、FunASR 1.4.4、ModelScope 1.39.1、pyannote.audio 4.0.7、PyTorch/torchaudio 2.9.1+cu128 和 RTX 5070 CUDA 实算正常。
-- 全量 78 个单元测试通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution/semantic 防篡改、跨源引用、v10→v11 身份证据迁移、分片清单事务、相同静音内容的不同实例、session-native run、不可覆盖独立备份、清单外文件拒绝、篡改撤销恢复资格、production/shadow 准入、原音篡改预阻断、阶段复用、持久工作流、V2-C/D/E 与既有评测逻辑。V2-W.1 新测试只使用临时合成 WAV，没有读取或运行新增真实音频。
+- 原有 79 个单元测试在阶段 0 开始时全部通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution/semantic 防篡改、跨源引用、v10→v11 身份证据迁移、分片清单事务、相同静音内容的不同实例、session-native run、不可覆盖独立备份、清单外文件拒绝、篡改撤销恢复资格、production/shadow 准入、原音篡改预阻断、阶段复用、持久工作流、V2-C/D/E 与既有评测逻辑。V2-W.1 新测试只使用临时合成 WAV，没有读取或运行新增真实音频。
 - 真实库已从 schema v3 升级到 v4，升级前自动保存一份 schema v3 SQLite 备份。迁移前后 V1 各表计数一致：423 个语音段、17 条人工身份标注、26 条声纹样本、10 个事件和 3 个历史 run 均保留。
 - 当前 79,826,205 字节 Watch M4A 完整性状态为 `verified`；迁移和真实逻辑窗口解码前后 SHA-256 均为 `3503e63fc61b0b97a91d0ecb1ea925fbbd81ae021790134f538b04c7ccfd2d08`。
 - 当前长录音可规划为 33 个无空洞的 5 分钟核心窗口并带 5 秒边界上下文；真实 10 秒核心窗口临时解码为 11 秒 WAV，退出后缓存已删除。
