@@ -11,6 +11,7 @@ from allday_asr.storage.database import (
     Database,
     MIGRATIONS,
     SCHEMA,
+    V7_GUARD_SQL,
 )
 
 
@@ -18,7 +19,7 @@ class DatabaseTests(unittest.TestCase):
     def test_recording_dedup_and_resumable_segments(self) -> None:
         database_path = Path(__file__).parent / f"test-{uuid4().hex}.sqlite3"
         try:
-            database = Database(database_path)
+            database = Database.open(database_path)
             self.assertEqual(database.schema_version(), LATEST_SCHEMA_VERSION)
             values = {
                 "source_path": str(Path(__file__).parent / "audio.m4a"),
@@ -181,7 +182,7 @@ class DatabaseTests(unittest.TestCase):
 
         backup_paths: list[Path] = []
         try:
-            database = Database(database_path)
+            database = Database.open(database_path)
             self.assertEqual(database.schema_version(), LATEST_SCHEMA_VERSION)
             source = database.list_source_objects()[0]
             session = database.get_session_for_recording(1)
@@ -245,7 +246,7 @@ class DatabaseTests(unittest.TestCase):
             f"v2b-migration-{token}.schema-v4-to-v{LATEST_SCHEMA_VERSION}.*.sqlite3"
         )
         try:
-            database = Database(database_path)
+            database = Database.open(database_path)
             self.assertEqual(database.schema_version(), LATEST_SCHEMA_VERSION)
             with database.connect() as connection:
                 tables = {
@@ -297,6 +298,7 @@ class DatabaseTests(unittest.TestCase):
                     "INSERT INTO schema_migrations VALUES (?, '2026-08-29T00:00:00+00:00')",
                     (version,),
                 )
+            connection.executescript(V7_GUARD_SQL)
             connection.execute(
                 """
                 INSERT INTO source_objects (
@@ -355,6 +357,65 @@ class DatabaseTests(unittest.TestCase):
                 )
                 """
             )
+            connection.execute(
+                """
+                INSERT INTO recordings (
+                    source_path, sha256, device, recorded_at, timezone,
+                    duration_ms, status, created_at, updated_at
+                ) VALUES (
+                    'synthetic.wav', 'recording-sha', 'test',
+                    '2026-08-29T00:00:00+00:00', 'Asia/Singapore',
+                    1000, 'completed', '2026-08-29T00:00:00+00:00',
+                    '2026-08-29T00:00:00+00:00'
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO processing_runs (
+                    recording_id, run_kind, status, config_json, config_sha256,
+                    started_at, completed_at
+                ) VALUES (
+                    1, 'quality_asr_v2c', 'completed', '{}', 'config-sha',
+                    '2026-08-29T00:00:00+00:00',
+                    '2026-08-29T00:01:00+00:00'
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO asr_hypotheses (
+                    hypothesis_key, run_id, session_id, window_index, hypothesis_role,
+                    core_start_ms, core_end_ms, analysis_start_ms,
+                    analysis_end_ms, model_id, backend, language, text,
+                    parameters_json, raw_response_json, content_sha256, created_at
+                ) VALUES (
+                    'hypothesis-1', 1, 1, 0, 'primary', 0, 1000, 0, 1000,
+                    'test-asr', 'test', 'zh', 'test', '{}', '{}',
+                    'hypothesis-sha', '2026-08-29T00:00:00+00:00'
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO asr_alignment_tokens (
+                    hypothesis_id, token_index, text, session_start_ms,
+                    session_end_ms, analysis_start_ms, analysis_end_ms,
+                    kept_in_core, metadata_json, created_at
+                ) VALUES (
+                    1, 0, 'test', 100, 300, 100, 300, 1, '{}',
+                    '2026-08-29T00:00:00+00:00'
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO asr_token_sources (
+                    token_id, position, source_object_id, source_sha256,
+                    source_start_ms, source_end_ms
+                ) VALUES (1, 0, 1, 'same-content', 100, 300)
+                """
+            )
             connection.commit()
         finally:
             connection.close()
@@ -363,7 +424,7 @@ class DatabaseTests(unittest.TestCase):
             f"v11-migration-{token}.schema-v10-to-v{LATEST_SCHEMA_VERSION}.*.sqlite3"
         )
         try:
-            database = Database(database_path)
+            database = Database.open(database_path)
             reference = database.list_identity_reference_intervals(
                 identity_label="mother"
             )[0]
@@ -371,6 +432,12 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(len(database.list_source_instances(1)), 1)
             with database.connect() as migrated:
                 self.assertEqual(list(migrated.execute("PRAGMA foreign_key_check")), [])
+                self.assertEqual(
+                    migrated.execute(
+                        "SELECT source_instance_id FROM asr_token_sources"
+                    ).fetchone()[0],
+                    1,
+                )
             self.assertEqual(len(list(root.glob(backup_pattern))), 1)
         finally:
             for candidate in [

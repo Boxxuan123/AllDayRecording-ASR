@@ -67,7 +67,7 @@ class QualityDiarizationTests(unittest.TestCase):
         self.output_dir = self.root / f"diarization-output-{self.token}"
         self.source_bytes = b"immutable-watch-audio"
         self.source_path.write_bytes(self.source_bytes)
-        self.database = Database(self.database_path)
+        self.database = Database.open(self.database_path)
         recording = self.database.create_recording(
             {
                 "source_path": str(self.source_path.resolve()),

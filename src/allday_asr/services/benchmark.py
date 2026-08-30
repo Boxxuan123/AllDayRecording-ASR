@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from allday_asr.asr.oracle_backends import OracleAsrBackend
+from allday_asr.domain.text import levenshtein_operations, normalize_text
 from allday_asr.paths import EVALUATION_DIR, OUTPUT_DIR
 from allday_asr.services.acoustic_selection import (
     analyze_pcm_wav,
@@ -23,8 +24,6 @@ from allday_asr.services.acoustic_selection import (
 from allday_asr.services.evaluation import (
     EVALUATION_FORMAT,
     NAME_PATTERN,
-    levenshtein_operations,
-    normalize_text,
 )
 from allday_asr.services.sources import (
     LogicalWindow,

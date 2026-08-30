@@ -324,7 +324,7 @@ def session_import_manifest(
     """完整预检所有分片后，在一个事务中创建并关闭不可变会话。"""
     resolved = load_config(config)
     summary = ingest_session_manifest(
-        Database(db),
+        Database.open(db),
         manifest,
         device=resolved.ingest.device,
         timezone_name=resolved.ingest.timezone,
@@ -345,7 +345,7 @@ def session_list(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """列出单文件兼容会话和原生多分片会话。"""
-    database = Database(db)
+    database = Database.open(db)
     table = Table("Session", "Kind", "Status", "Duration", "Chunks", "Key")
     for session in database.list_recording_sessions():
         session_id = int(session["id"])
@@ -394,7 +394,7 @@ def session_backup(
     """创建不覆盖已有文件的逐实例原音备份，并保存验证证据。"""
     try:
         summary = create_session_backup(
-            Database(db),
+            Database.open(db),
             session_id,
             destination,
             storage_kind=storage_kind,
@@ -438,7 +438,7 @@ def session_backup_verify(
     """重新读取备份并验证清单、每个文件和可恢复性。"""
     try:
         summary = verify_session_backup(
-            Database(db),
+            Database.open(db),
             backup_id,
             restore_drill=restore_drill,
             restore_probe_root=restore_probe_root,
@@ -466,7 +466,7 @@ def session_readiness(
     """只做完整性和工程能力检查，不运行 VAD、ASR 或说话人模型。"""
     try:
         result = evaluate_session_readiness(
-            Database(db), session_id, verify_backups=verify_backups
+            Database.open(db), session_id, verify_backups=verify_backups
         )
     except (OSError, RuntimeError, ValueError) as exc:
         console.print(f"[red]会话准入检查失败[/red]：{exc}")
@@ -527,9 +527,9 @@ def quality_workflow_run(
     ),
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
-    """完整性复核后顺序运行质量 ASR、说话人时间轴和本地语义证据。"""
+    """运行质量 ASR、说话人、自动增强审计和本地语义证据。"""
     resolved = load_config(config)
-    database = Database(db)
+    database = Database.open(db)
     recording_id, session_id = _resolve_v2_target(
         database, recording_id, session_id
     )
@@ -563,7 +563,9 @@ def quality_workflow_run(
     console.print(
         f"[green]V2 工作流完成[/green] workflow_run={summary.workflow_run_id} | "
         f"state={summary.state} | ASR={summary.asr_run_id} | "
-        f"D={summary.diarization_run_id} | E={summary.semantic_run_id or 'skipped'}"
+        f"D={summary.diarization_run_id} | D.1={summary.v2d1_run_id or 'failed'} | "
+        f"D.2={summary.v2d2_run_id or 'skipped'} | "
+        f"E={summary.semantic_run_id or 'skipped'}"
     )
     if summary.reused_stages:
         console.print(f"复用阶段：{', '.join(summary.reused_stages)}")
@@ -571,9 +573,12 @@ def quality_workflow_run(
         console.print(
             "[yellow]本次为显式 shadow 运行，不代表已满足独立备份和正式生产门槛。[/yellow]"
         )
+    if summary.review_required:
+        console.print("[yellow]增强证据需要人工检查：[/yellow]")
+        for reason in summary.review_reasons:
+            console.print(f"[yellow]- {reason['message']}[/yellow]")
     console.print(
-        "[yellow]已停在本地 semantic_ready 边界；没有调用云端 LLM，"
-        "也没有修改或生成替代原音。[/yellow]"
+        "[yellow]本地证据链已完成；没有调用云端 LLM，也没有修改或生成替代原音。[/yellow]"
     )
 
 
@@ -583,7 +588,7 @@ def quality_workflow_status(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """显示 SQLite 中持久保存的 V2 工作流状态。"""
-    database = Database(db)
+    database = Database.open(db)
     rows = [
         row
         for row in database.list_session_processing_runs(session_id)
@@ -641,7 +646,7 @@ def quality_diarization_run(
 ) -> None:
     """在整段原始会话派生的临时 PCM 上运行本地 Community-1。"""
     resolved = load_config(config)
-    database = Database(db)
+    database = Database.open(db)
     recording_id, session_id = _resolve_v2_target(
         database, recording_id, session_id
     )
@@ -692,7 +697,7 @@ def quality_diarization_status(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """查看说话人时长、重叠区间和 token 归属统计。"""
-    database = Database(db)
+    database = Database.open(db)
     run = database.get_processing_run(run_id)
     if str(run["run_kind"]) != "quality_diarization_v2d":
         raise typer.BadParameter("run 不是 V2-D 说话人时间轴运行")
@@ -758,7 +763,7 @@ def quality_diarization_snapshot(
 ) -> None:
     """把 V2-D regular turns 和真实重叠区冻结为公平评测快照。"""
     summary = snapshot_quality_diarization(
-        Database(db), run_id, name=name, truth_set_id=truth_set_id
+        Database.open(db), run_id, name=name, truth_set_id=truth_set_id
     )
     console.print(
         f"[green]V2-D 预测已冻结[/green] prediction_set="
@@ -792,7 +797,7 @@ def quality_diarization_refine(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """生成 V2-D.1 检测/可能语音双层快照，保留原匿名 speaker。"""
-    database = Database(db)
+    database = Database.open(db)
     if diarization_run_id is None:
         candidates = [
             row
@@ -847,7 +852,7 @@ def quality_diarization_source_truth(
 ) -> None:
     """冻结一段来源真值；来源标签不会合并或重命名匿名说话人。"""
     summary = create_source_micro_truth(
-        Database(db),
+        Database.open(db),
         recording_id,
         name=name,
         start_ms=parse_offset(start),
@@ -880,7 +885,7 @@ def quality_diarization_identity_audit(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """生成 V2-D.2 人工身份到匿名 speaker 的污染审计。"""
-    database = Database(db)
+    database = Database.open(db)
     if diarization_run_id is None:
         candidates = [
             row
@@ -954,7 +959,7 @@ def quality_diarization_mine_identities(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """用 Community-1 声纹和人工负对照生成 V2-D.3 弱种子试听队列。"""
-    database = Database(db)
+    database = Database.open(db)
     if diarization_run_id is None:
         candidates = [
             row
@@ -998,7 +1003,7 @@ def quality_diarization_sync_identity_references(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """把跨 run 人工结论索引为可跨录音复用的原音区间。"""
-    summary = sync_identity_reference_set(Database(db), identity)
+    summary = sync_identity_reference_set(Database.open(db), identity)
     console.print(
         f"[green]人物参考集已同步[/green] identity={summary.identity_label} | "
         f"confirmed={summary.confirmed_intervals}/"
@@ -1055,7 +1060,7 @@ def semantic_v2_build(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """生成四轨证据分离、不联网的 V2-E.0.2 episode 传输计划。"""
-    database = Database(db)
+    database = Database.open(db)
     recording_id, session_id = _resolve_v2_target(
         database, recording_id, session_id
     )
@@ -1097,7 +1102,7 @@ def semantic_v2_export(
 ) -> None:
     """导出给当前 Codex 会话手工评估的脱敏 episode 请求。"""
     payload = export_manual_semantic_bundle(
-        Database(db),
+        Database.open(db),
         recording_id,
         output,
         asr_run_id=asr_run_id,
@@ -1134,7 +1139,7 @@ def semantic_v2_replay(
     if not isinstance(parsed, dict):
         raise typer.BadParameter("语义响应 JSON 顶层必须是对象")
     summary = run_semantic_v2e02(
-        Database(db),
+        Database.open(db),
         recording_id,
         asr_run_id=asr_run_id,
         diarization_run_id=diarization_run_id,
@@ -1158,7 +1163,7 @@ def semantic_v2_status(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """查看最新 V2-E 证据包、传输计划和人工审核进度。"""
-    payload = semantic_overview(Database(db), recording_id)
+    payload = semantic_overview(Database.open(db), recording_id)
     if not payload["available"]:
         console.print(f"[yellow]{payload['reason']}[/yellow]")
         return
@@ -1216,7 +1221,7 @@ def quality_asr_run(
 ) -> None:
     """顺序运行最大 Qwen ASR+Aligner 和 Fun-ASR-Nano，避免同时占用显存。"""
     resolved = load_config(config)
-    database = Database(db)
+    database = Database.open(db)
     recording_id, session_id = _resolve_v2_target(
         database, recording_id, session_id
     )
@@ -1255,7 +1260,7 @@ def quality_asr_status(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """查看 V2-C run 的逐窗口模型证据和分歧优先级。"""
-    database = Database(db)
+    database = Database.open(db)
     run = database.get_processing_run(run_id)
     hypotheses = database.list_asr_hypotheses(run_id)
     disagreements = database.list_asr_disagreements(run_id)
@@ -1309,7 +1314,7 @@ def quality_asr_snapshot(
 ) -> None:
     """将 Qwen 主假设的 core tokens 冻结为可与 V1 比较的预测集。"""
     summary = snapshot_quality_asr(
-        Database(db), run_id, name=name, truth_set_id=truth_set_id
+        Database.open(db), run_id, name=name, truth_set_id=truth_set_id
     )
     console.print(
         f"[green]V2-C 预测已冻结[/green] prediction_set={summary.prediction_set_id} | "
@@ -1359,7 +1364,7 @@ def config_show(
 ) -> None:
     """校验并显示一键流程的最终配置、哈希和数据库版本。"""
     resolved = load_config(config)
-    database = Database(db)
+    database = Database.open(db)
     console.print_json(data=resolved.to_dict())
     console.print(f"config_sha256={resolved.sha256()}")
     console.print(f"database_schema_version={database.schema_version()}")
@@ -1370,7 +1375,7 @@ def source_objects(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """列出永久保存的不可变原始音频对象及其 V2 会话。"""
-    database = Database(db)
+    database = Database.open(db)
     sessions_by_recording = {
         int(session["legacy_recording_id"]): session
         for session in database.list_recording_sessions()
@@ -1404,7 +1409,7 @@ def source_audit(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """只读校验原始音频的 SHA-256、大小和媒体元数据。"""
-    database = Database(db)
+    database = Database.open(db)
     results = (
         [audit_source_object(database, source_id)]
         if source_id is not None
@@ -1438,7 +1443,7 @@ def session_windows(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """规划不会修改原音、也不会生成整段 PCM 的逻辑处理窗口。"""
-    database = Database(db)
+    database = Database.open(db)
     windows = plan_logical_windows(
         database,
         session_id,
@@ -1493,7 +1498,7 @@ def daily_run_command(
             progress_ui.update(task_id, description=f"{stage}：{detail}")
 
         summary = run_daily(
-            Database(db), resolved_source, resolved_config, progress=update
+            Database.open(db), resolved_source, resolved_config, progress=update
         )
 
     table = Table(title=f"一键离线日记 · recording {summary.recording_id}")
@@ -1524,7 +1529,7 @@ def action_candidates(
     """查看已经提取的日程/待办候选；不会写入真实日历。"""
     if status is not None and status not in {"pending", "confirmed", "dismissed"}:
         raise typer.BadParameter("status 只能是 pending、confirmed 或 dismissed")
-    rows = Database(db).list_action_candidates(recording_id, status=status)
+    rows = Database.open(db).list_action_candidates(recording_id, status=status)
     table = Table(title=f"行动候选 · recording {recording_id}")
     for column in ("ID", "类型", "状态", "时间", "地点", "置信度", "标题"):
         table.add_column(column)
@@ -1554,7 +1559,7 @@ def action_review(
 ) -> None:
     """确认、忽略或重新打开候选；仍然不会写入真实日历。"""
     try:
-        row = Database(db).review_action_candidate(
+        row = Database.open(db).review_action_candidate(
             candidate_id,
             status=status,
             title=title,
@@ -1587,7 +1592,7 @@ def evaluation_init(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
     summary = create_evaluation_template(
-        Database(db),
+        Database.open(db),
         recording_id,
         name=name,
         start_ms=start_ms,
@@ -1615,7 +1620,7 @@ def evaluation_run(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """计算 CER、说话人成对指标、本人识别和关键事实召回率。"""
-    summary = evaluate_truth(Database(db), truth)
+    summary = evaluate_truth(Database.open(db), truth)
     text_metrics = summary.metrics["text"]
     speaker_metrics = summary.metrics["speaker_pairwise"]
     identity_metrics = summary.metrics["self_identity"]
@@ -1651,7 +1656,7 @@ def benchmark_migrate_v1_truth(
 ) -> None:
     """将 segment 绑定的旧标注无损映射到 source/session 连续时间。"""
     summary = migrate_legacy_truth(
-        Database(db), truth, name=name, output_path=output
+        Database.open(db), truth, name=name, output_path=output
     )
     console.print(
         f"[green]连续时间真值已冻结[/green] truth_set={summary.truth_set_id}，"
@@ -1675,7 +1680,7 @@ def benchmark_init_truth(
         start_ms = parse_offset(start)
         end_ms = parse_offset(end) if end is not None else None
         path = create_continuous_truth_template(
-            Database(db),
+            Database.open(db),
             session_id,
             name=name,
             start_ms=start_ms,
@@ -1701,7 +1706,7 @@ def benchmark_init_blind(
     """从未查看模型输出的连续范围建立 V2-C.1 盲标任务。"""
     try:
         summary = create_blind_truth_task(
-            Database(db),
+            Database.open(db),
             session_id,
             name=name,
             duration_ms=parse_offset(duration),
@@ -1762,7 +1767,7 @@ def benchmark_init_blind_v2c2(
     """用原始波形声学活动度生成 V2-C.2 语音富集盲标任务。"""
     try:
         summary = create_acoustic_blind_truth_task(
-            Database(db),
+            Database.open(db),
             session_id,
             name=name,
             review_duration_ms=parse_offset(review_duration),
@@ -1793,7 +1798,7 @@ def benchmark_snapshot_v1(
 ) -> None:
     """冻结当前 V1 segments、转写、人物标签，防止后续结果漂移。"""
     summary = snapshot_v1_predictions(
-        Database(db),
+        Database.open(db),
         truth_set_id,
         name=name,
         processing_run_id=processing_run_id,
@@ -1821,7 +1826,7 @@ def benchmark_freeze_completed(
 ) -> None:
     """冻结已完整检查的窗口；未检查窗口保持排除，不伪装成完整 V2-C.2。"""
     summary = freeze_completed_blind_subset(
-        Database(db),
+        Database.open(db),
         task,
         name=name,
         output_path=output,
@@ -1861,7 +1866,7 @@ def benchmark_oracle_asr(
             )
 
         summary = snapshot_oracle_asr_predictions(
-            Database(db),
+            Database.open(db),
             truth_set_id,
             backend,
             name=name,
@@ -1889,7 +1894,7 @@ def benchmark_import_truth(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """验证源哈希和时间映射后，将连续真值冻结入库。"""
-    summary = import_continuous_truth(Database(db), truth)
+    summary = import_continuous_truth(Database.open(db), truth)
     console.print(
         f"[green]连续时间真值已冻结[/green] truth_set={summary.truth_set_id}，"
         f"annotations={summary.annotation_count}，SHA-256={summary.truth_sha256}"
@@ -1903,7 +1908,7 @@ def benchmark_run(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """计算 segmentation-independent CER、VAD、DER/JER、对齐和实体指标。"""
-    summary = evaluate_benchmark(Database(db), truth_set_id, prediction_set_id)
+    summary = evaluate_benchmark(Database.open(db), truth_set_id, prediction_set_id)
     metrics = summary.metrics
     console.print(
         f"[green]Benchmark 完成[/green] run={summary.benchmark_run_id} | "
@@ -1923,7 +1928,7 @@ def benchmark_compare(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """比较同一冻结真值和原始输入上的全部 benchmark run。"""
-    rows = benchmark_comparison(Database(db), truth_set_id)
+    rows = benchmark_comparison(Database.open(db), truth_set_id)
     table = Table(
         "Run",
         "Prediction",
@@ -1968,7 +1973,7 @@ def benchmark_compare_oracle_pair(
 ) -> None:
     """对两个同边界 ASR 快照做 paired bootstrap，不只看点估计。"""
     result = paired_oracle_bootstrap(
-        Database(db),
+        Database.open(db),
         truth_set_id,
         baseline_prediction_set_id,
         candidate_prediction_set_id,
@@ -1999,7 +2004,7 @@ def voice_library_sync(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """将已有独立声纹登记同步进人物样本库。"""
-    summary = sync_all_enrollments(Database(db))
+    summary = sync_all_enrollments(Database.open(db))
     console.print(
         f"[green]声纹库已同步[/green] people={summary.people}，"
         f"enrollment_sources={summary.source_rows}"
@@ -2012,7 +2017,7 @@ def voice_library_status(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """查看人物声纹库的数据量、状态和留出集。"""
-    database = Database(db)
+    database = Database.open(db)
     write_library_manifests(database)
     table = Table(title="人物声纹库")
     for column in ("ID", "人物", "状态", "有效语音", "会话", "Embedding", "留出", "阈值"):
@@ -2045,7 +2050,7 @@ def voice_library_accumulate(
 ) -> None:
     """从已人工标注的日常录音积累人物、留出和负样本。"""
     summary = accumulate_reviewed_samples(
-        Database(db),
+        Database.open(db),
         recording_id,
         split=split,
         device=device,
@@ -2073,7 +2078,7 @@ def voice_library_enroll_person(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """为经同意的固定人物建立独立声纹并加入样本库。"""
-    database = Database(db)
+    database = Database.open(db)
     summary = enroll_known_person(
         database, inputs, display_name=name, device=device
     )
@@ -2110,7 +2115,7 @@ def ingest(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """读取元数据和 SHA-256，将录音去重入库。"""
-    database = Database(db)
+    database = Database.open(db)
     result = ingest_recording(database, audio, device=device, timezone_name=timezone_name)
     row = result.recording
     state = "已创建" if result.created else "已存在（未重复导入）"
@@ -2126,7 +2131,7 @@ def recordings(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """列出已入库录音和处理状态。"""
-    database = Database(db)
+    database = Database.open(db)
     rows = database.list_recordings()
     table = Table(title="录音")
     for column in ("ID", "状态", "时长", "录制时间", "设备", "源文件"):
@@ -2157,7 +2162,7 @@ def process(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """标准化录音、运行 VAD，并逐片段转写；可重复执行以续跑。"""
-    database = Database(db)
+    database = Database.open(db)
     with Progress(
         SpinnerColumn(spinner_name="line"),
         TextColumn("{task.description}"),
@@ -2202,7 +2207,7 @@ def diarize(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """使用 CAM++ 为现有片段分配匿名说话人标签。"""
-    database = Database(db)
+    database = Database.open(db)
     summary = diarize_recording(
         database,
         recording_id,
@@ -2230,7 +2235,7 @@ def speaker_samples(
 ) -> None:
     """导出各匿名说话人的代表性音频，供人工确认身份。"""
     summary = export_speaker_samples(
-        Database(db), recording_id, per_speaker=per_speaker, speaker=speaker
+        Database.open(db), recording_id, per_speaker=per_speaker, speaker=speaker
     )
     console.print(f"[green]试听样本已生成[/green] {summary.directory.resolve()}")
     console.print(f"清单：{summary.manifest.resolve()} | {summary.speakers}")
@@ -2258,7 +2263,7 @@ def mark_self(
         )
         raise typer.Exit(code=2)
     summary = mark_speaker_as_self(
-        Database(db),
+        Database.open(db),
         recording_id,
         speaker,
         display_name=name,
@@ -2285,7 +2290,7 @@ def enroll_self_command(
 ) -> None:
     """从独立、纯净的本人录音建立多 embedding 声纹档案。"""
     summary = enroll_self(
-        Database(db), inputs, display_name=name, device=device
+        Database.open(db), inputs, display_name=name, device=device
     )
     console.print(
         f"[green]本人声纹登记完成[/green] profile_id={summary.profile_id}，"
@@ -2313,7 +2318,7 @@ def self_candidates(
 ) -> None:
     """用本人声纹生成试听候选，不自动写入身份。"""
     summary = export_self_candidates(
-        Database(db),
+        Database.open(db),
         recording_id,
         device=device,
         threshold=threshold,
@@ -2342,7 +2347,7 @@ def import_self_review_command(
 ) -> None:
     """导入人工身份标注，保存校准并应用本人身份。"""
     summary = import_self_review(
-        Database(db), recording_id, review_path=review, threshold=threshold
+        Database.open(db), recording_id, review_path=review, threshold=threshold
     )
     console.print(
         f"[green]人工标注已导入[/green] annotations={summary.annotations}，"
@@ -2363,7 +2368,7 @@ def unmark_self_command(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """撤销误登记的本人身份；保留转写、匿名说话人标签和原始录音。"""
-    summary = unmark_self(Database(db), recording_id)
+    summary = unmark_self(Database.open(db), recording_id)
     console.print(
         f"[green]本人标记已撤销[/green] profile_id={summary.profile_id}，"
         f"segments={summary.cleared_segments}，profile_deleted={summary.profile_deleted}"
@@ -2385,7 +2390,7 @@ def audit_speakers(
 ) -> None:
     """对已有标签执行保守质量过滤，不重新运行模型。"""
     summary = audit_speaker_assignments(
-        Database(db),
+        Database.open(db),
         recording_id,
         min_segment_ms=round(min_speaker_seconds * 1000),
     )
@@ -2407,7 +2412,7 @@ def timeline(
 ) -> None:
     """聚合对话事件，并生成事件级 JSON 和 Markdown 时间线。"""
     summary = build_timeline(
-        Database(db), recording_id, max_gap_seconds=max_gap_seconds
+        Database.open(db), recording_id, max_gap_seconds=max_gap_seconds
     )
     console.print(
         f"[green]时间线已生成[/green] events={summary.event_count}，"
@@ -2425,7 +2430,7 @@ def export_results(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """导出已完成的转写结果。"""
-    database = Database(db)
+    database = Database.open(db)
     normalized_format = output_format.lower()
     if normalized_format not in {"jsonl", "markdown", "md"}:
         raise typer.BadParameter("--format 只能是 jsonl 或 markdown")
@@ -2445,7 +2450,7 @@ def clip(
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
     """按转写片段从原始录音截取一段可回听 WAV。"""
-    database = Database(db)
+    database = Database.open(db)
     segment = database.get_segment(segment_id)
     recording = database.get_recording(int(segment["recording_id"]))
     destination = output or recording_output_dir(int(recording["id"])) / "clips" / f"segment-{segment_id}.wav"

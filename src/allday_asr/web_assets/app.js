@@ -1,12 +1,14 @@
 "use strict";
 
 const state = {
-  recordings: [],
+  sessions: [],
+  sessionId: null,
   recordingId: null,
   dashboard: null,
   templates: [],
   evaluationName: null,
   evaluation: null,
+  sessionEvaluation: null,
   actions: [],
   runs: [],
   timeline: null,
@@ -20,6 +22,9 @@ const state = {
   activeView: "timeline",
   jobTimer: null,
 };
+
+const possibleFocusPlayback = new WeakMap();
+const manualIdentityPlayback = new WeakMap();
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -83,20 +88,33 @@ function metric(value) {
   return value === null || value === undefined ? "N/A" : Number(value).toFixed(4);
 }
 
+function workflowStateLabel(value) {
+  const labels = {
+    semantic_ready: "证据已就绪",
+    semantic_ready_empty: "无文字证据",
+    semantic_ready_needs_review: "待人工检查",
+    semantic_ready_empty_needs_review: "无文字 · 待检查",
+    asr_completed: "ASR 已完成",
+    diarization_completed: "说话人已完成",
+    failed: "运行失败",
+  };
+  return labels[value] || value || "未运行 V2";
+}
+
 async function initialize() {
   bindNavigation();
   bindToolbar();
   try {
-    const payload = await api("/api/recordings");
-    state.recordings = payload.recordings;
-    renderRecordingOptions();
-    if (!state.recordings.length) {
-      toast("数据库中还没有录音，请先运行 daily-run 导入录音。", "error");
+    const payload = await api("/api/sessions");
+    state.sessions = payload.sessions;
+    renderSessionOptions();
+    if (!state.sessions.length) {
+      toast("数据库中还没有录音会话，请先导入音频。", "error");
       return;
     }
-    state.recordingId = state.recordings[0].id;
-    $("#recording-select").value = String(state.recordingId);
-    await loadRecordingWorkspace();
+    selectSession(state.sessions[0].id);
+    $("#recording-select").value = String(state.sessionId);
+    await loadSessionWorkspace();
   } catch (error) {
     toast(error.message, "error");
   }
@@ -121,15 +139,16 @@ function bindNavigation() {
 
 function bindToolbar() {
   $("#recording-select").addEventListener("change", async (event) => {
-    state.recordingId = Number(event.target.value);
+    selectSession(Number(event.target.value));
     state.evaluationName = null;
     state.evaluation = null;
+    state.sessionEvaluation = null;
     state.timeline = null;
     state.semantic = null;
     state.timelineSelectedId = null;
     state.timelineWindow = null;
     state.page = 1;
-    await loadRecordingWorkspace();
+    await loadSessionWorkspace();
   });
   $("#evaluation-select").addEventListener("change", async (event) => {
     state.evaluationName = event.target.value || null;
@@ -137,7 +156,7 @@ function bindToolbar() {
     await loadEvaluation();
   });
   $("#run-evaluation-button").addEventListener("click", runEvaluation);
-  $("#run-daily-button").addEventListener("click", startDailyRun);
+  $("#run-daily-button").addEventListener("click", refreshWorkspace);
   $("#generate-semantic-button").addEventListener("click", generateSemantic);
 }
 
@@ -155,39 +174,62 @@ function switchView(view) {
   $$(".view").forEach((item) => item.classList.toggle("active-view", item.id === `view-${view}`));
 }
 
-function renderRecordingOptions() {
+function selectSession(sessionId) {
+  state.sessionId = sessionId;
+  state.recordingId = state.sessions.find((item) => item.id === sessionId)?.recording_id || null;
+}
+
+function sessionQuery() {
+  return `session_id=${state.sessionId}`;
+}
+
+function sessionBody(extra = {}) {
+  return { session_id: state.sessionId, ...extra };
+}
+
+function renderSessionOptions() {
   const select = $("#recording-select");
   select.replaceChildren();
-  state.recordings.forEach((recording) => {
+  state.sessions.forEach((session) => {
+    const stateLabel = ` · ${workflowStateLabel(session.workflow_state)}`;
     const option = node(
       "option",
       "",
-      `#${recording.id} · ${recording.source_name} · ${formatDuration(recording.duration_ms)}`,
+      `S${session.id} · ${session.source_name} · ${formatDuration(session.duration_ms)}${stateLabel}`,
     );
-    option.value = recording.id;
+    option.value = session.id;
     select.append(option);
   });
 }
 
-async function loadRecordingWorkspace() {
-  if (!state.recordingId) return;
+async function loadSessionWorkspace() {
+  if (!state.sessionId) return;
   try {
-    const [dashboard, templates, actions, runs, timeline, semantic] = await Promise.all([
-      api(`/api/dashboard?recording_id=${state.recordingId}`),
-      api(`/api/evaluations?recording_id=${state.recordingId}`),
-      api(`/api/actions?recording_id=${state.recordingId}`),
-      api(`/api/runs?recording_id=${state.recordingId}`),
-      api(`/api/speaker-timeline?recording_id=${state.recordingId}`),
-      api(`/api/semantic?recording_id=${state.recordingId}`),
+    const [dashboard, runs, timeline, semantic, sessionEvaluation] = await Promise.all([
+      api(`/api/session-dashboard?${sessionQuery()}`),
+      api(`/api/runs?${sessionQuery()}`),
+      api(`/api/speaker-timeline?${sessionQuery()}`),
+      api(`/api/semantic?${sessionQuery()}`),
+      api(`/api/session-evaluation?${sessionQuery()}`),
     ]);
+    let templates = { evaluations: [] };
+    let actions = { actions: [] };
+    if (state.recordingId) {
+      [templates, actions] = await Promise.all([
+        api(`/api/evaluations?recording_id=${state.recordingId}`),
+        api(`/api/actions?recording_id=${state.recordingId}`),
+      ]);
+    }
     state.dashboard = dashboard;
     state.templates = templates.evaluations;
     state.actions = actions.actions;
     state.runs = runs.runs;
     state.timeline = timeline;
     state.semantic = semantic;
+    state.sessionEvaluation = sessionEvaluation;
     renderDashboard();
     renderEvaluationOptions();
+    renderSessionEvaluation();
     renderActions();
     renderRuns();
     renderTimelineOverview();
@@ -195,6 +237,31 @@ async function loadRecordingWorkspace() {
     await loadEvaluation();
   } catch (error) {
     toast(error.message, "error");
+  }
+}
+
+async function refreshWorkspace() {
+  const button = $("#run-daily-button");
+  button.disabled = true;
+  button.textContent = "刷新中…";
+  try {
+    const payload = await api("/api/sessions");
+    const selected = state.sessionId;
+    state.sessions = payload.sessions;
+    renderSessionOptions();
+    const next = state.sessions.some((item) => item.id === selected)
+      ? selected
+      : state.sessions[0]?.id;
+    if (!next) return;
+    selectSession(next);
+    $("#recording-select").value = String(next);
+    await loadSessionWorkspace();
+    toast("V2 会话与运行结果已刷新");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "刷新 V2 结果";
   }
 }
 
@@ -263,7 +330,7 @@ function renderTimelineV2D1Status() {
   if (!refinement?.available) {
     container.classList.add("unavailable");
     container.append(
-      node("strong", "", "V2-D.1 尚未生成"),
+      node("strong", "", enhancementStatusLabel("V2-D.1", refinement)),
       node("span", "", refinement?.reason || "当前只显示正式说话人结果。"),
     );
     return;
@@ -274,6 +341,29 @@ function renderTimelineV2D1Status() {
     node("span", "", `确定语音 ${formatDuration(refinement.detected_ms)} · 可能语音 ${formatDuration(refinement.possible_ms)}`),
     node("span", "timeline-v2d1-policy", "来源只是一条独立真值轨；电视中的不同男女声仍保留为不同匿名 speaker。"),
   );
+  const review = refinement.review;
+  if (review?.candidate_count) {
+    const reviewPanel = node("div", `possible-review-progress ${review.completed ? "completed" : ""}`);
+    const copy = review.completed
+      ? `人工检查已完成 · ${review.reviewed_count}/${review.candidate_count}`
+      : `人工检查 ${review.reviewed_count}/${review.candidate_count} · 剩余 ${review.pending_count}`;
+    reviewPanel.append(node("strong", "", copy));
+    const track = node("span", "possible-review-progress-track");
+    const fill = node("span", "possible-review-progress-fill");
+    fill.style.width = `${review.candidate_count ? (review.reviewed_count / review.candidate_count) * 100 : 0}%`;
+    track.append(fill);
+    reviewPanel.append(track);
+    const complete = node(
+      "button",
+      "possible-review-complete-button",
+      review.completed ? "✓ 本次检查已完成" : review.pending_count ? `完成检查（还剩 ${review.pending_count}）` : "完成本次检查",
+    );
+    complete.type = "button";
+    complete.disabled = review.completed || review.pending_count > 0;
+    complete.addEventListener("click", () => completePossibleSpeechReview(complete));
+    reviewPanel.append(complete);
+    container.append(reviewPanel);
+  }
 }
 
 function renderTimelineV2D2Status() {
@@ -284,10 +374,42 @@ function renderTimelineV2D2Status() {
   auditPanel.replaceChildren();
   if (!audit?.available) {
     container.classList.add("unavailable");
+    const setup = audit?.setup || {};
+    const statusTitle = setup.can_run
+      ? "V2-D.2 · 可以运行"
+      : setup.identity_pending_count
+        ? "V2-D.2 · 等待人物标签"
+        : enhancementStatusLabel("V2-D.2", audit);
     container.append(
-      node("strong", "", "V2-D.2 尚未生成"),
+      node("strong", "", statusTitle),
       node("span", "", audit?.reason || "当前没有人工身份污染审计。"),
     );
+    if (setup.confirmed_speech_count) {
+      container.append(node(
+        "span",
+        "timeline-v2d2-progress",
+        `人物真值 ${setup.identity_labeled_count || 0}/${setup.confirmed_speech_count}`,
+      ));
+      if (setup.identity_pending_count) {
+        const labelButton = node("button", "enhancement-action-button", "去标人物");
+        labelButton.type = "button";
+        labelButton.addEventListener("click", openNextIdentityLabel);
+        container.append(labelButton);
+      }
+      if (setup.can_run) {
+        const runButton = node("button", "enhancement-action-button primary", "运行 D.2 污染审计");
+        runButton.type = "button";
+        runButton.addEventListener("click", () => runV2D2Audit(runButton));
+        container.append(runButton);
+      }
+    }
+    if (setup.manual_identity_count) {
+      container.append(node(
+        "span",
+        "timeline-v2d2-progress",
+        `普通语音身份 ${setup.manual_identity_count} 段 · ${formatDuration(setup.manual_identity_duration_ms || 0)}`,
+      ));
+    }
     auditPanel.classList.add("hidden");
     return;
   }
@@ -304,6 +426,20 @@ function renderTimelineV2D2Status() {
     ),
     node("span", "timeline-v2d1-policy", "只标注真值覆盖的短区间，不把整个匿名簇改名。"),
   );
+  const setup = audit.setup || {};
+  if (setup.manual_identity_count) {
+    container.append(node(
+      "span",
+      "timeline-v2d2-progress",
+      `普通语音身份 ${setup.manual_identity_count} 段 · ${formatDuration(setup.manual_identity_duration_ms || 0)}`,
+    ));
+  }
+  if (setup.needs_rerun) {
+    const rerun = node("button", "enhancement-action-button primary", "用新增真值重跑 D.2");
+    rerun.type = "button";
+    rerun.addEventListener("click", () => runV2D2Audit(rerun));
+    container.append(rerun);
+  }
   auditPanel.classList.remove("hidden");
   const header = node("header", "identity-audit-heading");
   header.append(
@@ -342,16 +478,63 @@ function renderTimelineV2D2Status() {
   auditPanel.append(table);
 }
 
+function openNextIdentityLabel() {
+  const item = state.timeline.queues.possible.items.find(
+    (candidate) => candidate.review_status === "confirmed_speech" && !candidate.identity_label,
+  );
+  if (!item) {
+    toast("确认语音都已经有人物标签。", "error");
+    return;
+  }
+  state.timelineSelectedId = item.id;
+  selectTimelineQueue("possible", {preserveSelection: true});
+  toast("已定位到下一条需要人物标签的确认语音");
+}
+
+async function runV2D2Audit(button) {
+  button.disabled = true;
+  button.textContent = "正在审计…";
+  try {
+    await api("/api/speaker-timeline/v2d2", {
+      method: "POST",
+      body: JSON.stringify(sessionBody({run_id: state.timeline.v2d1.run_id})),
+    });
+    await loadSessionWorkspace();
+    toast("V2-D.2 人工身份污染审计已完成");
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "运行 D.2 污染审计";
+    toast(error.message, "error");
+  }
+}
+
 function renderTimelineV2D3Status() {
   const container = $("#timeline-v2d3-status");
   const expansion = state.timeline.v2d3;
   container.replaceChildren();
   if (!expansion?.available) {
     container.classList.add("unavailable");
+    const expansionStatus = expansion?.can_run
+      ? "V2-D.3 · 可以运行"
+      : state.timeline.v2d2?.available
+        ? "V2-D.3 · 等待负对照"
+        : "V2-D.3 · 等待 D.2";
     container.append(
-      node("strong", "", "V2-D.3 尚未生成"),
+      node("strong", "", expansionStatus),
       node("span", "", expansion?.reason || "当前没有身份扩样候选。"),
     );
+    if (expansion?.can_run) {
+      const select = node("select", "enhancement-target-select");
+      expansion.target_identities.forEach((identity) => {
+        const option = node("option", "", identityLabel(identity));
+        option.value = identity;
+        select.append(option);
+      });
+      const button = node("button", "enhancement-action-button primary", "生成 D.3 扩样候选");
+      button.type = "button";
+      button.addEventListener("click", () => startV2D3Mining(button, select.value));
+      container.append(select, button);
+    }
     return;
   }
   container.classList.remove("unavailable");
@@ -374,6 +557,84 @@ function renderTimelineV2D3Status() {
         : "弱种子：未达到正式声纹登记门槛，所有分数只用于排序",
     ),
   );
+  if (expansion.can_run && expansion.target_identities?.length > 1) {
+    const controls = node("div", "enhancement-rerun-controls");
+    controls.append(node("span", "", "换一个目标人物继续扩样"));
+    const select = node("select", "enhancement-target-select");
+    expansion.target_identities.forEach((identity) => {
+      const current = identity === expansion.target_identity;
+      const option = node(
+        "option",
+        "",
+        `${identityLabel(identity)}${current ? "（当前结果）" : "（尚未扩样）"}`,
+      );
+      option.value = identity;
+      if (!current) option.selected = true;
+      select.append(option);
+    });
+    const button = node("button", "enhancement-action-button primary");
+    button.type = "button";
+    const updateLabel = () => {
+      button.textContent = `为${identityLabel(select.value)}生成 D.3 候选`;
+    };
+    select.addEventListener("change", updateLabel);
+    button.addEventListener("click", () => startV2D3Mining(button, select.value));
+    updateLabel();
+    controls.append(select, button);
+    container.append(controls);
+  }
+}
+
+async function startV2D3Mining(button, targetIdentity) {
+  button.disabled = true;
+  button.textContent = "正在启动…";
+  try {
+    const job = await api("/api/speaker-timeline/v2d3", {
+      method: "POST",
+      body: JSON.stringify(sessionBody({target_identity: targetIdentity})),
+    });
+    button.textContent = "模型运行中…";
+    pollEnhancementJob(job.id, button);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "生成 D.3 扩样候选";
+    toast(error.message, "error");
+  }
+}
+
+async function pollEnhancementJob(jobId, button) {
+  try {
+    const job = await api(`/api/jobs/${jobId}`);
+    button.textContent = job.detail || "模型运行中…";
+    if (job.status === "completed") {
+      await loadSessionWorkspace();
+      toast(`V2-D.3 已生成 ${job.result?.selected_candidates || 0} 个身份扩样候选`);
+      return;
+    }
+    if (job.status === "failed") {
+      button.disabled = false;
+      button.textContent = "重新运行 D.3";
+      toast(job.error || "V2-D.3 运行失败", "error");
+      return;
+    }
+    state.jobTimer = window.setTimeout(() => pollEnhancementJob(jobId, button), 1500);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "重新运行 D.3";
+    toast(error.message, "error");
+  }
+}
+
+function enhancementStatusLabel(name, value) {
+  const labels = {
+    completed: "已完成",
+    not_applicable: "已跳过",
+    needs_review: "等待人工",
+    failed: "运行失败",
+    running: "运行中",
+    not_run: "旧流程未运行",
+  };
+  return `${name} · ${labels[value?.status] || "未运行"}`;
 }
 
 function selectTimelineQueue(queueName, options = {}) {
@@ -429,6 +690,9 @@ function renderTimelineCandidates() {
       facts.append(node("span", item.contrastive_margin >= 0 ? "identity-fact" : "possible-fact", `对照差 ${Number(item.contrastive_margin).toFixed(3)}`));
       if (item.review_status) facts.append(node("span", `identity-review-badge ${item.review_status}`, identityReviewLabel(item.review_status)));
     }
+    if (item.kind === "possible" && item.review_status) {
+      facts.append(node("span", `possible-review-badge ${item.review_status}`, possibleReviewLabel(item.review_status)));
+    }
     facts.append(node("span", "", `${item.token_count} 词`));
     button.append(facts);
     if (item.preview) button.append(node("span", "timeline-candidate-preview", item.preview));
@@ -451,7 +715,7 @@ async function loadTimelineCandidate(candidateId) {
   detail.replaceChildren(node("div", "timeline-loading", "正在读取时间轴…"));
   try {
     const payload = await api(
-      `/api/speaker-timeline/window?recording_id=${state.recordingId}`
+      `/api/speaker-timeline/window?${sessionQuery()}`
       + `&run_id=${state.timeline.run.id}&start_ms=${item.start_ms}&end_ms=${item.end_ms}`,
     );
     if (state.timelineSelectedId !== candidateId) return;
@@ -514,6 +778,12 @@ function renderTimelineDetail(item, payload) {
     detail.append(notice);
     detail.append(renderIdentityReviewControls(item, payload));
   }
+  if (item.kind === "possible") {
+    detail.append(renderPossibleReviewControls(item, payload));
+  }
+  if (item.kind !== "possible" && item.kind !== "identity_expansion") {
+    detail.append(renderManualIdentityControls(item, payload));
+  }
 
   const audioBlock = node("div", "timeline-audio-block");
   audioBlock.append(node("strong", "", "响度增强试听（派生缓存）"));
@@ -530,6 +800,491 @@ function renderTimelineDetail(item, payload) {
   detail.append(renderTimelineTranscript(payload, audio));
 }
 
+function renderManualIdentityControls(item, payload) {
+  const wrapper = node("section", "manual-identity-controls");
+  const heading = node("div", "manual-identity-heading");
+  heading.append(
+    node("strong", "", "人物真值采样"),
+    node("span", "", "多人窗口中只开放单人 speaker 区间"),
+  );
+  wrapper.append(heading);
+
+  const cleanRanges = manualIdentityCleanRanges(payload.turns);
+  if (!cleanRanges.length) {
+    wrapper.append(node(
+      "p",
+      "manual-identity-unavailable",
+      "这个候选没有至少 1 秒的单人说话区间，请换一个候选；这里不开放人物标注。",
+    ));
+    wrapper.append(renderManualIdentityList(item, payload));
+    return wrapper;
+  }
+
+  if (!item.manual_identity_selection
+    || !manualIdentitySelectionRange(item.manual_identity_selection, cleanRanges)) {
+    const cleanTurn = cleanRanges[0];
+    item.manual_identity_selection = {
+      start_ms: cleanTurn.start_ms,
+      end_ms: Math.min(cleanTurn.end_ms, cleanTurn.start_ms + 3000),
+    };
+  }
+  const selection = item.manual_identity_selection;
+  const selectionCopy = node("p", "manual-identity-selection-copy");
+  const validationCopy = node("p", "manual-identity-validation");
+  const suggestionButtons = [];
+  let identityActions = null;
+  let preview = null;
+
+  const refreshSelection = (startInput, endInput) => {
+    updateManualIdentitySelection(
+      selection, payload, startInput, endInput, selectionCopy,
+    );
+    const selectedRange = manualIdentitySelectionRange(selection, cleanRanges);
+    validationCopy.classList.toggle("valid", Boolean(selectedRange));
+    validationCopy.classList.toggle("invalid", !selectedRange);
+    validationCopy.textContent = selectedRange
+      ? `单人可标：${selectedRange.speaker}，可以试听后选择人物。`
+      : "当前范围跨越了其他 speaker；请选择上方单人区间后再标注。";
+    if (identityActions) {
+      identityActions.querySelectorAll("button").forEach((button) => {
+        button.disabled = !selectedRange;
+      });
+    }
+    suggestionButtons.forEach(({button, suggestion}) => {
+      button.classList.toggle("active", (
+        selection.start_ms === suggestion.start_ms
+        && selection.end_ms === suggestion.end_ms
+      ));
+    });
+  };
+
+  const suggestions = node("div", "manual-identity-suggestions");
+  const suggestedRanges = cleanRanges.slice(0, 6).map((range, index) => ({
+    start_ms: range.start_ms,
+    end_ms: Math.min(range.end_ms, range.start_ms + 3000),
+    speaker: range.speaker,
+    recommended: index === 0,
+  }));
+  const suggestionStates = suggestedRanges.map((suggestion) => (
+    manualIdentitySuggestionState(suggestion)
+  ));
+  const labeledCount = suggestionStates.filter((status) => status.labeled).length;
+  suggestions.append(node(
+    "span",
+    "",
+    `单人可标区间 · 当前候选已标 ${labeledCount}/${suggestedRanges.length}`,
+  ));
+  suggestedRanges.forEach((suggestion, index) => {
+    const status = suggestionStates[index];
+    const prefix = suggestion.recommended ? "推荐 · " : "";
+    const button = node(
+      "button",
+      `manual-identity-suggestion ${status.labeled ? "labeled" : "unlabeled"}`,
+      `${prefix}${formatOffset(suggestion.start_ms)}–${formatOffset(suggestion.end_ms)}`
+        + ` · ${suggestion.speaker} · ${status.label}`,
+    );
+    button.type = "button";
+    button.addEventListener("click", () => {
+      const changed = (
+        selection.start_ms !== suggestion.start_ms
+        || selection.end_ms !== suggestion.end_ms
+      );
+      selection.start_ms = suggestion.start_ms;
+      selection.end_ms = suggestion.end_ms;
+      refreshSelection(startField.input, endField.input);
+      if (changed && preview) {
+        void playManualIdentitySelection(selection, payload, preview);
+      }
+    });
+    if (suggestion.recommended) button.classList.add("recommended");
+    suggestionButtons.push({button, suggestion});
+    suggestions.append(button);
+  });
+  wrapper.append(suggestions);
+
+  const fields = node("div", "manual-identity-range-fields");
+  const startField = manualIdentityRangeField(
+    "本段起点（秒）",
+    (selection.start_ms - payload.start_ms) / 1000,
+    (value, commit) => {
+      selection.start_ms = Math.round(payload.start_ms + value * 1000);
+      refreshSelection(
+        commit ? startField.input : null,
+        commit ? endField.input : null,
+      );
+    },
+  );
+  const endField = manualIdentityRangeField(
+    "本段终点（秒）",
+    (selection.end_ms - payload.start_ms) / 1000,
+    (value, commit) => {
+      selection.end_ms = Math.round(payload.start_ms + value * 1000);
+      refreshSelection(
+        commit ? startField.input : null,
+        commit ? endField.input : null,
+      );
+    },
+  );
+  fields.append(startField.wrapper, endField.wrapper);
+  wrapper.append(fields, selectionCopy);
+
+  const tools = node("div", "manual-identity-tools");
+  const capture = node("button", "secondary-button", "截取刚才 3 秒");
+  capture.type = "button";
+  capture.addEventListener("click", () => {
+    const audio = $("#timeline-detail audio");
+    if (!audio) return;
+    const relativeEndMs = Math.round(Math.max(1000, audio.currentTime * 1000));
+    selection.end_ms = Math.min(payload.end_ms, payload.start_ms + relativeEndMs);
+    selection.start_ms = Math.max(payload.start_ms, selection.end_ms - 3000);
+    if (selection.end_ms - selection.start_ms < 1000) {
+      selection.end_ms = Math.min(payload.end_ms, selection.start_ms + 3000);
+    }
+    refreshSelection(startField.input, endField.input);
+  });
+  preview = node("button", "manual-identity-preview-button", "▶ 试听所选区间");
+  preview.type = "button";
+  preview.addEventListener("click", () => playManualIdentitySelection(selection, payload, preview));
+  tools.append(capture, preview);
+  wrapper.append(tools);
+
+  wrapper.append(validationCopy);
+  identityActions = node("div", "manual-identity-actions");
+  [
+    ["self", "标为本人"],
+    ["mother", "标为母亲"],
+    ["father", "标为父亲"],
+    ["tv", "标为电视/媒体"],
+    ["other", "标为其他人物"],
+    ["unknown", "无法确定"],
+  ].forEach(([identity, label]) => {
+    const button = node("button", "manual-identity-save-button", label);
+    button.type = "button";
+    button.addEventListener("click", () => saveManualIdentitySelection(
+      item, payload, selection, identity, identityActions,
+    ));
+    identityActions.append(button);
+  });
+  wrapper.append(identityActions);
+  refreshSelection(startField.input, endField.input);
+  wrapper.append(node(
+    "p",
+    "manual-identity-guidance",
+    "切换到不同区间会自动试听一次；重复点击当前区间不会重播。需要重听可用“试听所选区间”。",
+  ));
+  wrapper.append(renderManualIdentityList(item, payload));
+  return wrapper;
+}
+
+function manualIdentityCleanRanges(turns) {
+  const bySpeaker = new Map();
+  turns.forEach((turn) => {
+    const speaker = String(turn.speaker || "");
+    if (!speaker || turn.end_ms <= turn.start_ms) return;
+    if (!bySpeaker.has(speaker)) bySpeaker.set(speaker, []);
+    bySpeaker.get(speaker).push({
+      start_ms: Number(turn.start_ms),
+      end_ms: Number(turn.end_ms),
+    });
+  });
+  const mergedBySpeaker = new Map();
+  bySpeaker.forEach((ranges, speaker) => {
+    const merged = [];
+    ranges.sort((left, right) => left.start_ms - right.start_ms).forEach((range) => {
+      const previous = merged[merged.length - 1];
+      if (previous && range.start_ms <= previous.end_ms) {
+        previous.end_ms = Math.max(previous.end_ms, range.end_ms);
+      } else {
+        merged.push({...range});
+      }
+    });
+    mergedBySpeaker.set(speaker, merged);
+  });
+
+  const clean = [];
+  mergedBySpeaker.forEach((ranges, speaker) => {
+    const blockers = [];
+    mergedBySpeaker.forEach((otherRanges, otherSpeaker) => {
+      if (otherSpeaker !== speaker) blockers.push(...otherRanges);
+    });
+    ranges.forEach((range) => {
+      let fragments = [range];
+      blockers.forEach((blocker) => {
+        fragments = fragments.flatMap((fragment) => {
+          if (blocker.end_ms <= fragment.start_ms || blocker.start_ms >= fragment.end_ms) {
+            return [fragment];
+          }
+          const pieces = [];
+          if (blocker.start_ms > fragment.start_ms) {
+            pieces.push({...fragment, end_ms: blocker.start_ms});
+          }
+          if (blocker.end_ms < fragment.end_ms) {
+            pieces.push({...fragment, start_ms: blocker.end_ms});
+          }
+          return pieces;
+        });
+      });
+      fragments
+        .filter((fragment) => fragment.end_ms - fragment.start_ms >= 1000)
+        .forEach((fragment) => clean.push({...fragment, speaker}));
+    });
+  });
+  return clean.sort((left, right) => (
+    (right.end_ms - right.start_ms) - (left.end_ms - left.start_ms)
+    || left.start_ms - right.start_ms
+  ));
+}
+
+function manualIdentitySelectionRange(selection, cleanRanges) {
+  return cleanRanges.find((range) => (
+    selection.start_ms >= range.start_ms && selection.end_ms <= range.end_ms
+  ));
+}
+
+function manualIdentitySuggestionState(suggestion) {
+  const matches = (state.timeline.manual_identity?.items || []).filter((annotation) => {
+    if (annotation.anonymous_speaker_label !== suggestion.speaker) return false;
+    const overlapMs = Math.max(
+      0,
+      Math.min(annotation.end_ms, suggestion.end_ms)
+        - Math.max(annotation.start_ms, suggestion.start_ms),
+    );
+    const shorterMs = Math.min(
+      annotation.end_ms - annotation.start_ms,
+      suggestion.end_ms - suggestion.start_ms,
+    );
+    return shorterMs > 0 && overlapMs / shorterMs >= 0.8;
+  });
+  const identities = [...new Set(matches.map((annotation) => (
+    annotation.identity_label
+  )))];
+  if (!identities.length) return {labeled: false, label: "未标"};
+  if (identities.length === 1) {
+    return {labeled: true, label: `✓ ${identityLabel(identities[0])}`};
+  }
+  return {labeled: true, label: "⚠ 多个标签"};
+}
+
+function manualIdentityRangeField(label, value, onChange) {
+  const wrapper = node("label", "manual-identity-range-field");
+  wrapper.append(node("span", "", label));
+  const input = node("input");
+  input.type = "number";
+  input.min = "0";
+  input.step = "0.1";
+  input.value = Number(value).toFixed(1);
+  input.addEventListener("input", () => {
+    const current = Number(input.value);
+    if (input.value !== "" && Number.isFinite(current)) onChange(current, false);
+  });
+  input.addEventListener("change", () => onChange(Number(input.value), true));
+  wrapper.append(input);
+  return {wrapper, input};
+}
+
+function updateManualIdentitySelection(selection, payload, startInput, endInput, copy) {
+  selection.start_ms = Math.max(payload.start_ms, Math.min(selection.start_ms, payload.end_ms - 1000));
+  selection.end_ms = Math.min(payload.end_ms, Math.max(selection.end_ms, selection.start_ms + 1000));
+  if (selection.end_ms - selection.start_ms > 10000) selection.end_ms = selection.start_ms + 10000;
+  if (startInput) startInput.value = ((selection.start_ms - payload.start_ms) / 1000).toFixed(1);
+  if (endInput) endInput.value = ((selection.end_ms - payload.start_ms) / 1000).toFixed(1);
+  copy.textContent = `会话时间 ${formatOffset(selection.start_ms)}–${formatOffset(selection.end_ms)}`
+    + ` · 共 ${((selection.end_ms - selection.start_ms) / 1000).toFixed(1)} 秒`;
+}
+
+async function playManualIdentitySelection(selection, payload, button) {
+  const audio = $("#timeline-detail audio");
+  if (!audio) return;
+  const startSeconds = (selection.start_ms - payload.start_ms) / 1000;
+  const endSeconds = (selection.end_ms - payload.start_ms) / 1000;
+  const previous = manualIdentityPlayback.get(audio);
+  if (previous) previous.cleanup();
+  let cancelled = false;
+  const preparation = {
+    cleanup: () => {
+      cancelled = true;
+      audio.pause();
+      button.disabled = false;
+      button.textContent = "▶ 试听所选区间";
+      if (manualIdentityPlayback.get(audio) === preparation) {
+        manualIdentityPlayback.delete(audio);
+      }
+    },
+  };
+  manualIdentityPlayback.set(audio, preparation);
+  button.disabled = true;
+  button.textContent = "正在准备所选区间…";
+  try {
+    await waitForAudioMetadata(audio);
+    audio.pause();
+    await seekAudio(audio, startSeconds);
+  } catch (error) {
+    preparation.cleanup();
+    toast(`无法定位所选区间：${error.message}`, "error");
+    return;
+  }
+  if (cancelled || !audio.isConnected) return;
+  let stopTimer = null;
+  const cleanup = () => {
+    cancelled = true;
+    if (stopTimer !== null) window.clearInterval(stopTimer);
+    audio.pause();
+    audio.removeEventListener("timeupdate", stop);
+    audio.removeEventListener("ended", cleanup);
+    if (manualIdentityPlayback.get(audio)?.cleanup === cleanup) {
+      manualIdentityPlayback.delete(audio);
+    }
+    button.disabled = false;
+    button.textContent = "▶ 试听所选区间";
+  };
+  const stop = () => {
+    if (audio.currentTime >= endSeconds - 0.03) {
+      audio.currentTime = endSeconds;
+      cleanup();
+    }
+  };
+  audio.currentTime = startSeconds;
+  audio.addEventListener("timeupdate", stop);
+  audio.addEventListener("ended", cleanup);
+  manualIdentityPlayback.set(audio, {cleanup});
+  button.disabled = false;
+  button.textContent = `正在播放 ${startSeconds.toFixed(1)}–${endSeconds.toFixed(1)}s`;
+  try {
+    await audio.play();
+    if (cancelled) return;
+    stopTimer = window.setInterval(stop, 40);
+  } catch (error) {
+    cleanup();
+    toast(`无法试听所选区间：${error.message}`, "error");
+  }
+}
+
+function waitForAudioMetadata(audio) {
+  if (audio.readyState >= 1 && Number.isFinite(audio.duration)) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => finish(new Error("音频加载超时")), 8000);
+    const finish = (error = null) => {
+      window.clearTimeout(timeout);
+      audio.removeEventListener("loadedmetadata", loaded);
+      audio.removeEventListener("error", failed);
+      if (error) reject(error); else resolve();
+    };
+    const loaded = () => finish();
+    const failed = () => finish(new Error("音频元数据加载失败"));
+    audio.addEventListener("loadedmetadata", loaded);
+    audio.addEventListener("error", failed);
+    audio.load();
+  });
+}
+
+function seekAudio(audio, seconds) {
+  const target = Math.max(0, Math.min(seconds, audio.duration || seconds));
+  audio.currentTime = target;
+  if (!audio.seeking && Math.abs(audio.currentTime - target) < 0.05) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => finish(new Error("音频跳转超时")), 5000);
+    const finish = (error = null) => {
+      window.clearTimeout(timeout);
+      audio.removeEventListener("seeked", completed);
+      audio.removeEventListener("error", failed);
+      if (error) reject(error); else resolve();
+    };
+    const completed = () => finish();
+    const failed = () => finish(new Error("无法跳转到所选时间"));
+    audio.addEventListener("seeked", completed);
+    audio.addEventListener("error", failed);
+  });
+}
+
+async function saveManualIdentitySelection(item, payload, selection, identity, actions) {
+  actions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+  try {
+    const result = await api("/api/speaker-timeline/manual-identity", {
+      method: "POST",
+      body: JSON.stringify(sessionBody({
+        run_id: state.timeline.run.id,
+        start_ms: selection.start_ms,
+        end_ms: selection.end_ms,
+        identity_label: identity,
+      })),
+    });
+    state.timeline.manual_identity = result.overview;
+    updateV2D2SetupFromManualIdentity(result.overview);
+    renderTimelineV2D2Status();
+    renderTimelineDetail(item, payload);
+    toast(`已保存 ${formatOffset(selection.start_ms)}–${formatOffset(selection.end_ms)} 为${identityLabel(identity)}`);
+  } catch (error) {
+    actions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+    toast(error.message, "error");
+  }
+}
+
+function updateV2D2SetupFromManualIdentity(overview) {
+  const setup = state.timeline.v2d2.setup || {};
+  const d1Counts = state.timeline.v2d1.review?.identity_counts || {};
+  const combined = {...d1Counts};
+  Object.entries(overview.identity_counts || {}).forEach(([identity, count]) => {
+    combined[identity] = (combined[identity] || 0) + count;
+  });
+  state.timeline.v2d2.setup = {
+    ...setup,
+    identity_counts: combined,
+    manual_identity_count: overview.count,
+    manual_identity_duration_ms: overview.duration_ms,
+    needs_rerun: true,
+  };
+}
+
+function renderManualIdentityList(item, payload) {
+  const container = node("div", "manual-identity-list");
+  const rows = state.timeline.manual_identity?.items || [];
+  if (!rows.length) {
+    container.append(node("span", "", "当前还没有从普通语音保存的人物区间。"));
+    return container;
+  }
+  container.append(node("strong", "", `已保存 ${rows.length} 个普通语音人物区间`));
+  rows.slice().reverse().slice(0, 8).forEach((annotation) => {
+    const row = node("div", "manual-identity-list-item");
+    row.append(node(
+      "span",
+      "",
+      `${formatOffset(annotation.start_ms)}–${formatOffset(annotation.end_ms)}`
+        + ` · ${identityLabel(annotation.identity_label)} · ${annotation.anonymous_speaker_label}`,
+    ));
+    const remove = node("button", "manual-identity-retract-button", "撤回");
+    remove.type = "button";
+    remove.addEventListener("click", () => retractManualIdentity(annotation, item, payload, remove));
+    row.append(remove);
+    container.append(row);
+  });
+  return container;
+}
+
+async function retractManualIdentity(annotation, item, payload, button) {
+  button.disabled = true;
+  try {
+    const result = await api("/api/speaker-timeline/manual-identity/retract", {
+      method: "POST",
+      body: JSON.stringify(sessionBody({
+        run_id: state.timeline.run.id,
+        annotation_id: annotation.id,
+      })),
+    });
+    state.timeline.manual_identity = result.overview;
+    updateV2D2SetupFromManualIdentity(result.overview);
+    renderTimelineV2D2Status();
+    renderTimelineDetail(item, payload);
+    toast("人工人物区间已撤回；历史冻结真值保持不变");
+  } catch (error) {
+    button.disabled = false;
+    toast(error.message, "error");
+  }
+}
+
 function renderIdentityReviewControls(item, payload) {
   const wrapper = node("section", "identity-review-controls");
   const heading = node("div", "identity-review-heading");
@@ -541,7 +1296,7 @@ function renderIdentityReviewControls(item, payload) {
   const actions = node("div", "identity-review-actions");
   [
     ["confirmed_target", `是${identityLabel(item.target_identity)}`],
-    ["rejected", "不是"],
+    ["rejected", `不是${identityLabel(item.target_identity)} / 不是语音`],
     ["uncertain", "听不清"],
   ].forEach(([status, label]) => {
     const button = node("button", `identity-review-button ${status} ${item.review_status === status ? "active" : ""}`, label);
@@ -559,12 +1314,11 @@ async function submitIdentityReview(item, status, payload, actions) {
   try {
     const review = await api("/api/speaker-timeline/identity-review", {
       method: "POST",
-      body: JSON.stringify({
-        recording_id: state.recordingId,
+      body: JSON.stringify(sessionBody({
         run_id: state.timeline.v2d3.run_id,
         candidate_id: item.id,
         status,
-      }),
+      })),
     });
     item.review_status = review.status;
     item.reviewed_at = review.updated_at;
@@ -588,10 +1342,242 @@ async function submitIdentityReview(item, status, payload, actions) {
   }
 }
 
+function renderPossibleReviewControls(item, payload) {
+  const wrapper = node("section", "possible-review-controls");
+  const clipDurationSeconds = (item.end_ms - item.start_ms) / 1000;
+  const focusStartSeconds = (item.focus_start_ms - item.start_ms) / 1000;
+  const focusEndSeconds = (item.focus_end_ms - item.start_ms) / 1000;
+  const heading = node("div", "possible-review-heading");
+  heading.append(
+    node("strong", "", "试听后判断琥珀色区间是否确实有人声"),
+    node("span", "", item.review_status ? `当前：${possibleReviewLabel(item.review_status)}` : "尚未判断"),
+  );
+  wrapper.append(heading);
+
+  const focus = node("div", "possible-focus-card");
+  const focusCopy = node("div", "possible-focus-copy");
+  focusCopy.append(
+    node("strong", "", `琥珀区间：本段第 ${focusStartSeconds.toFixed(1)}–${focusEndSeconds.toFixed(1)} 秒`),
+    node("span", "", `会话时间 ${formatOffset(item.focus_start_ms)}–${formatOffset(item.focus_end_ms)} · 共 ${((item.focus_end_ms - item.focus_start_ms) / 1000).toFixed(1)} 秒`),
+  );
+  const focusButton = node("button", "possible-focus-play-button", "▶ 只听琥珀区间");
+  focusButton.type = "button";
+  focusButton.addEventListener("click", () => playPossibleFocus(item, focusButton));
+  focus.append(focusCopy, focusButton);
+
+  const ruler = node("div", "possible-focus-ruler");
+  const rulerTrack = node("span", "possible-focus-ruler-track");
+  const marker = node("span", "possible-focus-ruler-marker");
+  marker.style.left = `${clipDurationSeconds ? (focusStartSeconds / clipDurationSeconds) * 100 : 0}%`;
+  marker.style.width = `${clipDurationSeconds ? ((focusEndSeconds - focusStartSeconds) / clipDurationSeconds) * 100 : 0}%`;
+  marker.title = `琥珀区间：${focusStartSeconds.toFixed(1)}–${focusEndSeconds.toFixed(1)} 秒`;
+  rulerTrack.append(marker);
+  ruler.append(
+    node("span", "", "0.0s"),
+    rulerTrack,
+    node("span", "", `${clipDurationSeconds.toFixed(1)}s`),
+  );
+  focus.append(ruler);
+  wrapper.append(focus);
+
+  const actions = node("div", "possible-review-actions");
+  [
+    ["confirmed_speech", "确认是语音"],
+    ["rejected", "确认不是语音"],
+    ["uncertain", "听不清"],
+  ].forEach(([status, label]) => {
+    const button = node("button", `possible-review-button ${status} ${item.review_status === status ? "active" : ""}`, label);
+    button.type = "button";
+    button.addEventListener("click", () => submitPossibleSpeechReview(item, status, payload, actions));
+    actions.append(button);
+  });
+  wrapper.append(actions);
+  if (item.review_status === "confirmed_speech") {
+    const identity = node("div", "possible-identity-controls");
+    identity.append(
+      node("strong", "", "这是谁的声音？"),
+      node(
+        "span",
+        "",
+        item.identity_label ? `当前：${identityLabel(item.identity_label)}` : "D.2 需要这项人工真值",
+      ),
+    );
+    const identityActions = node("div", "possible-identity-actions");
+    [
+      ["self", "本人"],
+      ["mother", "母亲"],
+      ["father", "父亲"],
+      ["tv", "电视/媒体"],
+      ["other", "其他人物"],
+      ["unknown", "无法确定"],
+    ].forEach(([value, label]) => {
+      const button = node(
+        "button",
+        `possible-identity-button ${item.identity_label === value ? "active" : ""}`,
+        label,
+      );
+      button.type = "button";
+      button.addEventListener("click", () => submitPossibleIdentity(item, value, payload, identityActions));
+      identityActions.append(button);
+    });
+    identity.append(identityActions);
+    wrapper.append(identity);
+  }
+  wrapper.append(node("p", "", "人工判断单独保存，不会修改 V2-D.1 模型输出。三种结论都计入审核进度。"));
+  return wrapper;
+}
+
+async function submitPossibleIdentity(item, identityLabelValue, payload, actions) {
+  actions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+  try {
+    const result = await api("/api/speaker-timeline/possible-identity", {
+      method: "POST",
+      body: JSON.stringify(sessionBody({
+        run_id: state.timeline.v2d1.run_id,
+        candidate_id: item.id,
+        identity_label: identityLabelValue,
+      })),
+    });
+    item.identity_label = result.identity_label;
+    state.timeline.v2d1.review = result.review;
+    state.timeline.queues.possible.review = result.review;
+    state.timeline.v2d2.setup = {
+      confirmed_speech_count: result.review.confirmed_speech_count,
+      identity_labeled_count: result.review.identity_labeled_count,
+      identity_pending_count: result.review.identity_pending_count,
+      identity_counts: result.review.identity_counts,
+      can_run: result.review.completed
+        && result.review.confirmed_speech_count > 0
+        && result.review.identity_pending_count === 0,
+    };
+    renderTimelineCandidates();
+    renderTimelineV2D1Status();
+    renderTimelineV2D2Status();
+    renderTimelineDetail(item, payload);
+    toast(`${item.title}：人物已标为${identityLabel(result.identity_label)}`);
+  } catch (error) {
+    actions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+    toast(error.message, "error");
+  }
+}
+
+function playPossibleFocus(item, button) {
+  const audio = $("#timeline-detail audio");
+  if (!audio) {
+    toast("播放器尚未准备好，请稍后再试。", "error");
+    return;
+  }
+  const focusStartSeconds = Math.max(0, (item.focus_start_ms - item.start_ms) / 1000);
+  const focusEndSeconds = Math.max(focusStartSeconds, (item.focus_end_ms - item.start_ms) / 1000);
+  const previous = possibleFocusPlayback.get(audio);
+  if (previous) {
+    audio.removeEventListener("timeupdate", previous.stop);
+    audio.removeEventListener("ended", previous.cleanup);
+    previous.cleanup();
+  }
+
+  const cleanup = () => {
+    audio.removeEventListener("timeupdate", stop);
+    audio.removeEventListener("ended", cleanup);
+    possibleFocusPlayback.delete(audio);
+    button.classList.remove("playing");
+    button.textContent = "▶ 只听琥珀区间";
+  };
+  const stop = () => {
+    if (audio.currentTime >= focusEndSeconds) {
+      audio.pause();
+      audio.currentTime = focusEndSeconds;
+      cleanup();
+    }
+  };
+  const startPlayback = async () => {
+    audio.currentTime = focusStartSeconds;
+    audio.addEventListener("timeupdate", stop);
+    audio.addEventListener("ended", cleanup);
+    possibleFocusPlayback.set(audio, {stop, cleanup});
+    button.classList.add("playing");
+    button.textContent = `正在播放 ${focusStartSeconds.toFixed(1)}–${focusEndSeconds.toFixed(1)}s`;
+    try {
+      await audio.play();
+    } catch (error) {
+      cleanup();
+      toast(`无法播放琥珀区间：${error.message}`, "error");
+    }
+  };
+  if (audio.readyState >= 1) {
+    startPlayback();
+  } else {
+    audio.addEventListener("loadedmetadata", startPlayback, {once: true});
+    audio.load();
+  }
+}
+
+async function submitPossibleSpeechReview(item, status, payload, actions) {
+  actions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+  try {
+    const result = await api("/api/speaker-timeline/possible-review", {
+      method: "POST",
+      body: JSON.stringify(sessionBody({
+        run_id: state.timeline.v2d1.run_id,
+        candidate_id: item.id,
+        status,
+      })),
+    });
+    item.review_status = result.status;
+    if (result.status !== "confirmed_speech") item.identity_label = null;
+    item.reviewed_at = result.updated_at;
+    state.timeline.v2d1.review = result.review;
+    state.timeline.queues.possible.review = result.review;
+    renderTimelineCandidates();
+    renderTimelineV2D1Status();
+    renderTimelineDetail(item, payload);
+    toast(`${item.title}：${possibleReviewLabel(status)} · 已审 ${result.review.reviewed_count}/${result.review.candidate_count}`);
+  } catch (error) {
+    actions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+    toast(error.message, "error");
+  }
+}
+
+async function completePossibleSpeechReview(button) {
+  button.disabled = true;
+  button.textContent = "正在完成…";
+  try {
+    const review = await api("/api/speaker-timeline/possible-review/complete", {
+      method: "POST",
+      body: JSON.stringify(sessionBody({run_id: state.timeline.v2d1.run_id})),
+    });
+    state.timeline.v2d1.review = review;
+    state.timeline.queues.possible.review = review;
+    const [sessions, dashboard] = await Promise.all([
+      api("/api/sessions"),
+      api(`/api/session-dashboard?${sessionQuery()}`),
+    ]);
+    state.sessions = sessions.sessions;
+    state.dashboard = dashboard;
+    renderSessionOptions();
+    $("#recording-select").value = String(state.sessionId);
+    renderDashboard();
+    renderTimelineV2D1Status();
+    toast("V2-D.1 人工检查已完成，工作流状态已重新计算");
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "完成本次检查";
+    toast(error.message, "error");
+  }
+}
+
+function possibleReviewLabel(status) {
+  return {
+    confirmed_speech: "确认是语音",
+    rejected: "确认不是语音",
+    uncertain: "听不清",
+  }[status] || "尚未判断";
+}
+
 function identityReviewLabel(status) {
   return {
     confirmed_target: "确认是目标人物",
-    rejected: "确认不是",
+    rejected: "不是目标 / 非语音",
     uncertain: "听不清",
   }[status] || "尚未判断";
 }
@@ -715,6 +1701,8 @@ function identityLabel(identity) {
     tv: "电视",
     self: "本人",
     me: "本人",
+    other: "其他人物",
+    unknown: "无法确定",
   }[identity] || identity;
 }
 
@@ -790,16 +1778,32 @@ function renderTimelineDetailEmpty(title, copy) {
 
 function renderDashboard() {
   const dashboard = state.dashboard;
-  const completed = dashboard?.segments?.completed || 0;
-  const total = Object.values(dashboard?.segments || {}).reduce((sum, value) => sum + Number(value), 0);
-  $("#metric-segments").textContent = completed.toLocaleString("zh-CN");
-  $("#metric-segments-detail").textContent = `${total} 总片段 · ${dashboard.events} 个事件`;
-  $("#metric-annotations").textContent = String(dashboard.annotations);
-  $("#metric-actions").textContent = String(dashboard.actions.pending);
+  const asr = dashboard?.asr?.summary || {};
+  const diarization = dashboard?.diarization?.summary || {};
+  const workflow = dashboard?.workflow?.summary || {};
+  const integrity = dashboard?.integrity || {};
+  $("#metric-segments").textContent = Number(asr.committed_primary_tokens || 0).toLocaleString("zh-CN");
+  $("#metric-segments-detail").textContent = dashboard?.asr?.available
+    ? `${asr.accepted_speech_candidates || 0}/${asr.speech_candidates || 0} 语音候选 · run #${dashboard.asr.id}`
+    : "尚未完成 V2-C";
+  $("#metric-annotations").textContent = String(diarization.speakers || 0);
+  $("#metric-annotations-detail").textContent = dashboard?.diarization?.available
+    ? `${diarization.regular_turns || 0} turns · ${diarization.overlap_regions || 0} 重叠区间`
+    : "尚未完成 V2-D";
+  $("#metric-evaluation").textContent = workflowStateLabel(workflow.workflow_state);
+  $("#metric-evaluation-detail").textContent = dashboard?.workflow?.available
+    ? `workflow #${dashboard.workflow.id} · ${dashboard.workflow.status}`
+      + (workflow.review?.required ? ` · 人工检查 ${workflow.review.reasons?.length || 0}` : "")
+    : "等待 V2 工作流";
+  $("#metric-actions").textContent = integrity.available
+    ? `${integrity.verified_instances}/${integrity.instance_count}`
+    : `${dashboard?.session?.chunk_count || 0} 分片`;
+  $("#metric-actions-detail").textContent = integrity.available
+    ? `原音已校验 · gap ${integrity.gaps} · overlap ${integrity.overlaps}`
+    : "尚无工作流完整性快照";
   const badge = $("#pending-action-badge");
-  badge.textContent = String(dashboard.actions.pending);
-  badge.classList.toggle("hidden", dashboard.actions.pending === 0);
-  updateEvaluationMetric();
+  badge.textContent = String(state.actions.length);
+  badge.classList.toggle("hidden", state.actions.length === 0);
 }
 
 function renderEvaluationOptions() {
@@ -827,12 +1831,107 @@ function renderEvaluationOptions() {
   select.value = state.evaluationName;
 }
 
+function renderSessionEvaluation() {
+  const container = $("#session-evaluation-panel");
+  const payload = state.sessionEvaluation;
+  const legacyOnly = Boolean(state.recordingId);
+  $("#view-evaluation .section-actions").classList.toggle("hidden", !legacyOnly);
+  $("#view-evaluation .review-toolbar").classList.toggle("hidden", !legacyOnly);
+  $("#view-evaluation .annotation-purpose").classList.toggle("hidden", !legacyOnly);
+  container.replaceChildren();
+  if (!payload || legacyOnly) {
+    container.classList.add("hidden");
+    return;
+  }
+  container.classList.remove("hidden");
+  const heading = node("header", "session-evaluation-heading");
+  const title = node("div");
+  title.append(
+    node("strong", "", "V2-D.1 人工区间评测"),
+    node("p", "", "只评测你已经逐条听过的琥珀区间；听不清的区间自动排除。"),
+  );
+  heading.append(title);
+  if (payload.can_create) {
+    const button = node(
+      "button",
+      "primary-button",
+      payload.available ? "重新读取评测结果" : "生成连续评测真值",
+    );
+    button.type = "button";
+    button.addEventListener("click", () => createSessionEvaluation(button));
+    heading.append(button);
+  }
+  container.append(heading);
+
+  const review = payload.review || {};
+  const facts = node("div", "session-evaluation-facts");
+  facts.append(
+    timelineFact("D.1 已审核", `${review.reviewed_count || 0}/${review.candidate_count || 0}`),
+    timelineFact("确认语音", review.status_counts?.confirmed_speech || 0),
+    timelineFact("确认非语音", review.status_counts?.rejected || 0),
+    timelineFact("听不清排除", review.status_counts?.uncertain || 0),
+  );
+  container.append(facts);
+
+  if (!payload.truth) {
+    container.append(node("p", "session-evaluation-note", payload.reason || "尚未生成连续真值。"));
+    return;
+  }
+  const truth = payload.truth;
+  container.append(node(
+    "p",
+    "session-evaluation-note",
+    `冻结真值 #${truth.truth_set_id} · ${truth.evaluation_region_count} 个离散审核范围`
+      + ` · 覆盖 ${formatDuration(truth.evaluated_duration_ms)} · 人声 ${formatDuration(truth.speech_duration_ms)}`,
+  ));
+  const results = node("div", "session-evaluation-results");
+  [
+    ["detected", "原始确定层"],
+    ["recall_rescue", "加入召回补救层"],
+  ].forEach(([key, label]) => {
+    const value = payload.benchmarks?.[key];
+    const card = node("article", "session-evaluation-result");
+    card.append(node("strong", "", label));
+    if (!value?.vad?.available) {
+      card.append(node("span", "", "尚未计算"));
+    } else {
+      card.append(
+        node("span", "", `F1 ${metric(value.vad.f1)}`),
+        node("span", "", `召回 ${metric(value.vad.recall)}`),
+        node("span", "", `精确率 ${metric(value.vad.precision)}`),
+        node("span", "", `误报率 ${metric(value.vad.false_alarm_rate)}`),
+        node("small", "", `报告 #${value.benchmark_run_id}`),
+      );
+    }
+    results.append(card);
+  });
+  container.append(results);
+}
+
+async function createSessionEvaluation(button) {
+  button.disabled = true;
+  button.textContent = "正在生成…";
+  try {
+    await api("/api/session-evaluation/v2d1", {
+      method: "POST",
+      body: JSON.stringify(sessionBody({run_id: state.sessionEvaluation.v2d1_run_id})),
+    });
+    state.sessionEvaluation = await api(`/api/session-evaluation?${sessionQuery()}`);
+    renderSessionEvaluation();
+    toast("D.1 人工判断已冻结为连续真值，VAD 对比报告已生成");
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "生成连续评测真值";
+    toast(error.message, "error");
+  }
+}
+
 async function loadEvaluation() {
   const empty = $("#evaluation-empty");
   const list = $("#segment-list");
   if (!state.evaluationName) {
     state.evaluation = null;
-    empty.classList.remove("hidden");
+    empty.classList.toggle("hidden", !state.recordingId);
     list.replaceChildren();
     $("#pagination").replaceChildren();
     $("#run-evaluation-button").disabled = true;
@@ -1055,15 +2154,7 @@ function updateEvaluationProgress() {
 }
 
 function updateEvaluationMetric() {
-  const template = state.templates.find((item) => item.name === state.evaluationName) || state.templates[0];
-  if (!template) {
-    $("#metric-evaluation").textContent = "0%";
-    $("#metric-evaluation-detail").textContent = "没有评测模板";
-    return;
-  }
-  const percent = template.segments ? Math.round((template.text_labeled / template.segments) * 100) : 0;
-  $("#metric-evaluation").textContent = `${percent}%`;
-  $("#metric-evaluation-detail").textContent = `${template.text_labeled} / ${template.segments} 已听写`;
+  // 评测进度在标注页内展示；顶部指标固定用于 V2 主链状态。
 }
 
 function renderPagination(pages) {
@@ -1095,7 +2186,7 @@ async function runEvaluation() {
     toast(
       `报告 #${payload.evaluation_run_id}：CER ${metric(metrics.text.cer)}，本人召回 ${metric(metrics.self_identity.recall)}`,
     );
-    await loadRecordingWorkspace();
+    await loadSessionWorkspace();
   } catch (error) {
     toast(error.message, "error");
   } finally {
@@ -1315,17 +2406,17 @@ function renderSemanticReviewPlayer(candidate) {
 }
 
 async function generateSemantic() {
-  if (!state.recordingId) return;
+  if (!state.sessionId) return;
   const button = $("#generate-semantic-button");
   button.disabled = true;
   button.textContent = "整理证据中…";
   try {
     const result = await api("/api/semantic/generate", {
       method: "POST",
-      body: JSON.stringify({ recording_id: state.recordingId }),
+      body: JSON.stringify(sessionBody()),
     });
     toast(`V2-E.0.2 run #${result.run_id}：${result.episode_count} 个 Episode；当前本地 mock 不生成场景`);
-    state.semantic = await api(`/api/semantic?recording_id=${state.recordingId}`);
+    state.semantic = await api(`/api/semantic?${sessionQuery()}`);
     renderSemantic();
   } catch (error) {
     toast(error.message, "error");
@@ -1340,15 +2431,14 @@ async function reviewSemantic(candidate, status, title, body, note, button) {
   try {
     await api(`/api/semantic/candidates/${candidate.id}/review`, {
       method: "POST",
-      body: JSON.stringify({
-        recording_id: state.recordingId,
+      body: JSON.stringify(sessionBody({
         status,
         title: title.value,
         body: body.value,
         note: note.value,
-      }),
+      })),
     });
-    state.semantic = await api(`/api/semantic?recording_id=${state.recordingId}`);
+    state.semantic = await api(`/api/semantic?${sessionQuery()}`);
     renderSemantic();
     toast(`语义证据 #${candidate.id} 已${status === "confirmed" ? "确认" : "排除"}`);
   } catch (error) {
@@ -1409,7 +2499,7 @@ async function reviewAction(action, status) {
     });
     Object.assign(action, updated);
     toast(`候选 #${action.id} 已更新为 ${status}`);
-    await loadRecordingWorkspace();
+    await loadSessionWorkspace();
   } catch (error) {
     toast(error.message, "error");
   }
@@ -1421,21 +2511,53 @@ function renderRuns() {
   state.runs.forEach((run) => {
     const row = node("tr");
     row.append(node("td", "", `#${run.id}`));
+    row.append(node("td", "run-kind", runKindLabel(run.run_kind)));
     const statusCell = node("td");
-    statusCell.append(node("span", `status-chip ${run.status === "completed" ? "confirmed" : "pending"}`, run.status));
+    const statusClass = run.status === "completed" ? "confirmed" : run.status === "failed" ? "dismissed" : "pending";
+    statusCell.append(node("span", `status-chip ${statusClass}`, run.status));
     row.append(statusCell);
     row.append(node("td", "", formatDate(run.started_at)));
-    row.append(node("td", "", run.config_sha256.slice(0, 12)));
-    row.append(node("td", "", String(run.summary?.review_actions?.length || 0)));
+    row.append(node("td", "mono-cell", (run.config_sha256 || "").slice(0, 12) || "—"));
+    row.append(node("td", "run-summary-cell", summarizeRun(run)));
     body.append(row);
   });
   if (!state.runs.length) {
     const row = node("tr");
-    const cell = node("td", "", "还没有一键运行记录");
-    cell.colSpan = 5;
+    const cell = node("td", "", "当前会话还没有 V2 运行记录");
+    cell.colSpan = 6;
     row.append(cell);
     body.append(row);
   }
+}
+
+function runKindLabel(kind) {
+  return {
+    quality_workflow_v2: "V2 Workflow",
+    quality_asr_v2c: "V2-C ASR",
+    quality_diarization_v2d: "V2-D 说话人",
+    semantic_v2e0: "V2-E 语义",
+    quality_diarization_v2d1: "V2-D.1 召回",
+    quality_diarization_v2d2: "V2-D.2 审计",
+    quality_diarization_v2d3: "V2-D.3 身份",
+  }[kind] || kind;
+}
+
+function summarizeRun(run) {
+  const summary = run.summary || {};
+  if (run.error) return run.error;
+  if (run.run_kind === "quality_workflow_v2") {
+    return `${summary.workflow_state || "—"} · ${summary.admission_mode || "—"}`;
+  }
+  if (run.run_kind === "quality_asr_v2c") {
+    return `${summary.committed_primary_tokens || 0} tokens · ${summary.window_count || 0} 窗口 · ${summary.disagreements || 0} 分歧`;
+  }
+  if (run.run_kind === "quality_diarization_v2d") {
+    return `${summary.speakers || 0} 人 · ${summary.regular_turns || 0} turns · ${formatDuration(summary.overlap_ms || 0)} 重叠`;
+  }
+  if (run.run_kind === "semantic_v2e0") {
+    return `${summary.episode_count || 0} episode · ${summary.scene_count || 0} scene · ${summary.provider || "local"}`;
+  }
+  return Object.keys(summary).slice(0, 3).map((key) => `${key}=${String(summary[key])}`).join(" · ") || "—";
 }
 
 async function startDailyRun() {
@@ -1471,7 +2593,7 @@ function pollJob(jobId) {
       if (job.status === "completed") {
         $("#run-daily-button").disabled = false;
         toast(`一键日记 run #${job.result.run_id} 已完成`);
-        await loadRecordingWorkspace();
+        await loadSessionWorkspace();
         window.setTimeout(() => $("#job-banner").classList.add("hidden"), 2600);
       } else if (job.status === "failed") {
         $("#run-daily-button").disabled = false;

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import uuid
@@ -10,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from allday_asr.domain.hashing import canonical_json_sha256 as _sha256_mapping
 from allday_asr.paths import OUTPUT_DIR
 from allday_asr.storage.database import Database
 
@@ -35,14 +35,28 @@ class V2D2Summary:
 
 def run_identity_contamination_audit(
     database: Database,
-    recording_id: int,
+    recording_id: int | None,
     *,
+    session_id: int | None = None,
     diarization_run_id: int,
     truth_set_id: int,
 ) -> V2D2Summary:
     """Audit sparse human identities without relabeling model speaker turns."""
     diarization_run = database.get_processing_run(diarization_run_id)
-    if int(diarization_run["recording_id"]) != recording_id:
+    run_session_id = int(diarization_run["session_id"])
+    if session_id is None:
+        if recording_id is None:
+            session_id = run_session_id
+        else:
+            session_id = int(database.get_session_for_recording(recording_id)["id"])
+    if session_id != run_session_id:
+        raise ValueError("V2-D run does not belong to the selected recording session")
+    run_recording_id = (
+        int(diarization_run["recording_id"])
+        if diarization_run["recording_id"] is not None
+        else None
+    )
+    if recording_id is not None and run_recording_id != recording_id:
         raise ValueError("V2-D run does not belong to the selected recording")
     if str(diarization_run["run_kind"]) != "quality_diarization_v2d":
         raise ValueError("V2-D.2 requires a V2-D diarization parent run")
@@ -52,7 +66,6 @@ def run_identity_contamination_audit(
     truth_set = database.get_truth_set(truth_set_id)
     if str(truth_set["status"]) != "frozen":
         raise ValueError("V2-D.2 requires a frozen truth set")
-    session_id = int(diarization_run["session_id"])
     if int(truth_set["session_id"]) != session_id:
         raise ValueError("identity truth belongs to a different recording session")
     annotations = [
@@ -78,6 +91,7 @@ def run_identity_contamination_audit(
     }
     run_id = database.start_processing_run(
         recording_id,
+        session_id=session_id,
         run_kind="quality_diarization_v2d2",
         config=config,
         config_sha256=_sha256_mapping(config),
@@ -344,13 +358,6 @@ def _merge_ranges(ranges: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
 
 def _ranges_ms(ranges: Sequence[tuple[int, int]]) -> int:
     return sum(end - start for start, end in ranges)
-
-
-def _sha256_mapping(value: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _json_object(value: str | None) -> dict[str, Any]:

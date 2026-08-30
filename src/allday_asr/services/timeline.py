@@ -4,7 +4,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from allday_asr.exporters import _absolute_timestamp, _group_segments, export_markdown
+from allday_asr.domain.intervals import group_segments
+from allday_asr.domain.time import absolute_timestamp
+from allday_asr.exporters import export_markdown
 from allday_asr.paths import recording_output_dir
 from allday_asr.storage.database import Database
 
@@ -28,7 +30,7 @@ def build_timeline(
         raise ValueError("max_gap_seconds 必须大于 0")
     recording = database.get_recording(recording_id)
     segments = database.all_segments(recording_id, completed_only=True)
-    groups = _group_segments(segments, max_gap_ms=round(max_gap_seconds * 1000))
+    groups = group_segments(segments, max_gap_ms=round(max_gap_seconds * 1000))
     events = [
         {
             "start_ms": int(group[0]["start_ms"]),
@@ -58,10 +60,10 @@ def build_timeline(
                 "id": index,
                 "start_ms": event["start_ms"],
                 "end_ms": event["end_ms"],
-                "start_at": _absolute_timestamp(
+                "start_at": absolute_timestamp(
                     recording["recorded_at"], event["start_ms"], recording["timezone"]
                 ),
-                "end_at": _absolute_timestamp(
+                "end_at": absolute_timestamp(
                     recording["recorded_at"], event["end_ms"], recording["timezone"]
                 ),
                 "segments": [

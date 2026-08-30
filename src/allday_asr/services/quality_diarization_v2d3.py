@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -14,14 +13,18 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
-from allday_asr.audio.tools import sha256_file
+from allday_asr.audio.embeddings import l2_normalize, normalize_speech_level
 from allday_asr.diarization.quality_backends import (
     PYANNOTE_COMMUNITY_MODEL_ID,
     PyannoteCommunityBackend,
 )
+from allday_asr.domain.hashing import canonical_json_sha256 as _sha256_mapping
 from allday_asr.paths import OUTPUT_DIR
-from allday_asr.services.enrollment import l2_normalize, normalize_speech_level
-from allday_asr.services.sources import resolve_session_slices
+from allday_asr.services.sources import (
+    LogicalWindow,
+    resolve_session_slices,
+    temporary_logical_window,
+)
 from allday_asr.storage.database import Database
 
 EMBEDDING_WINDOW_MS = 3_000
@@ -96,8 +99,8 @@ def sync_identity_reference_set(
         raise ValueError("人物参考身份不能为空")
 
     relevant_runs: list[Any] = []
-    for recording in database.list_recordings():
-        for run in database.list_processing_runs(int(recording["id"])):
+    for session in database.list_recording_sessions():
+        for run in database.list_session_processing_runs(int(session["id"])):
             if (
                 str(run["run_kind"]) != "quality_diarization_v2d3"
                 or str(run["status"]) != "completed"
@@ -321,7 +324,9 @@ def carry_forward_identity_candidate_reviews(
     previous_runs = reversed(
         [
             row
-            for row in database.list_processing_runs(int(run["recording_id"]))
+            for row in database.list_session_processing_runs(
+                int(run["session_id"])
+            )
             if int(row["id"]) < run_id
             and str(row["run_kind"]) == "quality_diarization_v2d3"
             and str(row["status"]) == "completed"
@@ -376,8 +381,9 @@ def carry_forward_identity_candidate_reviews(
 
 def run_identity_candidate_mining(
     database: Database,
-    recording_id: int,
+    recording_id: int | None,
     *,
+    session_id: int | None = None,
     diarization_run_id: int,
     truth_set_id: int,
     target_identity: str,
@@ -394,7 +400,20 @@ def run_identity_candidate_mining(
         raise ValueError("目标身份不能为空")
 
     diarization_run = database.get_processing_run(diarization_run_id)
-    if int(diarization_run["recording_id"]) != recording_id:
+    run_session_id = int(diarization_run["session_id"])
+    if session_id is None:
+        if recording_id is None:
+            session_id = run_session_id
+        else:
+            session_id = int(database.get_session_for_recording(recording_id)["id"])
+    if session_id != run_session_id:
+        raise ValueError("V2-D run does not belong to the selected recording session")
+    run_recording_id = (
+        int(diarization_run["recording_id"])
+        if diarization_run["recording_id"] is not None
+        else None
+    )
+    if recording_id is not None and run_recording_id != recording_id:
         raise ValueError("V2-D run does not belong to the selected recording")
     if str(diarization_run["run_kind"]) != "quality_diarization_v2d":
         raise ValueError("V2-D.3 requires a V2-D diarization parent run")
@@ -427,11 +446,22 @@ def run_identity_candidate_mining(
     if not negative_identities:
         raise ValueError("至少需要一个已标注的负对照身份")
 
-    recording = database.get_recording(recording_id)
-    normalized_path = Path(str(recording["normalized_path"] or ""))
-    if not normalized_path.is_file():
-        raise RuntimeError("V2-D.3 需要现有的 16 kHz 单声道派生音频")
-    normalized_sha256 = sha256_file(normalized_path)
+    session = database.get_recording_session(session_id)
+    duration_ms = int(session["duration_ms"])
+    slices, gaps = resolve_session_slices(database, session_id, 0, duration_ms)
+    if gaps:
+        raise RuntimeError(f"V2-D.3 会话存在未映射原音：{gaps}")
+    audio_window = LogicalWindow(
+        session_id=session_id,
+        index=0,
+        core_start_ms=0,
+        core_end_ms=duration_ms,
+        analysis_start_ms=0,
+        analysis_end_ms=duration_ms,
+        slices=slices,
+        uncovered_ranges=gaps,
+    )
+    input_fingerprint = database.session_input_fingerprint(session_id)
 
     backend = embedding_backend or PyannoteCommunityBackend(
         device=device, model_path=model_path
@@ -453,7 +483,7 @@ def run_identity_candidate_mining(
         "target_identity": target_identity,
         "negative_identities": negative_identities,
         "embedding_window_ms": EMBEDDING_WINDOW_MS,
-        "derived_audio_sha256": normalized_sha256,
+        "session_input_fingerprint": input_fingerprint,
         "derived_audio_format": "pcm-float32-read-from-16khz-mono-wav",
         "min_candidate_ms": settings.min_candidate_ms,
         "max_candidate_ms": settings.max_candidate_ms,
@@ -465,6 +495,7 @@ def run_identity_candidate_mining(
     }
     run_id = database.start_processing_run(
         recording_id,
+        session_id=session_id,
         run_kind="quality_diarization_v2d3",
         config=config,
         config_sha256=_sha256_mapping(config),
@@ -480,7 +511,10 @@ def run_identity_candidate_mining(
         parent_run_id=diarization_run_id,
     )
     try:
-        with sf.SoundFile(normalized_path) as audio:
+        with (
+            temporary_logical_window(audio_window) as normalized_path,
+            sf.SoundFile(normalized_path) as audio,
+        ):
             if audio.samplerate != EMBEDDING_SAMPLE_RATE or audio.channels != 1:
                 raise RuntimeError("V2-D.3 派生音频必须是 16 kHz 单声道")
             seed_waveforms: list[np.ndarray] = []
@@ -960,13 +994,6 @@ def _write_manifest(
     )
     os.replace(temporary, path)
     return path
-
-
-def _sha256_mapping(value: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _union_session_ranges_ms(

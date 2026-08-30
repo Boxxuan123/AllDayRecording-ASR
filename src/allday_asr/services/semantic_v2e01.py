@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import uuid
@@ -10,6 +9,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from allday_asr.domain.hashing import canonical_json as _canonical_json
+from allday_asr.domain.hashing import canonical_json_sha256 as _sha256_json
 from allday_asr.paths import OUTPUT_DIR
 from allday_asr.services.semantic_v2e0 import (
     resolve_semantic_input_runs,
@@ -1185,19 +1186,6 @@ def _write_manifest(
     )
     os.replace(temporary, path)
     return path
-
-
-def _sha256_json(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
 
 
 def _json_object(value: str | None) -> dict[str, Any]:

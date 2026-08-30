@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from allday_asr.domain.intervals import group_segments as _group_segments
+from allday_asr.domain.time import absolute_datetime as _absolute_datetime
+from allday_asr.domain.time import absolute_timestamp as _absolute_timestamp
+from allday_asr.domain.time import format_clock as _format_clock
+from allday_asr.domain.time import format_offset
 from allday_asr.storage.database import Database
+
+_format_offset = format_offset
 
 
 def export_jsonl(database: Database, recording_id: int, destination: Path) -> Path:
@@ -67,48 +71,3 @@ def export_markdown(
         lines.append("")
     destination.write_text("\n".join(lines), encoding="utf-8")
     return destination
-
-
-def _group_segments(segments: Iterable, max_gap_ms: int) -> list[list]:
-    groups: list[list] = []
-    for segment in segments:
-        if not groups or int(segment["start_ms"]) - int(groups[-1][-1]["end_ms"]) > max_gap_ms:
-            groups.append([segment])
-        else:
-            groups[-1].append(segment)
-    return groups
-
-
-def _absolute_timestamp(
-    recorded_at: str, offset_ms: int, timezone_name: str | None = None
-) -> str | None:
-    value = _absolute_datetime(recorded_at, offset_ms, timezone_name)
-    return value.isoformat() if value else None
-
-
-def _absolute_datetime(
-    recorded_at: str, offset_ms: int, timezone_name: str | None = None
-) -> datetime | None:
-    try:
-        base = datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    value = base + timedelta(milliseconds=offset_ms)
-    if timezone_name:
-        try:
-            value = value.astimezone(ZoneInfo(timezone_name))
-        except ZoneInfoNotFoundError:
-            pass
-    return value
-
-
-def _format_offset(milliseconds: int) -> str:
-    seconds = milliseconds // 1000
-    hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-
-def _format_clock(recording, milliseconds: int) -> str:
-    value = _absolute_datetime(recording["recorded_at"], milliseconds, recording["timezone"])
-    return value.strftime("%H:%M:%S") if value else _format_offset(milliseconds)

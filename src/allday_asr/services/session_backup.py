@@ -9,8 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from allday_asr.application.use_cases.session_integrity import verify_session_inputs
 from allday_asr.audio.tools import sha256_file
-from allday_asr.services.session_readiness import verify_session_inputs
+from allday_asr.domain.hashing import canonical_json_sha256 as _sha256_json
 from allday_asr.storage.database import Database
 
 
@@ -493,10 +494,3 @@ def _reject_mixed_source_and_destination(
             pass
         else:
             raise ValueError("原音不能位于备份目标目录内")
-
-
-def _sha256_json(value: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

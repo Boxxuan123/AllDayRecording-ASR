@@ -85,7 +85,7 @@ class ExporterTests(unittest.TestCase):
     def test_speaker_audit_refreshes_stage_details(self) -> None:
         database_path = Path(__file__).parent / f"test-{uuid4().hex}.sqlite3"
         try:
-            database = Database(database_path)
+            database = Database.open(database_path)
             recording = database.create_recording(
                 {
                     "source_path": str(Path(__file__).parent / "audio.m4a"),

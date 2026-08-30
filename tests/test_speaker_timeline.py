@@ -24,7 +24,7 @@ class SpeakerTimelineTests(unittest.TestCase):
         self.output_path = self.root / f"speaker-timeline-output-{self.token}"
         self.source_bytes = b"permanent-original-watch-audio"
         self.source_path.write_bytes(self.source_bytes)
-        self.database = Database(self.database_path)
+        self.database = Database.open(self.database_path)
         recording = self.database.create_recording(
             {
                 "source_path": str(self.source_path.resolve()),

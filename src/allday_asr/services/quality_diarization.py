@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from collections import defaultdict
 from dataclasses import asdict, dataclass
@@ -11,6 +10,7 @@ from allday_asr.diarization.quality_backends import (
     QualityDiarizationBackend,
     SpeakerTurn,
 )
+from allday_asr.domain.hashing import canonical_json_sha256 as _sha256_mapping
 from allday_asr.paths import OUTPUT_DIR
 from allday_asr.services.sources import (
     LogicalWindow,
@@ -54,10 +54,7 @@ class QualityDiarizationSettings:
         return asdict(self)
 
     def sha256(self) -> str:
-        canonical = json.dumps(
-            self.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return _sha256_mapping(self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -626,13 +623,6 @@ def _backend_manifest(backend: QualityDiarizationBackend) -> dict[str, Any]:
         "privacy": "local-inference-no-audio-upload",
         "outputs": ["overlap-aware", "exclusive"],
     }
-
-
-def _sha256_mapping(value: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _write_manifest(

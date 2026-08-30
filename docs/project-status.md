@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-30
-> 当前阶段：可维护性重构阶段 0 已建立测试、CLI、Web、workflow、Ruff 与依赖审查基线；尚未移动生产代码。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一轮没有读取或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
+> 当前阶段：可维护性重构阶段 0、阶段 1 及阶段 2A/2B/2C 已完成；八个核心业务 repository 已建立，`Database` 的 96 个公开方法保持兼容转发，构造函数不再隐式建目录或运行 migration，86 个项目内入口统一使用 `Database.open(...)`。下一步进入阶段 3，拆分质量工作流。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一轮没有读取或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
 
 ## 1. 结论
 
@@ -29,7 +29,7 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 | 固定人物登记 | 基础完成 | 经同意可建立 `known_person` 档案；V2-D.3 人工参考区间可跨录音积累，尚无跨天自动匹配 |
 | 时间线 | 原型完成 | 规则聚合事件、Markdown/JSON、原音区间追溯 |
 | 语义证据 | V2-E.0.2 已完成 | episode/utterance/scene 分层、ASR/匿名声纹/source/identity 四轨证据、最小化 provider payload、严格响应校验、Codex manual record/replay、追加式审核和分片回听；真实云端 provider 待接入 |
-| 数据库迁移 | V2-W.1 已完成 | 最新 schema v12；`processing_runs.recording_id` 对 session-native V2 可空，所有历史证据保留，升级前自动备份 |
+| 数据库迁移 | schema v15；重构 2A 已完成 | v001–v015 SQL 分版本保存；统一 runner 负责顺序、原子版本记录、升级前备份和高版本拒绝；`Database` 接口保持兼容 |
 | 统一配置 | 已完成 V1 | TOML 校验、配置哈希、每次运行完整快照 |
 | 一键日处理 | V1/V2 分离 | V1 保留 `daily-run`；V2 默认要求 `production_ready` 后持久编排 C→D→E，本地停在 `semantic_ready`；`--shadow` 是显式实验模式 |
 | 人工评测 | V2-B 已完成 | 连续 session/source 真值、预测快照、CER、VAD、DER/JER、对齐、实体和多 run 对比；保留 V1 兼容入口 |
@@ -112,12 +112,16 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 3. `workflow-v2` 已持久编排 C→D→E 并与 V1 `daily-run` 分开；网页仍主要暴露 V1 一键入口，尚未加入原生分片会话选择和 V2 恢复按钮。
 4. V2-E.0.2 已完成一次 Codex manual eval，但它不是可复现的固定模型质量基准；真实云端模型、数据保留策略、上下文上限和独立的幻觉/遗漏评测仍需在 V2-E.1 明确后才能调用。
 5. 固定人物可以登记，但尚无通用的跨天人物候选匹配和人工确认流程。
-6. schema v12 已新增不可变备份及逐文件证据；可变的只有当前校验/恢复状态。完成 run、原始模型输出和语义基础候选仍不可变。后续结构变化必须继续新增 migration，不能修改既有版本。
+6. 最新 schema 为 v15；v12 不可变备份证据、v13/v14 D.1 人工审核及身份标签、v15 手工身份区间均保留。完成 run、原始模型输出和语义基础候选仍不可变。后续结构变化必须继续新增 migration，不能修改既有版本。
 7. `daily-run` 已使用统一配置；旧的分步命令仍保留各自参数，后续可逐步接入同一配置层。
 8. 已建立 Git 基线提交 `d9e9377` 和一键日记提交 `57cbe2e`；后续能力继续按可验证功能独立提交。
 
 ## 6. 本次盘点验证
 
+- 可维护性重构阶段 2C 见 [显式数据库生命周期记录](refactoring-phase-2c-explicit-database-lifecycle.md)：`Database(path)` 只装配对象，`initialize()`/`open()` 显式承担目录与 migration I/O；86 个 CLI、Web 和测试入口已迁移；构造无副作用、显式初始化、重复打开和入口约束均有测试；全量 110 个测试及 Ruff 通过。
+- 可维护性重构阶段 2B 见 [Repository 接缝记录](refactoring-phase-2b-repository-seams.md)：八个核心业务 repository 已提取，96 个门面方法只保留原签名转发；真实 SQLite 覆盖门面一致性、关键事务回滚及第二批五类入口；全量 106 个测试及 Ruff 通过。
+- 可维护性重构阶段 2A 见 [SQLite 迁移基础设施记录](refactoring-phase-2a-sqlite-migrations.md)：连接、runner 和 v001–v015 SQL 已分离；历史 SQL 组合哈希固定；空库对象快照、v1–v14 全升级、备份、失败回滚和 v16 拒绝测试通过；全量 98 个测试及 Ruff 通过。
+- 可维护性重构阶段 1 的迁移和兼容层见 [阶段 1 记录](refactoring-phase-1-shared-primitives.md)：文本、区间、时间、embedding、canonical JSON hash 和 session integrity 均有直接 characterization test；架构白名单已清空；全量 92 个测试及 Ruff 通过。
 - 可维护性重构阶段 0 的行为与依赖基线见 [阶段 0 基线](refactoring-phase-0-baseline.md)：重构前 79 个测试通过；新增 CLI smoke 和架构约束后 86 个测试通过，且 Ruff 对 `src`/`tests` 通过。本阶段没有加载真实模型或读取真实录音。
 - `doctor` 全部通过：Python 3.12.10、FFmpeg/FFprobe、FunASR 1.4.4、ModelScope 1.39.1、pyannote.audio 4.0.7、PyTorch/torchaudio 2.9.1+cu128 和 RTX 5070 CUDA 实算正常。
 - 原有 79 个单元测试在阶段 0 开始时全部通过，覆盖 schema 自动备份、冻结 ASR/token/source/diarization/attribution/semantic 防篡改、跨源引用、v10→v11 身份证据迁移、分片清单事务、相同静音内容的不同实例、session-native run、不可覆盖独立备份、清单外文件拒绝、篡改撤销恢复资格、production/shadow 准入、原音篡改预阻断、阶段复用、持久工作流、V2-C/D/E 与既有评测逻辑。V2-W.1 新测试只使用临时合成 WAV，没有读取或运行新增真实音频。

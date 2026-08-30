@@ -24,7 +24,7 @@ class QualityWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(__file__).parent / f"quality-workflow-{uuid4().hex}"
         self.root.mkdir()
-        self.database = Database(self.root / "state.sqlite3")
+        self.database = Database.open(self.root / "state.sqlite3")
 
     def tearDown(self) -> None:
         for path in self.root.iterdir():
@@ -45,6 +45,11 @@ class QualityWorkflowTests(unittest.TestCase):
                 workflow,
                 "run_quality_diarization",
                 return_value=SimpleNamespace(run_id=102),
+            ),
+            patch.object(
+                workflow,
+                "run_quality_diarization_v2d1",
+                return_value=self._v2d1_summary(103),
             ),
             patch.object(
                 self.database,
@@ -69,9 +74,9 @@ class QualityWorkflowTests(unittest.TestCase):
         with (
             patch.object(workflow, "run_quality_asr") as asr_mock,
             patch.object(workflow, "run_quality_diarization") as diarization_mock,
+            self.assertRaisesRegex(RuntimeError, "独立设备/网络备份"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "独立设备/网络备份"):
-                self._run(session_id, admission_mode="production")
+            self._run(session_id, admission_mode="production")
         asr_mock.assert_not_called()
         diarization_mock.assert_not_called()
 
@@ -89,6 +94,11 @@ class QualityWorkflowTests(unittest.TestCase):
                 return_value=SimpleNamespace(run_id=202),
             ),
             patch.object(
+                workflow,
+                "run_quality_diarization_v2d1",
+                return_value=self._v2d1_summary(204),
+            ),
+            patch.object(
                 self.database,
                 "list_committed_asr_tokens",
                 return_value=[{"text": "测试"}],
@@ -104,6 +114,83 @@ class QualityWorkflowTests(unittest.TestCase):
         self.assertEqual(summary.state, "semantic_ready")
         self.assertEqual(summary.semantic_run_id, 203)
         semantic_mock.assert_called_once()
+
+    def test_enhancements_trigger_review_without_blocking_semantic(self) -> None:
+        session_id, _ = self._import_session("enhancement-review")
+        d1_result = self._v2d1_summary(304)
+        d1_result.detected_ms = 80_000
+        d1_result.possible_ms = 20_000
+        d1_result.possible_regions = 4
+        d2_result = SimpleNamespace(
+            run_id=305,
+            coverage=0.60,
+            human_speakers=[{"identity": "father", "fragmented": True}],
+            contaminated_speakers=["SPEAKER_01"],
+        )
+        with (
+            patch.object(
+                workflow,
+                "run_quality_asr",
+                return_value=SimpleNamespace(run_id=301),
+            ),
+            patch.object(
+                workflow,
+                "run_quality_diarization",
+                return_value=SimpleNamespace(run_id=302),
+            ),
+            patch.object(
+                workflow,
+                "run_quality_diarization_v2d1",
+                return_value=d1_result,
+            ) as d1_mock,
+            patch.object(
+                workflow,
+                "_latest_frozen_speaker_truth_set",
+                return_value={"id": 9},
+            ),
+            patch.object(
+                workflow,
+                "run_identity_contamination_audit",
+                return_value=d2_result,
+            ) as d2_mock,
+            patch.object(
+                self.database,
+                "list_committed_asr_tokens",
+                return_value=[{"text": "测试"}],
+            ),
+            patch.object(
+                workflow,
+                "run_semantic_v2e02",
+                return_value=SimpleNamespace(run_id=303),
+            ) as semantic_mock,
+        ):
+            summary = self._run(session_id)
+
+        self.assertEqual(summary.state, "semantic_ready_needs_review")
+        self.assertTrue(summary.review_required)
+        self.assertEqual(summary.v2d1_run_id, 304)
+        self.assertEqual(summary.v2d2_run_id, 305)
+        codes = {reason["code"] for reason in summary.review_reasons}
+        self.assertIn("possible_speech_high", codes)
+        self.assertIn("identity_cluster_contamination", codes)
+        self.assertIn("identity_truth_coverage_low", codes)
+        self.assertIn("identity_fragmented", codes)
+        self.assertIn("v2d3_target_identity_required", codes)
+        d1_mock.assert_called_once()
+        self.assertEqual(d1_mock.call_args.kwargs["session_id"], session_id)
+        d2_mock.assert_called_once()
+        self.assertEqual(d2_mock.call_args.kwargs["session_id"], session_id)
+        semantic_mock.assert_called_once()
+        persisted = json.loads(
+            str(
+                self.database.get_processing_run(summary.workflow_run_id)[
+                    "summary_json"
+                ]
+            )
+        )
+        self.assertEqual(
+            persisted["enhancements"]["v2d3"]["status"], "needs_review"
+        )
 
     def test_changed_original_is_detected_before_any_model_stage(self) -> None:
         session_id, audio_path = self._import_session("tampered-workflow")
@@ -157,6 +244,11 @@ class QualityWorkflowTests(unittest.TestCase):
         with (
             patch.object(workflow, "run_quality_asr") as asr_mock,
             patch.object(workflow, "run_quality_diarization") as diarization_mock,
+            patch.object(
+                workflow,
+                "run_quality_diarization_v2d1",
+                return_value=self._v2d1_summary(303),
+            ),
         ):
             summary = self._run(session_id)
 
@@ -180,6 +272,16 @@ class QualityWorkflowTests(unittest.TestCase):
             secondary_factory=lambda: object(),
             diarization_factory=lambda: object(),
             admission_mode=admission_mode,
+        )
+
+    @staticmethod
+    def _v2d1_summary(run_id: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            run_id=run_id,
+            detected_regions=1,
+            possible_regions=0,
+            detected_ms=100,
+            possible_ms=0,
         )
 
     def _import_session(self, session_key: str) -> tuple[int, Path]:

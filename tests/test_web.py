@@ -25,7 +25,7 @@ class WebConsoleTests(unittest.TestCase):
         web_output = root / f"web-output-{suffix}"
         server = None
         try:
-            database = Database(database_path)
+            database = Database.open(database_path)
             recording = database.create_recording(
                 {
                     "source_path": str(root / "test-audio.m4a"),
@@ -59,6 +59,28 @@ class WebConsoleTests(unittest.TestCase):
             with patch("allday_asr.services.evaluation.EVALUATION_DIR", evaluation_dir):
                 create_evaluation_template(
                     database, recording_id, name="web-test", end_ms=5_000
+                )
+                native_session = database.create_recording_session(
+                    {
+                        "session_key": f"web-native:{suffix}",
+                        "device": "watch",
+                        "recorded_at": "2026-08-28T09:00:00+08:00",
+                        "timezone": "Asia/Singapore",
+                        "duration_ms": 0,
+                        "status": "active",
+                    }
+                )
+                source = database.list_source_objects()[0]
+                database.add_session_source(
+                    {
+                        "session_id": native_session["id"],
+                        "source_object_id": source["id"],
+                        "chunk_index": 0,
+                        "session_start_ms": 0,
+                        "session_end_ms": 5_000,
+                        "source_end_ms": 5_000,
+                        "continuity_status": "continuous",
+                    }
                 )
                 server = create_web_server(
                     database_path=database_path,
@@ -112,6 +134,37 @@ class WebConsoleTests(unittest.TestCase):
                 self.assertIn("DOMContentLoaded", javascript)
                 self.assertIn("renderTimelineOverview", javascript)
                 self.assertIn("renderSemantic", javascript)
+                self.assertIn("loadSessionWorkspace", javascript)
+
+                with opener.open(f"{base_url}/api/sessions", timeout=3) as response:
+                    sessions = json.load(response)["sessions"]
+                self.assertEqual(sessions[0]["id"], int(native_session["id"]))
+                self.assertEqual(sessions[0]["recording_id"], None)
+                self.assertEqual(sessions[0]["kind"], "session")
+
+                with opener.open(
+                    f"{base_url}/api/session-dashboard?session_id={int(native_session['id'])}",
+                    timeout=3,
+                ) as response:
+                    session_dashboard = json.load(response)
+                self.assertEqual(session_dashboard["session"]["chunk_count"], 1)
+                self.assertFalse(session_dashboard["workflow"]["available"])
+
+                with opener.open(
+                    f"{base_url}/api/speaker-timeline?session_id={int(native_session['id'])}",
+                    timeout=3,
+                ) as response:
+                    native_timeline = json.load(response)
+                self.assertFalse(native_timeline["available"])
+                self.assertEqual(native_timeline["session_id"], int(native_session["id"]))
+
+                with opener.open(
+                    f"{base_url}/api/semantic?session_id={int(native_session['id'])}",
+                    timeout=3,
+                ) as response:
+                    native_semantic = json.load(response)
+                self.assertFalse(native_semantic["available"])
+                self.assertEqual(native_semantic["session_id"], int(native_session["id"]))
 
                 with opener.open(
                     f"{base_url}/api/dashboard?recording_id={recording_id}",

@@ -45,7 +45,7 @@ class ContinuousBenchmarkTests(unittest.TestCase):
         self.token = uuid4().hex
         self.database_path = self.root / f"benchmark-{self.token}.sqlite3"
         self.output_dir = self.root / f"benchmark-output-{self.token}"
-        self.database = Database(self.database_path)
+        self.database = Database.open(self.database_path)
         self.recording = self.database.create_recording(
             {
                 "source_path": str((self.root / f"audio-{self.token}.m4a").resolve()),

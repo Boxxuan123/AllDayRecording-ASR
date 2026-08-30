@@ -20,7 +20,7 @@ class SessionManifestIngestTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(__file__).parent / f"session-ingest-{uuid4().hex}"
         self.root.mkdir()
-        self.database = Database(self.root / "state.sqlite3")
+        self.database = Database.open(self.root / "state.sqlite3")
 
     def tearDown(self) -> None:
         for path in self.root.iterdir():

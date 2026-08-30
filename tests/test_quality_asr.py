@@ -96,7 +96,7 @@ class QualityAsrTests(unittest.TestCase):
         self.output_dir = self.root / f"quality-output-{self.token}"
         self.truth_path = self.root / f"quality-truth-{self.token}.jsonl"
         self.source_path.write_bytes(b"immutable-watch-audio")
-        self.database = Database(self.database_path)
+        self.database = Database.open(self.database_path)
         digest = hashlib.sha256(self.source_path.read_bytes()).hexdigest()
         recording = self.database.create_recording(
             {

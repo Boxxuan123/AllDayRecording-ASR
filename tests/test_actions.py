@@ -17,7 +17,7 @@ class ActionCandidateTests(unittest.TestCase):
         output_dir = Path(__file__).parent / f"actions-output-{suffix}"
         try:
             output_dir.mkdir()
-            database = Database(database_path)
+            database = Database.open(database_path)
             recording = database.create_recording(
                 {
                     "source_path": str(Path(__file__).parent / "audio.m4a"),

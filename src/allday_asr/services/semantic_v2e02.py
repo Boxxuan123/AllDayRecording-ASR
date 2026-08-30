@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import uuid
@@ -10,6 +9,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from allday_asr.domain.hashing import canonical_json as _canonical_json
+from allday_asr.domain.hashing import canonical_json_sha256 as _sha256_json
 from allday_asr.paths import OUTPUT_DIR
 from allday_asr.services.semantic_v2e0 import (
     resolve_semantic_input_runs,
@@ -950,20 +951,35 @@ def response_candidates(
     return candidates
 
 
-def semantic_overview(database: Database, recording_id: int) -> dict[str, Any]:
-    database.get_recording(recording_id)
+def semantic_overview(
+    database: Database,
+    recording_id: int | None = None,
+    *,
+    session_id: int | None = None,
+) -> dict[str, Any]:
+    recording_id, session_id = _resolve_overview_target(
+        database, recording_id, session_id
+    )
     completed = [
         row
-        for row in database.list_processing_runs(recording_id)
+        for row in database.list_session_processing_runs(session_id)
         if str(row["run_kind"]) == "semantic_v2e0"
         and str(row["status"]) == "completed"
     ]
     if not completed:
-        return v2e01_semantic_overview(database, recording_id)
+        if recording_id is not None:
+            return v2e01_semantic_overview(database, recording_id)
+        return _empty_session_semantic_overview(database, session_id)
     run = completed[-1]
     exchange = database.get_semantic_exchange(int(run["id"]))
     if str(exchange["request_format"]) != EVIDENCE_LEDGER_FORMAT:
-        return v2e01_semantic_overview(database, recording_id)
+        if recording_id is not None:
+            return v2e01_semantic_overview(database, recording_id)
+        return _empty_session_semantic_overview(
+            database,
+            session_id,
+            reason="最新语义结果使用旧版格式，原生会话页面暂不展示。",
+        )
     request = _json_object(exchange["request_json"])
     response = _json_object(exchange["response_json"])
     ledger = request.get("evidence_ledger") or {}
@@ -979,11 +995,11 @@ def semantic_overview(database: Database, recording_id: int) -> dict[str, Any]:
         review_clips = [
             {
                 **clip,
-                "audio_url": (
-                    "/api/speaker-timeline/audio"
-                    f"?recording_id={recording_id}"
-                    f"&start_ms={int(clip['start_ms'])}"
-                    f"&end_ms={int(clip['end_ms'])}"
+                "audio_url": _semantic_audio_url(
+                    recording_id,
+                    session_id,
+                    start_ms=int(clip["start_ms"]),
+                    end_ms=int(clip["end_ms"]),
                 ),
             }
             for clip in evidence.get("review_clips", [])
@@ -1017,6 +1033,7 @@ def semantic_overview(database: Database, recording_id: int) -> dict[str, Any]:
     return {
         "available": True,
         "recording_id": recording_id,
+        "session_id": session_id,
         "version": "v2-e.0.2",
         "run": {
             "id": int(run["id"]),
@@ -1062,6 +1079,78 @@ def semantic_overview(database: Database, recording_id: int) -> dict[str, Any]:
         "reviewed_candidates": reviewed,
         "candidates": candidates,
     }
+
+
+def _resolve_overview_target(
+    database: Database,
+    recording_id: int | None,
+    session_id: int | None,
+) -> tuple[int | None, int]:
+    if session_id is None:
+        if recording_id is None:
+            raise ValueError("必须指定 recording_id 或 session_id")
+        database.get_recording(recording_id)
+        return recording_id, int(database.get_session_for_recording(recording_id)["id"])
+    session = database.get_recording_session(session_id)
+    legacy_recording_id = (
+        int(session["legacy_recording_id"])
+        if session["legacy_recording_id"] is not None
+        else None
+    )
+    if recording_id is not None and recording_id != legacy_recording_id:
+        raise ValueError("recording_id 与 session_id 不属于同一录音会话")
+    return legacy_recording_id, session_id
+
+
+def _empty_session_semantic_overview(
+    database: Database,
+    session_id: int,
+    *,
+    reason: str = "还没有 V2-E.0.2 本地语义证据包。",
+) -> dict[str, Any]:
+    can_generate = True
+    inputs: dict[str, int | None] | None = None
+    try:
+        asr_run, diarization_run = resolve_semantic_input_runs(
+            database, None, session_id=session_id
+        )
+        inputs = {
+            "asr_run_id": int(asr_run["id"]),
+            "diarization_run_id": (
+                int(diarization_run["id"])
+                if diarization_run is not None
+                else None
+            ),
+        }
+    except (KeyError, RuntimeError, ValueError) as exc:
+        can_generate = False
+        reason = str(exc)
+    return {
+        "available": False,
+        "recording_id": None,
+        "session_id": session_id,
+        "can_generate": can_generate,
+        "reason": reason,
+        "inputs": inputs,
+    }
+
+
+def _semantic_audio_url(
+    recording_id: int | None,
+    session_id: int,
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> str:
+    target = (
+        f"recording_id={recording_id}"
+        if recording_id is not None
+        else f"session_id={session_id}"
+    )
+    return (
+        "/api/speaker-timeline/audio"
+        f"?{target}&start_ms={start_ms}&end_ms={end_ms}&v=2"
+    )
 
 
 def assemble_transport_episodes(request: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1793,16 +1882,3 @@ def _json_object(value: str | None) -> dict[str, Any]:
         return {}
     parsed = json.loads(value)
     return parsed if isinstance(parsed, dict) else {}
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _sha256_json(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()

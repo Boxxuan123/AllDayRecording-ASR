@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import tempfile
 import uuid
@@ -12,6 +10,7 @@ from pathlib import Path
 from typing import Iterator
 
 from allday_asr.audio.tools import AudioMetadata, extract_clip, probe_audio, sha256_file
+from allday_asr.domain.hashing import canonical_json_sha256
 from allday_asr.storage.database import Database
 
 
@@ -215,8 +214,7 @@ def logical_window_cache_key(
             for item in window.slices
         ],
     }
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return canonical_json_sha256(payload)
 
 
 def materialize_logical_window(

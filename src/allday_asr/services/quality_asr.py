@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from allday_asr.asr.quality_backends import QualityAsrBackend
+from allday_asr.domain.hashing import canonical_json_sha256
+from allday_asr.domain.text import levenshtein_operations, normalize_text
 from allday_asr.paths import OUTPUT_DIR
-from allday_asr.services.benchmark import normalize_text
-from allday_asr.services.evaluation import levenshtein_operations
 from allday_asr.services.sources import (
     LogicalWindow,
     plan_logical_windows,
@@ -43,10 +42,7 @@ class QualityAsrSettings:
         return asdict(self)
 
     def sha256(self) -> str:
-        canonical = json.dumps(
-            self.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return canonical_json_sha256(self.to_dict())
 
 
 @dataclass(frozen=True)

@@ -1,9 +1,9 @@
 # AllDayRecording-ASR 可维护性重构指南
 
-> 状态：执行中；阶段 0 已于 2026-08-30 完成  
+> 状态：执行中；阶段 0、阶段 1、阶段 2A、阶段 2B、阶段 2C 已于 2026-08-30 完成
 > 编写日期：2026-08-30  
 > 适用范围：`src/allday_asr/`、`tests/` 与相关工程文档  
-> 当前回归基线：79 个单元测试通过
+> 当前回归基线：110 个单元测试通过
 
 ## 1. 目的与结论
 
@@ -180,6 +180,11 @@ Ruff 项目规则和防止新增依赖债务的架构测试。本阶段未修改
 
 目标：建立最小、稳定、无副作用的公共层，为后续拆分创造接缝。
 
+实施记录见 [阶段 1：共享纯函数与依赖接缝](refactoring-phase-1-shared-primitives.md)：
+文本、区间、时间、embedding、canonical JSON hash 和 session integrity 已提取；
+旧入口保留兼容 re-export，阶段 0 记录的私有导入、循环依赖和函数内 service
+import 白名单均已清零。
+
 优先迁移：
 
 | 当前能力 | 当前依赖方向 | 建议目标 |
@@ -214,6 +219,11 @@ Ruff 项目规则和防止新增依赖债务的架构测试。本阶段未修改
 
 #### 2A：提取连接和 migration
 
+实施记录见 [阶段 2A：SQLite 连接与迁移基础设施](refactoring-phase-2a-sqlite-migrations.md)：
+连接事务、migration runner 和 v001–v015 历史 SQL 已提取；组合 SQL 哈希保持不变，
+空库 schema 快照、全部历史版本升级、升级前备份、失败回滚和高版本拒绝均已有测试。
+`Database` 保持兼容门面；阶段 2B repository 拆分随后已完成。
+
 ```text
 infrastructure/sqlite/
   connection.py
@@ -230,6 +240,12 @@ infrastructure/sqlite/
 - 新库初始化和旧库升级使用同一个 runner。
 
 #### 2B：按业务区域提取 repository
+
+实施记录见 [阶段 2B：核心业务 Repository](refactoring-phase-2b-repository-seams.md)：
+Session、Run、ASR、Diarization、Identity、Semantic、Evaluation 和 Action 八个核心
+repository 与 source fingerprint 已提取，96 个原 `Database` 方法保留显式兼容转发；
+真实 SQLite 测试覆盖直接调用、门面一致性及关键事务回滚。下一步进入阶段 2C，显式化
+数据库初始化和 migration I/O。
 
 建议至少分为：
 
@@ -252,6 +268,11 @@ class Database:
 旧调用方仍可使用 `database.list_session_processing_runs(...)`，门面内部委托给对应 repository。新代码不再向门面添加新业务方法。
 
 #### 2C：移除构造函数隐藏副作用
+
+实施记录见 [阶段 2C：显式数据库生命周期](refactoring-phase-2c-explicit-database-lifecycle.md)：
+`Database.__init__` 现在只解析路径并装配 repository；目录创建和 migration 由
+`initialize()` 显式执行，普通入口统一使用 `Database.open(...)`。CLI、Web 和测试中的
+86 个调用点已完成迁移，构造无 I/O、重复打开幂等及历史 migration 行为均有自动测试。
 
 目标接口应区分：
 
@@ -620,11 +641,12 @@ characterization tests
 ### 工作包 B：数据库迁移与 repository 接缝
 
 - 先提取 migration runner 和历史 SQL。
-- 再提取 Session、Run、Semantic repository。
+- 再按两个批次提取八个核心业务 repository。
 - 保留 `Database` 兼容门面。
 - 增加空库、历史升级、回滚和门面兼容测试。
 
-优先选择 Session/Run/Semantic，是因为它们正被 workflow、Web 和版本化 semantic 共同使用，拆出后收益最大。
+首批优先选择 Session/Run/Semantic，是因为它们正被 workflow、Web 和版本化 semantic
+共同使用；第二批已完成 ASR/Diarization/Identity/Evaluation/Action。
 
 ### 工作包 C：Web 工作台模块化
 

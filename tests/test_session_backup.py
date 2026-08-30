@@ -28,7 +28,7 @@ class SessionBackupTests(unittest.TestCase):
         self.backup_root = self.root / "backup-device"
         self.restore_root = self.root / "restore-probes"
         self.source_root.mkdir(parents=True)
-        self.database = Database(self.root / "state.sqlite3")
+        self.database = Database.open(self.root / "state.sqlite3")
 
     def tearDown(self) -> None:
         tests_root = Path(__file__).parent.resolve()

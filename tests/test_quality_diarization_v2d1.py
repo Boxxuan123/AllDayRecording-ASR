@@ -12,10 +12,25 @@ from allday_asr.services.benchmark import (
     CONTINUOUS_TRUTH_FORMAT,
     import_continuous_truth,
 )
+from allday_asr.services.manual_identity import (
+    manual_identity_overview,
+    retract_manual_identity_annotation,
+    save_manual_identity_annotation,
+)
 from allday_asr.services.quality_diarization_v2d1 import (
     V2D1Settings,
     create_source_micro_truth,
     run_quality_diarization_v2d1,
+)
+from allday_asr.services.quality_diarization_v2d1_review import (
+    complete_possible_speech_review,
+    effective_workflow_summary,
+    label_possible_speech_identity,
+    review_possible_speech_candidate,
+)
+from allday_asr.services.quality_diarization_v2d1_truth import (
+    create_v2d1_review_truth,
+    evaluate_v2d1_review,
 )
 from allday_asr.services.quality_diarization_v2d2 import (
     run_identity_contamination_audit,
@@ -37,7 +52,7 @@ class QualityDiarizationV2D1Tests(unittest.TestCase):
         self.evaluation_dir = self.root / f"v2d1-evaluation-{self.token}"
         self.source_bytes = b"immutable-v2d1-watch-audio"
         self.source_path.write_bytes(self.source_bytes)
-        self.database = Database(self.database_path)
+        self.database = Database.open(self.database_path)
         recording = self.database.create_recording(
             {
                 "source_path": str(self.source_path.resolve()),
@@ -93,7 +108,8 @@ class QualityDiarizationV2D1Tests(unittest.TestCase):
         ):
             summary = run_quality_diarization_v2d1(
                 self.database,
-                self.recording_id,
+                None,
+                session_id=int(self.session["id"]),
                 diarization_run_id=self.diarization_run_id,
                 settings=V2D1Settings(bridge_gap_ms=4_000),
                 evaluation_truth_set_ids=(truth.truth_set_id,),
@@ -133,7 +149,8 @@ class QualityDiarizationV2D1Tests(unittest.TestCase):
         ):
             identity_audit = run_identity_contamination_audit(
                 self.database,
-                self.recording_id,
+                None,
+                session_id=int(self.session["id"]),
                 diarization_run_id=self.diarization_run_id,
                 truth_set_id=identity_truth,
             )
@@ -157,6 +174,95 @@ class QualityDiarizationV2D1Tests(unittest.TestCase):
         self.assertTrue(overview["v2d2"]["available"])
         self.assertEqual(overview["v2d2"]["run_id"], identity_audit.run_id)
         self.assertEqual(overview["queues"]["possible"]["count"], 1)
+        possible_candidate = overview["queues"]["possible"]["items"][0]
+        with self.assertRaisesRegex(ValueError, "还有 1 个"):
+            complete_possible_speech_review(self.database, summary.run_id)
+        reviewed = review_possible_speech_candidate(
+            self.database,
+            summary.run_id,
+            candidate_id=possible_candidate["id"],
+            status="confirmed_speech",
+        )
+        self.assertEqual(reviewed["review"]["reviewed_count"], 1)
+        labeled = label_possible_speech_identity(
+            self.database,
+            summary.run_id,
+            candidate_id=possible_candidate["id"],
+            identity_label="tv",
+        )
+        self.assertEqual(labeled["review"]["identity_labeled_count"], 1)
+        reviewed_overview = speaker_timeline_overview(
+            self.database, self.recording_id
+        )
+        self.assertEqual(
+            reviewed_overview["queues"]["possible"]["items"][0][
+                "review_status"
+            ],
+            "confirmed_speech",
+        )
+        completion = complete_possible_speech_review(
+            self.database, summary.run_id
+        )
+        self.assertTrue(completion["completed"])
+        with patch(
+            "allday_asr.services.benchmark.OUTPUT_DIR", self.output_dir
+        ):
+            evaluation = evaluate_v2d1_review(
+                self.database,
+                summary.run_id,
+                output_dir=self.evaluation_dir,
+            )
+        self.assertEqual(
+            evaluation["benchmarks"]["detected"]["vad"]["recall"], 0.0
+        )
+        self.assertEqual(
+            evaluation["benchmarks"]["recall_rescue"]["vad"]["recall"], 1.0
+        )
+        saved_identity = save_manual_identity_annotation(
+            self.database,
+            session_id=int(self.session["id"]),
+            diarization_run_id=self.diarization_run_id,
+            start_ms=3_000,
+            end_ms=4_000,
+            identity_label="father",
+        )
+        self.assertEqual(saved_identity["overview"]["identity_counts"], {"father": 1})
+        identity_review_truth = create_v2d1_review_truth(
+            self.database,
+            summary.run_id,
+            include_identities=True,
+            output_dir=self.evaluation_dir,
+        )
+        identity_rows = self.database.list_truth_annotations(
+            identity_review_truth["truth_set_id"], annotation_kind="speaker"
+        )
+        self.assertEqual(
+            [str(row["label"]) for row in identity_rows], ["tv", "father"]
+        )
+        manual_row = next(
+            row
+            for row in identity_rows
+            if str(row["label"]) == "father"
+        )
+        self.assertIn(
+            "manual_identity_annotation_id", str(manual_row["metadata_json"])
+        )
+        effective = effective_workflow_summary(
+            self.database,
+            {
+                "workflow_state": "semantic_ready_needs_review",
+                "base_state": "semantic_ready",
+                "enhancements": {"v2d1": {"run_id": summary.run_id}},
+                "review": {
+                    "required": True,
+                    "reasons": [
+                        {"code": "possible_speech_high", "stage": "v2d1"}
+                    ],
+                },
+            },
+        )
+        self.assertEqual(effective["workflow_state"], "semantic_ready")
+        self.assertFalse(effective["review"]["required"])
         window = speaker_timeline_window(
             self.database,
             self.recording_id,
@@ -191,6 +297,22 @@ class QualityDiarizationV2D1Tests(unittest.TestCase):
                 for item in male_turn["identity_evidence"]["evidence"]
             },
             {"mother", "tv"},
+        )
+        annotation_id = int(saved_identity["annotation"]["id"])
+        retracted = retract_manual_identity_annotation(
+            self.database,
+            annotation_id,
+            session_id=int(self.session["id"]),
+            diarization_run_id=self.diarization_run_id,
+        )
+        self.assertEqual(retracted["overview"]["count"], 0)
+        self.assertEqual(
+            manual_identity_overview(
+                self.database,
+                int(self.session["id"]),
+                diarization_run_id=self.diarization_run_id,
+            )["items"],
+            [],
         )
         self.assertEqual(self.source_path.read_bytes(), self.source_bytes)
 

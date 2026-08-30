@@ -6,7 +6,11 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from allday_asr.diarization.quality_backends import SpeakerTurn
+from allday_asr.services.manual_identity import manual_identity_overview
 from allday_asr.services.quality_diarization import compute_overlap_regions
+from allday_asr.services.quality_diarization_v2d1_review import (
+    v2d1_review_overview,
+)
 from allday_asr.storage.database import Database
 
 SPEAKER_COLORS = (
@@ -25,17 +29,24 @@ MAX_AUDIO_WINDOW_MS = 120_000
 
 
 def speaker_timeline_overview(
-    database: Database, recording_id: int, *, run_id: int | None = None
+    database: Database,
+    recording_id: int | None = None,
+    *,
+    session_id: int | None = None,
+    run_id: int | None = None,
 ) -> dict[str, Any]:
     """Build ranked, read-only listening queues from one completed V2-D run."""
-    recording = database.get_recording(recording_id)
-    run = _resolve_run(database, recording_id, run_id)
+    recording_id, session_id, duration_ms = _resolve_target(
+        database, recording_id, session_id
+    )
+    run = _resolve_run(database, session_id, run_id)
     if run is None:
         return {
             "available": False,
             "recording_id": recording_id,
-            "duration_ms": int(recording["duration_ms"]),
-            "reason": "这条录音还没有已完成的 V2-D 说话人结果。",
+            "session_id": session_id,
+            "duration_ms": duration_ms,
+            "reason": "这个录音会话还没有已完成的 V2-D 说话人结果。",
         }
 
     regular_rows = database.list_diarization_turns(int(run["id"]), turn_kind="regular")
@@ -45,7 +56,6 @@ def speaker_timeline_overview(
     tokens = _attributed_tokens(database, run)
     regular = [_speaker_turn(row) for row in regular_rows]
     overlaps = compute_overlap_regions(regular)
-    duration_ms = int(recording["duration_ms"])
     speakers = _speaker_summaries(regular_rows)
 
     conversation = _conversation_candidates(
@@ -53,11 +63,26 @@ def speaker_timeline_overview(
     )
     overlap_candidates = _overlap_candidates(overlaps, tokens, duration_ms)
     unassigned = _unassigned_candidates(tokens, duration_ms)
-    v2d1_run = _latest_v2d1_run(database, recording_id, int(run["id"]))
+    v2d1_run = _latest_v2d1_run(database, session_id, int(run["id"]))
     v2d1_summary = _json_object(v2d1_run["summary_json"]) if v2d1_run else {}
     rescue_rows = _v2d1_prediction_rows(database, v2d1_summary)
     possible = _possible_candidates(rescue_rows, tokens, duration_ms)
-    v2d2_run = _latest_v2d2_run(database, recording_id, int(run["id"]))
+    v2d1_review = (
+        v2d1_review_overview(database, int(v2d1_run["id"]))
+        if v2d1_run
+        else _empty_v2d1_review()
+    )
+    manual_identity = manual_identity_overview(
+        database, session_id, diarization_run_id=int(run["id"])
+    )
+    possible_reviews = v2d1_review.get("items") or {}
+    for item in possible:
+        review = possible_reviews.get(str(item["id"]))
+        item["review_status"] = review.get("status") if review else None
+        item["review_note"] = review.get("note") if review else None
+        item["reviewed_at"] = review.get("updated_at") if review else None
+        item["identity_label"] = review.get("identity_label") if review else None
+    v2d2_run = _latest_v2d2_run(database, session_id, int(run["id"]))
     v2d2_summary = _json_object(v2d2_run["summary_json"]) if v2d2_run else {}
     identity_regions = _identity_truth_regions(
         database,
@@ -73,7 +98,7 @@ def speaker_timeline_overview(
     }
     for speaker in speakers:
         speaker["identity_audit"] = audits_by_speaker.get(speaker["label"])
-    v2d3_run = _latest_v2d3_run(database, recording_id, int(run["id"]))
+    v2d3_run = _latest_v2d3_run(database, session_id, int(run["id"]))
     v2d3_summary = _json_object(v2d3_run["summary_json"]) if v2d3_run else {}
     v2d3_review_rows = (
         database.list_identity_candidate_reviews(int(v2d3_run["id"]))
@@ -83,6 +108,7 @@ def speaker_timeline_overview(
     v2d3_reviews = {
         str(row["candidate_id"]): row for row in v2d3_review_rows
     }
+    enhancement_state = _latest_enhancement_state(database, session_id)
     identity_expansion = [
         dict(item) for item in v2d3_summary.get("candidates") or []
     ]
@@ -93,9 +119,39 @@ def speaker_timeline_overview(
         item["reviewed_at"] = review["updated_at"] if review else None
     summary = _json_object(run["summary_json"])
     model = _json_object(run["model_manifest_json"])
+    v2d2_overview = _v2d2_overview(
+        v2d2_run,
+        v2d2_summary,
+        enhancement_state.get("v2d2"),
+        review=v2d1_review,
+        manual_identity=manual_identity,
+    )
+    v2d3_overview = _v2d3_overview(
+        v2d3_run,
+        v2d3_summary,
+        v2d3_review_rows,
+        enhancement_state.get("v2d3"),
+    )
+    target_identities = [
+        str(item["identity"])
+        for item in v2d2_overview.get("human_speakers") or []
+        if str(item["identity"]) not in {"unknown", "uncertain", "mixed"}
+    ]
+    v2d3_overview["target_identities"] = target_identities
+    v2d3_overview["can_run"] = bool(
+        v2d2_overview.get("available") and len(set(target_identities)) >= 2
+    )
+    if not v2d3_overview.get("available"):
+        if not v2d2_overview.get("available"):
+            v2d3_overview["reason"] = "先完成人物标签和 V2-D.2 污染审计。"
+        elif len(set(target_identities)) < 2:
+            v2d3_overview["reason"] = "至少需要两个明确人物，才能建立目标与负对照。"
+        else:
+            v2d3_overview["reason"] = "选择目标人物后即可生成身份扩样候选。"
     return {
         "available": True,
         "recording_id": recording_id,
+        "session_id": session_id,
         "duration_ms": duration_ms,
         "run": {
             "id": int(run["id"]),
@@ -146,6 +202,11 @@ def speaker_timeline_overview(
                 ),
                 "count": len(possible),
                 "total_ms": sum(item["possible_ms"] for item in possible),
+                "review": {
+                    key: value
+                    for key, value in v2d1_review.items()
+                    if key != "items"
+                },
                 "items": possible,
             },
             "identity_expansion": {
@@ -158,9 +219,15 @@ def speaker_timeline_overview(
                 "items": identity_expansion,
             },
         },
-        "v2d1": _v2d1_overview(v2d1_run, v2d1_summary),
-        "v2d2": _v2d2_overview(v2d2_run, v2d2_summary),
-        "v2d3": _v2d3_overview(v2d3_run, v2d3_summary, v2d3_review_rows),
+        "v2d1": _v2d1_overview(
+            v2d1_run,
+            v2d1_summary,
+            enhancement_state.get("v2d1"),
+            review=v2d1_review,
+        ),
+        "v2d2": v2d2_overview,
+        "v2d3": v2d3_overview,
+        "manual_identity": manual_identity,
         "method": {
             "conversation_window_ms": CONVERSATION_WINDOW_MS,
             "conversation_step_ms": CONVERSATION_STEP_MS,
@@ -175,15 +242,17 @@ def speaker_timeline_overview(
 
 def speaker_timeline_window(
     database: Database,
-    recording_id: int,
+    recording_id: int | None = None,
     *,
+    session_id: int | None = None,
     run_id: int,
     start_ms: int,
     end_ms: int,
 ) -> dict[str, Any]:
-    run = _require_run(database, recording_id, run_id)
-    recording = database.get_recording(recording_id)
-    duration_ms = int(recording["duration_ms"])
+    recording_id, session_id, duration_ms = _resolve_target(
+        database, recording_id, session_id
+    )
+    run = _require_run(database, session_id, run_id)
     _validate_window(start_ms, end_ms, duration_ms)
 
     regular_rows = database.list_diarization_turns(run_id, turn_kind="regular")
@@ -209,7 +278,7 @@ def speaker_timeline_window(
         for token in _attributed_tokens(database, run)
         if token["end_ms"] > start_ms and token["start_ms"] < end_ms
     ]
-    v2d1_run = _latest_v2d1_run(database, recording_id, run_id)
+    v2d1_run = _latest_v2d1_run(database, session_id, run_id)
     v2d1_summary = _json_object(v2d1_run["summary_json"]) if v2d1_run else {}
     speech_evidence = [
         _evidence_payload(row, start_ms, end_ms)
@@ -223,7 +292,7 @@ def speaker_timeline_window(
         start_ms=start_ms,
         end_ms=end_ms,
     )
-    v2d2_run = _latest_v2d2_run(database, recording_id, run_id)
+    v2d2_run = _latest_v2d2_run(database, session_id, run_id)
     v2d2_summary = _json_object(v2d2_run["summary_json"]) if v2d2_run else {}
     identity_regions = _identity_truth_regions(
         database,
@@ -241,6 +310,7 @@ def speaker_timeline_window(
         )
     return {
         "recording_id": recording_id,
+        "session_id": session_id,
         "run_id": run_id,
         "start_ms": start_ms,
         "end_ms": end_ms,
@@ -252,19 +322,18 @@ def speaker_timeline_window(
         "source_regions": source_regions,
         "identity_regions": identity_regions,
         "v2d2": _v2d2_overview(v2d2_run, v2d2_summary),
-        "audio_url": (
-            "/api/speaker-timeline/audio"
-            f"?recording_id={recording_id}&start_ms={start_ms}&end_ms={end_ms}&v=1"
+        "audio_url": _timeline_audio_url(
+            recording_id, session_id, start_ms=start_ms, end_ms=end_ms
         ),
     }
 
 
 def _latest_v2d1_run(
-    database: Database, recording_id: int, diarization_run_id: int
+    database: Database, session_id: int, diarization_run_id: int
 ):
     matches = [
         row
-        for row in database.list_processing_runs(recording_id)
+        for row in database.list_session_processing_runs(session_id)
         if str(row["run_kind"]) == "quality_diarization_v2d1"
         and str(row["status"]) == "completed"
         and int(row["parent_run_id"] or 0) == diarization_run_id
@@ -273,11 +342,11 @@ def _latest_v2d1_run(
 
 
 def _latest_v2d2_run(
-    database: Database, recording_id: int, diarization_run_id: int
+    database: Database, session_id: int, diarization_run_id: int
 ):
     matches = [
         row
-        for row in database.list_processing_runs(recording_id)
+        for row in database.list_session_processing_runs(session_id)
         if str(row["run_kind"]) == "quality_diarization_v2d2"
         and str(row["status"]) == "completed"
         and int(row["parent_run_id"] or 0) == diarization_run_id
@@ -286,11 +355,11 @@ def _latest_v2d2_run(
 
 
 def _latest_v2d3_run(
-    database: Database, recording_id: int, diarization_run_id: int
+    database: Database, session_id: int, diarization_run_id: int
 ):
     matches = [
         row
-        for row in database.list_processing_runs(recording_id)
+        for row in database.list_session_processing_runs(session_id)
         if str(row["run_kind"]) == "quality_diarization_v2d3"
         and str(row["status"]) == "completed"
         and int(row["parent_run_id"] or 0) == diarization_run_id
@@ -309,13 +378,52 @@ def _v2d1_prediction_rows(
     )
 
 
-def _v2d1_overview(run, summary: dict[str, Any]) -> dict[str, Any]:
+def _latest_enhancement_state(
+    database: Database, session_id: int
+) -> dict[str, Any]:
+    for row in reversed(database.list_session_processing_runs(session_id)):
+        if (
+            str(row["run_kind"]) != "quality_workflow_v2"
+            or str(row["status"]) != "completed"
+        ):
+            continue
+        enhancements = _json_object(row["summary_json"]).get("enhancements")
+        return enhancements if isinstance(enhancements, dict) else {}
+    return {}
+
+
+def _unavailable_enhancement(
+    stage: dict[str, Any] | None,
+    *,
+    default_reason: str,
+    policy_key: str,
+    policy: str,
+) -> dict[str, Any]:
+    stage = stage or {}
+    return {
+        "available": False,
+        "status": str(stage.get("status") or "not_run"),
+        "reason": str(stage.get("detail") or default_reason),
+        "workflow_reason": stage.get("reason"),
+        "error": stage.get("error"),
+        policy_key: policy,
+    }
+
+
+def _v2d1_overview(
+    run,
+    summary: dict[str, Any],
+    stage: dict[str, Any] | None = None,
+    *,
+    review: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if run is None:
-        return {
-            "available": False,
-            "reason": "尚未生成 V2-D.1 双层语音证据。",
-            "speaker_policy": "来源层不会合并匿名说话人。",
-        }
+        return _unavailable_enhancement(
+            stage,
+            default_reason="当前 workflow 尚未生成 V2-D.1 双层语音证据。",
+            policy_key="speaker_policy",
+            policy="来源层不会合并匿名说话人。",
+        )
     config = _json_object(run["config_json"])
     return {
         "available": True,
@@ -326,6 +434,11 @@ def _v2d1_overview(run, summary: dict[str, Any]) -> dict[str, Any]:
         "possible_ms": int(summary.get("possible_ms") or 0),
         "bridge_gap_ms": int(config.get("bridge_gap_ms") or 0),
         "evaluations": summary.get("evaluations") or {},
+        "review": {
+            key: value
+            for key, value in (review or _empty_v2d1_review()).items()
+            if key != "items"
+        },
         "speaker_policy": str(
             summary.get("speaker_policy")
             or "anonymous speakers preserved independently of source"
@@ -333,13 +446,80 @@ def _v2d1_overview(run, summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _v2d2_overview(run, summary: dict[str, Any]) -> dict[str, Any]:
+def _empty_v2d1_review() -> dict[str, Any]:
+    return {
+        "run_id": None,
+        "candidate_count": 0,
+        "reviewed_count": 0,
+        "pending_count": 0,
+        "status_counts": {
+            "confirmed_speech": 0,
+            "rejected": 0,
+            "uncertain": 0,
+        },
+        "completed": False,
+        "completed_at": None,
+        "confirmed_speech_count": 0,
+        "identity_labeled_count": 0,
+        "identity_pending_count": 0,
+        "identity_counts": {},
+        "items": {},
+    }
+
+
+def _v2d2_overview(
+    run,
+    summary: dict[str, Any],
+    stage: dict[str, Any] | None = None,
+    *,
+    review: dict[str, Any] | None = None,
+    manual_identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    review = review or _empty_v2d1_review()
+    manual_identity = manual_identity or {
+        "count": 0,
+        "duration_ms": 0,
+        "identity_counts": {},
+        "items": [],
+    }
+    identity_counts = dict(review.get("identity_counts") or {})
+    for identity, count in (manual_identity.get("identity_counts") or {}).items():
+        identity_counts[str(identity)] = identity_counts.get(str(identity), 0) + int(count)
+    identity_sample_count = sum(int(count) for count in identity_counts.values())
+    setup = {
+        "confirmed_speech_count": int(review.get("confirmed_speech_count") or 0),
+        "identity_labeled_count": int(review.get("identity_labeled_count") or 0),
+        "identity_pending_count": int(review.get("identity_pending_count") or 0),
+        "identity_counts": identity_counts,
+        "manual_identity_count": int(manual_identity.get("count") or 0),
+        "manual_identity_duration_ms": int(
+            manual_identity.get("duration_ms") or 0
+        ),
+        "can_run": bool(
+            review.get("completed")
+            and identity_sample_count > 0
+            and int(review.get("identity_pending_count") or 0) == 0
+        ),
+    }
     if run is None:
-        return {
-            "available": False,
-            "reason": "尚未生成 V2-D.2 人工身份污染审计。",
-            "identity_policy": "人工身份不会全局覆盖匿名 speaker。",
-        }
+        unavailable = _unavailable_enhancement(
+            stage,
+            default_reason="当前没有可用的 V2-D.2 人工身份污染审计。",
+            policy_key="identity_policy",
+            policy="人工身份不会全局覆盖匿名 speaker。",
+        )
+        unavailable["setup"] = setup
+        if setup["confirmed_speech_count"] and setup["identity_pending_count"]:
+            unavailable["reason"] = (
+                f"请给 {setup['identity_pending_count']} 条确认语音补人物标签。"
+            )
+        elif setup["can_run"]:
+            unavailable["reason"] = "人物标签已齐，可以运行身份污染审计。"
+        return unavailable
+    setup["needs_rerun"] = bool(
+        str(manual_identity.get("latest_updated_at") or "")
+        > str(run["completed_at"] or "")
+    )
     return {
         "available": True,
         "run_id": int(run["id"]),
@@ -358,18 +538,23 @@ def _v2d2_overview(run, summary: dict[str, Any]) -> dict[str, Any]:
             summary.get("identity_policy")
             or "audit-only interval evidence; model speaker labels remain immutable"
         ),
+        "setup": setup,
     }
 
 
 def _v2d3_overview(
-    run, summary: dict[str, Any], reviews: Sequence[Any]
+    run,
+    summary: dict[str, Any],
+    reviews: Sequence[Any],
+    stage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if run is None:
-        return {
-            "available": False,
-            "reason": "尚未生成 V2-D.3 身份扩样候选。",
-            "identity_policy": "没有候选会被自动写成人物身份。",
-        }
+        return _unavailable_enhancement(
+            stage,
+            default_reason="当前没有需要人工审核的 V2-D.3 身份扩样候选。",
+            policy_key="identity_policy",
+            policy="没有候选会被自动写成人物身份。",
+        )
     review_counts = {
         status: sum(str(row["status"]) == status for row in reviews)
         for status in ("confirmed_target", "rejected", "uncertain")
@@ -660,27 +845,67 @@ def _source_truth_regions(
     )
 
 
-def _resolve_run(database: Database, recording_id: int, run_id: int | None):
+def _resolve_run(database: Database, session_id: int, run_id: int | None):
     if run_id is not None:
-        return _require_run(database, recording_id, run_id)
+        return _require_run(database, session_id, run_id)
     matches = [
         row
-        for row in database.list_processing_runs(recording_id)
+        for row in database.list_session_processing_runs(session_id)
         if str(row["run_kind"]) == "quality_diarization_v2d"
         and str(row["status"]) == "completed"
     ]
     return matches[-1] if matches else None
 
 
-def _require_run(database: Database, recording_id: int, run_id: int):
+def _require_run(database: Database, session_id: int, run_id: int):
     run = database.get_processing_run(run_id)
-    if int(run["recording_id"]) != recording_id:
-        raise ValueError("V2-D 运行不属于所选录音")
+    if int(run["session_id"]) != session_id:
+        raise ValueError("V2-D 运行不属于所选录音会话")
     if str(run["run_kind"]) != "quality_diarization_v2d":
         raise ValueError("所选运行不是 V2-D 说话人运行")
     if str(run["status"]) != "completed":
         raise ValueError("V2-D 运行尚未完成")
     return run
+
+
+def _resolve_target(
+    database: Database,
+    recording_id: int | None,
+    session_id: int | None,
+) -> tuple[int | None, int, int]:
+    if session_id is None:
+        if recording_id is None:
+            raise ValueError("必须指定 recording_id 或 session_id")
+        recording = database.get_recording(recording_id)
+        session = database.get_session_for_recording(recording_id)
+        return recording_id, int(session["id"]), int(recording["duration_ms"])
+    session = database.get_recording_session(session_id)
+    legacy_recording_id = (
+        int(session["legacy_recording_id"])
+        if session["legacy_recording_id"] is not None
+        else None
+    )
+    if recording_id is not None and recording_id != legacy_recording_id:
+        raise ValueError("recording_id 与 session_id 不属于同一录音会话")
+    return legacy_recording_id, session_id, int(session["duration_ms"])
+
+
+def _timeline_audio_url(
+    recording_id: int | None,
+    session_id: int,
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> str:
+    target = (
+        f"recording_id={recording_id}"
+        if recording_id is not None
+        else f"session_id={session_id}"
+    )
+    return (
+        "/api/speaker-timeline/audio"
+        f"?{target}&start_ms={start_ms}&end_ms={end_ms}&v=2"
+    )
 
 
 def _validate_window(start_ms: int, end_ms: int, duration_ms: int) -> None:

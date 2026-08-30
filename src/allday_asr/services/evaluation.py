@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from allday_asr.domain.text import levenshtein_operations, normalize_text
 from allday_asr.paths import EVALUATION_DIR, recording_output_dir
 from allday_asr.storage.database import Database
 
@@ -409,46 +409,6 @@ def parse_offset(value: str) -> int:
     if seconds < 0:
         raise ValueError("时间偏移不能为负数")
     return round(seconds * 1000)
-
-
-def normalize_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", value).lower()
-    return "".join(
-        character
-        for character in normalized
-        if not character.isspace()
-        and not unicodedata.category(character).startswith("P")
-    )
-
-
-def levenshtein_operations(reference: str, hypothesis: str) -> dict[str, int]:
-    previous = [(index, 0, 0, index) for index in range(len(hypothesis) + 1)]
-    for ref_index, reference_character in enumerate(reference, start=1):
-        current = [(ref_index, 0, ref_index, 0)]
-        for hyp_index, hypothesis_character in enumerate(hypothesis, start=1):
-            if reference_character == hypothesis_character:
-                substitution = previous[hyp_index - 1]
-            else:
-                distance, substitutions, deletions, insertions = previous[hyp_index - 1]
-                substitution = (
-                    distance + 1,
-                    substitutions + 1,
-                    deletions,
-                    insertions,
-                )
-            distance, substitutions, deletions, insertions = previous[hyp_index]
-            deletion = (distance + 1, substitutions, deletions + 1, insertions)
-            distance, substitutions, deletions, insertions = current[hyp_index - 1]
-            insertion = (distance + 1, substitutions, deletions, insertions + 1)
-            current.append(min(substitution, deletion, insertion))
-        previous = current
-    distance, substitutions, deletions, insertions = previous[-1]
-    return {
-        "distance": distance,
-        "substitutions": substitutions,
-        "deletions": deletions,
-        "insertions": insertions,
-    }
 
 
 def _load_truth(path: Path) -> tuple[dict, list[dict]]:

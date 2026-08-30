@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import uuid
@@ -10,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from allday_asr.domain.hashing import canonical_json_sha256 as _sha256_json
 from allday_asr.paths import OUTPUT_DIR
 from allday_asr.storage.database import Database
 
@@ -695,9 +695,10 @@ def semantic_overview(database: Database, recording_id: int) -> dict[str, Any]:
 
 def review_semantic_candidate(
     database: Database,
-    recording_id: int,
+    recording_id: int | None,
     candidate_id: int,
     *,
+    session_id: int | None = None,
     status: str,
     title: str | None = None,
     body: str | None = None,
@@ -705,7 +706,10 @@ def review_semantic_candidate(
 ) -> dict[str, Any]:
     candidate = database.get_semantic_candidate(candidate_id)
     run = database.get_processing_run(int(candidate["run_id"]))
-    if int(run["recording_id"]) != recording_id:
+    if session_id is not None:
+        if int(run["session_id"]) != session_id:
+            raise ValueError("语义候选不属于当前录音会话")
+    elif recording_id is None or int(run["recording_id"]) != recording_id:
         raise ValueError("语义候选不属于当前录音")
     revision = database.create_semantic_candidate_revision(
         candidate_id,
@@ -849,16 +853,6 @@ def _write_manifest(
     )
     os.replace(temporary, path)
     return path
-
-
-def _sha256_json(value: Any) -> str:
-    canonical = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _json_object(value: str | None) -> dict[str, Any]:

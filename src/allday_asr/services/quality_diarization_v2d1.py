@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from allday_asr.domain.hashing import canonical_json_sha256 as _sha256_mapping
 from allday_asr.paths import EVALUATION_DIR, OUTPUT_DIR
 from allday_asr.services.benchmark import (
     CONTINUOUS_TRUTH_FORMAT,
@@ -66,15 +67,29 @@ class EvidenceInterval:
 
 def run_quality_diarization_v2d1(
     database: Database,
-    recording_id: int,
+    recording_id: int | None,
     *,
+    session_id: int | None = None,
     diarization_run_id: int,
     settings: V2D1Settings,
     evaluation_truth_set_ids: Sequence[int] = (),
 ) -> V2D1Summary:
     """Create separate detected/possible speech layers without relabeling speakers."""
     diarization_run = database.get_processing_run(diarization_run_id)
-    if int(diarization_run["recording_id"]) != recording_id:
+    run_session_id = int(diarization_run["session_id"])
+    if session_id is None:
+        if recording_id is None:
+            session_id = run_session_id
+        else:
+            session_id = int(database.get_session_for_recording(recording_id)["id"])
+    if session_id != run_session_id:
+        raise ValueError("V2-D run does not belong to the selected recording session")
+    run_recording_id = (
+        int(diarization_run["recording_id"])
+        if diarization_run["recording_id"] is not None
+        else None
+    )
+    if recording_id is not None and run_recording_id != recording_id:
         raise ValueError("V2-D run does not belong to the selected recording")
     if str(diarization_run["run_kind"]) != "quality_diarization_v2d":
         raise ValueError("V2-D.1 requires a V2-D diarization parent run")
@@ -94,8 +109,7 @@ def run_quality_diarization_v2d1(
     ) != "completed":
         raise ValueError("V2-D.1 requires the completed parent V2-C ASR run")
 
-    session = database.get_session_for_recording(recording_id)
-    session_id = int(session["id"])
+    session = database.get_recording_session(session_id)
     duration_ms = int(session["duration_ms"])
     if int(diarization_run["session_id"]) != session_id or int(
         asr_run["session_id"]
@@ -112,6 +126,7 @@ def run_quality_diarization_v2d1(
     config_sha256 = _sha256_mapping(config)
     run_id = database.start_processing_run(
         recording_id,
+        session_id=session_id,
         run_kind="quality_diarization_v2d1",
         config=config,
         config_sha256=config_sha256,
@@ -621,13 +636,6 @@ def _intervals_ms(intervals: Sequence[EvidenceInterval]) -> int:
     return sum(end - start for start, end in _merge_ranges(
         (item.start_ms, item.end_ms) for item in intervals
     ))
-
-
-def _sha256_mapping(value: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _json_object(value: str | None) -> dict[str, Any]:

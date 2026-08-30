@@ -61,33 +61,33 @@
           </div>
           <div class="topbar-actions">
             <label class="select-field">
-              <span>录音</span>
-              <select id="recording-select" aria-label="选择录音"></select>
+              <span>录音会话</span>
+              <select id="recording-select" aria-label="选择录音会话"></select>
             </label>
-            <button id="run-daily-button" class="primary-button">重新生成日记</button>
+            <button id="run-daily-button" class="primary-button">刷新 V2 结果</button>
           </div>
         </header>
 
         <section class="metric-grid" aria-label="录音概览">
           <article class="metric-card accent-cyan">
-            <span>转写片段</span>
+            <span>V2-C 主 token</span>
             <strong id="metric-segments">—</strong>
             <small id="metric-segments-detail">读取中</small>
           </article>
           <article class="metric-card accent-violet">
-            <span>身份标注</span>
+            <span>V2-D 匿名说话人</span>
             <strong id="metric-annotations">—</strong>
-            <small>人工确认片段</small>
+            <small id="metric-annotations-detail">读取中</small>
           </article>
           <article class="metric-card accent-amber">
-            <span>评测进度</span>
+            <span>V2 workflow</span>
             <strong id="metric-evaluation">—</strong>
             <small id="metric-evaluation-detail">尚未选择模板</small>
           </article>
           <article class="metric-card accent-red">
-            <span>待确认行动</span>
+            <span>输入完整性</span>
             <strong id="metric-actions">—</strong>
-            <small>不会自动写入日历</small>
+            <small id="metric-actions-detail">读取中</small>
           </article>
         </section>
 
@@ -233,8 +233,8 @@
           <div class="section-heading">
             <div>
               <p class="eyebrow">GROUND TRUTH</p>
-              <h3>逐段听写与身份标注</h3>
-              <p>先播放原音，再填写准确文字。每次保存只修改当前片段。</p>
+              <h3>人工真值与评测</h3>
+              <p>原生 V2 会话使用连续区间真值；旧录音仍可使用逐段听写模板。</p>
             </div>
             <div class="section-actions">
               <label class="select-field compact">
@@ -265,6 +265,8 @@
             <p>准确文字测 ASR；真实说话人测多人切分；是否本人测声纹；关键事实测时间、地点和承诺有没有丢失。混合、非语音或听不清时将相关字段留空，必要时取消纳入评测并备注。</p>
           </div>
 
+          <div id="session-evaluation-panel" class="session-evaluation-panel hidden"></div>
+
           <div id="evaluation-empty" class="empty-state hidden">
             <strong>还没有评测模板</strong>
             <p>请先在终端运行 evaluation init，或选择其他录音。</p>
@@ -292,8 +294,8 @@
           <div class="section-heading">
             <div>
               <p class="eyebrow">PROCESS HISTORY</p>
-              <h3>一键日记运行记录</h3>
-              <p>每次运行保留配置哈希、阶段状态与待确认项。</p>
+              <h3>当前会话的 V2 运行记录</h3>
+              <p>工作流、ASR、说话人和语义阶段都保留配置、状态、摘要与错误信息。</p>
             </div>
           </div>
           <div class="table-wrap">
@@ -301,10 +303,11 @@
               <thead>
                 <tr>
                   <th>Run</th>
+                  <th>阶段</th>
                   <th>状态</th>
                   <th>开始时间</th>
                   <th>配置</th>
-                  <th>待确认</th>
+                  <th>结果摘要</th>
                 </tr>
               </thead>
               <tbody id="run-table-body"></tbody>

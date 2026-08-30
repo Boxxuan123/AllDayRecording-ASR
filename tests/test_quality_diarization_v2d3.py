@@ -74,7 +74,7 @@ class QualityDiarizationV2D3Tests(unittest.TestCase):
         sf.write(self.source_path, samples, 16_000, subtype="PCM_16")
         source_bytes = self.source_path.read_bytes()
         self.source_sha256 = hashlib.sha256(source_bytes).hexdigest()
-        self.database = Database(self.database_path)
+        self.database = Database.open(self.database_path)
         recording = self.database.create_recording(
             {
                 "source_path": str(self.source_path.resolve()),
@@ -119,7 +119,8 @@ class QualityDiarizationV2D3Tests(unittest.TestCase):
         ):
             summary = run_identity_candidate_mining(
                 self.database,
-                self.recording_id,
+                None,
+                session_id=int(self.session["id"]),
                 diarization_run_id=self.diarization_run_id,
                 truth_set_id=self.truth_set_id,
                 target_identity="father",
@@ -170,7 +171,8 @@ class QualityDiarizationV2D3Tests(unittest.TestCase):
         ):
             repeated = run_identity_candidate_mining(
                 self.database,
-                self.recording_id,
+                None,
+                session_id=int(self.session["id"]),
                 diarization_run_id=self.diarization_run_id,
                 truth_set_id=self.truth_set_id,
                 target_identity="father",

@@ -15,7 +15,16 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from allday_asr.audio.tools import extract_clip
 from allday_asr.config import load_config
-from allday_asr.paths import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH, recording_output_dir
+from allday_asr.paths import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_DB_PATH,
+    OUTPUT_DIR,
+    recording_output_dir,
+)
+from allday_asr.services.manual_identity import (
+    retract_manual_identity_annotation,
+    save_manual_identity_annotation,
+)
 from allday_asr.services.daily import run_daily
 from allday_asr.services.evaluation import (
     evaluate_truth,
@@ -24,8 +33,23 @@ from allday_asr.services.evaluation import (
     load_evaluation_truth,
     update_evaluation_truth_segment,
 )
+from allday_asr.services.quality_diarization_v2d1_review import (
+    complete_possible_speech_review,
+    effective_workflow_summary,
+    label_possible_speech_identity,
+    review_possible_speech_candidate,
+)
+from allday_asr.services.quality_diarization_v2d1_truth import (
+    create_v2d1_review_truth,
+    evaluate_v2d1_review,
+    v2d1_review_evaluation_overview,
+)
+from allday_asr.services.quality_diarization_v2d2 import (
+    run_identity_contamination_audit,
+)
 from allday_asr.services.quality_diarization_v2d3 import (
     review_identity_candidate,
+    run_identity_candidate_mining,
 )
 from allday_asr.services.semantic_v2e0 import review_semantic_candidate
 from allday_asr.services.semantic_v2e02 import (
@@ -72,7 +96,7 @@ class WebApplication:
         return f"http://{self.host}:{self.port}"
 
     def database(self) -> Database:
-        return Database(self.database_path)
+        return Database.open(self.database_path)
 
     def recordings(self) -> list[dict]:
         return [
@@ -87,6 +111,150 @@ class WebApplication:
             }
             for row in self.database().list_recordings()
         ]
+
+    def sessions(self) -> list[dict[str, Any]]:
+        database = self.database()
+        values: list[dict[str, Any]] = []
+        for row in reversed(database.list_recording_sessions()):
+            session_id = int(row["id"])
+            manifest = database.get_session_manifest(session_id)
+            runs = database.list_session_processing_runs(session_id)
+            workflow_runs = [
+                run for run in runs if str(run["run_kind"]) == "quality_workflow_v2"
+            ]
+            latest_workflow = workflow_runs[-1] if workflow_runs else None
+            workflow_summary = (
+                _json_value(latest_workflow["summary_json"])
+                if latest_workflow is not None
+                else None
+            ) or {}
+            workflow_summary = effective_workflow_summary(
+                database, workflow_summary
+            )
+            completed_run_kinds = {
+                str(run["run_kind"])
+                for run in runs
+                if str(run["status"]) == "completed"
+            }
+            inferred_workflow_state = None
+            if "semantic_v2e0" in completed_run_kinds:
+                inferred_workflow_state = "semantic_ready"
+            elif "quality_diarization_v2d" in completed_run_kinds:
+                inferred_workflow_state = "diarization_completed"
+            elif "quality_asr_v2c" in completed_run_kinds:
+                inferred_workflow_state = "asr_completed"
+            legacy_recording_id = (
+                int(row["legacy_recording_id"])
+                if row["legacy_recording_id"] is not None
+                else None
+            )
+            if manifest is not None:
+                source_name = Path(str(manifest["manifest_path"])).parent.name
+                kind = "manifest"
+            elif legacy_recording_id is not None:
+                recording = (
+                    database.get_recording(legacy_recording_id)
+                )
+                source_name = Path(str(recording["source_path"])).name
+                kind = "legacy-file"
+            else:
+                source_name = str(row["session_key"])
+                kind = "session"
+            values.append(
+                {
+                    "id": session_id,
+                    "recording_id": legacy_recording_id,
+                    "kind": kind,
+                    "status": str(row["status"]),
+                    "duration_ms": int(row["duration_ms"]),
+                    "recorded_at": str(row["recorded_at"]),
+                    "timezone": str(row["timezone"]),
+                    "device": row["device"],
+                    "source_name": source_name,
+                    "chunk_count": len(database.list_session_sources(session_id)),
+                    "workflow_state": (
+                        workflow_summary.get("workflow_state")
+                        or inferred_workflow_state
+                    ),
+                    "workflow_status": (
+                        str(latest_workflow["status"])
+                        if latest_workflow is not None
+                        else None
+                    ),
+                }
+            )
+        return values
+
+    def session_dashboard(self, session_id: int) -> dict[str, Any]:
+        database = self.database()
+        session = database.get_recording_session(session_id)
+        sources = database.list_session_sources(session_id)
+        manifest = database.get_session_manifest(session_id)
+        runs = database.list_session_processing_runs(session_id)
+        latest = {
+            kind: next(
+                (
+                    row
+                    for row in reversed(runs)
+                    if str(row["run_kind"]) == kind
+                ),
+                None,
+            )
+            for kind in (
+                "quality_workflow_v2",
+                "quality_asr_v2c",
+                "quality_diarization_v2d",
+                "semantic_v2e0",
+            )
+        }
+        workflow_summary = _run_summary(latest["quality_workflow_v2"])
+        workflow_summary = effective_workflow_summary(
+            database, workflow_summary
+        )
+        asr_summary = _run_summary(latest["quality_asr_v2c"])
+        diarization_summary = _run_summary(latest["quality_diarization_v2d"])
+        semantic_summary = _run_summary(latest["semantic_v2e0"])
+        integrity = workflow_summary.get("integrity") or {}
+        integrity_instances = list(integrity.get("instances") or [])
+        return {
+            "session": {
+                "id": session_id,
+                "recording_id": (
+                    int(session["legacy_recording_id"])
+                    if session["legacy_recording_id"] is not None
+                    else None
+                ),
+                "kind": "manifest" if manifest is not None else "legacy-file",
+                "status": str(session["status"]),
+                "duration_ms": int(session["duration_ms"]),
+                "recorded_at": str(session["recorded_at"]),
+                "timezone": str(session["timezone"]),
+                "device": session["device"],
+                "session_key": str(session["session_key"]),
+                "chunk_count": len(sources),
+                "input_fingerprint": database.session_input_fingerprint(session_id),
+                "manifest_sha256": (
+                    str(manifest["manifest_sha256"]) if manifest is not None else None
+                ),
+            },
+            "workflow": _dashboard_run(latest["quality_workflow_v2"], workflow_summary),
+            "asr": _dashboard_run(latest["quality_asr_v2c"], asr_summary),
+            "diarization": _dashboard_run(
+                latest["quality_diarization_v2d"], diarization_summary
+            ),
+            "semantic": _dashboard_run(latest["semantic_v2e0"], semantic_summary),
+            "integrity": {
+                "available": bool(integrity),
+                "verified_instances": sum(
+                    item.get("status") == "verified" for item in integrity_instances
+                ),
+                "instance_count": len(integrity_instances) or len(sources),
+                "gaps": len(integrity.get("gaps") or []),
+                "overlaps": len(integrity.get("overlaps") or []),
+                "manifest_status": (integrity.get("manifest") or {}).get("status"),
+            },
+            "schema_version": database.schema_version(),
+        }
 
     def dashboard(self, recording_id: int) -> dict:
         database = self.database()
@@ -166,6 +334,19 @@ class WebApplication:
             "report_json_path": str(summary.report_json_path.resolve()),
         }
 
+    def session_evaluation(self, session_id: int) -> dict[str, Any]:
+        self.database().get_recording_session(session_id)
+        return v2d1_review_evaluation_overview(self.database(), session_id)
+
+    def create_session_evaluation(
+        self, session_id: int, *, run_id: int
+    ) -> dict[str, Any]:
+        database = self.database()
+        self._validate_session_run_target(
+            database, run_id, recording_id=None, session_id=session_id
+        )
+        return evaluate_v2d1_review(database, run_id)
+
     def actions(self, recording_id: int) -> list[dict]:
         return [_action_payload(row) for row in self.database().list_action_candidates(recording_id)]
 
@@ -185,23 +366,40 @@ class WebApplication:
         )
         return _action_payload(row)
 
-    def runs(self, recording_id: int) -> list[dict]:
+    def runs(
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+    ) -> list[dict]:
+        database = self.database()
+        if session_id is not None:
+            rows = database.list_session_processing_runs(session_id)
+        elif recording_id is not None:
+            rows = database.list_processing_runs(recording_id)
+        else:
+            raise ValueError("必须指定 recording_id 或 session_id")
         return [
             _processing_run_payload(row)
-            for row in reversed(self.database().list_processing_runs(recording_id))
+            for row in reversed(rows)
         ]
 
     def speaker_timeline(
-        self, recording_id: int, *, run_id: int | None = None
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+        run_id: int | None = None,
     ) -> dict:
         return speaker_timeline_overview(
-            self.database(), recording_id, run_id=run_id
+            self.database(), recording_id, session_id=session_id, run_id=run_id
         )
 
     def speaker_timeline_window(
         self,
-        recording_id: int,
+        recording_id: int | None = None,
         *,
+        session_id: int | None = None,
         run_id: int,
         start_ms: int,
         end_ms: int,
@@ -209,6 +407,7 @@ class WebApplication:
         return speaker_timeline_window(
             self.database(),
             recording_id,
+            session_id=session_id,
             run_id=run_id,
             start_ms=start_ms,
             end_ms=end_ms,
@@ -216,8 +415,9 @@ class WebApplication:
 
     def review_identity_expansion(
         self,
-        recording_id: int,
+        recording_id: int | None = None,
         *,
+        session_id: int | None = None,
         run_id: int,
         candidate_id: str,
         status: str,
@@ -225,7 +425,10 @@ class WebApplication:
     ) -> dict:
         database = self.database()
         run = database.get_processing_run(run_id)
-        if int(run["recording_id"]) != recording_id:
+        if session_id is not None:
+            if int(run["session_id"]) != session_id:
+                raise ValueError("V2-D.3 run 不属于当前录音会话")
+        elif recording_id is None or int(run["recording_id"]) != recording_id:
             raise ValueError("V2-D.3 run 不属于当前录音")
         return review_identity_candidate(
             database,
@@ -235,14 +438,294 @@ class WebApplication:
             note=note,
         )
 
-    def semantic(self, recording_id: int) -> dict[str, Any]:
-        return semantic_overview(self.database(), recording_id)
+    def save_manual_identity(
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+        run_id: int,
+        start_ms: int,
+        end_ms: int,
+        identity_label: str,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        database = self.database()
+        run = database.get_processing_run(run_id)
+        effective_session_id = int(run["session_id"] or 0)
+        if str(run["run_kind"]) != "quality_diarization_v2d":
+            raise ValueError("人物真值采样只适用于 V2-D run")
+        if session_id is not None:
+            if effective_session_id != session_id:
+                raise ValueError("V2-D run 不属于当前录音会话")
+        elif recording_id is None or int(run["recording_id"] or 0) != recording_id:
+            raise ValueError("V2-D run 不属于当前录音")
+        return save_manual_identity_annotation(
+            database,
+            session_id=effective_session_id,
+            diarization_run_id=run_id,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            identity_label=identity_label,
+            note=note,
+        )
 
-    def generate_semantic(self, recording_id: int) -> dict[str, Any]:
-        summary = run_semantic_v2e02(self.database(), recording_id)
+    def retract_manual_identity(
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+        run_id: int,
+        annotation_id: int,
+    ) -> dict[str, Any]:
+        database = self.database()
+        run = database.get_processing_run(run_id)
+        effective_session_id = int(run["session_id"] or 0)
+        if str(run["run_kind"]) != "quality_diarization_v2d":
+            raise ValueError("人物真值采样只适用于 V2-D run")
+        if session_id is not None:
+            if effective_session_id != session_id:
+                raise ValueError("V2-D run 不属于当前录音会话")
+        elif recording_id is None or int(run["recording_id"] or 0) != recording_id:
+            raise ValueError("V2-D run 不属于当前录音")
+        return retract_manual_identity_annotation(
+            database,
+            annotation_id,
+            session_id=effective_session_id,
+            diarization_run_id=run_id,
+        )
+
+    def review_possible_speech(
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+        run_id: int,
+        candidate_id: str,
+        status: str,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        database = self.database()
+        self._validate_session_run_target(
+            database,
+            run_id,
+            recording_id=recording_id,
+            session_id=session_id,
+        )
+        return review_possible_speech_candidate(
+            database,
+            run_id,
+            candidate_id=candidate_id,
+            status=status,
+            note=note,
+        )
+
+    def label_possible_speech_identity(
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+        run_id: int,
+        candidate_id: str,
+        identity_label: str,
+    ) -> dict[str, Any]:
+        database = self.database()
+        self._validate_session_run_target(
+            database,
+            run_id,
+            recording_id=recording_id,
+            session_id=session_id,
+        )
+        return label_possible_speech_identity(
+            database,
+            run_id,
+            candidate_id=candidate_id,
+            identity_label=identity_label,
+        )
+
+    def complete_possible_speech_review(
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+        run_id: int,
+    ) -> dict[str, Any]:
+        database = self.database()
+        self._validate_session_run_target(
+            database,
+            run_id,
+            recording_id=recording_id,
+            session_id=session_id,
+        )
+        return complete_possible_speech_review(database, run_id)
+
+    def run_v2d2_identity_audit(
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+        run_id: int,
+    ) -> dict[str, Any]:
+        database = self.database()
+        self._validate_session_run_target(
+            database,
+            run_id,
+            recording_id=recording_id,
+            session_id=session_id,
+        )
+        v2d1_run = database.get_processing_run(run_id)
+        diarization_run_id = int(v2d1_run["parent_run_id"] or 0)
+        if not diarization_run_id:
+            raise ValueError("V2-D.1 run 缺少 V2-D 父运行")
+        effective_session_id = int(v2d1_run["session_id"])
+        truth = create_v2d1_review_truth(
+            database, run_id, include_identities=True
+        )
+        summary = run_identity_contamination_audit(
+            database,
+            recording_id,
+            session_id=effective_session_id,
+            diarization_run_id=diarization_run_id,
+            truth_set_id=int(truth["truth_set_id"]),
+        )
+        return {
+            "run_id": summary.run_id,
+            "truth": truth,
+            "timeline": speaker_timeline_overview(
+                database,
+                recording_id,
+                session_id=effective_session_id,
+                run_id=diarization_run_id,
+            ),
+        }
+
+    def start_v2d3_identity_mining(
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+        target_identity: str,
+    ) -> dict[str, Any]:
+        database = self.database()
+        timeline = speaker_timeline_overview(
+            database, recording_id, session_id=session_id
+        )
+        if not timeline.get("available"):
+            raise ValueError("当前会话没有可用的 V2-D 结果")
+        audit = timeline.get("v2d2") or {}
+        if not audit.get("available"):
+            raise ValueError("请先完成 V2-D.2 人工身份污染审计")
+        allowed = set((timeline.get("v2d3") or {}).get("target_identities") or [])
+        if target_identity not in allowed:
+            raise ValueError("目标人物不属于当前冻结身份真值")
+        if len(allowed) < 2:
+            raise ValueError("至少需要两个明确人物，才能建立身份负对照")
+        effective_session_id = int(timeline["session_id"])
+        diarization_run_id = int(timeline["run"]["id"])
+        truth_set_id = int(audit["truth_set_id"])
+        job_id = uuid.uuid4().hex
+        job = {
+            "id": job_id,
+            "kind": "quality_diarization_v2d3",
+            "recording_id": recording_id,
+            "session_id": effective_session_id,
+            "status": "queued",
+            "stage": "queued",
+            "detail": "等待加载本地说话人 embedding 模型",
+            "result": None,
+            "error": None,
+        }
+        with self.jobs_lock:
+            self.jobs[job_id] = job
+
+        def worker() -> None:
+            self._update_job(
+                job_id,
+                status="running",
+                stage="embedding",
+                detail=f"正在为{target_identity}生成对照式身份候选",
+            )
+            try:
+                summary = run_identity_candidate_mining(
+                    self.database(),
+                    recording_id,
+                    session_id=effective_session_id,
+                    diarization_run_id=diarization_run_id,
+                    truth_set_id=truth_set_id,
+                    target_identity=target_identity,
+                    device=load_config(self.config_path).runtime.device,
+                )
+                self._update_job(
+                    job_id,
+                    status="completed",
+                    stage="completed",
+                    detail="V2-D.3 身份扩样候选已生成",
+                    result={
+                        "run_id": summary.run_id,
+                        "target_identity": summary.target_identity,
+                        "selected_candidates": summary.selected_candidates,
+                        "scored_candidate_windows": summary.scored_candidate_windows,
+                    },
+                )
+            except Exception as exc:
+                self._update_job(
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    detail="V2-D.3 运行失败",
+                    error=str(exc),
+                )
+
+        threading.Thread(
+            target=worker,
+            name=f"v2d3-run-{job_id[:8]}",
+            daemon=True,
+        ).start()
+        return dict(job)
+
+    @staticmethod
+    def _validate_session_run_target(
+        database: Database,
+        run_id: int,
+        *,
+        recording_id: int | None,
+        session_id: int | None,
+    ) -> None:
+        run = database.get_processing_run(run_id)
+        if session_id is not None:
+            if int(run["session_id"]) != session_id:
+                raise ValueError("V2-D.1 run 不属于当前录音会话")
+        elif recording_id is None or int(run["recording_id"]) != recording_id:
+            raise ValueError("V2-D.1 run 不属于当前录音")
+
+    def semantic(
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+    ) -> dict[str, Any]:
+        return semantic_overview(
+            self.database(), recording_id, session_id=session_id
+        )
+
+    def generate_semantic(
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+    ) -> dict[str, Any]:
+        if session_id is None:
+            if recording_id is None:
+                raise ValueError("必须指定 recording_id 或 session_id")
+            session_id = int(
+                self.database().get_session_for_recording(recording_id)["id"]
+            )
+        summary = run_semantic_v2e02(
+            self.database(), recording_id, session_id=session_id
+        )
         return {
             "run_id": summary.run_id,
             "recording_id": recording_id,
+            "session_id": session_id,
             "asr_run_id": summary.asr_run_id,
             "diarization_run_id": summary.diarization_run_id,
             "episode_count": summary.episode_count,
@@ -261,9 +744,21 @@ class WebApplication:
         }
 
     def review_semantic(
-        self, recording_id: int, candidate_id: int, values: dict[str, Any]
+        self,
+        recording_id: int | None,
+        candidate_id: int,
+        values: dict[str, Any],
+        *,
+        session_id: int | None = None,
     ) -> dict[str, Any]:
-        allowed = {"recording_id", "status", "title", "body", "note"}
+        allowed = {
+            "recording_id",
+            "session_id",
+            "status",
+            "title",
+            "body",
+            "note",
+        }
         unknown = set(values) - allowed
         if unknown:
             raise ValueError(f"不允许更新字段：{', '.join(sorted(unknown))}")
@@ -273,6 +768,7 @@ class WebApplication:
             self.database(),
             recording_id,
             candidate_id,
+            session_id=session_id,
             status=str(values["status"]),
             title=str(values["title"]) if values.get("title") is not None else None,
             body=str(values["body"]) if values.get("body") is not None else None,
@@ -384,21 +880,41 @@ class WebApplication:
         return destination
 
     def speaker_timeline_audio_clip(
-        self, recording_id: int, *, start_ms: int, end_ms: int
+        self,
+        recording_id: int | None = None,
+        *,
+        session_id: int | None = None,
+        start_ms: int,
+        end_ms: int,
     ) -> Path:
         database = self.database()
-        database.get_recording(recording_id)
-        session = database.get_session_for_recording(recording_id)
+        if session_id is None:
+            if recording_id is None:
+                raise ValueError("必须指定 recording_id 或 session_id")
+            database.get_recording(recording_id)
+            session = database.get_session_for_recording(recording_id)
+            session_id = int(session["id"])
+        else:
+            session = database.get_recording_session(session_id)
+            legacy_recording_id = session["legacy_recording_id"]
+            if (
+                recording_id is not None
+                and (
+                    legacy_recording_id is None
+                    or int(legacy_recording_id) != recording_id
+                )
+            ):
+                raise ValueError("recording_id 与 session_id 不属于同一录音会话")
         duration_ms = int(session["duration_ms"])
         if start_ms < 0 or end_ms <= start_ms or end_ms > duration_ms:
             raise ValueError("试听时间范围无效")
         if end_ms - start_ms > MAX_AUDIO_WINDOW_MS:
             raise ValueError("单次试听不能超过 120 秒")
         slices, gaps = resolve_session_slices(
-            database, int(session["id"]), start_ms, end_ms
+            database, session_id, start_ms, end_ms
         )
         window = LogicalWindow(
-            session_id=int(session["id"]),
+            session_id=session_id,
             index=0,
             core_start_ms=start_ms,
             core_end_ms=end_ms,
@@ -409,8 +925,13 @@ class WebApplication:
         )
         transform = "pcm16-16khz-mono-loudnorm-i18-v1"
         fingerprint = logical_window_cache_key(window, transform=transform)[:16]
-        destination = (
+        output_root = (
             recording_output_dir(recording_id)
+            if recording_id is not None
+            else OUTPUT_DIR / f"session-{session_id:06d}"
+        )
+        destination = (
+            output_root
             / "web-speaker-timeline-audio-v1"
             / f"range-{start_ms}-{end_ms}-{fingerprint}.wav"
         )
@@ -474,6 +995,25 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/recordings":
             self._send_json(HTTPStatus.OK, {"recordings": self.application.recordings()})
             return
+        if parsed.path == "/api/sessions":
+            self._send_json(HTTPStatus.OK, {"sessions": self.application.sessions()})
+            return
+        if parsed.path == "/api/session-dashboard":
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.session_dashboard(
+                    _query_int(parsed.query, "session_id")
+                ),
+            )
+            return
+        if parsed.path == "/api/session-evaluation":
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.session_evaluation(
+                    _query_int(parsed.query, "session_id")
+                ),
+            )
+            return
         if parsed.path == "/api/dashboard":
             recording_id = _query_int(parsed.query, "recording_id")
             self._send_json(HTTPStatus.OK, self.application.dashboard(recording_id))
@@ -504,30 +1044,40 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/semantic":
-            recording_id = _query_int(parsed.query, "recording_id")
+            recording_id, session_id = _query_target(parsed.query)
             self._send_json(
-                HTTPStatus.OK, self.application.semantic(recording_id)
+                HTTPStatus.OK,
+                self.application.semantic(recording_id, session_id=session_id),
             )
             return
         if parsed.path == "/api/runs":
-            recording_id = _query_int(parsed.query, "recording_id")
+            recording_id, session_id = _query_target(parsed.query)
             self._send_json(
-                HTTPStatus.OK, {"runs": self.application.runs(recording_id)}
+                HTTPStatus.OK,
+                {
+                    "runs": self.application.runs(
+                        recording_id, session_id=session_id
+                    )
+                },
             )
             return
         if parsed.path == "/api/speaker-timeline":
-            recording_id = _query_int(parsed.query, "recording_id")
+            recording_id, session_id = _query_target(parsed.query)
             run_id = _query_optional_int(parsed.query, "run_id")
             self._send_json(
                 HTTPStatus.OK,
-                self.application.speaker_timeline(recording_id, run_id=run_id),
+                self.application.speaker_timeline(
+                    recording_id, session_id=session_id, run_id=run_id
+                ),
             )
             return
         if parsed.path == "/api/speaker-timeline/window":
+            recording_id, session_id = _query_target(parsed.query)
             self._send_json(
                 HTTPStatus.OK,
                 self.application.speaker_timeline_window(
-                    _query_int(parsed.query, "recording_id"),
+                    recording_id,
+                    session_id=session_id,
                     run_id=_query_int(parsed.query, "run_id"),
                     start_ms=_query_nonnegative_int(parsed.query, "start_ms"),
                     end_ms=_query_int(parsed.query, "end_ms"),
@@ -535,9 +1085,11 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/speaker-timeline/audio":
+            recording_id, session_id = _query_target(parsed.query)
             self._send_file(
                 self.application.speaker_timeline_audio_clip(
-                    _query_int(parsed.query, "recording_id"),
+                    recording_id,
+                    session_id=session_id,
                     start_ms=_query_nonnegative_int(parsed.query, "start_ms"),
                     end_ms=_query_int(parsed.query, "end_ms"),
                 ),
@@ -571,11 +1123,116 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.ACCEPTED, self.application.start_daily_run(recording_id)
             )
             return
+        if parsed.path == "/api/speaker-timeline/possible-review":
+            recording_id, session_id = _body_target(body)
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.review_possible_speech(
+                    recording_id,
+                    session_id=session_id,
+                    run_id=int(body["run_id"]),
+                    candidate_id=str(body["candidate_id"]),
+                    status=str(body["status"]),
+                    note=(
+                        str(body["note"])
+                        if body.get("note") is not None
+                        else None
+                    ),
+                ),
+            )
+            return
+        if parsed.path == "/api/speaker-timeline/possible-identity":
+            recording_id, session_id = _body_target(body)
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.label_possible_speech_identity(
+                    recording_id,
+                    session_id=session_id,
+                    run_id=int(body["run_id"]),
+                    candidate_id=str(body["candidate_id"]),
+                    identity_label=str(body["identity_label"]),
+                ),
+            )
+            return
+        if parsed.path == "/api/speaker-timeline/manual-identity":
+            recording_id, session_id = _body_target(body)
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.save_manual_identity(
+                    recording_id,
+                    session_id=session_id,
+                    run_id=int(body["run_id"]),
+                    start_ms=int(body["start_ms"]),
+                    end_ms=int(body["end_ms"]),
+                    identity_label=str(body["identity_label"]),
+                    note=(
+                        str(body["note"])
+                        if body.get("note") is not None
+                        else None
+                    ),
+                ),
+            )
+            return
+        if parsed.path == "/api/speaker-timeline/manual-identity/retract":
+            recording_id, session_id = _body_target(body)
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.retract_manual_identity(
+                    recording_id,
+                    session_id=session_id,
+                    run_id=int(body["run_id"]),
+                    annotation_id=int(body["annotation_id"]),
+                ),
+            )
+            return
+        if parsed.path == "/api/speaker-timeline/possible-review/complete":
+            recording_id, session_id = _body_target(body)
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.complete_possible_speech_review(
+                    recording_id,
+                    session_id=session_id,
+                    run_id=int(body["run_id"]),
+                ),
+            )
+            return
+        if parsed.path == "/api/session-evaluation/v2d1":
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.create_session_evaluation(
+                    int(body["session_id"]), run_id=int(body["run_id"])
+                ),
+            )
+            return
+        if parsed.path == "/api/speaker-timeline/v2d2":
+            recording_id, session_id = _body_target(body)
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.run_v2d2_identity_audit(
+                    recording_id,
+                    session_id=session_id,
+                    run_id=int(body["run_id"]),
+                ),
+            )
+            return
+        if parsed.path == "/api/speaker-timeline/v2d3":
+            recording_id, session_id = _body_target(body)
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                self.application.start_v2d3_identity_mining(
+                    recording_id,
+                    session_id=session_id,
+                    target_identity=str(body["target_identity"]),
+                ),
+            )
+            return
         if parsed.path == "/api/speaker-timeline/identity-review":
+            recording_id, session_id = _body_target(body)
             self._send_json(
                 HTTPStatus.OK,
                 self.application.review_identity_expansion(
-                    int(body["recording_id"]),
+                    recording_id,
+                    session_id=session_id,
                     run_id=int(body["run_id"]),
                     candidate_id=str(body["candidate_id"]),
                     status=str(body["status"]),
@@ -584,9 +1241,12 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/semantic/generate":
+            recording_id, session_id = _body_target(body)
             self._send_json(
                 HTTPStatus.OK,
-                self.application.generate_semantic(int(body["recording_id"])),
+                self.application.generate_semantic(
+                    recording_id, session_id=session_id
+                ),
             )
             return
         semantic_review_match = _match_path(
@@ -594,12 +1254,14 @@ class AllDayRequestHandler(BaseHTTPRequestHandler):
             r"/api/semantic/candidates/(?P<candidate_id>\d+)/review",
         )
         if semantic_review_match:
+            recording_id, session_id = _body_target(body)
             self._send_json(
                 HTTPStatus.OK,
                 self.application.review_semantic(
-                    int(body["recording_id"]),
+                    recording_id,
                     int(semantic_review_match["candidate_id"]),
                     body,
+                    session_id=session_id,
                 ),
             )
             return
@@ -829,6 +1491,28 @@ def _query_optional_int(query: str, name: str) -> int | None:
     return value
 
 
+def _query_target(query: str) -> tuple[int | None, int | None]:
+    recording_id = _query_optional_int(query, "recording_id")
+    session_id = _query_optional_int(query, "session_id")
+    if recording_id is None and session_id is None:
+        raise ValueError("缺少查询参数 recording_id 或 session_id")
+    return recording_id, session_id
+
+
+def _body_target(body: dict[str, Any]) -> tuple[int | None, int | None]:
+    recording_value = body.get("recording_id")
+    session_value = body.get("session_id")
+    recording_id = int(recording_value) if recording_value is not None else None
+    session_id = int(session_value) if session_value is not None else None
+    if recording_id is None and session_id is None:
+        raise ValueError("缺少 recording_id 或 session_id")
+    if recording_id is not None and recording_id < 1:
+        raise ValueError("recording_id 必须大于 0")
+    if session_id is not None and session_id < 1:
+        raise ValueError("session_id 必须大于 0")
+    return recording_id, session_id
+
+
 def _query_nonnegative_int(query: str, name: str) -> int:
     values = parse_qs(query).get(name)
     if not values:
@@ -861,7 +1545,10 @@ def _json_value(value: str | None) -> Any:
 def _processing_run_payload(row) -> dict:
     return {
         "id": int(row["id"]),
-        "recording_id": int(row["recording_id"]),
+        "recording_id": (
+            int(row["recording_id"]) if row["recording_id"] is not None else None
+        ),
+        "session_id": int(row["session_id"]),
         "run_kind": row["run_kind"],
         "status": row["status"],
         "config_sha256": row["config_sha256"],
@@ -870,6 +1557,27 @@ def _processing_run_payload(row) -> dict:
         "error": row["error"],
         "summary": _json_value(row["summary_json"]),
         "artifacts": _json_value(row["artifacts_json"]),
+    }
+
+
+def _run_summary(row) -> dict[str, Any]:
+    if row is None:
+        return {}
+    value = _json_value(row["summary_json"])
+    return value if isinstance(value, dict) else {}
+
+
+def _dashboard_run(row, summary: dict[str, Any]) -> dict[str, Any]:
+    if row is None:
+        return {"available": False, "summary": {}}
+    return {
+        "available": True,
+        "id": int(row["id"]),
+        "status": str(row["status"]),
+        "started_at": str(row["started_at"]),
+        "completed_at": row["completed_at"],
+        "error": row["error"],
+        "summary": summary,
     }
 
 

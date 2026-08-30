@@ -10,9 +10,9 @@ import numpy as np
 import soundfile as sf
 
 from allday_asr.asr.funasr_backend import SPEAKER_MODEL_ID, FunASRBackend
+from allday_asr.audio.embeddings import l2_normalize, normalize_speech_level
 from allday_asr.audio.tools import extract_clip, sha256_file
 from allday_asr.paths import OUTPUT_DIR, STATE_DIR, recording_output_dir
-from allday_asr.services.enrollment import l2_normalize, normalize_speech_level
 from allday_asr.storage.database import Database
 
 

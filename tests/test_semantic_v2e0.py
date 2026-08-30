@@ -29,7 +29,7 @@ class SemanticV2E0Tests(unittest.TestCase):
         self.output_dir = self.root / f"semantic-output-{self.token}"
         self.source_path.write_bytes(b"immutable-semantic-source")
         self.source_sha256 = hashlib.sha256(self.source_path.read_bytes()).hexdigest()
-        self.database = Database(self.database_path)
+        self.database = Database.open(self.database_path)
         recording = self.database.create_recording(
             {
                 "source_path": str(self.source_path.resolve()),

@@ -22,7 +22,7 @@ class SourceObjectTests(unittest.TestCase):
         self.root = Path(__file__).parent
         self.token = uuid4().hex
         self.database_path = self.root / f"sources-{self.token}.sqlite3"
-        self.database = Database(self.database_path)
+        self.database = Database.open(self.database_path)
         self.paths: list[Path] = []
 
     def tearDown(self) -> None:

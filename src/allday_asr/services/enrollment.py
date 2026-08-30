@@ -11,6 +11,7 @@ import numpy as np
 import soundfile as sf
 
 from allday_asr.asr.funasr_backend import SPEAKER_MODEL_ID, FunASRBackend
+from allday_asr.audio.embeddings import l2_normalize, normalize_speech_level
 from allday_asr.audio.tools import normalize_to_wav, sha256_file
 from allday_asr.paths import STATE_DIR
 from allday_asr.storage.database import Database
@@ -272,28 +273,6 @@ def make_speech_chunks(
         if chunks:
             chunks[-1] = np.concatenate([chunks[-1], remainder])
     return [chunk for chunk in chunks if len(chunk) >= min_samples]
-
-
-def normalize_speech_level(
-    samples: np.ndarray, *, target_dbfs: float = -24.0, max_gain_db: float = 24.0
-) -> np.ndarray:
-    value = np.asarray(samples, dtype=np.float32)
-    rms = float(np.sqrt(np.mean(np.square(value), dtype=np.float64)))
-    if rms <= 1e-8:
-        return value
-    current_dbfs = 20 * math.log10(rms)
-    gain_db = min(max_gain_db, target_dbfs - current_dbfs)
-    gain = 10 ** (gain_db / 20)
-    peak = float(np.max(np.abs(value)))
-    if peak > 0:
-        gain = min(gain, 0.95 / peak)
-    return np.asarray(value * gain, dtype=np.float32)
-
-
-def l2_normalize(values: np.ndarray) -> np.ndarray:
-    array = np.asarray(values, dtype=np.float32)
-    norms = np.linalg.norm(array, axis=1, keepdims=True)
-    return array / np.maximum(norms, 1e-8)
 
 
 def robust_embedding_filter(embeddings: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
