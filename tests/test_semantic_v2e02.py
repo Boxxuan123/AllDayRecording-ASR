@@ -81,7 +81,7 @@ class SemanticV2E02Tests(unittest.TestCase):
 
         provider = CapturingProvider()
         with patch(
-            "allday_asr.services.semantic_v2e02.OUTPUT_DIR", self.output_dir
+            "allday_asr.application.semantic.current.OUTPUT_DIR", self.output_dir
         ):
             summary = run_semantic_v2e02(
                 self.database,
@@ -155,7 +155,7 @@ class SemanticV2E02Tests(unittest.TestCase):
             second_key=str(second["key"]),
         )
         with patch(
-            "allday_asr.services.semantic_v2e02.OUTPUT_DIR", self.output_dir
+            "allday_asr.application.semantic.current.OUTPUT_DIR", self.output_dir
         ):
             summary = run_semantic_v2e02(
                 self.database,
@@ -275,7 +275,7 @@ class SemanticV2E02Tests(unittest.TestCase):
 
     def test_all_low_information_tokens_still_produce_a_valid_audit_run(self) -> None:
         with patch(
-            "allday_asr.services.semantic_v2e02.OUTPUT_DIR", self.output_dir
+            "allday_asr.application.semantic.current.OUTPUT_DIR", self.output_dir
         ):
             summary = run_semantic_v2e02(
                 self.database,

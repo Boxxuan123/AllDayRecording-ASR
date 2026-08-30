@@ -2,30 +2,28 @@ from __future__ import annotations
 
 from typing import Any
 
-from allday_asr.config import load_config
-from allday_asr.services.manual_identity import (
+from allday_asr.application.diarization.identity_audit import (
+    run_identity_contamination_audit,
+)
+from allday_asr.application.diarization.identity_candidates import (
+    review_identity_candidate,
+    run_identity_candidate_mining,
+)
+from allday_asr.application.diarization.identity_truth import (
+    create_v2d1_review_truth,
     retract_manual_identity_annotation,
     save_manual_identity_annotation,
 )
-from allday_asr.services.quality_diarization_v2d1_review import (
+from allday_asr.application.diarization.speech_recall import (
     complete_possible_speech_review,
     label_possible_speech_identity,
     review_possible_speech_candidate,
 )
-from allday_asr.services.quality_diarization_v2d1_truth import (
-    create_v2d1_review_truth,
-)
-from allday_asr.services.quality_diarization_v2d2 import (
-    run_identity_contamination_audit,
-)
-from allday_asr.services.quality_diarization_v2d3 import (
-    review_identity_candidate,
-    run_identity_candidate_mining,
-)
-from allday_asr.services.speaker_timeline import (
+from allday_asr.application.diarization.timeline import (
     speaker_timeline_overview,
     speaker_timeline_window,
 )
+from allday_asr.config import load_config
 from allday_asr.storage.database import Database
 
 

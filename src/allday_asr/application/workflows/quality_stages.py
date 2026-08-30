@@ -5,22 +5,22 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from typing import Any
 
-from allday_asr.services.quality_asr import QualityAsrSettings, run_quality_asr
-from allday_asr.services.quality_diarization import (
-    QualityDiarizationSettings,
-    run_quality_diarization,
+from allday_asr.application.diarization.identity_audit import (
+    run_identity_contamination_audit,
 )
-from allday_asr.services.quality_diarization_v2d1 import (
+from allday_asr.application.diarization.pipeline import (
+    DiarizationSettings as QualityDiarizationSettings,
+    run as run_quality_diarization,
+)
+from allday_asr.application.diarization.speech_recall import (
     V2D1Settings,
     run_quality_diarization_v2d1,
 )
-from allday_asr.services.quality_diarization_v2d2 import (
-    run_identity_contamination_audit,
+from allday_asr.application.semantic.pipeline import (
+    SemanticSettings as SemanticV2E02Settings,
+    run as run_semantic_v2e02,
 )
-from allday_asr.services.semantic_v2e02 import (
-    SemanticV2E02Settings,
-    run_semantic_v2e02,
-)
+from allday_asr.services.quality_asr import QualityAsrSettings, run_quality_asr
 from allday_asr.services.session_readiness import evaluate_session_readiness
 from allday_asr.storage.database import Database
 

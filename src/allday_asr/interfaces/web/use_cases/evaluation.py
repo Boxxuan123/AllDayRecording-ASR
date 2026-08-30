@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from allday_asr.application.diarization.identity_truth import (
+    evaluate_v2d1_review,
+    v2d1_review_evaluation_overview,
+)
 from allday_asr.interfaces.web.presenters import action_payload as _action_payload
 from allday_asr.services.evaluation import (
     evaluate_truth,
     evaluation_truth_path,
     load_evaluation_truth,
     update_evaluation_truth_segment,
-)
-from allday_asr.services.quality_diarization_v2d1_truth import (
-    evaluate_v2d1_review,
-    v2d1_review_evaluation_overview,
 )
 
 

@@ -10,6 +10,32 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from allday_asr.application.diarization.identity_audit import (
+    run_identity_contamination_audit,
+)
+from allday_asr.application.diarization.identity_candidates import (
+    V2D3Settings,
+    run_identity_candidate_mining,
+    sync_identity_reference_set,
+)
+from allday_asr.application.diarization.pipeline import (
+    DiarizationSettings as QualityDiarizationSettings,
+    compute_overlap_regions,
+    run as run_quality_diarization,
+    snapshot_quality_diarization,
+)
+from allday_asr.application.diarization.speech_recall import (
+    V2D1Settings,
+    create_source_micro_truth,
+    run_quality_diarization_v2d1,
+)
+from allday_asr.application.semantic.overview import overview as semantic_overview
+from allday_asr.application.semantic.pipeline import (
+    ReplaySemanticProvider,
+    SemanticSettings as SemanticV2E02Settings,
+    export_manual_bundle as export_manual_semantic_bundle,
+    run as run_semantic_v2e02,
+)
 from allday_asr.asr.oracle_backends import create_oracle_backend
 from allday_asr.asr.quality_backends import (
     FunAsrNanoBackend,
@@ -54,25 +80,6 @@ from allday_asr.services.quality_asr import (
     run_quality_asr,
     snapshot_quality_asr,
 )
-from allday_asr.services.quality_diarization import (
-    QualityDiarizationSettings,
-    compute_overlap_regions,
-    run_quality_diarization,
-    snapshot_quality_diarization,
-)
-from allday_asr.services.quality_diarization_v2d1 import (
-    V2D1Settings,
-    create_source_micro_truth,
-    run_quality_diarization_v2d1,
-)
-from allday_asr.services.quality_diarization_v2d2 import (
-    run_identity_contamination_audit,
-)
-from allday_asr.services.quality_diarization_v2d3 import (
-    V2D3Settings,
-    run_identity_candidate_mining,
-    sync_identity_reference_set,
-)
 from allday_asr.services.quality_workflow import run_quality_workflow
 from allday_asr.services.review import import_self_review
 from allday_asr.services.runtime_profile import resolve_vram_profile
@@ -82,13 +89,6 @@ from allday_asr.services.session_backup import (
 )
 from allday_asr.services.session_ingest import ingest_session_manifest
 from allday_asr.services.session_readiness import evaluate_session_readiness
-from allday_asr.services.semantic_v2e02 import (
-    ReplaySemanticProvider,
-    SemanticV2E02Settings,
-    export_manual_semantic_bundle,
-    run_semantic_v2e02,
-    semantic_overview,
-)
 from allday_asr.services.sources import (
     audit_all_sources,
     audit_source_object,

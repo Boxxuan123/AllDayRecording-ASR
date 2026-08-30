@@ -123,11 +123,11 @@ class QualityDiarizationTests(unittest.TestCase):
         backend = FakeDiarizationBackend()
         with (
             patch(
-                "allday_asr.services.quality_diarization.temporary_logical_window",
+                "allday_asr.application.diarization.base.temporary_logical_window",
                 fake_window,
             ),
             patch(
-                "allday_asr.services.quality_diarization.OUTPUT_DIR", self.output_dir
+                "allday_asr.application.diarization.base.OUTPUT_DIR", self.output_dir
             ),
         ):
             summary = run_quality_diarization(

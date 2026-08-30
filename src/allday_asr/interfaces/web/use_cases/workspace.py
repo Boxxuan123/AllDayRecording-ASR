@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from allday_asr.application.diarization.speech_recall import (
+    effective_workflow_summary,
+)
 from allday_asr.interfaces.web.presenters import (
     dashboard_run as _dashboard_run,
     json_value as _json_value,
@@ -10,9 +13,6 @@ from allday_asr.interfaces.web.presenters import (
     run_summary as _run_summary,
 )
 from allday_asr.services.evaluation import list_evaluation_templates
-from allday_asr.services.quality_diarization_v2d1_review import (
-    effective_workflow_summary,
-)
 
 
 class WorkspaceUseCases:

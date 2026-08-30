@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-30
-> 当前阶段：可维护性重构阶段 0、阶段 1、阶段 2A/2B/2C、阶段 3 和阶段 4 已完成；八个核心业务 repository、显式数据库生命周期、七段式质量工作流、Vue 3/Vite 前端和模块化 Web 接口层均已建立。下一步进入阶段 5，收拢版本化 semantic 与 diarization 代码。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；本轮浏览器冒烟读取既有本地会话并按页面既有行为请求派生试听缓存，没有修改数据库、运行 ASR/说话人模型或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
+> 当前阶段：可维护性重构阶段 0 至阶段 5 已完成；semantic/diarization 已具备稳定入口、显式版本 dispatcher、历史实现归档、职责化 diarization 实现和旧 service 兼容层。八个核心业务 repository、显式数据库生命周期、七段式质量工作流、Vue 3/Vite 前端和模块化 Web 接口层均已建立，下一步进入阶段 6 的 CLI 与运行时装配拆分。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一次浏览器冒烟读取既有本地会话并按页面既有行为请求派生试听缓存，没有修改数据库、运行 ASR/说话人模型或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
 
 ## 1. 结论
 
@@ -118,6 +118,7 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 
 ## 6. 本次盘点验证
 
+- 可维护性重构阶段 5 见 [版本入口记录](refactoring-phase-5a-version-dispatch.md) 和 [实现归位记录](refactoring-phase-5b-legacy-and-diarization.md)：semantic/diarization 建立稳定 application API、明确默认版本与未知版本拒绝；V2-E.0/V2-E.0.1 归入 legacy、V2-E.0.2 归入 current，diarization 按 base/timeline/recall/review/truth/audit/candidates 拆分；原版本化 service 仅保留兼容导出。全量 134 个测试、Ruff 和 diff 检查通过，阶段 5 已完成。
 - 可维护性重构阶段 4 见 [Vue 前端迁移记录](refactoring-phase-4a-vue-frontend.md) 和 [Web 后端模块化记录](refactoring-phase-4b-web-backend.md)：前端迁入 Vue 3/Vite，后端拆为协议、资源路由、presenter、job registry 与六类 application use case；原 URL、认证、payload 和盲标台兼容；全量 123 个 Python 测试、4 个前端测试、Vite 构建、Ruff 和浏览器五视图冒烟通过。
 - 可维护性重构阶段 3 见 [显式质量工作流记录](refactoring-phase-3-quality-workflow.md)：七个 runner、显式 context/result/review reason 和薄编排器已建立；原 service 保留兼容导出；ASR 续跑、D.1/D.2 非阻断失败、编排顺序和 Web/CLI JSON 兼容均有测试；全量 116 个测试及 Ruff 通过。
 - 可维护性重构阶段 2C 见 [显式数据库生命周期记录](refactoring-phase-2c-explicit-database-lifecycle.md)：`Database(path)` 只装配对象，`initialize()`/`open()` 显式承担目录与 migration I/O；86 个 CLI、Web 和测试入口已迁移；构造无副作用、显式初始化、重复打开和入口约束均有测试；全量 110 个测试及 Ruff 通过。

@@ -3,7 +3,7 @@
 > 状态：执行中；阶段 0、阶段 1、阶段 2A、阶段 2B、阶段 2C、阶段 3 已于 2026-08-30 完成
 > 编写日期：2026-08-30  
 > 适用范围：`src/allday_asr/`、`tests/` 与相关工程文档  
-> 当前回归基线：116 个单元测试通过
+> 当前回归基线：134 个单元测试通过
 
 ## 1. 目的与结论
 
@@ -495,6 +495,22 @@ diarization 可按职责拆为：
 - 当前入口只有一个明确的默认版本。
 - 新版模块不再从旧版模块导入公共实现。
 - 版本 dispatcher 对未知版本明确失败，不静默回退。
+
+阶段 5A 已于 2026-08-30 完成稳定入口与版本分发：semantic 默认版本固定为
+`v2-e.0.2`，diarization 基础入口固定为 `v2-d`，CLI、质量 workflow 和 Web
+统一依赖 `application/semantic/` 与 `application/diarization/`。最新版 semantic
+使用独立的 token 输入和证据种子模块，不再导入 V2-E.0/V2-E.0.1 主流程；两个
+dispatcher 都会拒绝未知版本。详细记录见
+[阶段 5A 版本入口记录](refactoring-phase-5a-version-dispatch.md)。
+
+阶段 5B 已于 2026-08-30 完成实现体归位：V2-E.0/V2-E.0.1 位于
+`application/semantic/legacy/`，V2-E.0.2 位于 `current.py`；diarization 的 base、
+timeline、speech recall/review、manual identity/truth、identity audit/candidates 已按
+职责迁入 `application/diarization/`。原版本化 service 文件只保留兼容导出，架构测试
+禁止 application 重新依赖这些兼容层。历史 fixture、overview、manifest 与公开导入
+继续通过，全量 134 个测试及 Ruff 通过。详细记录见
+[阶段 5B 实现归位记录](refactoring-phase-5b-legacy-and-diarization.md)。阶段 5 已整体完成，
+下一步进入阶段 6。
 
 ### 阶段 6：拆分 CLI 和运行时装配
 

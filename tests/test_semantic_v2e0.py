@@ -71,7 +71,7 @@ class SemanticV2E0Tests(unittest.TestCase):
 
         provider = CapturingProvider()
         with patch(
-            "allday_asr.services.semantic_v2e01.OUTPUT_DIR", self.output_dir
+            "allday_asr.application.semantic.legacy.v2e01.OUTPUT_DIR", self.output_dir
         ):
             summary = run_semantic_v2e01(
                 self.database,
@@ -173,7 +173,7 @@ class SemanticV2E0Tests(unittest.TestCase):
 
         with (
             patch(
-                "allday_asr.services.semantic_v2e01.OUTPUT_DIR",
+                "allday_asr.application.semantic.legacy.v2e01.OUTPUT_DIR",
                 self.output_dir,
             ),
             self.assertRaisesRegex(ValueError, "证据引用被改变"),

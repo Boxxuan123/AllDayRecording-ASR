@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from allday_asr.application.diarization.timeline import MAX_AUDIO_WINDOW_MS
 from allday_asr.audio.tools import extract_clip
 from allday_asr.paths import OUTPUT_DIR, recording_output_dir
 from allday_asr.services.sources import (
@@ -10,7 +11,6 @@ from allday_asr.services.sources import (
     materialize_logical_window,
     resolve_session_slices,
 )
-from allday_asr.services.speaker_timeline import MAX_AUDIO_WINDOW_MS
 
 
 class MediaUseCases:

@@ -4,13 +4,17 @@ from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
 
-from allday_asr.domain.hashing import canonical_json_sha256 as _sha256_mapping
-from allday_asr.services.quality_asr import QualityAsrSettings
-from allday_asr.services.quality_diarization import QualityDiarizationSettings
-from allday_asr.services.quality_diarization_v2d1_review import (
+from allday_asr.application.diarization.pipeline import (
+    DiarizationSettings as QualityDiarizationSettings,
+)
+from allday_asr.application.diarization.speech_recall import (
     effective_workflow_summary,
 )
-from allday_asr.services.semantic_v2e02 import SemanticV2E02Settings
+from allday_asr.domain.hashing import canonical_json_sha256 as _sha256_mapping
+from allday_asr.application.semantic.pipeline import (
+    SemanticSettings as SemanticV2E02Settings,
+)
+from allday_asr.services.quality_asr import QualityAsrSettings
 from allday_asr.storage.database import Database
 
 from .quality_models import (

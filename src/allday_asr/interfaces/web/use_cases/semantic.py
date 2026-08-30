@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from allday_asr.services.semantic_v2e0 import review_semantic_candidate
-from allday_asr.services.semantic_v2e02 import (
-    run_semantic_v2e02,
-    semantic_overview,
+from allday_asr.application.semantic.overview import overview as semantic_overview
+from allday_asr.application.semantic.pipeline import run as run_semantic_v2e02
+from allday_asr.application.semantic.review import (
+    review_candidate as review_semantic_candidate,
 )
 
 

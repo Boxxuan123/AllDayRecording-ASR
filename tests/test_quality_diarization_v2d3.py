@@ -114,7 +114,7 @@ class QualityDiarizationV2D3Tests(unittest.TestCase):
     def test_weak_seed_run_ranks_but_never_assigns_identity(self) -> None:
         backend = FakeCommunityEmbeddingBackend()
         with patch(
-            "allday_asr.services.quality_diarization_v2d3.OUTPUT_DIR",
+            "allday_asr.application.diarization.identity_candidates.OUTPUT_DIR",
             self.output_dir,
         ):
             summary = run_identity_candidate_mining(
@@ -166,7 +166,7 @@ class QualityDiarizationV2D3Tests(unittest.TestCase):
             sealed_summary,
         )
         with patch(
-            "allday_asr.services.quality_diarization_v2d3.OUTPUT_DIR",
+            "allday_asr.application.diarization.identity_candidates.OUTPUT_DIR",
             self.output_dir,
         ):
             repeated = run_identity_candidate_mining(

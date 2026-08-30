@@ -86,7 +86,7 @@ class QualityDiarizationV2D1Tests(unittest.TestCase):
 
     def test_recall_rescue_is_separate_from_speakers_and_source_truth(self) -> None:
         with patch(
-            "allday_asr.services.quality_diarization_v2d1.EVALUATION_DIR",
+            "allday_asr.application.diarization.recall_pipeline.EVALUATION_DIR",
             self.evaluation_dir,
         ):
             truth = create_source_micro_truth(
@@ -101,7 +101,7 @@ class QualityDiarizationV2D1Tests(unittest.TestCase):
 
         with (
             patch(
-                "allday_asr.services.quality_diarization_v2d1.OUTPUT_DIR",
+                "allday_asr.application.diarization.recall_pipeline.OUTPUT_DIR",
                 self.output_dir,
             ),
             patch("allday_asr.services.benchmark.OUTPUT_DIR", self.output_dir),
@@ -144,7 +144,7 @@ class QualityDiarizationV2D1Tests(unittest.TestCase):
 
         identity_truth = self._create_identity_truth()
         with patch(
-            "allday_asr.services.quality_diarization_v2d2.OUTPUT_DIR",
+            "allday_asr.application.diarization.identity_audit.OUTPUT_DIR",
             self.output_dir,
         ):
             identity_audit = run_identity_contamination_audit(
