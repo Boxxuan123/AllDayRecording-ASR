@@ -1,9 +1,9 @@
 # AllDayRecording-ASR 可维护性重构指南
 
-> 状态：执行中；阶段 0、阶段 1、阶段 2A、阶段 2B、阶段 2C 已于 2026-08-30 完成
+> 状态：执行中；阶段 0、阶段 1、阶段 2A、阶段 2B、阶段 2C、阶段 3 已于 2026-08-30 完成
 > 编写日期：2026-08-30  
 > 适用范围：`src/allday_asr/`、`tests/` 与相关工程文档  
-> 当前回归基线：110 个单元测试通过
+> 当前回归基线：116 个单元测试通过
 
 ## 1. 目的与结论
 
@@ -295,6 +295,11 @@ class Database:
 - `database.py` 不再包含全部 migration SQL 和全部业务仓储实现。
 
 ### 阶段 3：拆分质量工作流
+
+实施记录见 [阶段 3：显式质量工作流阶段](refactoring-phase-3-quality-workflow.md)：
+`WorkflowContext`、`StageResult`、`ReviewReason` 和七个具体 runner 已提取到
+`application/workflows/`；原 749 行 service 只保留 17 行兼容导出。主入口和阶段编排
+分别收敛到 81/83 行，复用、续跑、非阻断增强及 review JSON 均有直接测试。
 
 目标：让每个阶段的输入、输出、复用和失败语义可以独立理解与测试。
 

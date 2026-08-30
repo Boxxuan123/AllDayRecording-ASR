@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+from allday_asr.application.workflows import quality_stages as stages
 from allday_asr.audio.tools import AudioMetadata
 from allday_asr.services import quality_workflow as workflow
 from allday_asr.services.quality_asr import QualityAsrSettings
@@ -33,21 +34,21 @@ class QualityWorkflowTests(unittest.TestCase):
 
     def test_workflow_persists_semantic_ready_empty_without_cloud_stage(self) -> None:
         session_id, _ = self._import_session("empty-workflow")
-        semantic_mock = patch.object(workflow, "run_semantic_v2e02").start()
+        semantic_mock = patch.object(stages, "run_semantic_v2e02").start()
         self.addCleanup(patch.stopall)
         with (
             patch.object(
-                workflow,
+                stages,
                 "run_quality_asr",
                 return_value=SimpleNamespace(run_id=101),
             ),
             patch.object(
-                workflow,
+                stages,
                 "run_quality_diarization",
                 return_value=SimpleNamespace(run_id=102),
             ),
             patch.object(
-                workflow,
+                stages,
                 "run_quality_diarization_v2d1",
                 return_value=self._v2d1_summary(103),
             ),
@@ -72,8 +73,8 @@ class QualityWorkflowTests(unittest.TestCase):
     def test_production_mode_rejects_session_without_independent_backup(self) -> None:
         session_id, _ = self._import_session("production-gate")
         with (
-            patch.object(workflow, "run_quality_asr") as asr_mock,
-            patch.object(workflow, "run_quality_diarization") as diarization_mock,
+            patch.object(stages, "run_quality_asr") as asr_mock,
+            patch.object(stages, "run_quality_diarization") as diarization_mock,
             self.assertRaisesRegex(RuntimeError, "独立设备/网络备份"),
         ):
             self._run(session_id, admission_mode="production")
@@ -84,17 +85,17 @@ class QualityWorkflowTests(unittest.TestCase):
         session_id, _ = self._import_session("semantic-workflow")
         with (
             patch.object(
-                workflow,
+                stages,
                 "run_quality_asr",
                 return_value=SimpleNamespace(run_id=201),
             ),
             patch.object(
-                workflow,
+                stages,
                 "run_quality_diarization",
                 return_value=SimpleNamespace(run_id=202),
             ),
             patch.object(
-                workflow,
+                stages,
                 "run_quality_diarization_v2d1",
                 return_value=self._v2d1_summary(204),
             ),
@@ -104,7 +105,7 @@ class QualityWorkflowTests(unittest.TestCase):
                 return_value=[{"text": "测试"}],
             ),
             patch.object(
-                workflow,
+                stages,
                 "run_semantic_v2e02",
                 return_value=SimpleNamespace(run_id=203),
             ) as semantic_mock,
@@ -129,27 +130,27 @@ class QualityWorkflowTests(unittest.TestCase):
         )
         with (
             patch.object(
-                workflow,
+                stages,
                 "run_quality_asr",
                 return_value=SimpleNamespace(run_id=301),
             ),
             patch.object(
-                workflow,
+                stages,
                 "run_quality_diarization",
                 return_value=SimpleNamespace(run_id=302),
             ),
             patch.object(
-                workflow,
+                stages,
                 "run_quality_diarization_v2d1",
                 return_value=d1_result,
             ) as d1_mock,
             patch.object(
-                workflow,
+                stages,
                 "_latest_frozen_speaker_truth_set",
                 return_value={"id": 9},
             ),
             patch.object(
-                workflow,
+                stages,
                 "run_identity_contamination_audit",
                 return_value=d2_result,
             ) as d2_mock,
@@ -159,7 +160,7 @@ class QualityWorkflowTests(unittest.TestCase):
                 return_value=[{"text": "测试"}],
             ),
             patch.object(
-                workflow,
+                stages,
                 "run_semantic_v2e02",
                 return_value=SimpleNamespace(run_id=303),
             ) as semantic_mock,
@@ -192,13 +193,55 @@ class QualityWorkflowTests(unittest.TestCase):
             persisted["enhancements"]["v2d3"]["status"], "needs_review"
         )
 
+    def test_enhancement_failure_is_reviewable_and_semantic_still_runs(
+        self,
+    ) -> None:
+        session_id, _ = self._import_session("enhancement-failure")
+        with (
+            patch.object(
+                stages,
+                "run_quality_asr",
+                return_value=SimpleNamespace(run_id=401),
+            ),
+            patch.object(
+                stages,
+                "run_quality_diarization",
+                return_value=SimpleNamespace(run_id=402),
+            ),
+            patch.object(
+                stages,
+                "run_quality_diarization_v2d1",
+                side_effect=RuntimeError("D.1 failed"),
+            ),
+            patch.object(
+                self.database,
+                "list_committed_asr_tokens",
+                return_value=[{"text": "测试"}],
+            ),
+            patch.object(
+                stages,
+                "run_semantic_v2e02",
+                return_value=SimpleNamespace(run_id=403),
+            ) as semantic_mock,
+        ):
+            summary = self._run(session_id)
+
+        self.assertEqual(summary.state, "semantic_ready_needs_review")
+        self.assertIsNone(summary.v2d1_run_id)
+        self.assertEqual(summary.semantic_run_id, 403)
+        self.assertIn(
+            "v2d1_failed",
+            {reason["code"] for reason in summary.review_reasons},
+        )
+        semantic_mock.assert_called_once()
+
     def test_changed_original_is_detected_before_any_model_stage(self) -> None:
         session_id, audio_path = self._import_session("tampered-workflow")
         with audio_path.open("ab") as handle:
             handle.write(b"changed")
         with (
-            patch.object(workflow, "run_quality_asr") as asr_mock,
-            patch.object(workflow, "run_quality_diarization") as diarization_mock,
+            patch.object(stages, "run_quality_asr") as asr_mock,
+            patch.object(stages, "run_quality_diarization") as diarization_mock,
             self.assertRaisesRegex(RuntimeError, "完整性校验失败"),
         ):
             self._run(session_id)
@@ -242,10 +285,10 @@ class QualityWorkflowTests(unittest.TestCase):
         self.database.finish_processing_run(diarization_run_id, status="completed")
 
         with (
-            patch.object(workflow, "run_quality_asr") as asr_mock,
-            patch.object(workflow, "run_quality_diarization") as diarization_mock,
+            patch.object(stages, "run_quality_asr") as asr_mock,
+            patch.object(stages, "run_quality_diarization") as diarization_mock,
             patch.object(
-                workflow,
+                stages,
                 "run_quality_diarization_v2d1",
                 return_value=self._v2d1_summary(303),
             ),

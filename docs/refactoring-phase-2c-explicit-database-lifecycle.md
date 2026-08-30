@@ -68,5 +68,5 @@ ruff check src tests                      -> All checks passed
 
 ## 4. 后续
 
-阶段 2 的连接、migration、repository 和生命周期拆分全部完成。下一步进入阶段 3，按指南
-拆分质量工作流，使阶段输入、复用、失败和审核语义可独立测试。
+阶段 2 的连接、migration、repository 和生命周期拆分全部完成。阶段 3 也已完成质量
+工作流拆分；下一步进入阶段 4，拆分 Web 后端和前端。

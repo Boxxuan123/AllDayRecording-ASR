@@ -1,7 +1,7 @@
 # AllDayRecording-ASR 项目现状与路线图
 
 > 盘点日期：2026-08-30
-> 当前阶段：可维护性重构阶段 0、阶段 1 及阶段 2A/2B/2C 已完成；八个核心业务 repository 已建立，`Database` 的 96 个公开方法保持兼容转发，构造函数不再隐式建目录或运行 migration，86 个项目内入口统一使用 `Database.open(...)`。下一步进入阶段 3，拆分质量工作流。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一轮没有读取或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
+> 当前阶段：可维护性重构阶段 0、阶段 1、阶段 2A/2B/2C 及阶段 3 已完成；八个核心业务 repository 和显式数据库生命周期已建立，质量工作流已拆为七个具体 stage runner、薄编排器与兼容入口。下一步进入阶段 4，拆分 Web 后端和前端。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一轮没有读取或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
 
 ## 1. 结论
 
@@ -118,6 +118,7 @@ V2-E.0.2 已把 committed token、匿名声纹、不确定性、现场/媒体来
 
 ## 6. 本次盘点验证
 
+- 可维护性重构阶段 3 见 [显式质量工作流记录](refactoring-phase-3-quality-workflow.md)：七个 runner、显式 context/result/review reason 和薄编排器已建立；原 service 保留兼容导出；ASR 续跑、D.1/D.2 非阻断失败、编排顺序和 Web/CLI JSON 兼容均有测试；全量 116 个测试及 Ruff 通过。
 - 可维护性重构阶段 2C 见 [显式数据库生命周期记录](refactoring-phase-2c-explicit-database-lifecycle.md)：`Database(path)` 只装配对象，`initialize()`/`open()` 显式承担目录与 migration I/O；86 个 CLI、Web 和测试入口已迁移；构造无副作用、显式初始化、重复打开和入口约束均有测试；全量 110 个测试及 Ruff 通过。
 - 可维护性重构阶段 2B 见 [Repository 接缝记录](refactoring-phase-2b-repository-seams.md)：八个核心业务 repository 已提取，96 个门面方法只保留原签名转发；真实 SQLite 覆盖门面一致性、关键事务回滚及第二批五类入口；全量 106 个测试及 Ruff 通过。
 - 可维护性重构阶段 2A 见 [SQLite 迁移基础设施记录](refactoring-phase-2a-sqlite-migrations.md)：连接、runner 和 v001–v015 SQL 已分离；历史 SQL 组合哈希固定；空库对象快照、v1–v14 全升级、备份、失败回滚和 v16 拒绝测试通过；全量 98 个测试及 Ruff 通过。

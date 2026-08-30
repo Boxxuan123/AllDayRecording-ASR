@@ -25,6 +25,21 @@ REPOSITORIES_ROOT = (
     / "sqlite"
     / "repositories"
 )
+QUALITY_WORKFLOW_PATH = (
+    PROJECT_ROOT
+    / "src"
+    / "allday_asr"
+    / "application"
+    / "workflows"
+    / "quality.py"
+)
+QUALITY_WORKFLOW_COMPAT_PATH = (
+    PROJECT_ROOT
+    / "src"
+    / "allday_asr"
+    / "services"
+    / "quality_workflow.py"
+)
 
 EXTRACTED_REPOSITORY_METHODS = {
     "create_recording_session",
@@ -135,6 +150,51 @@ KNOWN_LOCAL_SERVICE_IMPORTS: set[tuple[str, str, str]] = set()
 
 
 class ArchitectureBaselineTests(unittest.TestCase):
+    def test_quality_workflow_has_explicit_stage_order(self) -> None:
+        tree = ast.parse(
+            QUALITY_WORKFLOW_PATH.read_text(encoding="utf-8"),
+            filename=str(QUALITY_WORKFLOW_PATH),
+        )
+        workflow = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_run_stages"
+        )
+        expected = [
+            "verify_admission",
+            "resolve_or_run_asr",
+            "resolve_or_run_diarization",
+            "run_optional_speech_recall",
+            "run_optional_identity_audit",
+            "inspect_identity_mining_state",
+            "resolve_or_run_semantic",
+        ]
+        calls = sorted(
+            (
+                node.lineno,
+                node.func.id,
+            )
+            for node in ast.walk(workflow)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in expected
+        )
+
+        self.assertEqual([name for _line, name in calls], expected)
+
+    def test_quality_workflow_service_is_only_a_compatibility_entrypoint(
+        self,
+    ) -> None:
+        tree = ast.parse(
+            QUALITY_WORKFLOW_COMPAT_PATH.read_text(encoding="utf-8"),
+            filename=str(QUALITY_WORKFLOW_COMPAT_PATH),
+        )
+
+        self.assertFalse(
+            any(isinstance(node, ast.FunctionDef) for node in tree.body)
+        )
+
     def test_runtime_entrypoints_use_explicit_database_open(self) -> None:
         direct_calls: list[str] = []
         for path in sorted(PACKAGE_ROOT.rglob("*.py")):

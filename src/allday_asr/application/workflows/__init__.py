@@ -1,7 +1,7 @@
-"""Compatibility entrypoint for the application quality workflow."""
+"""Persistent application workflows with explicit stage boundaries."""
 
-from allday_asr.application.workflows.quality import run_quality_workflow
-from allday_asr.application.workflows.quality_models import (
+from .quality import run_quality_workflow
+from .quality_models import (
     QualityWorkflowSummary,
     ReviewReason,
     StageResult,
