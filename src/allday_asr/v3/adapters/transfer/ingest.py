@@ -359,6 +359,10 @@ def _session_projection(
 ) -> dict[str, Any]:
     return {
         "session_id": session.session_id,
+        # Phone owns the original audio files under this stable manifest key.
+        # Publishing it once lets the device bind local facts to the V3 session
+        # without guessing from capture timestamps or file names.
+        "session_key": manifest["sessionKey"],
         "captured_start": session.captured_start.isoformat().replace(
             "+00:00", "Z"
         ),

@@ -278,7 +278,8 @@ class V3DeviceSyncTests(unittest.TestCase):
                     )
                 }
                 changes = connection.execute(
-                    "SELECT resource_type FROM change_events ORDER BY sequence"
+                    "SELECT resource_type, payload_json "
+                    "FROM change_events ORDER BY sequence"
                 ).fetchall()
             self.assertEqual(counts["recording_sessions"], 1)
             self.assertEqual(counts["audio_assets"], 2)
@@ -288,6 +289,11 @@ class V3DeviceSyncTests(unittest.TestCase):
             self.assertEqual(
                 [row["resource_type"] for row in changes],
                 ["audio_asset", "audio_asset", "recording_session"],
+            )
+            session_projection = json.loads(changes[-1]["payload_json"])
+            self.assertEqual(
+                session_projection["session_key"],
+                manifest["sessionKey"],
             )
 
     def test_http_sync_requires_one_time_device_signature(self) -> None:
