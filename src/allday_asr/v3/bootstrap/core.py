@@ -9,7 +9,7 @@ from allday_asr.paths import PROJECT_ROOT
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.legacy_v2 import LegacyV2Importer
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
-from allday_asr.v3.application import ImportLegacyV2
+from allday_asr.v3.application import ImportLegacyV2, MobileSyncService
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,7 @@ class V3Core:
     audio_store: ContentAddressedStore
     artifact_store: ContentAddressedStore
     import_legacy_v2: ImportLegacyV2
+    mobile_sync: MobileSyncService
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -70,12 +71,14 @@ def compose_v3_core(paths: V3CorePaths | None = None) -> V3Core:
         audio_store,
         artifact_store,
     )
+    mobile_sync = MobileSyncService(lambda: SqliteUnitOfWork(database))
     return V3Core(
         paths=selected,
         database=database,
         audio_store=audio_store,
         artifact_store=artifact_store,
         import_legacy_v2=ImportLegacyV2(importer),
+        mobile_sync=mobile_sync,
     )
 
 

@@ -10,6 +10,9 @@ from typer.testing import CliRunner
 
 from allday_asr.cli import app
 from allday_asr.v3.bootstrap import start_empty_runtime
+from allday_asr.v3.adapters.sqlite.migration_runner import (
+    LATEST_V3_SCHEMA_VERSION,
+)
 from allday_asr.v3.config import (
     DeploymentMode,
     V3ConfigurationError,
@@ -100,7 +103,9 @@ class V3BootstrapTests(unittest.TestCase):
             )
             self.assertEqual(enabled.exit_code, 0, enabled.output)
             payload = json.loads(enabled.output)
-            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(
+                payload["schema_version"], LATEST_V3_SCHEMA_VERSION
+            )
             self.assertEqual(payload["state"], "ready")
             self.assertTrue((directory / "core.sqlite3").is_file())
         finally:

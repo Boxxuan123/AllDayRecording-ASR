@@ -24,6 +24,7 @@ from allday_asr.interfaces.transfer.devices import (
     DeviceAuthManager,
     DeviceConflictError,
     DeviceCredentialStore,
+    DeviceForbiddenError,
     DeviceUnauthorizedError,
 )
 from allday_asr.interfaces.transfer.discovery import (
@@ -79,6 +80,8 @@ _REGISTER_OPTIONS_PATH = "/api/v1/passkeys/register/options"
 _REGISTER_VERIFY_PATH = "/api/v1/passkeys/register/verify"
 _AUTHENTICATE_OPTIONS_PATH = "/api/v1/passkeys/authenticate/options"
 _DEVICE_CHALLENGE_PATH = "/api/v1/devices/authenticate/challenge"
+_V3_STATUS_PATH = "/device/v3/status"
+_V3_SYNC_PATH = "/device/v3/sync"
 
 
 class TransferRequestHandler(BaseHTTPRequestHandler):
@@ -129,15 +132,17 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         except UploadStoreError as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         except DeviceUnauthorizedError as exc:
-            self._send_json(
+            self._send_error(
                 HTTPStatus.UNAUTHORIZED,
-                {"error": str(exc)},
+                str(exc),
                 headers={
                     "WWW-Authenticate": 'DeviceSignature realm="AllDayRecording Transfer"'
                 },
             )
         except DeviceConflictError as exc:
             self._send_error(HTTPStatus.CONFLICT, str(exc))
+        except DeviceForbiddenError as exc:
+            self._send_error(HTTPStatus.FORBIDDEN, str(exc))
         except DeviceAuthError as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
         except PasskeyUnauthorizedError as exc:
@@ -161,6 +166,17 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
 
     def _dispatch_get(self) -> None:
         path = urlparse(self.path).path
+        if path == _V3_STATUS_PATH:
+            if self.server.v3_gateway is None:
+                self._send_error(HTTPStatus.NOT_FOUND, "接口不存在")
+                return
+            binding = RequestBinding.for_request(method="GET", path=path, body=b"")
+            device = self._authenticate_device_request(binding)
+            self._send_json(
+                HTTPStatus.OK,
+                self.server.v3_gateway.status(device.device_id),
+            )
+            return
         match = _UPLOAD_PATH.fullmatch(path)
         if path != "/api/v1/status" and match is None:
             self._send_error(HTTPStatus.NOT_FOUND, "接口不存在")
@@ -243,6 +259,8 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
                     public_key=device["public_key"],
                     passkey_credential_id=record.credential_id,
                 )
+                if self.server.v3_gateway is not None:
+                    self.server.v3_gateway.device_enrolled(device_record)
             self._send_json(
                 HTTPStatus.CREATED,
                 {
@@ -283,6 +301,26 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
                 self.server.passkeys.start_authentication(binding),
             )
             return
+        if path == _V3_SYNC_PATH:
+            if self.server.v3_gateway is None:
+                self._send_error(HTTPStatus.NOT_FOUND, "接口不存在")
+                return
+            raw = self._read_body(max_bytes=MAX_JSON_BODY_BYTES)
+            binding = RequestBinding.for_request(
+                method="POST",
+                path=path,
+                body=raw,
+            )
+            device = self._authenticate_device_request(binding)
+            try:
+                response = self.server.v3_gateway.synchronize(
+                    device.device_id,
+                    self._decode_json(raw),
+                )
+            except ValueError as exc:
+                raise UploadStoreError(str(exc)) from exc
+            self._send_json(HTTPStatus.OK, response)
+            return
         if path != "/api/v1/uploads":
             self._send_error(HTTPStatus.NOT_FOUND, "接口不存在")
             return
@@ -292,7 +330,7 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
             path=path,
             body=raw,
         )
-        self._authenticate_request(binding)
+        device = self._authenticate_request(binding)
         body = self._decode_json(raw)
         required = {"relative_path", "size", "sha256", "kind"}
         missing = sorted(required - body.keys())
@@ -307,7 +345,10 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
             sha256=body["sha256"],
             kind=body["kind"],
         )
-        automation = self.server.notify_upload_completed(record)
+        automation = self.server.notify_upload_completed(
+            record,
+            device_key_id=device.device_id if device is not None else None,
+        )
         self._send_upload_record(
             HTTPStatus.CREATED if created else HTTPStatus.OK,
             record.public_dict(),
@@ -335,13 +376,16 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
             body=data,
             upload_offset=offset,
         )
-        self._authenticate_request(binding)
+        device = self._authenticate_request(binding)
         record = self.server.store.append_chunk(
             match.group("upload_id"),
             offset=offset,
             data=data,
         )
-        automation = self.server.notify_upload_completed(record)
+        automation = self.server.notify_upload_completed(
+            record,
+            device_key_id=device.device_id if device is not None else None,
+        )
         self._send_upload_record(
             HTTPStatus.OK,
             record.public_dict(),
@@ -364,21 +408,34 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         )
         return False
 
-    def _authenticate_request(self, binding: RequestBinding) -> None:
+    def _authenticate_request(self, binding: RequestBinding):
         device_id = self.headers.get(DEVICE_ID_HEADER, "")
         if device_id:
-            self.server.devices.verify_request(
+            return self.server.devices.verify_request(
                 device_id=device_id,
                 challenge_id=self.headers.get(DEVICE_CHALLENGE_HEADER, ""),
                 encoded_signature=self.headers.get(DEVICE_SIGNATURE_HEADER, ""),
                 binding=binding,
             )
-            return
         ceremony_id = self.headers.get(PASSKEY_CEREMONY_HEADER, "")
         assertion = self.headers.get(PASSKEY_ASSERTION_HEADER, "")
         self.server.passkeys.verify_request(
             ceremony_id=ceremony_id,
             encoded_assertion=assertion,
+            binding=binding,
+        )
+        return None
+
+    def _authenticate_device_request(self, binding: RequestBinding):
+        device_id = self.headers.get(DEVICE_ID_HEADER, "")
+        if not device_id:
+            raise DeviceUnauthorizedError(
+                "V3 Device API 只接受已登记设备的 HUKS 签名"
+            )
+        return self.server.devices.verify_request(
+            device_id=device_id,
+            challenge_id=self.headers.get(DEVICE_CHALLENGE_HEADER, ""),
+            encoded_signature=self.headers.get(DEVICE_SIGNATURE_HEADER, ""),
             binding=binding,
         )
 
@@ -430,8 +487,28 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
             payload["automation"] = dict(automation)
         self._send_json(status, payload, headers=response_headers)
 
-    def _send_error(self, status: HTTPStatus, message: str) -> None:
-        self._send_json(status, {"error": message})
+    def _send_error(
+        self,
+        status: HTTPStatus,
+        message: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        if urlparse(self.path).path.startswith("/device/v3/"):
+            from allday_asr.v3.domain.ids import new_ulid
+
+            self._send_json(
+                status,
+                {
+                    "code": status.name,
+                    "message": message,
+                    "details": {},
+                    "request_id": new_ulid(),
+                },
+                headers=headers,
+            )
+            return
+        self._send_json(status, {"error": message}, headers=headers)
 
     def _send_json(
         self,
@@ -473,6 +550,7 @@ class TransferHTTPServer(ThreadingHTTPServer):
         tls_enabled: bool = False,
         tls_context: ssl.SSLContext | None = None,
         upload_completed: UploadCompletedCallback | None = None,
+        v3_gateway=None,
     ) -> None:
         self.store = store
         self.token = token
@@ -482,6 +560,7 @@ class TransferHTTPServer(ThreadingHTTPServer):
         self.tls_enabled = tls_enabled
         self.tls_context = tls_context
         self.upload_completed = upload_completed
+        self.v3_gateway = v3_gateway
         super().__init__(server_address, TransferRequestHandler)
 
     @property
@@ -497,21 +576,33 @@ class TransferHTTPServer(ThreadingHTTPServer):
         )
 
     def notify_upload_completed(
-        self, record: UploadRecord
+        self,
+        record: UploadRecord,
+        *,
+        device_key_id: str | None = None,
     ) -> Mapping[str, Any] | None:
-        if record.status != "completed" or self.upload_completed is None:
+        if record.status != "completed":
             return None
-        try:
-            return self.upload_completed(record)
-        except Exception as exc:
-            print(
-                f"[transfer:v2] 无法把 {record.relative_path} 加入自动工作流："
-                f"{exc!r}"
-            )
-            return {
-                "status": "queue_failed",
-                "detail": str(exc),
-            }
+        result: dict[str, Any] = {}
+        if self.upload_completed is not None:
+            try:
+                legacy = self.upload_completed(record)
+                if legacy is not None:
+                    result.update(legacy)
+            except Exception as exc:
+                print(
+                    f"[transfer:v2] 无法把 {record.relative_path} 加入自动工作流："
+                    f"{exc!r}"
+                )
+                result.update({
+                    "status": "queue_failed",
+                    "detail": str(exc),
+                })
+        if self.v3_gateway is not None and device_key_id is not None:
+            v3 = self.v3_gateway.upload_completed(device_key_id, record, self.store)
+            if v3 is not None:
+                result["v3"] = v3
+        return result or None
 
 
 def create_transfer_server(
@@ -533,6 +624,8 @@ def create_transfer_server(
     device_manager: DeviceAuthManager | None = None,
     receiver_id: str | None = None,
     upload_completed: UploadCompletedCallback | None = None,
+    v3_gateway=None,
+    v3_core=None,
 ) -> TransferHTTPServer:
     if not 0 <= port <= 65535:
         raise ValueError("端口必须在 0 到 65535 之间")
@@ -586,6 +679,31 @@ def create_transfer_server(
             receiver_id = hashlib.sha256(
                 f"insecure-debug:{resolved_token}".encode("utf-8")
             ).hexdigest()
+    if v3_core is not None:
+        if v3_gateway is not None:
+            raise ValueError("v3_core 与 v3_gateway 不能同时指定")
+        from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork
+        from allday_asr.v3.adapters.transfer import (
+            TransferDeviceTrustAdapter,
+            V3UploadIngestAdapter,
+        )
+        from allday_asr.v3.interfaces.device_gateway import DeviceGateway
+
+        v3_core.initialize()
+        trust = TransferDeviceTrustAdapter(
+            device_manager,
+            lambda: SqliteUnitOfWork(v3_core.database),
+            receiver_id_from_fingerprint(receiver_id),
+        )
+        ingest = V3UploadIngestAdapter(
+            trust,
+            lambda: SqliteUnitOfWork(v3_core.database),
+            v3_core.audio_store,
+            v3_core.artifact_store,
+        )
+        v3_gateway = DeviceGateway(trust, v3_core.mobile_sync, ingest)
+        v3_gateway.reconcile()
+        device_manager = trust
     server = TransferHTTPServer(
         (host, port),
         store=store,
@@ -596,6 +714,7 @@ def create_transfer_server(
         tls_enabled=tls_cert is not None,
         tls_context=tls_context,
         upload_completed=upload_completed,
+        v3_gateway=v3_gateway,
     )
     if tls_context is not None:
         try:
@@ -628,6 +747,8 @@ def serve_transfer(
     workflow_diarization_model_path: Path | None = None,
     workflow_backup_root: Path | None = None,
     workflow_backup_storage_kind: str = "independent_device",
+    enable_v3: bool = False,
+    v3_state_dir: Path | None = None,
 ) -> None:
     if insecure_http and (tls_cert is not None or tls_key is not None):
         raise ValueError("--insecure-http 不能与 TLS 证书参数同时使用")
@@ -673,6 +794,13 @@ def serve_transfer(
         if pairing_fingerprint is not None
         else None
     )
+    v3_core = None
+    if enable_v3:
+        if v3_state_dir is None:
+            raise ValueError("V3 Device API 需要独立的 --v3-state-dir")
+        from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core
+
+        v3_core = compose_v3_core(V3CorePaths.from_state_dir(v3_state_dir))
     server = create_transfer_server(
         inbox=inbox,
         host=host,
@@ -686,6 +814,7 @@ def serve_transfer(
         passkey_rp_id=passkey_rp_id,
         passkey_origins=passkey_origins,
         receiver_id=receiver_id,
+        v3_core=v3_core,
     )
     automatic_runner = None
     if auto_workflow:

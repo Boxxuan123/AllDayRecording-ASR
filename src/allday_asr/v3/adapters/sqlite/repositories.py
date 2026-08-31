@@ -6,6 +6,15 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from allday_asr.v3.domain.device_sync import (
+    ClientOperation,
+    ClientOperationRecord,
+    ClientOperationStatus,
+    DeviceCredential,
+    DeviceScope,
+    OperationReceipt,
+    PairingRecord,
+)
 from allday_asr.v3.domain.ids import new_ulid
 from allday_asr.v3.domain.models import (
     Artifact,
@@ -13,6 +22,8 @@ from allday_asr.v3.domain.models import (
     AudioFormat,
     AudioReplica,
     CaptureSegment,
+    ChangeEvent,
+    ChangeOperation,
     CorrectionOperation,
     Device,
     ProcessingRun,
@@ -326,6 +337,199 @@ class SqliteChangeLogRepository:
         )
         return int(cursor.lastrowid)
 
+    def list_after(self, sequence: int, limit: int) -> tuple[ChangeEvent, ...]:
+        if sequence < 0 or not 1 <= limit <= 501:
+            raise ValueError("invalid change-log range")
+        rows = self.connection.execute(
+            """
+            SELECT * FROM change_events
+            WHERE sequence > ?
+            ORDER BY sequence
+            LIMIT ?
+            """,
+            (sequence, limit),
+        )
+        return tuple(_change_event(row) for row in rows)
+
+
+class SqliteDeviceTrustRepository:
+    def __init__(self, connection: sqlite3.Connection, *, now: Clock) -> None:
+        self.connection = connection
+        self.now = now
+
+    def enroll(self, credential: DeviceCredential, pairing: PairingRecord) -> bool:
+        current = self.find_by_key_id(credential.key_id)
+        if current is not None:
+            if (
+                current.device_id != credential.device_id
+                or current.algorithm != credential.algorithm
+                or current.public_key != credential.public_key
+                or current.passkey_credential_ref
+                != credential.passkey_credential_ref
+            ):
+                raise ValueError("device key conflicts with an enrolled credential")
+            return False
+        self.connection.execute(
+            """
+            INSERT INTO device_credentials (
+                credential_id, device_id, key_id, algorithm, public_key,
+                scopes_json, passkey_credential_ref, revoked_at,
+                last_used_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                credential.credential_id,
+                credential.device_id,
+                credential.key_id,
+                credential.algorithm,
+                credential.public_key,
+                _json([scope.value for scope in credential.scopes]),
+                credential.passkey_credential_ref,
+                _optional_datetime(credential.revoked_at),
+                _optional_datetime(credential.last_used_at),
+                _datetime(credential.created_at),
+            ),
+        )
+        self.connection.execute(
+            """
+            INSERT INTO pairing_records (
+                pairing_id, device_id, receiver_id,
+                passkey_credential_ref, paired_at, revoked_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                pairing.pairing_id,
+                pairing.device_id,
+                pairing.receiver_id,
+                pairing.passkey_credential_ref,
+                _datetime(pairing.paired_at),
+                _optional_datetime(pairing.revoked_at),
+            ),
+        )
+        return True
+
+    def find_by_key_id(self, key_id: str) -> DeviceCredential | None:
+        row = self.connection.execute(
+            "SELECT * FROM device_credentials WHERE key_id = ?", (key_id,)
+        ).fetchone()
+        return _device_credential(row) if row is not None else None
+
+    def authorize(
+        self, key_id: str, required_scopes: tuple[DeviceScope, ...]
+    ) -> DeviceCredential:
+        credential = self.find_by_key_id(key_id)
+        if credential is None or credential.revoked_at is not None:
+            raise LookupError("device credential is missing or revoked")
+        missing = set(required_scopes) - set(credential.scopes)
+        if missing:
+            values = ", ".join(sorted(scope.value for scope in missing))
+            raise PermissionError(f"device credential lacks required scopes: {values}")
+        return credential
+
+    def mark_used(self, key_id: str) -> None:
+        cursor = self.connection.execute(
+            "UPDATE device_credentials SET last_used_at = ? "
+            "WHERE key_id = ? AND revoked_at IS NULL",
+            (self.now(), key_id),
+        )
+        if cursor.rowcount != 1:
+            raise LookupError("device credential is missing or revoked")
+
+    def revoke(self, key_id: str, revoked_at: str) -> bool:
+        row = self.connection.execute(
+            "SELECT device_id, revoked_at FROM device_credentials WHERE key_id = ?",
+            (key_id,),
+        ).fetchone()
+        if row is None or row["revoked_at"] is not None:
+            return False
+        device_id = str(row["device_id"])
+        self.connection.execute(
+            "UPDATE device_credentials SET revoked_at = ? WHERE key_id = ?",
+            (revoked_at, key_id),
+        )
+        self.connection.execute(
+            "UPDATE pairing_records SET revoked_at = ? "
+            "WHERE device_id = ? AND revoked_at IS NULL",
+            (revoked_at, device_id),
+        )
+        self.connection.execute(
+            """
+            UPDATE devices
+            SET status = 'revoked', revision = revision + 1,
+                updated_at = ?, tombstoned_at = ?
+            WHERE device_id = ? AND status != 'revoked'
+            """,
+            (revoked_at, revoked_at, device_id),
+        )
+        return True
+
+
+class SqliteMobileSyncRepository:
+    def __init__(self, connection: sqlite3.Connection, *, now: Clock) -> None:
+        self.connection = connection
+        self.now = now
+
+    def find_operation(self, operation_id: str) -> ClientOperationRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM client_operations WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        return _client_operation_record(row) if row is not None else None
+
+    def record_operation(
+        self,
+        device_id: str,
+        operation: ClientOperation,
+        payload_sha256: str,
+        receipt: OperationReceipt,
+    ) -> bool:
+        now = self.now()
+        cursor = self.connection.execute(
+            """
+            INSERT INTO client_operations (
+                operation_id, device_id, kind, base_revision,
+                payload_sha256, payload_json, status, receipt_json,
+                created_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                operation.operation_id,
+                device_id,
+                operation.kind,
+                operation.base_revision,
+                payload_sha256,
+                _json(operation.payload),
+                receipt.status.value,
+                _json(receipt.as_dict()),
+                now,
+                now,
+            ),
+        )
+        return cursor.rowcount == 1
+
+    def acknowledge_cursor(
+        self, device_id: str, projection_version: int, sequence: int
+    ) -> None:
+        if sequence < 0:
+            raise ValueError("cursor sequence cannot be negative")
+        self.connection.execute(
+            """
+            INSERT INTO sync_cursors (
+                device_id, projection_version, acknowledged_sequence, updated_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(device_id) DO UPDATE SET
+                projection_version = excluded.projection_version,
+                acknowledged_sequence = MAX(
+                    sync_cursors.acknowledged_sequence,
+                    excluded.acknowledged_sequence
+                ),
+                updated_at = excluded.updated_at
+            """,
+            (device_id, projection_version, sequence, self.now()),
+        )
+
 
 class SqliteAuditRepository:
     def __init__(self, connection: sqlite3.Connection, *, now: Clock) -> None:
@@ -535,10 +739,78 @@ def _processing_run(row: sqlite3.Row) -> ProcessingRun:
     )
 
 
+def _change_event(row: sqlite3.Row) -> ChangeEvent:
+    payload = row["payload_json"]
+    return ChangeEvent(
+        sequence=int(row["sequence"]),
+        resource_type=str(row["resource_type"]),
+        resource_id=str(row["resource_id"]),
+        revision=int(row["revision"]),
+        operation=ChangeOperation(str(row["operation"])),
+        payload=json.loads(str(payload)) if payload is not None else None,
+        created_at=_parse_datetime(row["created_at"]),
+    )
+
+
+def _device_credential(row: sqlite3.Row) -> DeviceCredential:
+    scopes = json.loads(str(row["scopes_json"]))
+    if not isinstance(scopes, list):
+        raise ValueError("stored device scopes are invalid")
+    return DeviceCredential(
+        credential_id=str(row["credential_id"]),
+        device_id=str(row["device_id"]),
+        key_id=str(row["key_id"]),
+        algorithm=str(row["algorithm"]),
+        public_key=str(row["public_key"]),
+        scopes=tuple(DeviceScope(str(value)) for value in scopes),
+        passkey_credential_ref=str(row["passkey_credential_ref"]),
+        created_at=_parse_datetime(row["created_at"]),
+        last_used_at=_optional_parse_datetime(row["last_used_at"]),
+        revoked_at=_optional_parse_datetime(row["revoked_at"]),
+    )
+
+
+def _client_operation_record(row: sqlite3.Row) -> ClientOperationRecord:
+    payload = json.loads(str(row["payload_json"]))
+    receipt = json.loads(str(row["receipt_json"]))
+    if not isinstance(payload, dict) or not isinstance(receipt, dict):
+        raise ValueError("stored client operation JSON is invalid")
+    return ClientOperationRecord(
+        device_id=str(row["device_id"]),
+        operation=ClientOperation(
+            operation_id=str(row["operation_id"]),
+            kind=str(row["kind"]),
+            base_revision=(
+                int(row["base_revision"])
+                if row["base_revision"] is not None
+                else None
+            ),
+            payload=payload,
+        ),
+        payload_sha256=str(row["payload_sha256"]),
+        receipt=OperationReceipt(
+            operation_id=str(receipt["operation_id"]),
+            status=ClientOperationStatus(str(receipt["status"])),
+            resource_revision=(
+                int(receipt["resource_revision"])
+                if receipt.get("resource_revision") is not None
+                else None
+            ),
+            error=receipt.get("error"),
+        ),
+        created_at=_parse_datetime(row["created_at"]),
+        completed_at=_parse_datetime(row["completed_at"]),
+    )
+
+
 def _datetime(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("database timestamps must be timezone-aware")
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return (
+        value.astimezone(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def _optional_datetime(value: datetime | None) -> str | None:
@@ -561,7 +833,11 @@ def _json(value: object) -> str:
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 __all__ = [
@@ -570,8 +846,10 @@ __all__ = [
     "SqliteChangeLogRepository",
     "SqliteCorrectionRepository",
     "SqliteDeviceRepository",
+    "SqliteDeviceTrustRepository",
     "SqliteIdempotencyRepository",
     "SqliteLegacyImportRunRepository",
+    "SqliteMobileSyncRepository",
     "SqliteProcessingRunRepository",
     "SqliteRecordingCatalogRepository",
     "SqliteTombstoneRepository",

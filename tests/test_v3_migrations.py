@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 import sqlite3
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from allday_asr.v3.adapters.sqlite import (
     V3MigrationRunner,
 )
 from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core
+from allday_asr.v3.adapters.sqlite.migrations import MIGRATIONS
 
 
 TEST_ROOT = Path(__file__).parent
@@ -107,6 +109,60 @@ class V3MigrationTests(unittest.TestCase):
         self.assertIn("stable", tables)
         self.assertNotIn("half_written", tables)
         self.assertEqual(versions, [(1,)])
+
+    def test_device_sync_migration_backfills_rebuildable_projection_payloads(
+        self,
+    ) -> None:
+        path = self.directory / "core.sqlite3"
+        V3MigrationRunner(path, migrations=(MIGRATIONS[0],)).initialize()
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO recording_sessions (
+                    session_id, captured_start, captured_end, timezone, state,
+                    revision, status_code, current_stage, progress,
+                    blocking_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "session-1",
+                    "2026-08-31T00:00:00.000000Z",
+                    "2026-08-31T00:01:00.000000Z",
+                    "Asia/Singapore",
+                    "ready_for_processing",
+                    1,
+                    "ready",
+                    None,
+                    1.0,
+                    None,
+                    "2026-08-31T00:00:00.000000Z",
+                    "2026-08-31T00:00:00.000000Z",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO change_events (
+                    resource_type, resource_id, revision, operation,
+                    payload_json, created_at
+                ) VALUES ('recording_session', 'session-1', 1, 'upsert', NULL, ?)
+                """,
+                ("2026-08-31T00:00:00.000000Z",),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        V3Database(path).initialize()
+
+        with sqlite3.connect(path) as migrated:
+            payload = json.loads(
+                migrated.execute(
+                    "SELECT payload_json FROM change_events"
+                ).fetchone()[0]
+            )
+        self.assertEqual(payload["session_id"], "session-1")
+        self.assertEqual(payload["status_code"], "ready")
 
     def test_transaction_rolls_back_all_writes_on_error(self) -> None:
         database = V3Database.open(self.directory / "core.sqlite3")

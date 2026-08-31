@@ -688,7 +688,7 @@ class LegacyV2Importer:
                         session.session_id,
                         session.revision,
                         "upsert",
-                        None,
+                        _session_projection(session),
                     )
 
             actual_asset_ids: dict[str, str] = {}
@@ -703,7 +703,11 @@ class LegacyV2Importer:
                 actual_asset_ids[asset.asset_id] = asset.asset_id
                 if added:
                     uow.changes.append(
-                        "audio_asset", asset.asset_id, 1, "upsert", None
+                        "audio_asset",
+                        asset.asset_id,
+                        1,
+                        "upsert",
+                        _asset_projection(asset),
                     )
 
             actual_replica_ids: dict[str, str] = {}
@@ -739,7 +743,11 @@ class LegacyV2Importer:
                 _record(created, existing, "processing_runs", added)
                 if added:
                     uow.changes.append(
-                        "processing_run", run.run_id, 1, "upsert", None
+                        "processing_run",
+                        run.run_id,
+                        1,
+                        "upsert",
+                        _run_projection(run),
                     )
             for artifact in prepared.artifacts:
                 _record(
@@ -918,6 +926,58 @@ def _audio_format(container: object, source_path: str) -> AudioFormat:
     value = str(container or Path(source_path).suffix.lstrip(".")).lower()
     aliases = {"wave": "wav", "mp4": "m4a"}
     return AudioFormat(aliases.get(value, value))
+
+
+def _session_projection(session: RecordingSession) -> dict[str, Any]:
+    return {
+        "session_id": session.session_id,
+        "captured_start": _projection_datetime(session.captured_start),
+        "captured_end": (
+            _projection_datetime(session.captured_end)
+            if session.captured_end is not None
+            else None
+        ),
+        "timezone": session.timezone,
+        "state": session.state.value,
+        "revision": session.revision,
+        "status_code": session.status_code,
+        "current_stage": session.current_stage,
+        "progress": session.progress,
+        "blocking_reason": session.blocking_reason,
+    }
+
+
+def _asset_projection(asset: AudioAsset) -> dict[str, Any]:
+    return {
+        "asset_id": asset.asset_id,
+        "sha256": asset.sha256,
+        "size_bytes": asset.size_bytes,
+        "duration_ms": asset.duration_ms,
+        "format": asset.format.value,
+        "media_id": asset.media_id,
+    }
+
+
+def _run_projection(run: ProcessingRun) -> dict[str, Any]:
+    return {
+        "run_id": run.run_id,
+        "session_id": run.session_id,
+        "pipeline_version": run.pipeline_version,
+        "input_revision": run.input_revision,
+        "status": run.status.value,
+        "current_stage": run.current_stage,
+        "progress": run.progress,
+        "completed_at": (
+            _projection_datetime(run.completed_at)
+            if run.completed_at is not None
+            else None
+        ),
+        "error": run.error,
+    }
+
+
+def _projection_datetime(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _sha256(value: str) -> str:

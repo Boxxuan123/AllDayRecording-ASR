@@ -1,3 +1,16 @@
+from allday_asr.v3.domain.device_sync import (
+    DEFAULT_PHONE_SCOPES,
+    ClientOperation,
+    ClientOperationRecord,
+    ClientOperationStatus,
+    DeviceCredential,
+    DeviceScope,
+    OperationReceipt,
+    PairingRecord,
+    SyncChange,
+    SyncRequest,
+    SyncResponse,
+)
 from allday_asr.v3.domain.ids import new_ulid, stable_ulid
 from allday_asr.v3.domain.models import (
     Artifact,
@@ -20,6 +33,17 @@ from allday_asr.v3.domain.models import (
 )
 
 __all__ = [
+    "DEFAULT_PHONE_SCOPES",
+    "ClientOperation",
+    "ClientOperationRecord",
+    "ClientOperationStatus",
+    "DeviceCredential",
+    "DeviceScope",
+    "OperationReceipt",
+    "PairingRecord",
+    "SyncChange",
+    "SyncRequest",
+    "SyncResponse",
     "Artifact",
     "AudioAsset",
     "AudioFormat",

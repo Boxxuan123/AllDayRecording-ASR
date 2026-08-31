@@ -18,6 +18,7 @@ DEFAULT_INBOX = PROJECT_ROOT / "data" / "phone-inbox"
 DEFAULT_TLS_IDENTITY_DIR = PROJECT_ROOT / "state" / "transfer-tls"
 DEFAULT_PASSKEY_STATE = PROJECT_ROOT / "state" / "transfer-passkeys.json"
 DEFAULT_DEVICE_STATE = PROJECT_ROOT / "state" / "transfer-devices.json"
+DEFAULT_V3_STATE_DIR = PROJECT_ROOT / "state" / "v3"
 
 app = typer.Typer(
     help="在局域网中安全接收手机录音和会话清单。",
@@ -150,6 +151,19 @@ def receive_command(
         "--workflow-db",
         help="自动导入和 V2 工作流使用的 SQLite 数据库。",
     ),
+    enable_v3: bool = typer.Option(
+        False,
+        "--enable-v3",
+        help="启用仅限已配对 Phone 的 V3 Device API 和投影同步。",
+    ),
+    v3_state_dir: Path = typer.Option(
+        DEFAULT_V3_STATE_DIR,
+        "--v3-state-dir",
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
+        help="V3 Core 独立数据库、音频和制品存储目录。",
+    ),
 ) -> None:
     """启动独立于本机网页工作台的可断点续传接收服务。"""
     try:
@@ -174,6 +188,8 @@ def receive_command(
             workflow_diarization_model_path=workflow_diarization_model_path,
             workflow_backup_root=workflow_backup_root,
             workflow_backup_storage_kind=workflow_backup_storage_kind,
+            enable_v3=enable_v3,
+            v3_state_dir=v3_state_dir,
         )
     except (OSError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc

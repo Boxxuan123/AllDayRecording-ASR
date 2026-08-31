@@ -11,8 +11,10 @@ from allday_asr.v3.adapters.sqlite.repositories import (
     SqliteChangeLogRepository,
     SqliteCorrectionRepository,
     SqliteDeviceRepository,
+    SqliteDeviceTrustRepository,
     SqliteIdempotencyRepository,
     SqliteLegacyImportRunRepository,
+    SqliteMobileSyncRepository,
     SqliteProcessingRunRepository,
     SqliteRecordingCatalogRepository,
     SqliteTombstoneRepository,
@@ -35,6 +37,8 @@ class SqliteUnitOfWork:
         connection = self._connection
         self.catalog = SqliteRecordingCatalogRepository(connection)
         self.devices = SqliteDeviceRepository(connection)
+        self.device_trust = SqliteDeviceTrustRepository(connection, now=self.now)
+        self.mobile_sync = SqliteMobileSyncRepository(connection, now=self.now)
         self.processing_runs = SqliteProcessingRunRepository(connection)
         self.artifacts = SqliteArtifactRepository(connection)
         self.corrections = SqliteCorrectionRepository(connection)

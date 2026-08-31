@@ -185,6 +185,14 @@ class UploadStore:
                 records.append(record)
             return records
 
+    def completed_path(self, record: UploadRecord) -> Path:
+        """Return a verified inbox path for one immutable completed upload."""
+        with self._lock:
+            refreshed = self._refresh_offset(self._load(record.upload_id))
+            if refreshed != record or refreshed.status != "completed":
+                raise UploadConflictError("上传记录不是当前已完成版本")
+            return self._destination(refreshed.relative_path)
+
     def append_chunk(
         self,
         upload_id: str,

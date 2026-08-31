@@ -8,11 +8,20 @@ from allday_asr.v3.domain.models import (
     AudioAsset,
     AudioReplica,
     CaptureSegment,
+    ChangeEvent,
     CorrectionOperation,
     Device,
     ProcessingRun,
     RecordingSession,
     SessionManifest,
+)
+from allday_asr.v3.domain.device_sync import (
+    ClientOperation,
+    ClientOperationRecord,
+    DeviceCredential,
+    DeviceScope,
+    OperationReceipt,
+    PairingRecord,
 )
 
 
@@ -52,6 +61,40 @@ class ChangeLogRepository(Protocol):
         operation: str,
         payload: dict[str, Any] | None,
     ) -> int: ...
+
+    def list_after(self, sequence: int, limit: int) -> tuple[ChangeEvent, ...]: ...
+
+
+class DeviceTrustRepository(Protocol):
+    def enroll(
+        self, credential: DeviceCredential, pairing: PairingRecord
+    ) -> bool: ...
+
+    def find_by_key_id(self, key_id: str) -> DeviceCredential | None: ...
+
+    def authorize(
+        self, key_id: str, required_scopes: tuple[DeviceScope, ...]
+    ) -> DeviceCredential: ...
+
+    def mark_used(self, key_id: str) -> None: ...
+
+    def revoke(self, key_id: str, revoked_at: str) -> bool: ...
+
+
+class MobileSyncRepository(Protocol):
+    def find_operation(self, operation_id: str) -> ClientOperationRecord | None: ...
+
+    def record_operation(
+        self,
+        device_id: str,
+        operation: ClientOperation,
+        payload_sha256: str,
+        receipt: OperationReceipt,
+    ) -> bool: ...
+
+    def acknowledge_cursor(
+        self, device_id: str, projection_version: int, sequence: int
+    ) -> None: ...
 
 
 class AuditRepository(Protocol):
@@ -105,6 +148,8 @@ class UnitOfWork(Protocol):
     artifacts: ArtifactRepository
     corrections: CorrectionRepository
     changes: ChangeLogRepository
+    device_trust: DeviceTrustRepository
+    mobile_sync: MobileSyncRepository
     audit: AuditRepository
     idempotency: IdempotencyRepository
     tombstones: TombstoneRepository
@@ -126,8 +171,10 @@ __all__ = [
     "ChangeLogRepository",
     "CorrectionRepository",
     "DeviceRepository",
+    "DeviceTrustRepository",
     "IdempotencyRepository",
     "LegacyImportRunRepository",
+    "MobileSyncRepository",
     "ProcessingRunRepository",
     "RecordingCatalogRepository",
     "TombstoneRepository",

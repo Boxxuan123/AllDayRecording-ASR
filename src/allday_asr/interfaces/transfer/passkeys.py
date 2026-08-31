@@ -132,12 +132,19 @@ class RequestBinding:
     def validate(self) -> None:
         upload_path = _is_upload_item_path(self.path)
         valid_target = (
-            (self.method == "GET" and (self.path == "/api/v1/status" or upload_path))
-            or (self.method == "POST" and self.path == "/api/v1/uploads")
+            (
+                self.method == "GET"
+                and self.path in {"/api/v1/status", "/device/v3/status"}
+            )
+            or (
+                self.method == "POST"
+                and self.path in {"/api/v1/uploads", "/device/v3/sync"}
+            )
             or (self.method == "PUT" and upload_path)
+            or (self.method == "GET" and upload_path)
         )
         if not valid_target:
-            raise PasskeyError("Passkey 请求绑定的接口或方法不受支持")
+            raise PasskeyError("认证请求绑定的接口或方法不受支持")
         if len(self.body_sha256) != 64 or any(
             value not in "0123456789abcdef" for value in self.body_sha256
         ):

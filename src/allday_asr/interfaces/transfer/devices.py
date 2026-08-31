@@ -48,6 +48,10 @@ class DeviceConflictError(DeviceAuthError):
     pass
 
 
+class DeviceForbiddenError(DeviceAuthError):
+    pass
+
+
 @dataclass(frozen=True)
 class DeviceCredentialRecord:
     device_id: str
