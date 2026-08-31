@@ -1,0 +1,192 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AllDayRecording Desktop API",
+    "version": "3.0.0",
+    "description": "Loopback-only complete query and administration API for the Desktop frontend."
+  },
+  "servers": [{"url": "http://127.0.0.1:8765"}],
+  "security": [{"DesktopSession": []}],
+  "paths": {
+    "/api/v3/status": {
+      "get": {
+        "operationId": "getDesktopStatus",
+        "responses": {
+          "200": {
+            "description": "V3 runtime status",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RuntimeStatus"}
+              }
+            }
+          },
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/v3/recording-sessions": {
+      "get": {
+        "operationId": "listRecordingSessions",
+        "parameters": [
+          {"$ref": "#/components/parameters/Cursor"},
+          {"$ref": "#/components/parameters/Limit"}
+        ],
+        "responses": {
+          "200": {
+            "description": "Recording session page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["items", "next_cursor"],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "../schemas/recording-session.schema.json"
+                      }
+                    },
+                    "next_cursor": {"type": ["string", "null"]}
+                  }
+                }
+              }
+            }
+          },
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/v3/recording-sessions/{session_id}": {
+      "parameters": [{"$ref": "#/components/parameters/SessionId"}],
+      "get": {
+        "operationId": "getRecordingSession",
+        "responses": {
+          "200": {
+            "description": "Recording session",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "../schemas/recording-session.schema.json"}
+              }
+            }
+          },
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/v3/processing-runs/{run_id}": {
+      "get": {
+        "operationId": "getProcessingRun",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "../schemas/primitives.schema.json#/$defs/StableId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable processing run",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "../schemas/processing-run.schema.json"}
+              }
+            }
+          },
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/v3/media/{media_id}": {
+      "get": {
+        "operationId": "readMediaRange",
+        "parameters": [
+          {
+            "name": "media_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "../schemas/primitives.schema.json#/$defs/StableId"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "required": false,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {"description": "Complete media bytes"},
+          "206": {"description": "Requested media byte range"},
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/api/v3/events/processing": {
+      "get": {
+        "operationId": "streamProcessingEvents",
+        "responses": {
+          "200": {
+            "description": "Server-sent processing event stream",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}}
+          },
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "DesktopSession": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-AllDay-Desktop-Session"
+      }
+    },
+    "parameters": {
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "schema": {"type": "string", "minLength": 1}
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}
+      },
+      "SessionId": {
+        "name": "session_id",
+        "in": "path",
+        "required": true,
+        "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}
+      }
+    },
+    "responses": {
+      "ApiError": {
+        "description": "Stable API error",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/ApiError"}
+          }
+        }
+      }
+    },
+    "schemas": {
+      "RuntimeStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["contract_version", "enabled", "state"],
+        "properties": {
+          "contract_version": {"const": "3.0.0"},
+          "enabled": {"type": "boolean"},
+          "state": {"enum": ["empty_ready"]}
+        }
+      }
+    }
+  }
+}

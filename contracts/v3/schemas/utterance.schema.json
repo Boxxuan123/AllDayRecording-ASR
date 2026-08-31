@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:alldayrecording:contracts:v3:utterance",
+  "title": "Utterance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "utterance_id",
+    "session_id",
+    "start_at",
+    "end_at",
+    "speaker_track_id",
+    "text",
+    "revision",
+    "evidence"
+  ],
+  "properties": {
+    "utterance_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "start_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+    "end_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+    "speaker_track_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "text": {"type": "string"},
+    "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["media_id", "start_ms", "end_ms"],
+      "properties": {
+        "media_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "start_ms": {"type": "integer", "minimum": 0},
+        "end_ms": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

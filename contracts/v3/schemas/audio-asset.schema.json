@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:alldayrecording:contracts:v3:audio-asset",
+  "title": "AudioAsset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "asset_id",
+    "sha256",
+    "size_bytes",
+    "duration_ms",
+    "format",
+    "media_id",
+    "created_at"
+  ],
+  "properties": {
+    "asset_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "sha256": {"$ref": "primitives.schema.json#/$defs/Sha256"},
+    "size_bytes": {"type": "integer", "minimum": 0},
+    "duration_ms": {"type": "integer", "minimum": 0},
+    "format": {"type": "string", "enum": ["wav", "m4a", "flac"]},
+    "media_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "created_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"}
+  }
+}

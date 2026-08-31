@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:alldayrecording:contracts:v3:primitives",
+  "title": "AllDayRecording V3 shared primitives",
+  "$defs": {
+    "StableId": {
+      "type": "string",
+      "oneOf": [
+        {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+        }
+      ]
+    },
+    "UtcDateTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "Timezone": {
+      "type": "string",
+      "pattern": "^[A-Za-z_+-]+(?:/[A-Za-z0-9_+.-]+)+$"
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "Revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "DeviceKind": {
+      "type": "string",
+      "enum": ["watch", "phone", "computer"]
+    },
+    "DeviceStatus": {
+      "type": "string",
+      "enum": ["active", "revoked"]
+    },
+    "DeviceScope": {
+      "type": "string",
+      "enum": [
+        "audio.upload",
+        "data.sync.read",
+        "data.sync.write",
+        "device.status"
+      ]
+    },
+    "RecordingSessionState": {
+      "type": "string",
+      "enum": [
+        "capturing",
+        "closing",
+        "recovering",
+        "quarantined",
+        "sealed",
+        "phone_verified",
+        "computer_ingested",
+        "admission_pending",
+        "admission_blocked",
+        "ready_for_processing"
+      ]
+    },
+    "AggregateStatus": {
+      "type": "string",
+      "enum": [
+        "awaiting_upload",
+        "verifying",
+        "backup_required",
+        "ready",
+        "processing",
+        "needs_review",
+        "available",
+        "failed",
+        "stale"
+      ]
+    },
+    "ProcessingStatus": {
+      "type": "string",
+      "enum": [
+        "created",
+        "queued",
+        "running",
+        "waiting_review",
+        "succeeded",
+        "failed_retryable",
+        "failed_final",
+        "cancel_requested",
+        "cancelled",
+        "stale"
+      ]
+    },
+    "StageRunStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "running",
+        "waiting_review",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "stale"
+      ]
+    },
+    "AudioReplicaState": {
+      "type": "string",
+      "enum": [
+        "discovered",
+        "receiving",
+        "stored",
+        "verified",
+        "available",
+        "failed_retryable",
+        "quarantined",
+        "delete_pending",
+        "deleted"
+      ]
+    },
+    "SyncOperation": {
+      "type": "string",
+      "enum": ["upsert", "tombstone"]
+    },
+    "ClientOperationStatus": {
+      "type": "string",
+      "enum": ["pending", "applied", "conflict", "rejected"]
+    },
+    "ResourceType": {
+      "type": "string",
+      "enum": [
+        "recording_session",
+        "audio_asset",
+        "processing_run",
+        "utterance",
+        "review_item"
+      ]
+    },
+    "ApiError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "details", "request_id"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "message": {"type": "string", "minLength": 1},
+        "details": {"type": "object"},
+        "request_id": {"$ref": "#/$defs/StableId"}
+      }
+    },
+    "PageRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limit"],
+      "properties": {
+        "cursor": {"type": ["string", "null"], "minLength": 1},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 500}
+      }
+    },
+    "PageMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["next_cursor"],
+      "properties": {
+        "next_cursor": {"type": ["string", "null"], "minLength": 1}
+      }
+    }
+  }
+}

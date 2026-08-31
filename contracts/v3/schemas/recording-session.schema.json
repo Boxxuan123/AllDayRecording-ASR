@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:alldayrecording:contracts:v3:recording-session",
+  "title": "RecordingSession",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "captured_start",
+    "captured_end",
+    "timezone",
+    "state",
+    "revision",
+    "status_code",
+    "current_stage",
+    "progress",
+    "updated_at",
+    "blocking_reason"
+  ],
+  "properties": {
+    "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "captured_start": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+    "captured_end": {
+      "oneOf": [
+        {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+        {"type": "null"}
+      ]
+    },
+    "timezone": {"$ref": "primitives.schema.json#/$defs/Timezone"},
+    "state": {"$ref": "primitives.schema.json#/$defs/RecordingSessionState"},
+    "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+    "status_code": {"$ref": "primitives.schema.json#/$defs/AggregateStatus"},
+    "current_stage": {"type": ["string", "null"]},
+    "progress": {"type": "number", "minimum": 0, "maximum": 1},
+    "updated_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+    "blocking_reason": {"type": ["string", "null"]},
+    "legacy_ref": {"type": ["string", "null"]}
+  }
+}

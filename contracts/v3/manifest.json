@@ -1,0 +1,52 @@
+{
+  "contract_version": "3.0.0",
+  "projection_version": 1,
+  "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+  "openapi_version": "3.1.0",
+  "schemas": {
+    "primitives": {
+      "path": "schemas/primitives.schema.json",
+      "sha256": "227399e3d2ef8ca417b6956b5c634e2740a27bb6f734e1bd979cdb56da97dcc3"
+    },
+    "recording_session": {
+      "path": "schemas/recording-session.schema.json",
+      "sha256": "554971fdceae6298cc9a3ff3f1b1ef17285f3ea01f80c3a272df9965a02cc620"
+    },
+    "audio_asset": {
+      "path": "schemas/audio-asset.schema.json",
+      "sha256": "bd9048dbbe46cb516f1db2ed1d6de225c07c214d1ceb06aea0011cfcafbc70f6"
+    },
+    "processing_run": {
+      "path": "schemas/processing-run.schema.json",
+      "sha256": "5c194d193912aa2e92b591d9df88549afa0aa77b71e25c77ce4317e9303839e7"
+    },
+    "utterance": {
+      "path": "schemas/utterance.schema.json",
+      "sha256": "e65776617567db27aa5f5c8101a7613942f9b0ab9cb5b285d807b65fef4aa205"
+    },
+    "device_sync": {
+      "path": "schemas/device-sync.schema.json",
+      "sha256": "c076b434fe50bb1a8fd30ce8ce0962c26007b2a9f53295c399632fa9a34026a6"
+    }
+  },
+  "apis": {
+    "desktop": {
+      "path": "openapi/desktop-api.openapi.json",
+      "sha256": "5e5ffd6e5b194ecc8438634feeed6faf4d1c9e5dd7f1c5175eabb6d7dc6afbdc"
+    },
+    "device": {
+      "path": "openapi/device-api.openapi.json",
+      "sha256": "1312fad68e19a877fbd164820249f04b18880d6f9e9da66eb715c5674d355d8f"
+    }
+  },
+  "fixtures": {
+    "core_resources": {
+      "path": "fixtures/core-resources.json",
+      "sha256": "b6bad8928c4a9e331f99f46c78462e54417c623e94902134bb91cf934fd3b7a7"
+    },
+    "forward_enums": {
+      "path": "fixtures/forward-enums.json",
+      "sha256": "22e8f9407c98bee742f776eceb85b34c8aa6020fc34c3d681377b0cbbe4eb760"
+    }
+  }
+}

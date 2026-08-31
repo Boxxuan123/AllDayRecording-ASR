@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   audioRangeSource,
@@ -17,6 +18,8 @@ import {
   workflowStateLabel,
 } from '../src/utils/format.js'
 import { sessionOptionLabel } from '../src/views/sessions.js'
+import { decodeV3ContractFixture } from '../src/v3/contracts.js'
+import { isV3Enabled } from '../src/v3/feature.js'
 
 const cases = []
 
@@ -148,6 +151,27 @@ test('session reset preserves navigation and loaded session identity', () => {
   assert.equal(state.timeline, null)
   assert.equal(state.timelineSelectedId, null)
   assert.equal(state.page, 1)
+})
+
+test('decodes the canonical V3 fixture and degrades future enums', () => {
+  const fixtureUrl = new URL(
+    '../../contracts/v3/fixtures/core-resources.json',
+    import.meta.url,
+  )
+  const forwardUrl = new URL(
+    '../../contracts/v3/fixtures/forward-enums.json',
+    import.meta.url,
+  )
+  for (const url of [fixtureUrl, forwardUrl]) {
+    const fixture = JSON.parse(readFileSync(url, 'utf8'))
+    assert.deepEqual(decodeV3ContractFixture(fixture), fixture.expected_decode)
+  }
+})
+
+test('keeps the parallel V3 frontend feature disabled by default', () => {
+  assert.equal(isV3Enabled(undefined), false)
+  assert.equal(isV3Enabled('0'), false)
+  assert.equal(isV3Enabled('true'), true)
 })
 
 for (const { name, callback } of cases) {

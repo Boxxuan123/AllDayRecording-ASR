@@ -1,0 +1,102 @@
+{
+  "contract_version": "3.0.0",
+  "recording_session": {
+    "session_id": "01990d5a-7c00-7000-8000-000000000001",
+    "captured_start": "2026-09-01T02:23:15Z",
+    "captured_end": "2026-09-01T02:25:15Z",
+    "timezone": "Asia/Singapore",
+    "state": "ready_for_processing",
+    "revision": 3,
+    "status_code": "ready",
+    "current_stage": "backup_admitted",
+    "progress": 1.0,
+    "updated_at": "2026-09-01T02:26:00Z",
+    "blocking_reason": null
+  },
+  "audio_asset": {
+    "asset_id": "01990d5a-7c00-7000-8000-000000000002",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size_bytes": 3840044,
+    "duration_ms": 120000,
+    "format": "wav",
+    "media_id": "01990d5a-7c00-7000-8000-000000000012",
+    "created_at": "2026-09-01T02:25:16Z"
+  },
+  "processing_run": {
+    "run_id": "01990d5a-7c00-7000-8000-000000000003",
+    "session_id": "01990d5a-7c00-7000-8000-000000000001",
+    "pipeline_version": "v3-empty-adapter/1",
+    "input_revision": 3,
+    "status": "running",
+    "current_stage": "utterance_projection",
+    "progress": 0.75,
+    "created_at": "2026-09-01T02:27:00Z",
+    "updated_at": "2026-09-01T02:28:00Z"
+  },
+  "utterance": {
+    "utterance_id": "01990d5a-7c00-7000-8000-000000000004",
+    "session_id": "01990d5a-7c00-7000-8000-000000000001",
+    "start_at": "2026-09-01T02:23:20Z",
+    "end_at": "2026-09-01T02:23:24Z",
+    "speaker_track_id": "01990d5a-7c00-7000-8000-000000000014",
+    "text": "我下午把修改后的文档发给你",
+    "revision": 1,
+    "evidence": {
+      "media_id": "01990d5a-7c00-7000-8000-000000000012",
+      "start_ms": 5000,
+      "end_ms": 9000
+    }
+  },
+  "device_sync_request": {
+    "projection_version": 1,
+    "cursor": "cursor-41",
+    "client_operations": [
+      {
+        "operation_id": "01990d5a-7c00-7000-8000-000000000006",
+        "kind": "utterance.correct_text",
+        "base_revision": 1,
+        "payload": {
+          "utterance_id": "01990d5a-7c00-7000-8000-000000000004",
+          "text": "我下午把修改后的文档发给你"
+        }
+      }
+    ],
+    "pull_limit": 500
+  },
+  "device_sync_response": {
+    "projection_version": 1,
+    "receipts": [
+      {
+        "operation_id": "01990d5a-7c00-7000-8000-000000000006",
+        "status": "applied",
+        "resource_revision": 2,
+        "error": null
+      }
+    ],
+    "changes": [
+      {
+        "sequence": 42,
+        "resource_type": "utterance",
+        "resource_id": "01990d5a-7c00-7000-8000-000000000004",
+        "revision": 2,
+        "operation": "upsert",
+        "resource": {
+          "utterance_id": "01990d5a-7c00-7000-8000-000000000004"
+        }
+      }
+    ],
+    "next_cursor": "cursor-42",
+    "has_more": false,
+    "server_time": "2026-09-01T02:29:00Z"
+  },
+  "expected_decode": {
+    "contract_version": "3.0.0",
+    "session_state": "ready_for_processing",
+    "aggregate_status": "ready",
+    "processing_status": "running",
+    "receipt_status": "applied",
+    "change_resource_type": "utterance",
+    "change_operation": "upsert",
+    "next_cursor": "cursor-42"
+  }
+}

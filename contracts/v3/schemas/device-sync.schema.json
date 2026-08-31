@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:alldayrecording:contracts:v3:device-sync",
+  "title": "DeviceSync",
+  "$defs": {
+    "ClientOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "kind", "base_revision", "payload"],
+      "properties": {
+        "operation_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "kind": {"type": "string", "minLength": 1},
+        "base_revision": {"type": ["integer", "null"], "minimum": 1},
+        "payload": {"type": "object"}
+      }
+    },
+    "OperationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "status", "resource_revision", "error"],
+      "properties": {
+        "operation_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "status": {"$ref": "primitives.schema.json#/$defs/ClientOperationStatus"},
+        "resource_revision": {"type": ["integer", "null"], "minimum": 1},
+        "error": {
+          "oneOf": [
+            {"$ref": "primitives.schema.json#/$defs/ApiError"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "Change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "resource_type",
+        "resource_id",
+        "revision",
+        "operation",
+        "resource"
+      ],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 1},
+        "resource_type": {"$ref": "primitives.schema.json#/$defs/ResourceType"},
+        "resource_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+        "operation": {"$ref": "primitives.schema.json#/$defs/SyncOperation"},
+        "resource": {"type": ["object", "null"]}
+      }
+    },
+    "SyncRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projection_version", "cursor", "client_operations", "pull_limit"],
+      "properties": {
+        "projection_version": {"const": 1},
+        "cursor": {"type": ["string", "null"], "minLength": 1},
+        "client_operations": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {"$ref": "#/$defs/ClientOperation"}
+        },
+        "pull_limit": {"type": "integer", "minimum": 1, "maximum": 500}
+      }
+    },
+    "SyncResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projection_version",
+        "receipts",
+        "changes",
+        "next_cursor",
+        "has_more",
+        "server_time"
+      ],
+      "properties": {
+        "projection_version": {"const": 1},
+        "receipts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/OperationReceipt"}
+        },
+        "changes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Change"}
+        },
+        "next_cursor": {"type": "string", "minLength": 1},
+        "has_more": {"type": "boolean"},
+        "server_time": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"}
+      }
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/$defs/SyncRequest"},
+    {"$ref": "#/$defs/SyncResponse"}
+  ]
+}

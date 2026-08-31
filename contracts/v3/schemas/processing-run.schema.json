@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:alldayrecording:contracts:v3:processing-run",
+  "title": "ProcessingRun",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "session_id",
+    "pipeline_version",
+    "input_revision",
+    "status",
+    "current_stage",
+    "progress",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "run_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "pipeline_version": {"type": "string", "minLength": 1},
+    "input_revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+    "status": {"$ref": "primitives.schema.json#/$defs/ProcessingStatus"},
+    "current_stage": {"type": ["string", "null"]},
+    "progress": {"type": "number", "minimum": 0, "maximum": 1},
+    "created_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+    "updated_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"}
+  }
+}

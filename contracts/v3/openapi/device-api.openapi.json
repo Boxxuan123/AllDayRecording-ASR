@@ -1,0 +1,145 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AllDayRecording Device API",
+    "version": "3.0.0",
+    "description": "Restricted paired-device API. It does not expose Desktop administration, Lab, database, or arbitrary file operations."
+  },
+  "servers": [
+    {
+      "url": "https://{pairedHost}:8766",
+      "variables": {
+        "pairedHost": {"default": "paired-computer.invalid"}
+      }
+    }
+  ],
+  "security": [
+    {
+      "DeviceId": [],
+      "DeviceChallenge": [],
+      "DeviceSignature": []
+    }
+  ],
+  "paths": {
+    "/device/v3/status": {
+      "get": {
+        "operationId": "getDeviceGatewayStatus",
+        "x-required-scopes": ["device.status"],
+        "responses": {
+          "200": {
+            "description": "Gateway and projection status",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/DeviceStatus"}
+              }
+            }
+          },
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/device/v3/sync": {
+      "post": {
+        "operationId": "synchronizeDeviceProjection",
+        "x-required-scopes": ["data.sync.read", "data.sync.write"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../schemas/device-sync.schema.json#/$defs/SyncRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Operation receipts and incremental changes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../schemas/device-sync.schema.json#/$defs/SyncResponse"
+                }
+              }
+            }
+          },
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/device/v3/uploads": {
+      "post": {
+        "operationId": "createAudioUpload",
+        "x-required-scopes": ["audio.upload"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/CreateUpload"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Durable upload accepted",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/UploadAccepted"}
+              }
+            }
+          },
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "DeviceId": {"type": "apiKey", "in": "header", "name": "X-AllDay-Device-Id"},
+      "DeviceChallenge": {"type": "apiKey", "in": "header", "name": "X-AllDay-Device-Challenge"},
+      "DeviceSignature": {"type": "apiKey", "in": "header", "name": "X-AllDay-Device-Signature"}
+    },
+    "responses": {
+      "ApiError": {
+        "description": "Stable API error",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/ApiError"}
+          }
+        }
+      }
+    },
+    "schemas": {
+      "DeviceStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["contract_version", "projection_version", "server_time"],
+        "properties": {
+          "contract_version": {"const": "3.0.0"},
+          "projection_version": {"const": 1},
+          "server_time": {"$ref": "../schemas/primitives.schema.json#/$defs/UtcDateTime"}
+        }
+      },
+      "CreateUpload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["idempotency_key", "relative_path", "sha256", "size_bytes"],
+        "properties": {
+          "idempotency_key": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"},
+          "relative_path": {"type": "string", "minLength": 1},
+          "sha256": {"$ref": "../schemas/primitives.schema.json#/$defs/Sha256"},
+          "size_bytes": {"type": "integer", "minimum": 1}
+        }
+      },
+      "UploadAccepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["upload_id", "offset"],
+        "properties": {
+          "upload_id": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"},
+          "offset": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}
