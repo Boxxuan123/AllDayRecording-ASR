@@ -964,6 +964,7 @@ def _run_projection(run: ProcessingRun) -> dict[str, Any]:
         "session_id": run.session_id,
         "pipeline_version": run.pipeline_version,
         "input_revision": run.input_revision,
+        "revision": run.revision,
         "status": run.status.value,
         "current_stage": run.current_stage,
         "progress": run.progress,

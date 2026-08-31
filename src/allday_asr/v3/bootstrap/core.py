@@ -9,7 +9,13 @@ from allday_asr.paths import PROJECT_ROOT
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.legacy_v2 import LegacyV2Importer
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
-from allday_asr.v3.application import ImportLegacyV2, MobileSyncService
+from allday_asr.v3.application import (
+    AdmissionService,
+    CorrectionInvalidationService,
+    DurableProcessingService,
+    ImportLegacyV2,
+    MobileSyncService,
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,9 @@ class V3Core:
     artifact_store: ContentAddressedStore
     import_legacy_v2: ImportLegacyV2
     mobile_sync: MobileSyncService
+    admission: AdmissionService
+    processing: DurableProcessingService
+    corrections: CorrectionInvalidationService
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -72,6 +81,13 @@ def compose_v3_core(paths: V3CorePaths | None = None) -> V3Core:
         artifact_store,
     )
     mobile_sync = MobileSyncService(lambda: SqliteUnitOfWork(database))
+    admission = AdmissionService(lambda: SqliteUnitOfWork(database))
+    processing = DurableProcessingService(
+        lambda: SqliteUnitOfWork(database), artifact_store
+    )
+    corrections = CorrectionInvalidationService(
+        lambda: SqliteUnitOfWork(database)
+    )
     return V3Core(
         paths=selected,
         database=database,
@@ -79,6 +95,9 @@ def compose_v3_core(paths: V3CorePaths | None = None) -> V3Core:
         artifact_store=artifact_store,
         import_legacy_v2=ImportLegacyV2(importer),
         mobile_sync=mobile_sync,
+        admission=admission,
+        processing=processing,
+        corrections=corrections,
     )
 
 

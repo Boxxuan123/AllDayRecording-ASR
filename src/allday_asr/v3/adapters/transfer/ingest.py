@@ -120,7 +120,7 @@ class V3UploadIngestAdapter:
         )
         now = datetime.now(timezone.utc)
         state = (
-            RecordingSessionState.READY_FOR_PROCESSING
+            RecordingSessionState.ADMISSION_PENDING
             if manifest["continuityValid"]
             else RecordingSessionState.ADMISSION_BLOCKED
         )
@@ -131,11 +131,15 @@ class V3UploadIngestAdapter:
             timezone=manifest["timezone"],
             state=state,
             revision=1,
-            status_code="ready" if manifest["continuityValid"] else "failed",
-            current_stage=None,
-            progress=1.0,
+            status_code=(
+                "backup_required" if manifest["continuityValid"] else "failed"
+            ),
+            current_stage="backup_admission",
+            progress=0.0,
             blocking_reason=(
-                None if manifest["continuityValid"] else "audio_continuity_gap"
+                "backup_restore_evidence_required"
+                if manifest["continuityValid"]
+                else "audio_continuity_gap"
             ),
             created_at=now,
             updated_at=now,

@@ -32,6 +32,7 @@ from allday_asr.v3.domain.models import (
     RecordingSessionState,
     SessionManifest,
 )
+from allday_asr.v3.domain.processing import ArtifactInvalidation
 
 
 Clock = Callable[[], str]
@@ -163,6 +164,14 @@ class SqliteRecordingCatalogRepository:
         )
         return cursor.rowcount == 1
 
+    def get_session(self, session_id: str) -> RecordingSession:
+        row = self.connection.execute(
+            "SELECT * FROM recording_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"recording session does not exist: {session_id}")
+        return _recording_session(row)
+
     def find_session_by_legacy_ref(
         self, legacy_ref: str
     ) -> RecordingSession | None:
@@ -244,6 +253,14 @@ class SqliteProcessingRunRepository:
         ).fetchone()
         return _processing_run(row) if row is not None else None
 
+    def get(self, run_id: str) -> ProcessingRun:
+        row = self.connection.execute(
+            "SELECT * FROM processing_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"processing run does not exist: {run_id}")
+        return _processing_run(row)
+
 
 class SqliteArtifactRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
@@ -274,6 +291,67 @@ class SqliteArtifactRepository:
                 _json(artifact.metadata),
                 artifact.legacy_ref,
                 _datetime(artifact.created_at),
+            ),
+        )
+        return cursor.rowcount == 1
+
+    def list_active_for_run(self, run_id: str) -> tuple[Artifact, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT a.* FROM artifacts a
+            WHERE a.run_id = ? AND a.status = 'active'
+              AND NOT EXISTS (
+                SELECT 1 FROM artifact_status_events e
+                WHERE e.artifact_id = a.artifact_id
+              )
+            ORDER BY a.created_at, a.artifact_id
+            """,
+            (run_id,),
+        ).fetchall()
+        return tuple(_artifact(row) for row in rows)
+
+    def add_dependency(
+        self, artifact_id: str, input_type: str, input_id: str, input_revision: int
+    ) -> bool:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO artifact_dependencies (
+                artifact_id, input_type, input_id, input_revision
+            ) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING
+            """,
+            (artifact_id, input_type, input_id, input_revision),
+        )
+        return cursor.rowcount == 1
+
+    def dependent_ids(self, input_type: str, input_id: str) -> tuple[str, ...]:
+        return tuple(
+            str(row["artifact_id"])
+            for row in self.connection.execute(
+                """
+                SELECT DISTINCT artifact_id FROM artifact_dependencies
+                WHERE input_type = ? AND input_id = ? ORDER BY artifact_id
+                """,
+                (input_type, input_id),
+            )
+        )
+
+    def invalidate(self, event: ArtifactInvalidation) -> bool:
+        cursor = self.connection.execute(
+            """
+            INSERT INTO artifact_status_events (
+                status_event_id, artifact_id, status, reason, source_type,
+                source_id, source_revision, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING
+            """,
+            (
+                event.status_event_id,
+                event.artifact_id,
+                event.status,
+                event.reason,
+                event.source_type,
+                event.source_id,
+                event.source_revision,
+                _datetime(event.created_at),
             ),
         )
         return cursor.rowcount == 1
@@ -736,6 +814,30 @@ def _processing_run(row: sqlite3.Row) -> ProcessingRun:
         completed_at=_optional_parse_datetime(row["completed_at"]),
         error=row["error"],
         legacy_ref=row["legacy_ref"],
+        revision=int(row["revision"]),
+    )
+
+
+def _artifact(row: sqlite3.Row) -> Artifact:
+    input_refs = json.loads(str(row["input_refs_json"]))
+    metadata = json.loads(str(row["metadata_json"]))
+    if not isinstance(input_refs, list) or not isinstance(metadata, dict):
+        raise ValueError("stored artifact JSON is invalid")
+    return Artifact(
+        artifact_id=str(row["artifact_id"]),
+        run_id=row["run_id"],
+        kind=str(row["kind"]),
+        producer=str(row["producer"]),
+        producer_version=str(row["producer_version"]),
+        config_digest=str(row["config_digest"]),
+        input_refs=tuple(str(value) for value in input_refs),
+        storage_ref=str(row["storage_ref"]),
+        sha256=row["sha256"],
+        size_bytes=(int(row["size_bytes"]) if row["size_bytes"] is not None else None),
+        status=str(row["status"]),
+        metadata=metadata,
+        legacy_ref=row["legacy_ref"],
+        created_at=_parse_datetime(row["created_at"]),
     )
 
 

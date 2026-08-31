@@ -188,9 +188,11 @@ class ProcessingRun:
     completed_at: datetime | None = None
     error: str | None = None
     legacy_ref: str | None = None
+    revision: int = 1
 
     def __post_init__(self) -> None:
         _positive_revision(self.input_revision)
+        _positive_revision(self.revision)
         if not 0.0 <= self.progress <= 1.0:
             raise ValueError("progress must be between 0 and 1")
 

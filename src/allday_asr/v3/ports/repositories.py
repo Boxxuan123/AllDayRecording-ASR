@@ -23,6 +23,16 @@ from allday_asr.v3.domain.device_sync import (
     OperationReceipt,
     PairingRecord,
 )
+from allday_asr.v3.domain.processing import (
+    ArtifactInvalidation,
+    BackupEvidence,
+    ProcessingClaim,
+    ProcessingJob,
+    ProcessingSnapshot,
+    SpeakerTrack,
+    StageRun,
+    Utterance,
+)
 
 
 class RecordingCatalogRepository(Protocol):
@@ -33,6 +43,7 @@ class RecordingCatalogRepository(Protocol):
     def add_manifest(self, manifest: SessionManifest) -> bool: ...
     def find_session_by_legacy_ref(self, legacy_ref: str) -> RecordingSession | None: ...
     def find_asset_by_sha256(self, sha256: str) -> AudioAsset | None: ...
+    def get_session(self, session_id: str) -> RecordingSession: ...
 
 
 class DeviceRepository(Protocol):
@@ -42,10 +53,73 @@ class DeviceRepository(Protocol):
 class ProcessingRunRepository(Protocol):
     def add(self, run: ProcessingRun) -> bool: ...
     def find_by_legacy_ref(self, legacy_ref: str) -> ProcessingRun | None: ...
+    def get(self, run_id: str) -> ProcessingRun: ...
 
 
 class ArtifactRepository(Protocol):
     def add(self, artifact: Artifact) -> bool: ...
+    def list_active_for_run(self, run_id: str) -> tuple[Artifact, ...]: ...
+    def add_dependency(
+        self, artifact_id: str, input_type: str, input_id: str, input_revision: int
+    ) -> bool: ...
+    def dependent_ids(self, input_type: str, input_id: str) -> tuple[str, ...]: ...
+    def invalidate(self, event: ArtifactInvalidation) -> bool: ...
+
+
+class DurableProcessingRepository(Protocol):
+    def find_effective_run(
+        self, session_id: str, input_revision: int, pipeline_version: str
+    ) -> ProcessingRun | None: ...
+    def add_graph(
+        self,
+        run: ProcessingRun,
+        job: ProcessingJob,
+        stages: tuple[StageRun, ...],
+    ) -> None: ...
+    def get_snapshot(self, job_id: str) -> ProcessingSnapshot: ...
+    def get_snapshot_for_run(self, run_id: str) -> ProcessingSnapshot: ...
+    def claim_next(
+        self, worker_id: str, lease_seconds: int, config: dict[str, Any]
+    ) -> ProcessingClaim | None: ...
+    def heartbeat(
+        self,
+        claim: ProcessingClaim,
+        lease_seconds: int,
+        checkpoint: dict[str, Any] | None,
+    ) -> bool: ...
+    def complete_stage(
+        self,
+        claim: ProcessingClaim,
+        checkpoint: dict[str, Any],
+        log_summary: str,
+        output: dict[str, Any],
+    ) -> ProcessingSnapshot: ...
+    def fail_stage(
+        self,
+        claim: ProcessingClaim,
+        error: str,
+        log_summary: str,
+        retryable: bool,
+    ) -> ProcessingSnapshot: ...
+    def cancel_claim(self, claim: ProcessingClaim, reason: str) -> ProcessingSnapshot: ...
+    def request_cancel(self, job_id: str, reason: str) -> ProcessingSnapshot: ...
+    def retry(self, job_id: str) -> ProcessingSnapshot: ...
+    def recover_expired(self) -> tuple[str, ...]: ...
+
+
+class AdmissionRepository(Protocol):
+    def add_evidence(self, evidence: BackupEvidence) -> bool: ...
+    def evaluate(self, session_id: str) -> tuple[bool, str | None]: ...
+    def apply(self, session_id: str, admitted: bool, reason: str | None) -> int: ...
+
+
+class EvidenceProjectionRepository(Protocol):
+    def add_speaker_track(self, track: SpeakerTrack) -> bool: ...
+    def add_utterance(self, utterance: Utterance) -> bool: ...
+    def get_utterance(self, utterance_id: str) -> Utterance: ...
+    def revise_utterance(
+        self, utterance_id: str, expected_revision: int, text: str
+    ) -> Utterance: ...
 
 
 class CorrectionRepository(Protocol):
@@ -145,7 +219,10 @@ class UnitOfWork(Protocol):
     catalog: RecordingCatalogRepository
     devices: DeviceRepository
     processing_runs: ProcessingRunRepository
+    processing: DurableProcessingRepository
+    admission: AdmissionRepository
     artifacts: ArtifactRepository
+    evidence: EvidenceProjectionRepository
     corrections: CorrectionRepository
     changes: ChangeLogRepository
     device_trust: DeviceTrustRepository
@@ -167,11 +244,14 @@ class UnitOfWork(Protocol):
 
 __all__ = [
     "ArtifactRepository",
+    "AdmissionRepository",
     "AuditRepository",
     "ChangeLogRepository",
     "CorrectionRepository",
     "DeviceRepository",
     "DeviceTrustRepository",
+    "DurableProcessingRepository",
+    "EvidenceProjectionRepository",
     "IdempotencyRepository",
     "LegacyImportRunRepository",
     "MobileSyncRepository",

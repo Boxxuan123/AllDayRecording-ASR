@@ -55,6 +55,19 @@ class V3MigrationTests(unittest.TestCase):
         self.assertEqual(journal_mode, "wal")
         self.assertEqual(foreign_key_errors, [])
         self.assertIn("recording_sessions", tables)
+        self.assertTrue(
+            {
+                "processing_jobs",
+                "stage_runs",
+                "stage_attempts",
+                "worker_leases",
+                "backup_evidence",
+                "speaker_tracks",
+                "utterances",
+                "artifact_dependencies",
+                "artifact_status_events",
+            }.issubset(tables)
+        )
         self.assertNotIn("source_objects", tables)
 
     def test_failed_migration_rolls_back_its_schema_and_version(self) -> None:

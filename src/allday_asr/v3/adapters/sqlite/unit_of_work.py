@@ -4,6 +4,11 @@ import sqlite3
 from types import TracebackType
 
 from allday_asr.v3.adapters.sqlite.database import V3Database
+from allday_asr.v3.adapters.sqlite.processing_repositories import (
+    SqliteAdmissionRepository,
+    SqliteDurableProcessingRepository,
+    SqliteEvidenceProjectionRepository,
+)
 from allday_asr.v3.adapters.sqlite.repositories import (
     Clock,
     SqliteArtifactRepository,
@@ -40,7 +45,10 @@ class SqliteUnitOfWork:
         self.device_trust = SqliteDeviceTrustRepository(connection, now=self.now)
         self.mobile_sync = SqliteMobileSyncRepository(connection, now=self.now)
         self.processing_runs = SqliteProcessingRunRepository(connection)
+        self.processing = SqliteDurableProcessingRepository(connection, now=self.now)
+        self.admission = SqliteAdmissionRepository(connection, now=self.now)
         self.artifacts = SqliteArtifactRepository(connection)
+        self.evidence = SqliteEvidenceProjectionRepository(connection, now=self.now)
         self.corrections = SqliteCorrectionRepository(connection)
         self.changes = SqliteChangeLogRepository(connection, now=self.now)
         self.audit = SqliteAuditRepository(connection, now=self.now)
