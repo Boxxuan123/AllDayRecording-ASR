@@ -237,6 +237,10 @@ class DurableProcessingService:
         with self._uow_factory() as uow:
             return uow.processing.get_snapshot(job_id)
 
+    def get_for_run(self, run_id: str) -> ProcessingSnapshot:
+        with self._uow_factory() as uow:
+            return uow.processing.get_snapshot_for_run(run_id)
+
     def claim(self, worker_id: str, config: dict[str, Any]) -> ProcessingClaim | None:
         with self._uow_factory() as uow:
             claim = uow.processing.claim_next(worker_id, self.lease_seconds, config)

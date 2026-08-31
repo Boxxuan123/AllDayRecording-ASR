@@ -13,6 +13,7 @@ from allday_asr.v3.application import (
     AdmissionService,
     CorrectionInvalidationService,
     DurableProcessingService,
+    DesktopQueryService,
     ImportLegacyV2,
     MobileSyncService,
 )
@@ -60,6 +61,7 @@ class V3Core:
     admission: AdmissionService
     processing: DurableProcessingService
     corrections: CorrectionInvalidationService
+    desktop: DesktopQueryService
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -88,6 +90,7 @@ def compose_v3_core(paths: V3CorePaths | None = None) -> V3Core:
     corrections = CorrectionInvalidationService(
         lambda: SqliteUnitOfWork(database)
     )
+    desktop = DesktopQueryService(lambda: SqliteUnitOfWork(database))
     return V3Core(
         paths=selected,
         database=database,
@@ -98,6 +101,7 @@ def compose_v3_core(paths: V3CorePaths | None = None) -> V3Core:
         admission=admission,
         processing=processing,
         corrections=corrections,
+        desktop=desktop,
     )
 
 

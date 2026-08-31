@@ -215,6 +215,27 @@ class LegacyImportRunRepository(Protocol):
     def fail(self, import_id: str, report: dict[str, Any]) -> None: ...
 
 
+class DesktopReadRepository(Protocol):
+    def overview(self) -> dict[str, Any]: ...
+    def list_sessions(
+        self,
+        before_captured_start: str | None,
+        before_session_id: str | None,
+        limit: int,
+    ) -> tuple[dict[str, Any], ...]: ...
+    def session_detail(self, session_id: str) -> dict[str, Any]: ...
+    def list_processing_jobs(
+        self, status: str | None, limit: int
+    ) -> tuple[dict[str, Any], ...]: ...
+    def list_reviews(self, limit: int) -> tuple[dict[str, Any], ...]: ...
+    def list_devices(self) -> tuple[dict[str, Any], ...]: ...
+    def data_health(self) -> dict[str, Any]: ...
+    def media(self, media_id: str) -> dict[str, Any]: ...
+    def processing_events(
+        self, after_sequence: int, limit: int
+    ) -> tuple[dict[str, Any], ...]: ...
+
+
 class UnitOfWork(Protocol):
     catalog: RecordingCatalogRepository
     devices: DeviceRepository
@@ -231,6 +252,7 @@ class UnitOfWork(Protocol):
     idempotency: IdempotencyRepository
     tombstones: TombstoneRepository
     legacy_imports: LegacyImportRunRepository
+    desktop: DesktopReadRepository
 
     def __enter__(self) -> Self: ...
 
@@ -250,6 +272,7 @@ __all__ = [
     "CorrectionRepository",
     "DeviceRepository",
     "DeviceTrustRepository",
+    "DesktopReadRepository",
     "DurableProcessingRepository",
     "EvidenceProjectionRepository",
     "IdempotencyRepository",

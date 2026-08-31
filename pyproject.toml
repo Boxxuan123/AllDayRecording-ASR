@@ -47,6 +47,10 @@ allday_asr = [
     "web_assets/*.svg",
     "web_assets/assets/*.css",
     "web_assets/assets/*.js",
+    "v3/web_assets/*.html",
+    "v3/web_assets/*.svg",
+    "v3/web_assets/assets/*.css",
+    "v3/web_assets/assets/*.js",
 ]
 
 [tool.ruff]

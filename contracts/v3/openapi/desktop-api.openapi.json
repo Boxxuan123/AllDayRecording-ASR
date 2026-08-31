@@ -3,190 +3,88 @@
   "info": {
     "title": "AllDayRecording Desktop API",
     "version": "3.0.0",
-    "description": "Loopback-only complete query and administration API for the Desktop frontend."
+    "description": "Loopback-only query, media, correction, and durable-processing API for the independent Desktop frontend."
   },
-  "servers": [{"url": "http://127.0.0.1:8765"}],
+  "servers": [{"url": "http://127.0.0.1:8766"}],
   "security": [{"DesktopSession": []}],
   "paths": {
-    "/api/v3/status": {
-      "get": {
-        "operationId": "getDesktopStatus",
-        "responses": {
-          "200": {
-            "description": "V3 runtime status",
-            "content": {
-              "application/json": {
-                "schema": {"$ref": "#/components/schemas/RuntimeStatus"}
-              }
-            }
-          },
-          "default": {"$ref": "#/components/responses/ApiError"}
-        }
-      }
-    },
+    "/api/v3/status": {"get": {"operationId": "getDesktopStatus", "responses": {"200": {"description": "V3 runtime status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RuntimeStatus"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
+    "/api/v3/overview": {"get": {"operationId": "getDesktopOverview", "responses": {"200": {"description": "Desktop overview projection", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
     "/api/v3/recording-sessions": {
       "get": {
         "operationId": "listRecordingSessions",
-        "parameters": [
-          {"$ref": "#/components/parameters/Cursor"},
-          {"$ref": "#/components/parameters/Limit"}
-        ],
+        "parameters": [{"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/Limit"}],
         "responses": {
-          "200": {
-            "description": "Recording session page",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": ["items", "next_cursor"],
-                  "properties": {
-                    "items": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "../schemas/recording-session.schema.json"
-                      }
-                    },
-                    "next_cursor": {"type": ["string", "null"]}
-                  }
-                }
-              }
-            }
-          },
+          "200": {"description": "Opaque keyset-paginated recording session page", "content": {"application/json": {"schema": {"type": "object", "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "items": {"$ref": "../schemas/recording-session.schema.json"}}, "next_cursor": {"type": ["string", "null"]}}}}}},
           "default": {"$ref": "#/components/responses/ApiError"}
         }
       }
     },
     "/api/v3/recording-sessions/{session_id}": {
       "parameters": [{"$ref": "#/components/parameters/SessionId"}],
-      "get": {
-        "operationId": "getRecordingSession",
-        "responses": {
-          "200": {
-            "description": "Recording session",
-            "content": {
-              "application/json": {
-                "schema": {"$ref": "../schemas/recording-session.schema.json"}
-              }
-            }
-          },
-          "default": {"$ref": "#/components/responses/ApiError"}
-        }
+      "get": {"operationId": "getRecordingSessionDetail", "responses": {"200": {"description": "Session, segments, runs, utterances, artifacts, and backup evidence", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SessionDetail"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/processing-jobs": {
+      "get": {"operationId": "listProcessingJobs", "parameters": [{"$ref": "#/components/parameters/Status"}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Durable processing job list", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/processing-jobs/{job_id}": {
+      "parameters": [{"$ref": "#/components/parameters/JobId"}],
+      "get": {"operationId": "getProcessingJob", "responses": {"200": {"description": "Durable job, run, stage, and attempt snapshot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProcessingSnapshot"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/processing-jobs/{job_id}/retry": {
+      "parameters": [{"$ref": "#/components/parameters/JobId"}],
+      "post": {"operationId": "retryProcessingJob", "responses": {"202": {"description": "Requeued durable snapshot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProcessingSnapshot"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/processing-jobs/{job_id}/cancel": {
+      "parameters": [{"$ref": "#/components/parameters/JobId"}],
+      "post": {
+        "operationId": "cancelProcessingJob",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["reason"], "properties": {"reason": {"type": "string", "minLength": 1}}}}}},
+        "responses": {"202": {"description": "Cancellation snapshot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProcessingSnapshot"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}
       }
     },
     "/api/v3/processing-runs/{run_id}": {
-      "get": {
-        "operationId": "getProcessingRun",
-        "parameters": [
-          {
-            "name": "run_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "../schemas/primitives.schema.json#/$defs/StableId"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Durable processing run",
-            "content": {
-              "application/json": {
-                "schema": {"$ref": "../schemas/processing-run.schema.json"}
-              }
-            }
-          },
-          "default": {"$ref": "#/components/responses/ApiError"}
-        }
+      "get": {"operationId": "getProcessingRun", "parameters": [{"$ref": "#/components/parameters/RunId"}], "responses": {"200": {"description": "Durable processing run projection", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reviews": {"get": {"operationId": "listReviewItems", "parameters": [{"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Waiting-review stage list", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
+    "/api/v3/utterances/{utterance_id}/corrections": {
+      "parameters": [{"$ref": "#/components/parameters/UtteranceId"}],
+      "post": {
+        "operationId": "correctUtterance",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["expected_revision", "text"], "properties": {"expected_revision": {"$ref": "../schemas/primitives.schema.json#/$defs/Revision"}, "text": {"type": "string"}}}}}},
+        "responses": {"200": {"description": "Corrected utterance identity and revision", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}
       }
     },
+    "/api/v3/devices": {"get": {"operationId": "listDesktopDevices", "responses": {"200": {"description": "Paired and known devices", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
+    "/api/v3/data-health": {"get": {"operationId": "getDataHealth", "responses": {"200": {"description": "Local storage, replica, backup, and artifact counts", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
+    "/api/v3/settings": {"get": {"operationId": "getDesktopSettings", "responses": {"200": {"description": "Read-only local deployment and privacy policy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
+    "/api/v3/lab": {"get": {"operationId": "getLabBoundary", "responses": {"200": {"description": "Explicit disabled-by-default Lab boundary", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
     "/api/v3/media/{media_id}": {
-      "get": {
-        "operationId": "readMediaRange",
-        "parameters": [
-          {
-            "name": "media_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "../schemas/primitives.schema.json#/$defs/StableId"
-            }
-          },
-          {
-            "name": "Range",
-            "in": "header",
-            "required": false,
-            "schema": {"type": "string"}
-          }
-        ],
-        "responses": {
-          "200": {"description": "Complete media bytes"},
-          "206": {"description": "Requested media byte range"},
-          "default": {"$ref": "#/components/responses/ApiError"}
-        }
-      }
+      "get": {"operationId": "readMediaRange", "parameters": [{"$ref": "#/components/parameters/MediaId"}, {"name": "Range", "in": "header", "required": false, "schema": {"type": "string"}}], "responses": {"200": {"description": "Complete media bytes"}, "206": {"description": "Requested media byte range"}, "default": {"$ref": "#/components/responses/ApiError"}}}
     },
     "/api/v3/events/processing": {
-      "get": {
-        "operationId": "streamProcessingEvents",
-        "responses": {
-          "200": {
-            "description": "Server-sent processing event stream",
-            "content": {"text/event-stream": {"schema": {"type": "string"}}}
-          },
-          "default": {"$ref": "#/components/responses/ApiError"}
-        }
-      }
+      "get": {"operationId": "streamProcessingEvents", "parameters": [{"name": "after", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 0}}], "responses": {"200": {"description": "Resumable server-sent processing event stream", "content": {"text/event-stream": {"schema": {"type": "string"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
     }
   },
   "components": {
-    "securitySchemes": {
-      "DesktopSession": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "X-AllDay-Desktop-Session"
-      }
-    },
+    "securitySchemes": {"DesktopSession": {"type": "apiKey", "in": "header", "name": "X-AllDay-Desktop-Session"}},
     "parameters": {
-      "Cursor": {
-        "name": "cursor",
-        "in": "query",
-        "required": false,
-        "schema": {"type": "string", "minLength": 1}
-      },
-      "Limit": {
-        "name": "limit",
-        "in": "query",
-        "required": false,
-        "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}
-      },
-      "SessionId": {
-        "name": "session_id",
-        "in": "path",
-        "required": true,
-        "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}
-      }
+      "Cursor": {"name": "cursor", "in": "query", "required": false, "schema": {"type": "string", "minLength": 1}},
+      "Limit": {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
+      "Status": {"name": "status", "in": "query", "required": false, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/ProcessingStatus"}},
+      "SessionId": {"name": "session_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
+      "JobId": {"name": "job_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
+      "RunId": {"name": "run_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
+      "UtteranceId": {"name": "utterance_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
+      "MediaId": {"name": "media_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}
     },
-    "responses": {
-      "ApiError": {
-        "description": "Stable API error",
-        "content": {
-          "application/json": {
-            "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/ApiError"}
-          }
-        }
-      }
-    },
+    "responses": {"ApiError": {"description": "Stable API error", "content": {"application/json": {"schema": {"$ref": "../schemas/primitives.schema.json#/$defs/ApiError"}}}}},
     "schemas": {
-      "RuntimeStatus": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["contract_version", "enabled", "state"],
-        "properties": {
-          "contract_version": {"const": "3.0.0"},
-          "enabled": {"type": "boolean"},
-          "state": {"enum": ["empty_ready"]}
-        }
-      }
+      "RuntimeStatus": {"type": "object", "additionalProperties": false, "required": ["contract_version", "enabled", "state"], "properties": {"contract_version": {"const": "3.0.0"}, "enabled": {"type": "boolean"}, "state": {"enum": ["empty_ready", "ready"]}}},
+      "ObjectProjection": {"type": "object"},
+      "ItemList": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"type": "object"}}}},
+      "SessionDetail": {"type": "object", "additionalProperties": false, "required": ["session", "segments", "runs", "utterances", "artifacts", "backups"], "properties": {"session": {"$ref": "../schemas/recording-session.schema.json"}, "segments": {"type": "array", "items": {"type": "object"}}, "runs": {"type": "array", "items": {"type": "object"}}, "utterances": {"type": "array", "items": {"type": "object"}}, "artifacts": {"type": "array", "items": {"type": "object"}}, "backups": {"type": "array", "items": {"type": "object"}}}},
+      "ProcessingSnapshot": {"type": "object", "additionalProperties": false, "required": ["job", "run", "stages", "attempts"], "properties": {"job": {"type": "object"}, "run": {"type": "object"}, "stages": {"type": "array", "items": {"type": "object"}}, "attempts": {"type": "array", "items": {"type": "object"}}}}
     }
   }
 }

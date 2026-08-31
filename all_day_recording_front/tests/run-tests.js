@@ -20,6 +20,7 @@ import {
 import { sessionOptionLabel } from '../src/views/sessions.js'
 import { decodeV3ContractFixture } from '../src/v3/contracts.js'
 import { isV3Enabled } from '../src/v3/feature.js'
+import { matchV3Route } from '../v3/core/routeMatch.js'
 
 const cases = []
 
@@ -172,6 +173,44 @@ test('keeps the parallel V3 frontend feature disabled by default', () => {
   assert.equal(isV3Enabled(undefined), false)
   assert.equal(isV3Enabled('0'), false)
   assert.equal(isV3Enabled('true'), true)
+})
+
+test('restores a nested V3 recording route and its selected tab', () => {
+  assert.deepEqual(
+    matchV3Route('/recordings/session%20one', '?tab=evidence'),
+    {
+      name: 'session',
+      path: '/recordings/session%20one',
+      sessionId: 'session one',
+      tab: 'evidence',
+    },
+  )
+  assert.deepEqual(matchV3Route('/unknown'), {
+    name: 'overview',
+    path: '/',
+    sessionId: null,
+    tab: null,
+  })
+})
+
+test('keeps V3 independent from the legacy DOM workspace controller', () => {
+  const app = readFileSync(new URL('../v3/App.vue', import.meta.url), 'utf8')
+  const shell = readFileSync(
+    new URL('../v3/components/AppShell.vue', import.meta.url),
+    'utf8',
+  )
+  const media = readFileSync(new URL('../v3/core/media.ts', import.meta.url), 'utf8')
+  const pageState = readFileSync(
+    new URL('../v3/components/PageState.vue', import.meta.url),
+    'utf8',
+  )
+  assert.equal(app.includes('workspace/controller'), false)
+  assert.equal(app.includes('getElementById'), false)
+  assert.equal(shell.includes("path: '/lab'"), false)
+  assert.equal((media.match(/new Audio\(/g) ?? []).length, 1)
+  assert.equal(media.includes('audio.src ='), true)
+  assert.equal(media.includes("audio.removeAttribute('src')"), true)
+  assert.equal(pageState.includes('设备处于离线状态'), true)
 })
 
 for (const { name, callback } of cases) {

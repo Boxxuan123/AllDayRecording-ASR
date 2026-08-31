@@ -1,0 +1,8 @@
+<script setup lang="ts">
+import PageState from '../components/PageState.vue'
+import { desktopApi } from '../core/api'
+import { formatBytes } from '../core/format'
+import { useQuery } from '../core/query'
+const query = useQuery('data-health', desktopApi.dataHealth)
+</script>
+<template><section class="page"><header class="page-header"><div><p class="overline">INTEGRITY & BACKUP</p><h1>数据与备份</h1></div><span class="header-note">上传成功不等于允许删除原音</span></header><PageState :loading="query.loading.value" :error="query.error.value" @retry="query.refresh(true)"><div v-if="query.data.value" class="data-health-grid"><article class="panel health-primary"><p class="section-kicker">ORIGINAL AUDIO</p><strong>{{ formatBytes(query.data.value.audio_bytes) }}</strong><span>{{ query.data.value.audio_assets }} 个不可变音频对象</span></article><article class="panel health-card"><small>可用副本</small><strong>{{ query.data.value.available_replicas }}</strong><span>{{ query.data.value.unhealthy_replicas ? `${query.data.value.unhealthy_replicas} 个需要检查` : '没有隔离或缺失副本' }}</span></article><article class="panel health-card"><small>恢复演练证据</small><strong>{{ query.data.value.verified_backups }}</strong><span>独立设备 / 网络备份</span></article><article class="panel health-card"><small>派生制品</small><strong>{{ query.data.value.artifacts }}</strong><span>{{ formatBytes(query.data.value.artifact_bytes) }} · {{ query.data.value.stale_artifacts }} 个 stale</span></article></div><section class="policy-note panel"><p class="section-kicker">RETENTION BOUNDARY</p><h2>原音、备份与处理结果相互独立</h2><p>处理失败或重新计算不会改写已验证原音和备份证据。删除策略必须由用户单独确认，并留下审计记录。</p></section></PageState></section></template>

@@ -34,6 +34,16 @@
     "progress": {"type": "number", "minimum": 0, "maximum": 1},
     "updated_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
     "blocking_reason": {"type": ["string", "null"]},
-    "legacy_ref": {"type": ["string", "null"]}
+    "legacy_ref": {"type": ["string", "null"]},
+    "segment_count": {"type": "integer", "minimum": 0},
+    "duration_ms": {"type": "integer", "minimum": 0},
+    "media_id": {"type": ["string", "null"]},
+    "latest_run_id": {"type": ["string", "null"]},
+    "processing_status": {
+      "oneOf": [
+        {"$ref": "primitives.schema.json#/$defs/ProcessingStatus"},
+        {"type": "null"}
+      ]
+    }
   }
 }

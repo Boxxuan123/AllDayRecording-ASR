@@ -10,7 +10,7 @@
     },
     "recording_session": {
       "path": "schemas/recording-session.schema.json",
-      "sha256": "554971fdceae6298cc9a3ff3f1b1ef17285f3ea01f80c3a272df9965a02cc620"
+      "sha256": "a44a756951bd28fd5108055d36bf53565868ff92676770d8d18653aedd80e3d0"
     },
     "audio_asset": {
       "path": "schemas/audio-asset.schema.json",
@@ -32,7 +32,7 @@
   "apis": {
     "desktop": {
       "path": "openapi/desktop-api.openapi.json",
-      "sha256": "5e5ffd6e5b194ecc8438634feeed6faf4d1c9e5dd7f1c5175eabb6d7dc6afbdc"
+      "sha256": "b8af494f65dde46ebc8a92fec9b83765f56e765919f41953f488f6e9867e8592"
     },
     "device": {
       "path": "openapi/device-api.openapi.json",

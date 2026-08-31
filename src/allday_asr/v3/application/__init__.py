@@ -17,6 +17,11 @@ from allday_asr.v3.application.durable_processing import (
     RecordBackupEvidenceCommand,
     SubmitProcessingCommand,
 )
+from allday_asr.v3.application.desktop import (
+    DesktopQueryService,
+    SessionPage,
+    processing_snapshot_dict,
+)
 
 __all__ = [
     "ClientOperationHandler",
@@ -25,6 +30,7 @@ __all__ = [
     "CorrectionInvalidationService",
     "DurableProcessingService",
     "DurableProcessingWorker",
+    "DesktopQueryService",
     "ImportLegacyV2",
     "LegacyImportCommand",
     "LegacyImportResult",
@@ -32,4 +38,6 @@ __all__ = [
     "RecordBackupEvidenceCommand",
     "RejectingClientOperationHandler",
     "SubmitProcessingCommand",
+    "SessionPage",
+    "processing_snapshot_dict",
 ]

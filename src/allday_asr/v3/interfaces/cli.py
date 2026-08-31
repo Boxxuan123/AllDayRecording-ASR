@@ -36,6 +36,7 @@ from allday_asr.v3.application import (
 )
 from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core, start_empty_runtime
 from allday_asr.v3.config import V3ConfigurationError, V3Settings
+from allday_asr.v3.interfaces.desktop_server import serve_v3_desktop
 
 
 app = typer.Typer(
@@ -98,6 +99,27 @@ def migrate_command(
             ensure_ascii=False,
             sort_keys=True,
         )
+    )
+
+
+@app.command(name="desktop")
+def desktop_command(
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8766,
+    open_browser: Annotated[bool, typer.Option("--open/--no-open")] = True,
+    state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
+) -> None:
+    """Start the loopback-only V3 Desktop API and independent frontend."""
+    _enabled_settings()
+    paths = (
+        V3CorePaths.from_state_dir(state_dir)
+        if state_dir is not None
+        else V3CorePaths.from_environment()
+    )
+    serve_v3_desktop(
+        paths=paths,
+        host="127.0.0.1",
+        port=port,
+        open_browser=open_browser,
     )
 
 

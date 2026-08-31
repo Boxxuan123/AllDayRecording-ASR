@@ -9,6 +9,9 @@ from allday_asr.v3.adapters.sqlite.processing_repositories import (
     SqliteDurableProcessingRepository,
     SqliteEvidenceProjectionRepository,
 )
+from allday_asr.v3.adapters.sqlite.desktop_repository import (
+    SqliteDesktopReadRepository,
+)
 from allday_asr.v3.adapters.sqlite.repositories import (
     Clock,
     SqliteArtifactRepository,
@@ -57,6 +60,7 @@ class SqliteUnitOfWork:
         self.legacy_imports = SqliteLegacyImportRunRepository(
             connection, now=self.now
         )
+        self.desktop = SqliteDesktopReadRepository(connection)
         return self
 
     def __exit__(
