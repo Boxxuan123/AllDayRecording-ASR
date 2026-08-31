@@ -69,13 +69,13 @@ snapshot adapter 升级为 v4。它除了逐 token transcript/alignment predicti
 
 ```powershell
 # 8 GB 5070，模型和 BF16 精度不变
-allday-asr asr-v2 run 1 --profile compatible-8gb
+allday-asr legacy asr run 1 --profile compatible-8gb
 
 # 只重跑覆盖当前五块开发真值的前五个逻辑窗口
-allday-asr asr-v2 run 1 --profile compatible-8gb --max-windows 5
+allday-asr legacy asr run 1 --profile compatible-8gb --max-windows 5
 
 # 生成同时含 speech 与 committed token 的冻结快照
-allday-asr asr-v2 snapshot <run-id> --truth-set 2 --name qwen-v2c3-dev
+allday-asr legacy asr snapshot <run-id> --truth-set 2 --name qwen-v2c3-dev
 allday-asr benchmark run 2 <prediction-set-id>
 ```
 

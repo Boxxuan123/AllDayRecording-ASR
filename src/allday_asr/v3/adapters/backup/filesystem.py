@@ -52,7 +52,9 @@ class FilesystemSessionBackupAdapter:
         entries = self._entries(session_id)
         root.mkdir(parents=True, exist_ok=True)
         final = root / session_id
-        temporary = root / f".{session_id}.{uuid4().hex}.staging"
+        # Keep the staging name short enough for Windows' legacy MAX_PATH handling.
+        # The final directory still carries the stable session identifier.
+        temporary = root / f".stage-{uuid4().hex}"
         temporary.mkdir()
         try:
             copied: list[dict[str, object]] = []

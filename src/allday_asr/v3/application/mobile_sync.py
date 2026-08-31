@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Protocol
 
+from allday_asr.v3.contracts import validate_utterance_dto
 from allday_asr.v3.domain.device_sync import (
     PROJECTION_VERSION,
     ClientOperation,
@@ -77,7 +78,12 @@ class MobileSyncService:
                     resource_id=event.resource_id,
                     revision=event.revision,
                     operation=event.operation.value,
-                    resource=event.payload,
+                    resource=(
+                        validate_utterance_dto(event.payload)
+                        if event.resource_type == "utterance"
+                        and event.payload is not None
+                        else event.payload
+                    ),
                 )
                 for event in selected
             )

@@ -54,7 +54,7 @@
         },
         "responses": {
           "200": {
-            "description": "Operation receipts and incremental changes",
+            "description": "Durable terminal operation receipts and schema-validated incremental changes",
             "content": {
               "application/json": {
                 "schema": {

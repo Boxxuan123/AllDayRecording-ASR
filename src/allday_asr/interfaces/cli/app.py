@@ -17,21 +17,27 @@ from allday_asr.v3.interfaces.cli import app as v3_app
 
 app = typer.Typer(
     name="allday-asr",
-    help="本地全天录音转写与时间线工具。",
+    help="AllDayRecording V3 本地工作台、设备同步与处理工具。",
     no_args_is_help=True,
 )
 
-app.add_typer(library_app, name="voice-library")
-app.add_typer(evaluation_app, name="evaluation")
-app.add_typer(benchmark_app, name="benchmark")
-app.add_typer(asr_app, name="asr-v2")
-app.add_typer(diarization_app, name="diarization-v2")
-app.add_typer(semantic_app, name="semantic-v2")
-app.add_typer(session_app, name="session")
-app.add_typer(transfer_app, name="transfer")
-app.add_typer(workflow_app, name="workflow-v2")
-app.add_typer(v3_app, name="v3")
-app.add_typer(utility_app)
-app.add_typer(legacy_app)
+legacy_root = typer.Typer(
+    help="V2 只读页面、维护命令与可执行回退入口。",
+    no_args_is_help=True,
+)
+legacy_root.add_typer(library_app, name="voice-library")
+legacy_root.add_typer(evaluation_app, name="evaluation")
+legacy_root.add_typer(benchmark_app, name="benchmark")
+legacy_root.add_typer(asr_app, name="asr")
+legacy_root.add_typer(diarization_app, name="diarization")
+legacy_root.add_typer(semantic_app, name="semantic")
+legacy_root.add_typer(session_app, name="session")
+legacy_root.add_typer(workflow_app, name="workflow")
+legacy_root.add_typer(utility_app)
+legacy_root.add_typer(legacy_app)
+
+app.add_typer(v3_app)
+app.add_typer(transfer_app, name="device")
+app.add_typer(legacy_root, name="legacy")
 
 __all__ = ["app"]

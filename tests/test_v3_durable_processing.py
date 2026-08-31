@@ -49,6 +49,9 @@ from allday_asr.v3.ports.processing import (
 from allday_asr.storage.database import Database
 
 
+SESSION_ID = stable_ulid("durable-processing-test", "session")
+
+
 TEST_ROOT = Path(__file__).parent
 
 
@@ -241,7 +244,7 @@ class V3DurableProcessingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different config"):
             self.service.submit(
                 SubmitProcessingCommand(
-                    session_id="session-1",
+                    session_id=SESSION_ID,
                     pipeline_version="v3-v2-adapter.1",
                     input_revision=1,
                     config={"profile": "other"},
@@ -274,6 +277,24 @@ class V3DurableProcessingTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(utterance)
         self.assertEqual(artifact_count, 2)
+        with self.uow_factory() as uow:
+            desktop_utterance = uow.desktop.session_detail(SESSION_ID)["utterances"][0]
+        self.assertEqual(
+            set(desktop_utterance),
+            {
+                "utterance_id",
+                "session_id",
+                "speaker_track_id",
+                "speaker_label",
+                "start_ms",
+                "end_ms",
+                "text",
+                "revision",
+                "status",
+                "evidence",
+            },
+        )
+        self.assertEqual(desktop_utterance["speaker_label"], "speaker-1")
         corrected = CorrectionInvalidationService(
             self.uow_factory, now=self.clock.now
         ).correct_utterance(
@@ -284,7 +305,9 @@ class V3DurableProcessingTests(unittest.TestCase):
                 actor="user",
             )
         )
-        self.assertEqual(corrected.revision, 2)
+        self.assertEqual(corrected["revision"], 2)
+        self.assertEqual(set(corrected), set(desktop_utterance))
+        self.assertEqual(corrected["speaker_label"], "speaker-1")
         with self.database.read() as connection:
             stale = connection.execute(
                 "SELECT artifact_id FROM artifact_status_events"
@@ -400,7 +423,7 @@ class V3DurableProcessingTests(unittest.TestCase):
 
         second = self.service.submit(
             SubmitProcessingCommand(
-                session_id="session-1",
+                session_id=SESSION_ID,
                 pipeline_version="v3-v2-adapter.optional-fixture",
                 input_revision=1,
                 config={"profile": "optional-failure"},
@@ -459,7 +482,7 @@ class V3DurableProcessingTests(unittest.TestCase):
         backup = FilesystemSessionBackupAdapter(
             self.database, self.audio_store, self.artifact_store
         ).backup(
-            "session-1",
+            SESSION_ID,
             self.root / "independent-backup",
             storage_kind="independent_device",
         )
@@ -469,7 +492,7 @@ class V3DurableProcessingTests(unittest.TestCase):
             FilesystemSessionBackupAdapter(
                 self.database, self.audio_store, self.artifact_store
             ).backup(
-                "session-1",
+                SESSION_ID,
                 self.audio_store.root,
                 storage_kind="independent_device",
             )
@@ -481,15 +504,15 @@ class V3DurableProcessingTests(unittest.TestCase):
             self.artifact_store,
             self.root / "compat-sessions",
         )
-        first = materializer.resolve("session-1", v2_database)
-        second = materializer.resolve("session-1", v2_database)
+        first = materializer.resolve(SESSION_ID, v2_database)
+        second = materializer.resolve(SESSION_ID, v2_database)
         self.assertEqual(first, second)
         session = v2_database.get_recording_session(first)
         self.assertEqual(int(session["duration_ms"]), 1000)
 
     def _command(self) -> SubmitProcessingCommand:
         return SubmitProcessingCommand(
-            session_id="session-1",
+            session_id=SESSION_ID,
             pipeline_version="v3-v2-adapter.1",
             input_revision=1,
             config={"profile": "fixture"},
@@ -536,7 +559,7 @@ class V3DurableProcessingTests(unittest.TestCase):
             )
             uow.catalog.add_session(
                 RecordingSession(
-                    session_id="session-1",
+                    session_id=SESSION_ID,
                     captured_start=now,
                     captured_end=now + timedelta(seconds=1),
                     timezone="UTC",
@@ -575,7 +598,7 @@ class V3DurableProcessingTests(unittest.TestCase):
             uow.catalog.add_segment(
                 CaptureSegment(
                     segment_id="segment-1",
-                    session_id="session-1",
+                    session_id=SESSION_ID,
                     asset_id="asset-1",
                     replica_id="replica-1",
                     sequence=0,
@@ -590,7 +613,7 @@ class V3DurableProcessingTests(unittest.TestCase):
             uow.catalog.add_manifest(
                 SessionManifest(
                     manifest_id="manifest-1",
-                    session_id="session-1",
+                    session_id=SESSION_ID,
                     schema_version="1",
                     sha256=manifest.sha256,
                     storage_ref=manifest.storage_key,
@@ -600,7 +623,7 @@ class V3DurableProcessingTests(unittest.TestCase):
             )
         admitted = self.admission.record_verified_backup(
             RecordBackupEvidenceCommand(
-                session_id="session-1",
+                session_id=SESSION_ID,
                 provider="fixture-backup",
                 storage_kind="independent_device",
                 digest="c" * 64,

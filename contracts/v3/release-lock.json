@@ -1,0 +1,13 @@
+{
+  "release_version": "3.0.0",
+  "contract_version": "3.0.0",
+  "projection_version": 1,
+  "core_schema_version": 3,
+  "phone_projection_schema_version": 4,
+  "default_entries": {
+    "desktop": "v3",
+    "phone": "v3",
+    "legacy": "read_only"
+  },
+  "frozen": true
+}

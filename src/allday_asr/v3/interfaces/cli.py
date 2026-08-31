@@ -23,6 +23,10 @@ from allday_asr.services.quality_workflow import run_quality_workflow
 from allday_asr.services.session_backup import create_session_backup
 from allday_asr.storage.database import Database
 from allday_asr.v3.adapters.backup import FilesystemSessionBackupAdapter
+from allday_asr.v3.adapters.release_snapshot import (
+    create_release_backups,
+    verify_release_backup,
+)
 from allday_asr.v3.adapters.models_v2 import (
     ExistingV2QualityWorkflowExecutor,
     QualityWorkflowV2Adapter,
@@ -37,6 +41,7 @@ from allday_asr.v3.application import (
 from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core, start_empty_runtime
 from allday_asr.v3.config import V3ConfigurationError, V3Settings
 from allday_asr.v3.interfaces.desktop_server import serve_v3_desktop
+from allday_asr.v3 import CONTRACT_VERSION, PROJECTION_VERSION
 
 
 app = typer.Typer(
@@ -123,6 +128,28 @@ def desktop_command(
     )
 
 
+@app.command(name="web")
+def web_command(
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8765,
+    open_browser: Annotated[bool, typer.Option("--open/--no-open")] = True,
+    state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
+) -> None:
+    """Start the default V3 Desktop entry on the traditional web port."""
+
+    _enabled_settings()
+    paths = (
+        V3CorePaths.from_state_dir(state_dir)
+        if state_dir is not None
+        else V3CorePaths.from_environment()
+    )
+    serve_v3_desktop(
+        paths=paths,
+        host="127.0.0.1",
+        port=port,
+        open_browser=open_browser,
+    )
+
+
 @app.command(name="legacy-import")
 def legacy_import_command(
     source_database: Annotated[
@@ -154,6 +181,114 @@ def legacy_import_command(
         )
     )
     typer.echo(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+
+
+@app.command(name="release-prepare")
+def release_prepare_command(
+    source_database: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False, resolve_path=True)
+    ],
+    backup_a: Annotated[
+        Path, typer.Option("--backup-a", file_okay=False, resolve_path=True)
+    ],
+    backup_b: Annotated[
+        Path, typer.Option("--backup-b", file_okay=False, resolve_path=True)
+    ],
+    state_dir: Annotated[
+        Path, typer.Option("--state-dir", file_okay=False, resolve_path=True)
+    ],
+) -> None:
+    """Create two immutable V2 snapshots, import one, and write a release receipt."""
+
+    settings = _enabled_settings()
+    backups = create_release_backups(source_database, (backup_a, backup_b))
+    if backups[0].dataset_digest != backups[1].dataset_digest:
+        raise typer.BadParameter("V2 backup dataset digests do not match")
+    paths = V3CorePaths.from_state_dir(state_dir)
+    core = compose_v3_core(paths)
+    schema_version = core.initialize()
+    result = core.import_legacy_v2.execute(
+        LegacyImportCommand(source_database=backups[0].database_path)
+    )
+    unmapped_count = sum(int(value) for value in result.unmapped.values())
+    import_clean = not result.issues and unmapped_count == 0
+    production_configured = settings.deployment_mode.value == "production"
+    receipt = {
+        "release": "3.0.0",
+        "contract_version": CONTRACT_VERSION,
+        "projection_version": PROJECTION_VERSION,
+        "core_schema_version": schema_version,
+        "deployment_mode": settings.deployment_mode.value,
+        "production_configured": production_configured,
+        "dataset_digest": backups[0].dataset_digest,
+        "backups": [backup.as_dict() for backup in backups],
+        "legacy_import": result.as_dict(),
+        "import_clean": import_clean,
+        "migration_ready": import_clean,
+        "automated_cutover_ready": import_clean,
+        "production_release_ready": import_clean and production_configured,
+    }
+    receipt_path = paths.state_dir / "release" / "v3.0-release.json"
+    _write_json_atomic(receipt_path, receipt)
+    output = {**receipt, "receipt": str(receipt_path)}
+    typer.echo(json.dumps(output, ensure_ascii=False, sort_keys=True))
+    if not import_clean:
+        raise typer.Exit(code=2)
+
+
+@app.command(name="release-verify")
+def release_verify_command(
+    receipt: Annotated[
+        Path, typer.Option("--receipt", exists=True, dir_okay=False, resolve_path=True)
+    ],
+    state_dir: Annotated[
+        Path, typer.Option("--state-dir", file_okay=False, resolve_path=True)
+    ],
+) -> None:
+    """Recompute backup evidence and verify the frozen V3 release receipt."""
+
+    _enabled_settings()
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    if payload.get("release") != "3.0.0":
+        raise typer.BadParameter("release receipt version mismatch")
+    if payload.get("contract_version") != CONTRACT_VERSION:
+        raise typer.BadParameter("release receipt contract version mismatch")
+    if payload.get("projection_version") != PROJECTION_VERSION:
+        raise typer.BadParameter("release receipt projection version mismatch")
+    if payload.get("import_clean") is not True:
+        raise typer.BadParameter("release receipt contains an incomplete Legacy import")
+    raw_backups = payload.get("backups")
+    if not isinstance(raw_backups, list) or len(raw_backups) != 2:
+        raise typer.BadParameter("release receipt must contain two backups")
+    backups = [
+        verify_release_backup(Path(str(item["root"]))) for item in raw_backups
+    ]
+    if backups[0].dataset_digest != backups[1].dataset_digest:
+        raise typer.BadParameter("release backup dataset digests do not match")
+    if backups[0].dataset_digest != payload.get("dataset_digest"):
+        raise typer.BadParameter("release receipt dataset digest mismatch")
+    core = compose_v3_core(V3CorePaths.from_state_dir(state_dir))
+    schema_version = core.initialize()
+    if schema_version != int(payload["core_schema_version"]):
+        raise typer.BadParameter("release receipt core schema version mismatch")
+    typer.echo(
+        json.dumps(
+            {
+                "verified": True,
+                "release": "3.0.0",
+                "dataset_digest": backups[0].dataset_digest,
+                "audio_count": backups[0].audio_count,
+                "audio_bytes": backups[0].audio_bytes,
+                "core_schema_version": schema_version,
+                "migration_ready": True,
+                "production_release_ready": bool(
+                    payload.get("production_release_ready", False)
+                ),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
 
 
 @app.command(name="backup-admit")
@@ -427,6 +562,22 @@ def _snapshot_dict(snapshot) -> dict[str, Any]:
             for stage in snapshot.stages
         ],
     }
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    )
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as target:
+            target.write(encoded)
+            target.flush()
+            os.fsync(target.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 __all__ = ["app"]

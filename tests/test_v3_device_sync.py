@@ -90,6 +90,50 @@ class _RecordingOperationHandler:
         )
 
 
+class _ReceiptMatrixOperationHandler:
+    def __init__(self) -> None:
+        self.calls: dict[str, int] = {}
+
+    def apply(
+        self, operation: ClientOperation, uow: SqliteUnitOfWork
+    ) -> OperationReceipt:
+        self.calls[operation.kind] = self.calls.get(operation.kind, 0) + 1
+        if operation.kind in {"review.apply", "review.crash"}:
+            resource_id = stable_ulid("receipt-matrix", operation.operation_id)
+            uow.changes.append(
+                "review_item",
+                resource_id,
+                2,
+                ChangeOperation.UPSERT.value,
+                {"review_item_id": resource_id, "revision": 2},
+            )
+            if operation.kind == "review.crash":
+                raise RuntimeError("injected handler crash")
+            return OperationReceipt(
+                operation_id=operation.operation_id,
+                status=ClientOperationStatus.APPLIED,
+                resource_revision=2,
+                error=None,
+            )
+        status = (
+            ClientOperationStatus.CONFLICT
+            if operation.kind == "review.conflict"
+            else ClientOperationStatus.REJECTED
+        )
+        code = "REVISION_CONFLICT" if status is ClientOperationStatus.CONFLICT else "INVALID"
+        return OperationReceipt(
+            operation_id=operation.operation_id,
+            status=status,
+            resource_revision=None,
+            error={
+                "code": code,
+                "message": f"terminal {status.value}",
+                "details": {"payload": operation.payload},
+                "request_id": stable_ulid("receipt-error", operation.operation_id),
+            },
+        )
+
+
 class V3DeviceSyncTests(unittest.TestCase):
     def _environment(self, root: Path):
         database = V3Database.open(root / "core.sqlite3")
@@ -168,6 +212,87 @@ class V3DeviceSyncTests(unittest.TestCase):
                 reused.receipts[0].status, ClientOperationStatus.CONFLICT
             )
             self.assertEqual(handler.calls, 1)
+
+    def test_terminal_receipts_replay_and_crash_rollback_are_atomic(self) -> None:
+        with _workspace_directory() as root:
+            database, _, record, trust, _, _ = self._environment(root)
+            handler = _ReceiptMatrixOperationHandler()
+            service = MobileSyncService(
+                lambda: SqliteUnitOfWork(database), operation_handler=handler
+            )
+            operations = tuple(
+                ClientOperation(
+                    operation_id=stable_ulid("receipt-matrix", kind),
+                    kind=kind,
+                    base_revision=1,
+                    payload={"decision": kind.rsplit(".", 1)[-1]},
+                )
+                for kind in ("review.apply", "review.conflict", "review.reject")
+            )
+            request = SyncRequest(1, None, operations, 100)
+            device_id = trust.domain_device_id(record.device_id)
+
+            first = service.synchronize(device_id, request)
+            replay = service.synchronize(device_id, request)
+
+            self.assertEqual(
+                [receipt.status for receipt in first.receipts],
+                [
+                    ClientOperationStatus.APPLIED,
+                    ClientOperationStatus.CONFLICT,
+                    ClientOperationStatus.REJECTED,
+                ],
+            )
+            self.assertEqual(first.receipts, replay.receipts)
+            self.assertEqual(handler.calls, {
+                "review.apply": 1,
+                "review.conflict": 1,
+                "review.reject": 1,
+            })
+            with database.read() as connection:
+                rows = connection.execute(
+                    "SELECT kind, payload_json, status, receipt_json "
+                    "FROM client_operations ORDER BY kind"
+                ).fetchall()
+                change_count = int(
+                    connection.execute("SELECT COUNT(*) FROM change_events").fetchone()[0]
+                )
+            self.assertEqual(len(rows), 3)
+            self.assertEqual({str(row["status"]) for row in rows}, {
+                "applied", "conflict", "rejected"
+            })
+            rejected = next(row for row in rows if row["status"] == "rejected")
+            self.assertEqual(
+                json.loads(str(rejected["payload_json"])), {"decision": "reject"}
+            )
+            self.assertEqual(
+                json.loads(str(rejected["receipt_json"])),
+                first.receipts[2].as_dict(),
+            )
+            self.assertEqual(change_count, 1)
+
+            crashing = ClientOperation(
+                operation_id=stable_ulid("receipt-matrix", "crash"),
+                kind="review.crash",
+                base_revision=1,
+                payload={"decision": "crash"},
+            )
+            with self.assertRaisesRegex(RuntimeError, "injected handler crash"):
+                service.synchronize(
+                    device_id,
+                    SyncRequest(1, first.next_cursor, (crashing,), 100),
+                )
+            with database.read() as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM client_operations"
+                    ).fetchone()[0],
+                    3,
+                )
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM change_events").fetchone()[0],
+                    1,
+                )
 
     def test_revoke_blocks_new_challenges(self) -> None:
         with _workspace_directory() as root:

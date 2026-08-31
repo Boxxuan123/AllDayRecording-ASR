@@ -4,11 +4,16 @@
 - 日期：2026-08-31
 - 适用版本：V3.0+
 
+> V3.0-G 修订：并行期已经结束，V3 本地入口默认启用；显式设置
+> `ALLDAY_V3_ENABLED=0` 只用于执行回退。生产 Device listener 仍必须满足本文的
+> RP ID/origin 校验，不因本地入口切换而放宽。
+
 ## 决策
 
-V3 与 V2 使用并行目录和显式 feature flag。`ALLDAY_V3_ENABLED` 默认关闭；
-V3.0-A 的 `v3 start` 只装配空 runtime、读取契约 manifest，不打开 V2 SQLite、
-不创建 V3 数据库、不监听端口，也不改变现有 V2 命令和页面入口。
+V3 与 V2 使用并行目录和显式 feature flag。V3.0-A 至 F 的并行实施期内
+`ALLDAY_V3_ENABLED` 默认关闭；V3.0-G 切换后默认开启，只有显式设置为 `0`
+才执行回退。V3.0-A 当时的 `v3 start` 只装配空 runtime、读取契约 manifest，
+不打开 V2 SQLite、不创建 V3 数据库、不监听端口，也不改变当时的 V2 命令和页面入口。
 
 Passkey 发布值只从发布环境注入：
 
@@ -32,4 +37,4 @@ V2 现有传输配置仍需可回退，不能为 V3 草率改写其默认值；�
 - 发布流水线必须显式注入并验证生产 RP ID/origin。
 - 后续 V3 Device Gateway 复用现有 CA、receiver/device identity 与 HUKS 密钥，
   但不能把 V2 的开发默认值当成生产发布配置。
-- V3 设为默认入口只能在 V3.0-G 发生。
+- V3 默认入口切换已经在 V3.0-G 发生；以后不得悄悄恢复旧页面或未版本化 API 为默认路径。

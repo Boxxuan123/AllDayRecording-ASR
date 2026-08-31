@@ -15,6 +15,7 @@ import type {
   ReviewItem,
   SessionDetail,
   SessionPage,
+  Utterance,
 } from './types'
 
 const mock = import.meta.env.VITE_V3_MOCK === '1'
@@ -72,7 +73,7 @@ export const desktopApi = {
   dataHealth: () => request<DataHealth>('/api/v3/data-health'),
   settings: () => request<Record<string, unknown>>('/api/v3/settings'),
   lab: () => request<{ enabled: boolean; label: string; message: string }>('/api/v3/lab'),
-  correctUtterance: (utteranceId: string, expectedRevision: number, text: string) => request<{ utterance_id: string; revision: number; text: string }>(`/api/v3/utterances/${encodeURIComponent(utteranceId)}/corrections`, { method: 'POST', body: JSON.stringify({ expected_revision: expectedRevision, text }) }),
+  correctUtterance: (utteranceId: string, expectedRevision: number, text: string) => request<Utterance>(`/api/v3/utterances/${encodeURIComponent(utteranceId)}/corrections`, { method: 'POST', body: JSON.stringify({ expected_revision: expectedRevision, text }) }),
 }
 
 async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -88,6 +89,17 @@ async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path === '/api/v3/data-health') return mockDataHealth as T
   if (path === '/api/v3/settings') return { contract_version: '3.0.0', deployment: 'local_only', processing: { durable_jobs: true, backup_admission_required: true, automatic_source_deletion: false }, privacy: { network_boundary: 'loopback', cloud_upload: false } } as T
   if (path === '/api/v3/lab') return { enabled: false, label: '实验室', message: '实验与 benchmark 工具保留在独立 Legacy/Lab 入口。' } as T
-  if (path.includes('/corrections') && init?.body) return { utterance_id: path.split('/')[4], revision: 2, text: JSON.parse(String(init.body)).text } as T
+  if (path.includes('/corrections') && init?.body) {
+    const utteranceId = decodeURIComponent(path.split('/')[4])
+    const original = mockSessionDetail.utterances.find(
+      (item) => item.utterance_id === utteranceId,
+    )
+    if (!original) throw new ApiError('utterance 不存在', 'not_found', 'mock')
+    return {
+      ...original,
+      revision: original.revision + 1,
+      text: JSON.parse(String(init.body)).text,
+    } as T
+  }
   throw new ApiError(`mock route not found: ${path}`, 'not_found', 'mock')
 }

@@ -22,3 +22,22 @@ def connect_sqlite(path: Path) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         connection.close()
+
+
+@contextmanager
+def connect_sqlite_read_only(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open a query-only SQLite connection without creating or migrating files."""
+
+    resolved = path.resolve(strict=True)
+    connection = sqlite3.connect(
+        f"{resolved.as_uri()}?mode=ro",
+        timeout=30,
+        uri=True,
+    )
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA query_only = ON")
+    try:
+        yield connection
+    finally:
+        connection.close()

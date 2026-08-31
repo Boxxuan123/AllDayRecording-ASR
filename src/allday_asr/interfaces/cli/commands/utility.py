@@ -40,13 +40,14 @@ def web_command(
     ),
     db: Path = typer.Option(DEFAULT_DB_PATH, help="SQLite 数据库路径。"),
 ) -> None:
-    """启动仅限本机访问的评测、日记和候选操作台。"""
+    """启动仅限本机访问的 V2 Legacy 只读回退工作台。"""
     serve_web(
         database_path=db,
         config_path=config,
         host="127.0.0.1",
         port=port,
         open_browser=open_browser,
+        read_only=True,
     )
 
 
@@ -272,4 +273,3 @@ def action_review(
         f"[green]候选已更新[/green] id={row['id']}，status={row['status']}，"
         f"title={row['title']}"
     )
-

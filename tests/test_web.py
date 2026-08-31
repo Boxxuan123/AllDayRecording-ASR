@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.cookiejar
+import hashlib
 import json
 import shutil
 import threading
@@ -17,6 +18,65 @@ from allday_asr.web import create_web_server
 
 
 class WebConsoleTests(unittest.TestCase):
+    def test_legacy_console_is_query_only_and_rejects_mutations(self) -> None:
+        suffix = uuid4().hex
+        root = Path(__file__).parent
+        database_path = root / f"legacy-read-only-{suffix}.sqlite3"
+        server = None
+        try:
+            database = Database.open(database_path)
+            database.create_recording_session(
+                {
+                    "session_key": f"legacy-read-only:{suffix}",
+                    "device": "watch",
+                    "recorded_at": "2026-08-31T08:00:00+08:00",
+                    "timezone": "Asia/Singapore",
+                    "duration_ms": 0,
+                    "status": "active",
+                }
+            )
+            before = hashlib.sha256(database_path.read_bytes()).hexdigest()
+            server = create_web_server(
+                database_path=database_path,
+                config_path=root / "unused.toml",
+                port=0,
+                token="legacy-token",
+                read_only=True,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            opener = urllib.request.build_opener(
+                urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+            )
+            with opener.open(
+                f"{server.application.base_url}/?token=legacy-token", timeout=3
+            ):
+                pass
+            with opener.open(
+                f"{server.application.base_url}/api/sessions", timeout=3
+            ) as response:
+                self.assertEqual(len(json.load(response)["sessions"]), 1)
+            request = urllib.request.Request(
+                f"{server.application.base_url}/api/daily-run",
+                data=b"{}",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                opener.open(request, timeout=3)
+            self.assertEqual(denied.exception.code, 405)
+            self.assertEqual(
+                hashlib.sha256(database_path.read_bytes()).hexdigest(), before
+            )
+        finally:
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+            for database_suffix in ("", "-shm", "-wal"):
+                candidate = Path(f"{database_path}{database_suffix}")
+                if candidate.exists():
+                    candidate.unlink()
+
     def test_local_console_authentication_dashboard_and_annotation_update(self) -> None:
         suffix = uuid4().hex
         root = Path(__file__).parent

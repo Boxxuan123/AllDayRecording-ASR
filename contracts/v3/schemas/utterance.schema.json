@@ -7,30 +7,30 @@
   "required": [
     "utterance_id",
     "session_id",
-    "start_at",
-    "end_at",
     "speaker_track_id",
+    "speaker_label",
+    "start_ms",
+    "end_ms",
     "text",
     "revision",
+    "status",
     "evidence"
   ],
   "properties": {
     "utterance_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
     "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
-    "start_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
-    "end_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
-    "speaker_track_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "speaker_track_id": {
+      "oneOf": [
+        {"$ref": "primitives.schema.json#/$defs/StableId"},
+        {"type": "null"}
+      ]
+    },
+    "speaker_label": {"type": ["string", "null"]},
+    "start_ms": {"type": "integer", "minimum": 0},
+    "end_ms": {"type": "integer", "minimum": 1},
     "text": {"type": "string"},
     "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
-    "evidence": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["media_id", "start_ms", "end_ms"],
-      "properties": {
-        "media_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
-        "start_ms": {"type": "integer", "minimum": 0},
-        "end_ms": {"type": "integer", "minimum": 0}
-      }
-    }
+    "status": {"type": "string", "enum": ["active", "stale"]},
+    "evidence": {"type": "object"}
   }
 }

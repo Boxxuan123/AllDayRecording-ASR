@@ -36,11 +36,13 @@
   "utterance": {
     "utterance_id": "01990d5a-7c00-7000-8000-000000000004",
     "session_id": "01990d5a-7c00-7000-8000-000000000001",
-    "start_at": "2026-09-01T02:23:20Z",
-    "end_at": "2026-09-01T02:23:24Z",
     "speaker_track_id": "01990d5a-7c00-7000-8000-000000000014",
+    "speaker_label": "SPEAKER_00",
+    "start_ms": 5000,
+    "end_ms": 9000,
     "text": "我下午把修改后的文档发给你",
     "revision": 1,
+    "status": "active",
     "evidence": {
       "media_id": "01990d5a-7c00-7000-8000-000000000012",
       "start_ms": 5000,
@@ -80,9 +82,22 @@
         "resource_id": "01990d5a-7c00-7000-8000-000000000004",
         "revision": 2,
         "operation": "upsert",
-        "resource": {
-          "utterance_id": "01990d5a-7c00-7000-8000-000000000004"
+      "resource": {
+        "utterance_id": "01990d5a-7c00-7000-8000-000000000004",
+        "session_id": "01990d5a-7c00-7000-8000-000000000001",
+        "speaker_track_id": "01990d5a-7c00-7000-8000-000000000014",
+        "speaker_label": "SPEAKER_00",
+        "start_ms": 5000,
+        "end_ms": 9000,
+        "text": "我下午把修订后的文档发给你",
+        "revision": 2,
+        "status": "active",
+        "evidence": {
+          "media_id": "01990d5a-7c00-7000-8000-000000000012",
+          "start_ms": 5000,
+          "end_ms": 9000
         }
+      }
       }
     ],
     "next_cursor": "cursor-42",

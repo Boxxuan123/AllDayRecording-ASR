@@ -52,7 +52,7 @@
       "post": {
         "operationId": "correctUtterance",
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["expected_revision", "text"], "properties": {"expected_revision": {"$ref": "../schemas/primitives.schema.json#/$defs/Revision"}, "text": {"type": "string"}}}}}},
-        "responses": {"200": {"description": "Corrected utterance identity and revision", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}
+        "responses": {"200": {"description": "Canonical corrected Utterance DTO", "content": {"application/json": {"schema": {"$ref": "../schemas/utterance.schema.json"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}
       }
     },
     "/api/v3/devices": {"get": {"operationId": "listDesktopDevices", "responses": {"200": {"description": "Paired and known devices", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
@@ -83,7 +83,7 @@
       "RuntimeStatus": {"type": "object", "additionalProperties": false, "required": ["contract_version", "enabled", "state"], "properties": {"contract_version": {"const": "3.0.0"}, "enabled": {"type": "boolean"}, "state": {"enum": ["empty_ready", "ready"]}}},
       "ObjectProjection": {"type": "object"},
       "ItemList": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"type": "object"}}}},
-      "SessionDetail": {"type": "object", "additionalProperties": false, "required": ["session", "segments", "runs", "utterances", "artifacts", "backups"], "properties": {"session": {"$ref": "../schemas/recording-session.schema.json"}, "segments": {"type": "array", "items": {"type": "object"}}, "runs": {"type": "array", "items": {"type": "object"}}, "utterances": {"type": "array", "items": {"type": "object"}}, "artifacts": {"type": "array", "items": {"type": "object"}}, "backups": {"type": "array", "items": {"type": "object"}}}},
+      "SessionDetail": {"type": "object", "additionalProperties": false, "required": ["session", "segments", "runs", "utterances", "artifacts", "backups"], "properties": {"session": {"$ref": "../schemas/recording-session.schema.json"}, "segments": {"type": "array", "items": {"type": "object"}}, "runs": {"type": "array", "items": {"type": "object"}}, "utterances": {"type": "array", "items": {"$ref": "../schemas/utterance.schema.json"}}, "artifacts": {"type": "array", "items": {"type": "object"}}, "backups": {"type": "array", "items": {"type": "object"}}}},
       "ProcessingSnapshot": {"type": "object", "additionalProperties": false, "required": ["job", "run", "stages", "attempts"], "properties": {"job": {"type": "object"}, "run": {"type": "object"}, "stages": {"type": "array", "items": {"type": "object"}}, "attempts": {"type": "array", "items": {"type": "object"}}}}
     }
   }

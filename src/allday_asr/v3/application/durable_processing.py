@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from allday_asr.domain.hashing import canonical_json_sha256
+from allday_asr.v3.contracts import UtteranceDto, utterance_dto
 from allday_asr.v3.domain.ids import new_ulid, stable_ulid
 from allday_asr.v3.domain.models import (
     Artifact,
@@ -372,7 +373,9 @@ class DurableProcessingService:
                             utterance.utterance_id,
                             utterance.revision,
                             ChangeOperation.UPSERT.value,
-                            _utterance_projection(utterance),
+                            utterance_dto(
+                                utterance, speaker_label=value.speaker_label
+                            ),
                         )
 
             snapshot = uow.processing.complete_stage(
@@ -486,7 +489,7 @@ class CorrectionInvalidationService:
         self._uow_factory = uow_factory
         self._now = now or _utc_now
 
-    def correct_utterance(self, command: CorrectUtteranceCommand) -> Utterance:
+    def correct_utterance(self, command: CorrectUtteranceCommand) -> UtteranceDto:
         if not command.text.strip():
             raise ValueError("utterance text cannot be empty")
         now = self._now()
@@ -509,6 +512,7 @@ class CorrectionInvalidationService:
             updated = uow.evidence.revise_utterance(
                 command.utterance_id, command.expected_revision, command.text
             )
+            speaker_label = uow.evidence.speaker_label(updated.speaker_track_id)
             for artifact_id in uow.artifacts.dependent_ids(
                 "utterance", command.utterance_id
             ):
@@ -529,7 +533,7 @@ class CorrectionInvalidationService:
                 updated.utterance_id,
                 updated.revision,
                 ChangeOperation.UPSERT.value,
-                _utterance_projection(updated),
+                utterance_dto(updated, speaker_label=speaker_label),
             )
             uow.audit.append(
                 "utterance.corrected",
@@ -538,7 +542,7 @@ class CorrectionInvalidationService:
                 updated.utterance_id,
                 {"revision": updated.revision, "correction_id": correction_id},
             )
-            return updated
+            return utterance_dto(updated, speaker_label=speaker_label)
 
 
 class DurableProcessingWorker:
@@ -661,19 +665,6 @@ def _session_projection(session: Any) -> dict[str, Any]:
         "current_stage": session.current_stage,
         "progress": session.progress,
         "blocking_reason": session.blocking_reason,
-    }
-
-
-def _utterance_projection(value: Utterance) -> dict[str, Any]:
-    return {
-        "utterance_id": value.utterance_id,
-        "session_id": value.session_id,
-        "speaker_track_id": value.speaker_track_id,
-        "start_ms": value.start_ms,
-        "end_ms": value.end_ms,
-        "text": value.text,
-        "revision": value.revision,
-        "evidence": value.evidence,
     }
 
 

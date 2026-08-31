@@ -218,14 +218,7 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                     actor="desktop-user",
                 )
             )
-            self._send_json(
-                HTTPStatus.OK,
-                {
-                    "utterance_id": value.utterance_id,
-                    "revision": value.revision,
-                    "text": value.text,
-                },
-            )
+            self._send_json(HTTPStatus.OK, value)
             return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found", "V3 命令不存在。")
 

@@ -21,11 +21,10 @@ from allday_asr.v3.config import (
 
 
 class V3BootstrapTests(unittest.TestCase):
-    def test_v3_is_disabled_by_default(self) -> None:
+    def test_v3_is_enabled_by_default_after_release_cutover(self) -> None:
         settings = V3Settings.from_environment({})
-        self.assertFalse(settings.enabled)
-        with self.assertRaises(V3ConfigurationError):
-            start_empty_runtime(settings)
+        self.assertTrue(settings.enabled)
+        self.assertEqual(start_empty_runtime(settings).state, "empty_ready")
 
     def test_empty_runtime_does_not_open_or_modify_a_v2_database(self) -> None:
         directory = Path(__file__).parent / f"v3-empty-{uuid4().hex}"
@@ -77,7 +76,7 @@ class V3BootstrapTests(unittest.TestCase):
     def test_cli_empty_start_is_explicit_and_machine_readable(self) -> None:
         result = CliRunner().invoke(
             app,
-            ["v3", "start"],
+            ["start"],
             env={"ALLDAY_V3_ENABLED": "1"},
         )
         self.assertEqual(result.exit_code, 0, result.output)
@@ -90,7 +89,7 @@ class V3BootstrapTests(unittest.TestCase):
         try:
             disabled = CliRunner().invoke(
                 app,
-                ["v3", "migrate", "--state-dir", str(directory)],
+                ["migrate", "--state-dir", str(directory)],
                 env={"ALLDAY_V3_ENABLED": "0"},
             )
             self.assertNotEqual(disabled.exit_code, 0)
@@ -98,7 +97,7 @@ class V3BootstrapTests(unittest.TestCase):
 
             enabled = CliRunner().invoke(
                 app,
-                ["v3", "migrate", "--state-dir", str(directory)],
+                ["migrate", "--state-dir", str(directory)],
                 env={"ALLDAY_V3_ENABLED": "1"},
             )
             self.assertEqual(enabled.exit_code, 0, enabled.output)

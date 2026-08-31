@@ -30,9 +30,21 @@ class AllDayRequestHandler(
         self._handle(lambda: dispatch_get(self))
 
     def do_POST(self) -> None:
+        if self.application.read_only:
+            self._send_json(
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {"error": "Legacy 工作台为只读入口，写操作已禁用。"},
+            )
+            return
         self._handle(lambda: dispatch_post(self))
 
     def do_PUT(self) -> None:
+        if self.application.read_only:
+            self._send_json(
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {"error": "Legacy 工作台为只读入口，写操作已禁用。"},
+            )
+            return
         self._handle(lambda: dispatch_put(self))
 
     def _handle(self, callback) -> None:
@@ -73,10 +85,16 @@ def create_web_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     token: str | None = None,
+    read_only: bool = False,
 ) -> AllDayHTTPServer:
     if host not in {"127.0.0.1", "localhost"}:
         raise ValueError("本地工作台只能绑定 127.0.0.1 或 localhost")
-    application = WebApplication(database_path, config_path, token=token)
+    application = WebApplication(
+        database_path,
+        config_path,
+        token=token,
+        read_only=read_only,
+    )
     server = AllDayHTTPServer((host, port), application)
     bound_host, bound_port = server.server_address[:2]
     application.host = "127.0.0.1" if bound_host in {"0.0.0.0", "::"} else host
@@ -91,15 +109,18 @@ def serve_web(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = True,
+    read_only: bool = False,
 ) -> None:
     server = create_web_server(
         database_path=database_path,
         config_path=config_path,
         host=host,
         port=port,
+        read_only=read_only,
     )
     url = f"{server.application.base_url}/?token={server.application.token}"
-    print(f"AllDayRecording 本地工作台：{url}")
+    label = "Legacy 只读工作台" if read_only else "本地工作台"
+    print(f"AllDayRecording {label}：{url}")
     print("仅监听本机；按 Ctrl+C 停止。")
     if open_browser:
         webbrowser.open(url)

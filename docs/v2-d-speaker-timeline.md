@@ -64,13 +64,13 @@ hf auth login
 $env:HF_TOKEN = "hf_..."
 
 # 默认选择录音 1 最新的已完成 V2-C run；当前全量候选也可显式写 --asr-run 10
-allday-asr diarization-v2 run 1 --asr-run 10
+allday-asr legacy diarization run 1 --asr-run 10
 
 # 只有确实知道人数时才设置，未知时让模型估计
-allday-asr diarization-v2 run 1 --asr-run 10 --num-speakers 3
+allday-asr legacy diarization run 1 --asr-run 10 --num-speakers 3
 
-allday-asr diarization-v2 status <run-id>
-allday-asr diarization-v2 snapshot <run-id>
+allday-asr legacy diarization status <run-id>
+allday-asr legacy diarization snapshot <run-id>
 ```
 
 也可把完整 snapshot 放到项目私有模型目录并使用 `--model-path`，此后可断网运行。Windows 当前 TorchCodec 动态库不可用，backend 按 pyannote 官方支持的方式传入预加载 float32 波形，不依赖 TorchCodec 解码。
@@ -119,11 +119,11 @@ V2-D.1 不尝试把“同属电视节目”的声音强行合并成一个人。�
 
 ```powershell
 # 冻结用户确认的来源事实；不提供 speaker 身份
-allday-asr diarization-v2 source-truth 1 --start 17:00 --end 17:14 `
+allday-asr legacy diarization source-truth 1 --start 17:00 --end 17:14 `
   --source media_playback --name v2d1-candidate01-media-17m
 
 # 从最新 V2-D 生成确定/可能双层预测，并在指定真值上同时评测
-allday-asr diarization-v2 refine 1 --truth-set 2 --truth-set 3
+allday-asr legacy diarization refine 1 --truth-set 2 --truth-set 3
 ```
 
 真实 run 12 生成 607 段 `detected`（1,548.125 秒）和 453 段 `possible`（486.932 秒），prediction set 16/17 已冻结。候选 01 的 `17:00–17:14` 来源微型真值为 truth set 3：正式 detected 覆盖 7.111 秒、recall `50.79%`；加上 possible 后覆盖 14 秒、recall `100%`。该微型真值没有负例时间，所以 false alarm 不可定义。
@@ -137,7 +137,7 @@ run 12 完成后再次执行 source audit，79,826,205 字节原始 M4A 状态�
 V2-D.2 恢复 truth set 1 中已有的稀疏 `mother / father / tv / self / unknown` speaker 真值，但不把它们当作模型预测，也不把整个 `SPEAKER_XX` 改名。它使用 V2-D exclusive turns 计算两向审计：每个人工身份被拆到哪些匿名 speaker，以及每个匿名 speaker 混入了哪些人工身份。网页把人工身份作为第四条短区间轨道，并在有真值覆盖的 token 上显示“母亲/父亲/电视”角标。
 
 ```powershell
-allday-asr diarization-v2 identity-audit 1 --truth-set 1
+allday-asr legacy diarization identity-audit 1 --truth-set 1
 ```
 
 真实 run 13 审计了 72 条稀疏身份区间，共 100.450 秒，模型 exclusive turn 覆盖 67.58 秒（67.27%）。主要结果：
@@ -171,7 +171,7 @@ contrastive_margin = father_similarity - max(mother, self, tv similarity)
 这个差值未经身份阈值校准，不是“是父亲”的概率。所有已标真值及前后 500 ms 都从候选中排除，避免把种子原样检索回来造成数据泄漏；匿名 exclusive turns 会先合并相邻短段，再切成 1.2–3 秒固定窗口。embedding 只在本次进程内存在，不写磁盘或数据库。
 
 ```powershell
-allday-asr diarization-v2 mine-identities 1 `
+allday-asr legacy diarization mine-identities 1 `
   --truth-set 1 --identity father --diarization-run 11
 ```
 
@@ -197,7 +197,7 @@ allday-asr diarization-v2 mine-identities 1 `
 schema v9 新增 `identity_reference_intervals`。它把冻结真值和跨 run 最新人工结论去重后，保存为人物标签、结论、会话时间、永久原音对象、原音 SHA-256、原音时间坐标和人工来源；不复制或修改音频，不持久化 embedding，也不自动绑定人物。候选结论更新时会自动重建这个派生索引，也可以手动执行：
 
 ```powershell
-allday-asr diarization-v2 sync-identity-references --identity father
+allday-asr legacy diarization sync-identity-references --identity father
 ```
 
 新录音进入后，跨天识别层可以直接从这些不可变原音坐标按需读取确认样本，并把新日期的人工确认继续追加到同一个参考集。正式声纹或自动身份绑定仍需独立 holdout 校准，不能因为累计时长接近 30 秒就自动启用。

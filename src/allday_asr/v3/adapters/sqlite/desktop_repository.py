@@ -4,6 +4,8 @@ import json
 import sqlite3
 from typing import Any
 
+from allday_asr.v3.contracts import validate_utterance_dto
+
 
 class SqliteDesktopReadRepository:
     """Read-only product projections for the loopback Desktop API."""
@@ -306,7 +308,7 @@ def _run(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _utterance(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+    return validate_utterance_dto({
         "utterance_id": str(row["utterance_id"]),
         "session_id": str(row["session_id"]),
         "speaker_track_id": row["speaker_track_id"],
@@ -317,7 +319,7 @@ def _utterance(row: sqlite3.Row) -> dict[str, Any]:
         "revision": int(row["revision"]),
         "status": str(row["status"]),
         "evidence": _json_object(row["evidence_json"]),
-    }
+    })
 
 
 def _artifact(row: sqlite3.Row) -> dict[str, Any]:

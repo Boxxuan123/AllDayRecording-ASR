@@ -76,6 +76,21 @@ class OperationReceipt:
     resource_revision: int | None
     error: dict[str, Any] | None
 
+    def __post_init__(self) -> None:
+        if not self.operation_id:
+            raise ValueError("operation receipt requires operation_id")
+        if self.status is ClientOperationStatus.APPLIED:
+            if self.resource_revision is None or self.error is not None:
+                raise ValueError("applied receipt requires revision and no error")
+        elif self.status in {
+            ClientOperationStatus.CONFLICT,
+            ClientOperationStatus.REJECTED,
+        }:
+            if self.resource_revision is not None or self.error is None:
+                raise ValueError(
+                    "conflict/rejected receipt requires error and no revision"
+                )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "operation_id": self.operation_id,

@@ -148,7 +148,7 @@ Fun-ASR 在唯一一条纯净电视节目上最好，但 `n=1` 的 bootstrap 区
 完整 run 7 已先用 FSMN-VAD 从每个五分钟逻辑窗口提出最长 30 秒的候选，再加 750 ms 上下文交给 Qwen 和 ForcedAligner；此前将它描述为“五分钟整窗直接识别”并不准确。它的实际问题是只有单路 FSMN 判断，而且 padding 内的 token 也会被提交。为避免 token 跨越非连续人工窗口，使用 review-region 裁剪快照：
 
 ```powershell
-allday-asr asr-v2 snapshot 7 --truth-set 2 `
+allday-asr legacy asr snapshot 7 --truth-set 2 `
   --name qwen3-asr-1.7b-v2c-full-truth2-scoped
 allday-asr benchmark run 2 10
 ```

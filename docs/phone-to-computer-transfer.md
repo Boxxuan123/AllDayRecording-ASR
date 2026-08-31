@@ -5,7 +5,7 @@
 ## 启动接收端
 
 ```powershell
-allday-asr transfer receive
+allday-asr device receive
 ```
 
 服务默认监听所有 IPv4 网卡的 `8766` 端口，并输出：
@@ -20,7 +20,7 @@ allday-asr transfer receive
 Windows 首次监听时可能弹出防火墙提示。若只在家庭网络使用，允许专用网络即可；若希望切换到被 Windows 标记为“公用网络”的 Wi-Fi 后仍能自动发现，应一次性同时允许公用网络。接收端仍要求配对 CA、设备签名和请求 challenge，但不要把端口映射到公网。也可以显式选择端口和目录：
 
 ```powershell
-allday-asr transfer receive `
+allday-asr device receive `
   --port 8766 `
   --inbox D:\AllDayRecording-Inbox
 ```
@@ -32,7 +32,7 @@ allday-asr transfer receive `
 `state/transfer-tls/receiver-ca-key.pem` 是电脑的私密配对身份，不得上传或分享。删除、替换或损坏配对 CA，以及清除手机 HUKS 私钥，都会要求明确重新配对。自定义正式证书也受支持：
 
 ```powershell
-allday-asr transfer receive `
+allday-asr device receive `
   --tls-cert D:\certs\receiver-cert.pem `
   --tls-key D:\certs\receiver-key.pem
 ```
@@ -40,7 +40,7 @@ allday-asr transfer receive `
 明文模式仅为回环协议测试保留：
 
 ```powershell
-allday-asr transfer receive --host 127.0.0.1 --insecure-http
+allday-asr device receive --host 127.0.0.1 --insecure-http
 ```
 
 它不能绑定局域网地址，也不能用于真实录音。
@@ -78,7 +78,7 @@ Content-Type: application/json
 电脑验证 Passkey 的 challenge、origin、RP ID、用户在场和签名后，将 HUKS ECC 公钥材料规范化为 P-256 DER SubjectPublicKeyInfo 再保存。HarmonyOS Passkey 要求 RP 域名已在 AppGallery Connect/App Linking 中与应用关联；默认 `alldayrecording.local` 只是占位值，真机联调应配置真实稳定域名：
 
 ```powershell
-allday-asr transfer receive `
+allday-asr device receive `
   --passkey-rp-id transfer.example.com `
   --passkey-origin https://transfer.example.com
 ```
@@ -169,13 +169,13 @@ Upload-Offset: <分片起始偏移>
 接收端可以在该提交点自动执行“原子导入 → V2-C → V2-D → 本地 V2-E”。HTTP 最后一片在任务持久加入后台串行队列后立即返回，手机不等待模型。没有可由电脑复核的独立备份时，必须显式选择 shadow：
 
 ```powershell
-allday-asr transfer receive --auto-workflow --workflow-shadow
+allday-asr device receive --auto-workflow --workflow-shadow
 ```
 
 正式 production 自动处理必须同时给出真正的独立磁盘或网络备份位置；接收端会先逐文件备份、复算 SHA-256 并完成恢复演练，通过后才启动模型：
 
 ```powershell
-allday-asr transfer receive --auto-workflow `
+allday-asr device receive --auto-workflow `
   --workflow-backup-root E:\AllDayRecordingBackup `
   --workflow-backup-storage-kind independent_device
 ```
@@ -188,5 +188,5 @@ allday-asr transfer receive --auto-workflow `
 allday-asr session import-manifest `
   data\phone-inbox\pcm_session_1787972654273\session_summary.json `
   --method watch_auto
-allday-asr workflow-v2 run --session <session-id> --shadow
+allday-asr legacy workflow run --session <session-id> --shadow
 ```

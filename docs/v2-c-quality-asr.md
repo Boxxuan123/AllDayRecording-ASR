@@ -54,20 +54,20 @@ V2-C.3 在这条基础上增加独立 Silero、相对 SNR 和候选时长证据�
 
 ```powershell
 # 8 GB 机器先做一个真实五分钟 smoke test
-allday-asr asr-v2 run 1 --profile compatible-8gb --max-windows 1
+allday-asr legacy asr run 1 --profile compatible-8gb --max-windows 1
 
 # 全量默认自动选择；也可显式固定档位用于复现
-allday-asr asr-v2 run 1
-allday-asr asr-v2 run 1 --profile compatible-8gb
+allday-asr legacy asr run 1
+allday-asr legacy asr run 1 --profile compatible-8gb
 
 # 查看逐窗口证据和分歧
-allday-asr asr-v2 status <run-id>
+allday-asr legacy asr status <run-id>
 ```
 
 如果中途异常，已成功写入的窗口不会丢失。使用完全相同的配置续跑，程序只补缺少的 `(window, role)`：
 
 ```powershell
-allday-asr asr-v2 run 1 --profile compatible-8gb --resume-run-id <run-id>
+allday-asr legacy asr run 1 --profile compatible-8gb --resume-run-id <run-id>
 ```
 
 `--max-windows` 是 smoke-test 范围的一部分，因此带该参数的 run 不能当成全长 run 续跑。
@@ -77,7 +77,7 @@ allday-asr asr-v2 run 1 --profile compatible-8gb --resume-run-id <run-id>
 完成的 run 可以把主模型 core token 冻结成 V2-B prediction set。`transcript` 与 `alignment_token` 都使用每个 token 的实际时间区间；不能把整份五分钟文字标为一个 transcript 区间，否则稀疏真值只要与窗口相交，就会把窗口内无关文字错误计为插入：
 
 ```powershell
-allday-asr asr-v2 snapshot <run-id> --name qwen3-asr-1.7b-v2c
+allday-asr legacy asr snapshot <run-id> --name qwen3-asr-1.7b-v2c
 allday-asr benchmark run 1 <prediction-set-id>
 allday-asr benchmark compare 1
 ```

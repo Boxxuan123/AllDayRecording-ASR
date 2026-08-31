@@ -20,10 +20,12 @@ class CliSmokeTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Usage: allday-asr", result.output)
-        self.assertIn("workflow-v2", result.output)
+        self.assertIn("release-prepare", result.output)
+        self.assertIn("device", result.output)
+        self.assertIn("legacy", result.output)
 
     def test_invalid_parameter_uses_typer_error_exit(self) -> None:
-        result = self.runner.invoke(app, ["process", "0"])
+        result = self.runner.invoke(app, ["legacy", "process", "0"])
 
         self.assertEqual(result.exit_code, 2, result.output)
         self.assertIn("Invalid value", result.output)
@@ -34,7 +36,7 @@ class CliSmokeTests(unittest.TestCase):
         try:
             result = self.runner.invoke(
                 app,
-                ["recordings", "--db", str(database_path)],
+                ["legacy", "recordings", "--db", str(database_path)],
             )
 
             self.assertEqual(
@@ -57,7 +59,7 @@ class CliSmokeTests(unittest.TestCase):
             "allday_asr.interfaces.cli.commands.legacy.run_checks",
             return_value=[failed_check],
         ):
-            result = self.runner.invoke(app, ["doctor"])
+            result = self.runner.invoke(app, ["legacy", "doctor"])
 
         self.assertEqual(result.exit_code, 1, result.output)
         self.assertIn("synthetic-check", result.output)

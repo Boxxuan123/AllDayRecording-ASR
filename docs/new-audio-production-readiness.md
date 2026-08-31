@@ -10,7 +10,7 @@
 
 项目现在可以把任意符合受支持清单格式的多分片录音导入为真实 `session`，并运行本地 V2 影子工作流；实现不依赖本批文件数、总时长、目录名或固定采样数。
 
-正确入口是 `session import-manifest` → `session backup` → `session readiness` → `workflow-v2 run --session <id>`。仍然不应该逐条运行旧 `ingest`，也不应该拿第一条 WAV 冒充整段 `recording`。
+V3.0-G 后的 Legacy V2 入口是 `legacy session import-manifest` → `legacy session backup` → `legacy session readiness` → `legacy workflow run --session <id>`。仍然不应该逐条运行旧 `ingest`，也不应该拿第一条 WAV 冒充整段 `recording`。
 
 原审计提出的四项 P0 当前状态如下：
 
@@ -83,7 +83,7 @@ schema v11 已把按 SHA-256 去重的内容对象与一次真实采集的 `sour
 `processing_runs.recording_id` 对 V2 已可空，V2-C/D/E、输入冻结、产物目录和持久编排器都可直接使用 `session_id`。核心入口现在是：
 
 ```text
-session import-manifest -> session_id
+legacy session import-manifest -> session_id
 session run-v2 <session_id> -> C run -> D run -> E evidence run
 ```
 
@@ -109,7 +109,7 @@ V2-D.2 人工污染审计和 V2-D.3 人物候选挖掘属于可选审核支线�
 
 ### P0-1：分片会话准入器（已完成）
 
-`session import-manifest <session_summary.json>` 已按“先完整验证、后单事务写入”实现：
+`legacy session import-manifest <session_summary.json>` 已按“先完整验证、后单事务写入”实现：
 
 1. 校验清单版本、整数采样坐标、文件存在性、文件数、索引唯一性和文件名安全性。
 2. 对每条 WAV 独立执行媒体探测和 SHA-256，核对采样率、声道、位深、采样数与字节数。
@@ -134,14 +134,14 @@ V2-D.2 人工污染审计和 V2-D.3 人物候选挖掘属于可选审核支线�
 
 ```powershell
 # 导入后先只读检查；未备份时应是 shadow_ready，而不是 production_ready
-allday-asr session readiness <session-id>
+allday-asr legacy session readiness <session-id>
 
 # 目标必须由用户确认属于独立设备或网络存储
-allday-asr session backup <session-id> <backup-root> `
+allday-asr legacy session backup <session-id> <backup-root> `
   --storage-kind independent_device
 
 # 命令默认复制后做恢复演练；随后再次准入
-allday-asr session readiness <session-id>
+allday-asr legacy session readiness <session-id>
 ```
 
 备份不会覆盖已有目录；既有路径只允许在内容完全匹配时幂等复核。每个文件实例和原始采集清单都有独立证据行。`same_device_test` 只用于验证机制，永远不能满足生产门。程序无法物理证明盘符背后是否真是另一块设备，因此 `storage_kind` 是操作者对存储拓扑的明确声明，字节与恢复结果则由程序验证。
@@ -172,7 +172,7 @@ admitted -> integrity_verified -> asr_completed
 - 网页任务状态来自 SQLite，而不是进程内字典；网页重启后仍能显示运行、失败和恢复入口。
 - 页面明确显示 `run_kind`，V1 一键日记与 V2 质量工作流不能使用同一个含糊按钮。
 
-`workflow-v2 run` 默认要求 `production_ready`；没有通过当前字节复核和恢复演练的独立/网络备份时，会在模型启动前失败并留下失败状态。只有显式 `--shadow` 才允许受监控实验；原音损坏、清单损坏、gap 或 overlap 在 shadow 模式下仍然是硬阻断。
+`legacy workflow run` 默认要求 `production_ready`；没有通过当前字节复核和恢复演练的独立/网络备份时，会在模型启动前失败并留下失败状态。只有显式 `--shadow` 才允许受监控实验；原音损坏、清单损坏、gap 或 overlap 在 shadow 模式下仍然是硬阻断。
 
 ## 5. 可以在第一次影子运行后补的 P1
 

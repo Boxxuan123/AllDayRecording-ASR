@@ -19,7 +19,7 @@ class V3ConfigurationError(ValueError):
 
 @dataclass(frozen=True)
 class V3Settings:
-    enabled: bool = False
+    enabled: bool = True
     deployment_mode: DeploymentMode = DeploymentMode.DEVELOPMENT
     passkey_rp_id: str | None = None
     passkey_origins: tuple[str, ...] = ()
@@ -38,7 +38,7 @@ class V3Settings:
             ) from exc
         raw_origins = values.get("ALLDAY_V3_PASSKEY_ORIGINS", "")
         settings = cls(
-            enabled=_parse_bool(values.get("ALLDAY_V3_ENABLED", "0")),
+            enabled=_parse_bool(values.get("ALLDAY_V3_ENABLED", "1")),
             deployment_mode=mode,
             passkey_rp_id=_optional(values.get("ALLDAY_V3_PASSKEY_RP_ID")),
             passkey_origins=tuple(

@@ -1,5 +1,9 @@
 export function isV3Enabled(value) {
-  return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').toLowerCase())
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (normalized === '') {
+    return true
+  }
+  return ['1', 'true', 'yes', 'on'].includes(normalized)
 }
 
 export const V3_ENABLED = isV3Enabled(

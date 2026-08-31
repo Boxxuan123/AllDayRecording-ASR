@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-from allday_asr.infrastructure.sqlite.connection import connect_sqlite
+from allday_asr.infrastructure.sqlite.connection import (
+    connect_sqlite,
+    connect_sqlite_read_only,
+)
 from allday_asr.infrastructure.sqlite.migration_runner import (
     LATEST_SCHEMA_VERSION,
     MigrationHooks,
@@ -336,8 +339,9 @@ def _backfill_v2_source_graph(
 class Database:
     """Compatibility facade with an explicit initialization lifecycle."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, read_only: bool = False):
         self.path = path.resolve()
+        self.read_only = read_only
         self.sessions = SessionRepository(
             self.connect,
             now=utc_now,
@@ -390,9 +394,19 @@ class Database:
         database.initialize()
         return database
 
+    @classmethod
+    def open_read_only(cls, path: Path) -> Database:
+        """Open an existing V2 database without migrations or write-capable handles."""
+
+        database = cls(path.resolve(strict=True), read_only=True)
+        with database.connect() as connection:
+            connection.execute("SELECT 1").fetchone()
+        return database
+
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        with connect_sqlite(self.path) as connection:
+        connector = connect_sqlite_read_only if self.read_only else connect_sqlite
+        with connector(self.path) as connection:
             yield connection
 
     def initialize(self) -> None:

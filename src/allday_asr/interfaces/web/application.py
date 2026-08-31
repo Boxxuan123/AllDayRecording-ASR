@@ -28,10 +28,12 @@ class WebApplication(
         config_path: Path,
         *,
         token: str | None = None,
+        read_only: bool = False,
     ):
         self.database_path = database_path.resolve()
         self.config_path = config_path.resolve()
         self.token = token or secrets.token_urlsafe(32)
+        self.read_only = read_only
         self.host = "127.0.0.1"
         self.port = 0
         self.job_registry = JobRegistry()
@@ -45,4 +47,6 @@ class WebApplication(
         return f"http://{self.host}:{self.port}"
 
     def database(self) -> Database:
+        if self.read_only:
+            return Database.open_read_only(self.database_path)
         return Database.open(self.database_path)

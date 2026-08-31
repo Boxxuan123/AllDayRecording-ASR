@@ -99,7 +99,7 @@ export interface Utterance {
   end_ms: number
   text: string
   revision: number
-  status: string
+  status: 'active' | 'stale'
   evidence: Record<string, unknown>
 }
 

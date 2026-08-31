@@ -9,6 +9,11 @@ from typing import Any
 
 from allday_asr.paths import PROJECT_ROOT
 from allday_asr.v3 import CONTRACT_VERSION, PROJECTION_VERSION
+from allday_asr.v3.adapters.sqlite.migrations import MIGRATIONS
+from allday_asr.v3.contracts import (
+    UTTERANCE_DTO_SCHEMA,
+    validate_utterance_dto,
+)
 from allday_asr.v3.contracts.decoders import KNOWN_ENUMS, decode_contract_fixture
 
 
@@ -23,6 +28,7 @@ class V3ContractTests(unittest.TestCase):
         self.assertEqual(manifest["openapi_version"], "3.1.0")
 
         entries = [
+            manifest["release_lock"],
             *manifest["schemas"].values(),
             *manifest["apis"].values(),
             *manifest["fixtures"].values(),
@@ -39,6 +45,20 @@ class V3ContractTests(unittest.TestCase):
                 (CONTRACT_ROOT / entry["path"]).read_bytes()
             ).hexdigest()
             self.assertEqual(entry["sha256"], digest, entry["path"])
+
+        release = _read_json(CONTRACT_ROOT / "release-lock.json")
+        self.assertTrue(release["frozen"])
+        self.assertEqual(release["release_version"], CONTRACT_VERSION)
+        self.assertEqual(release["contract_version"], CONTRACT_VERSION)
+        self.assertEqual(release["projection_version"], PROJECTION_VERSION)
+        self.assertEqual(
+            release["core_schema_version"], max(item.version for item in MIGRATIONS)
+        )
+        self.assertEqual(release["phone_projection_schema_version"], 4)
+        self.assertEqual(
+            release["default_entries"],
+            {"desktop": "v3", "phone": "v3", "legacy": "read_only"},
+        )
 
     def test_json_documents_parse_and_external_refs_resolve(self) -> None:
         for path in CONTRACT_ROOT.rglob("*.json"):
@@ -65,6 +85,51 @@ class V3ContractTests(unittest.TestCase):
             )
         self.assertRegex(fixture["audio_asset"]["sha256"], r"^[0-9a-f]{64}$")
         self.assertNotIn("path", fixture["audio_asset"])
+
+    def test_utterance_dto_is_canonical_and_runtime_validated(self) -> None:
+        schema = _read_json(CONTRACT_ROOT / "schemas" / "utterance.schema.json")
+        fixture = _read_json(CONTRACT_ROOT / "fixtures" / "core-resources.json")
+        utterance = fixture["utterance"]
+        changed = fixture["device_sync_response"]["changes"][0]["resource"]
+
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(set(schema["required"]), set(UTTERANCE_DTO_SCHEMA["required"]))
+        self.assertEqual(
+            set(schema["properties"]), set(UTTERANCE_DTO_SCHEMA["properties"])
+        )
+        self.assertEqual(
+            schema["properties"]["status"],
+            UTTERANCE_DTO_SCHEMA["properties"]["status"],
+        )
+        self.assertEqual(validate_utterance_dto(utterance), utterance)
+        self.assertEqual(validate_utterance_dto(changed), changed)
+
+        invalid_values = []
+        for name, replacement in (
+            ("missing speaker_label", {key: value for key, value in utterance.items() if key != "speaker_label"}),
+            ("reversed range", {**utterance, "end_ms": utterance["start_ms"]}),
+            ("unknown status", {**utterance, "status": "future"}),
+            ("invalid id", {**utterance, "utterance_id": "utterance-1"}),
+            ("extra field", {**utterance, "run_id": "not-on-wire"}),
+        ):
+            invalid_values.append((name, replacement))
+        for name, value in invalid_values:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                validate_utterance_dto(value)
+
+        desktop = _read_json(
+            CONTRACT_ROOT / "openapi" / "desktop-api.openapi.json"
+        )
+        session_utterance = desktop["components"]["schemas"]["SessionDetail"][
+            "properties"
+        ]["utterances"]["items"]
+        correction = desktop["paths"][
+            "/api/v3/utterances/{utterance_id}/corrections"
+        ]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(
+            session_utterance, {"$ref": "../schemas/utterance.schema.json"}
+        )
+        self.assertEqual(correction, session_utterance)
 
     def test_python_decodes_both_shared_fixtures(self) -> None:
         for fixture_name in ("core-resources.json", "forward-enums.json"):

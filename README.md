@@ -2,7 +2,30 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-当前 **可评测的一键离线日记 V1** 仍可完整运行；V2-A.1/V2-W.1 已补上通用多分片清单准入、内容对象与文件实例分离、session-native C/D/E、自动显存档位、不可覆盖的逐实例备份、恢复演练、会话准入门和 SQLite 持久工作流。V2-C 已完成 Qwen3-ASR-1.7B 强制对齐和 Fun-ASR-Nano 第二假设；V2-D 已完成 Community-1 重叠/互斥时间轴和 token-to-speaker；V2-E.0.2 已实现 episode/utterance/scene 与四轨证据。项目运行时仍未接入云端 LLM。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。V2 不以实时性或小模型为目标；之后需补充日级说话人处理，再接真实云端 provider 和 Watch 同步。
+V3.0-G 已把 V3 Core、版本化 Desktop API 和独立前端设为默认入口。V2-A.1 至 V2-E.0.2 的模型、证据和评测能力仍完整保留，但只通过 `allday-asr legacy ...` 作为可执行回退或 V3 adapter 使用；Legacy 网页强制 query-only，拒绝所有写请求。项目运行时仍未接入云端 LLM。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。
+
+## V3.0 默认入口与回退
+
+```powershell
+# V3 Desktop 默认入口；仅监听本机并只调用 /api/v3
+allday-asr web
+
+# 默认启用 /device/v3 的 Phone 接收、上传和增量同步服务
+allday-asr device receive
+
+# V2 页面和命令只在明确的 Legacy 命名空间下提供
+allday-asr legacy --help
+allday-asr legacy web
+```
+
+V3.0 的契约、Core schema、Phone projection schema 和默认入口冻结在
+`contracts/v3/release-lock.json`。本次真实 V2 数据切换使用 `release-prepare` 创建两份
+逐文件 SHA-256 校验、不可覆盖且只读的数据库/音频快照；`release-verify` 可随时复算证据。
+生产 Device listener 还必须通过 `ALLDAY_V3_DEPLOYMENT=production`、真实 Passkey RP ID
+和可信 origin 的 fail-closed 校验。
+
+真实迁移证据、回退步骤与尚待执行的生产/三端真机签字项见
+[V3.0-G 迁移、切换与发布验收](docs/V3/V3.0-G-migration-cutover-release.md)。
 
 实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，新分片正式使用前的堵点和准入顺序见 [新音频正式使用前准入审计](docs/new-audio-production-readiness.md)。V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0.2 Episode 证据层](docs/v2-e0-semantic-evidence.md)。
 
@@ -21,7 +44,7 @@ PyTorch 使用 CUDA 专用 wheel，应根据显卡和 CUDA 环境单独安装，
 python -m pip install -e . --no-deps
 
 # 检查 Python、FFmpeg、模型依赖和真实 CUDA 运算
-allday-asr doctor
+allday-asr legacy doctor
 ```
 
 ## 手机到电脑文件接收
@@ -29,7 +52,7 @@ allday-asr doctor
 电脑端已经提供独立的局域网接收服务；它不会把仅限本机的网页工作台或数据库接口开放给手机：
 
 ```powershell
-allday-asr transfer receive
+allday-asr device receive
 ```
 
 终端会显示配对二维码路径、局域网 HTTPS 地址、配对 CA 指纹和接收目录。手机首次扫码后用 Passkey 授权登记 HUKS 设备公钥；之后电脑通过 mDNS 广播当前地址，手机用稳定接收端标识自动发现，并以设备私钥静默签署一次性挑战。切换 Wi-Fi 不需要改地址或重新认证。协议同时支持按原相对路径保存、逐文件 SHA-256 完整性校验、幂等重试和服务重启后的断点续传；最终文件默认进入 `data\phone-inbox`，同路径的不同内容永不覆盖。接收服务默认拒绝明文 HTTP。
@@ -41,7 +64,7 @@ allday-asr transfer receive
 需显式接受 shadow 模式：
 
 ```powershell
-allday-asr transfer receive --auto-workflow --workflow-shadow
+allday-asr device receive --auto-workflow --workflow-shadow
 ```
 
 正式 production 自动流程改用
@@ -55,17 +78,17 @@ schema v11 在原有 source/session 图上增加 `source_instance` 和不可变 
 
 ```powershell
 # 查看永久原始对象和对应会话
-allday-asr sources
+allday-asr legacy sources
 
 # 只读校验 SHA-256、字节数、时长、编码、采样率和声道
-allday-asr source-audit
+allday-asr legacy source-audit
 
 # 为会话 1 规划 5 分钟核心窗口和两侧 5 秒上下文；只规划，不落盘 PCM
-allday-asr session-windows 1 --window-seconds 300 --context-seconds 5
+allday-asr legacy session-windows 1 --window-seconds 300 --context-seconds 5
 
 # 导入采集端清单；重复导入同一清单返回同一个 session_id
-allday-asr session import-manifest <session-manifest.json>
-allday-asr session list
+allday-asr legacy session import-manifest <session-manifest.json>
+allday-asr legacy session list
 ```
 
 逻辑窗口可以跨越多个未来 Watch 5 分钟块；只有模型真正运行时才临时解码当前窗口，退出后立即删除。当前 V1 已有的整段标准化 WAV 保留用于兼容和复现，但 V2-A 不再创建新的长期整段 PCM。
@@ -76,16 +99,16 @@ schema v5 将真值、预测快照和报告都绑定到同一个不可变输入�
 
 ```powershell
 # 无损迁移已有 15 分钟 V1 标注
-allday-asr benchmark migrate-v1-truth `
+allday-asr legacy benchmark migrate-v1-truth `
   state\evaluations\recording-000001\baseline-first-15m.jsonl
 
 # 冻结当前 V1 结果、运行并比较 benchmark
-allday-asr benchmark snapshot-v1 1 --name v1-sensevoice-current
-allday-asr benchmark run 1 1
-allday-asr benchmark compare 1
+allday-asr legacy benchmark snapshot-v1 1 --name v1-sensevoice-current
+allday-asr legacy benchmark run 1 1
+allday-asr legacy benchmark compare 1
 
 # 为真正穷尽式的 VAD/DER 标注创建新模板
-allday-asr benchmark init-truth 1 --name first-15m-exhaustive --end 15:00
+allday-asr legacy benchmark init-truth 1 --name first-15m-exhaustive --end 15:00
 ```
 
 当前迁移基线包含 277 条连续时间事实和 971 条冻结预测，CER 为 `14.36%`。旧标注不是穷尽式 VAD/说话人真值，因此 VAD-F1、DER/JER 显示 `N/A`，不会把未标时间错误地当成非语音。完整格式与指标定义见 [V2-B 指南](docs/v2-b-continuous-benchmark.md)。
@@ -100,16 +123,16 @@ V2-C.3 全量 run 10 也已在 8 GB 上完成：33+33 份假设、312 个门控�
 
 ```powershell
 # 默认 auto：按实际显存选择 batch；模型、BF16 精度和证据规则不变
-allday-asr asr-v2 run 1
+allday-asr legacy asr run 1
 
 # 需要时也可以显式固定档位
-allday-asr asr-v2 run 1 --profile compatible-8gb
-allday-asr asr-v2 run 1 --profile quality-16gb
+allday-asr legacy asr run 1 --profile compatible-8gb
+allday-asr legacy asr run 1 --profile quality-16gb
 
 # 冻结主假设并与 truth set 1 / V1 基线比较
-allday-asr asr-v2 snapshot <run-id> --name qwen3-asr-1.7b-v2c
-allday-asr benchmark run 1 <prediction-set-id>
-allday-asr benchmark compare 1
+allday-asr legacy asr snapshot <run-id> --name qwen3-asr-1.7b-v2c
+allday-asr legacy benchmark run 1 <prediction-set-id>
+allday-asr legacy benchmark compare 1
 ```
 
 完整配置、续跑语义、边界策略和依赖固定原因见 [V2-C 指南](docs/v2-c-quality-asr.md)。
@@ -120,14 +143,14 @@ schema v7 将说话人时间轴与 V1 VAD segments 解耦，同时保存允许�
 
 ```powershell
 hf auth login  # 首次下载前先在 Community-1 页面接受条款；也可设置 HF_TOKEN
-allday-asr diarization-v2 run 1 --asr-run 10
-allday-asr diarization-v2 status <run-id>
-allday-asr diarization-v2 snapshot <run-id>
-allday-asr diarization-v2 source-truth 1 --start 17:00 --end 17:14 --source media_playback --name v2d1-candidate01-media-17m
-allday-asr diarization-v2 refine 1 --truth-set 2 --truth-set 3
-allday-asr diarization-v2 identity-audit 1 --truth-set 1
-allday-asr diarization-v2 mine-identities 1 --truth-set 1 --identity father
-allday-asr diarization-v2 sync-identity-references --identity father
+allday-asr legacy diarization run 1 --asr-run 10
+allday-asr legacy diarization status <run-id>
+allday-asr legacy diarization snapshot <run-id>
+allday-asr legacy diarization source-truth 1 --start 17:00 --end 17:14 --source media_playback --name v2d1-candidate01-media-17m
+allday-asr legacy diarization refine 1 --truth-set 2 --truth-set 3
+allday-asr legacy diarization identity-audit 1 --truth-set 1
+allday-asr legacy diarization mine-identities 1 --truth-set 1 --identity father
+allday-asr legacy diarization sync-identity-references --identity father
 ```
 
 音频仍只在本地处理，pyannote telemetry 已关闭；HF token 不进入配置或数据库。完整模型选择、融合阈值和评测边界见 [V2-D 指南](docs/v2-d-speaker-timeline.md)。
@@ -141,11 +164,11 @@ V2-D.3 run 17 复用 Community-1 内置 WeSpeaker ResNet34，把父亲 5.970 秒
 schema v10 将 V2-C committed token、V2-D 匿名声簇、冻结的现场/电视来源、区间级真实身份和永久原音坐标组织成供应商无关的本地证据底账。启发式长容器只叫 episode，不再假装是完整对话；utterance 是 provider 唯一主文本，scene/claim/action 才是 LLM 输出。匿名声簇永远不是人物身份，120 秒只用于网页回听。当前先以 Codex manual record/replay 验收同一请求/响应契约，项目运行时不调用云端 API。
 
 ```powershell
-allday-asr semantic-v2 build 1
-allday-asr semantic-v2 export 1 state\evaluations\session-000001\v2e02-request.json
-allday-asr semantic-v2 replay 1 state\evaluations\session-000001\v2e02-response.json
-allday-asr semantic-v2 status 1
-allday-asr web
+allday-asr legacy semantic build 1
+allday-asr legacy semantic export 1 state\evaluations\session-000001\v2e02-request.json
+allday-asr legacy semantic replay 1 state\evaluations\session-000001\v2e02-response.json
+allday-asr legacy semantic status 1
+allday-asr legacy web
 ```
 
 run 20 修复了 120 秒硬切，但把 37 分钟声学容器误称为“完整对话”，且尚未把 source/identity 送入语义层。最终 run 22 在同一 2,192 个 committed token 上重建为 2 个 episode，并由当前 Codex 会话保守提取 9 个 scene、1 个有身份区间支撑的 claim、0 个 action 和 7 个 unresolved；历史 run 均未删除。该结果是不可变的手工 LLM 记录/回放，不冒充已接入的固定模型 API。稳定实体、验证规则、隐私边界和 V2-E.1 进入条件见 [V2-E.0.2 指南](docs/v2-e0-semantic-evidence.md)。
@@ -154,35 +177,35 @@ run 20 修复了 120 秒硬切，但把 37 分钟声学容器误称为“完整�
 
 ```powershell
 # 只依赖原音指纹、时长和 seed 生成连续盲标范围；任务不含模型输出
-allday-asr benchmark init-blind 1 --name watch-blind-30m-v2c1-20260828 `
+allday-asr legacy benchmark init-blind 1 --name watch-blind-30m-v2c1-20260828 `
   --duration 30:00 --chunk 5:00 --seed v2c1-primary-20260828
 
 # 启动不读取数据库和模型结果的本地盲标网页；默认自动打开浏览器
-allday-asr benchmark annotate-blind `
+allday-asr legacy benchmark annotate-blind `
   state\evaluations\session-000001\watch-blind-30m-v2c1-20260828-blind-v2c1\truth-draft.jsonl
 
 # V2-C.2：用原始波形声学活动排序生成 10 个分散的一分钟块
-allday-asr benchmark init-blind-v2c2 1 `
+allday-asr legacy benchmark init-blind-v2c2 1 `
   --name watch-speech-enriched-10m-v2c2-20260828 `
   --review-duration 10:00 --chunk 1:00 --minimum-gap 1:00 `
   --seed v2c2-primary-20260828
 
 # 标注实际 V2-C.2 任务
-allday-asr benchmark annotate-blind `
+allday-asr legacy benchmark annotate-blind `
   state\evaluations\session-000001\watch-speech-enriched-10m-v2c2-20260828-blind-v2c2\truth-draft.jsonl
 
 # 在同一人工 transcript 边界上比较纯 ASR
-allday-asr benchmark oracle-asr 1 --model sensevoice --name oracle-sensevoice
-allday-asr benchmark oracle-asr 1 --model qwen --name oracle-qwen
-allday-asr benchmark compare-oracle-pair 1 <baseline-set> <candidate-set> `
+allday-asr legacy benchmark oracle-asr 1 --model sensevoice --name oracle-sensevoice
+allday-asr legacy benchmark oracle-asr 1 --model qwen --name oracle-qwen
+allday-asr legacy benchmark compare-oracle-pair 1 <baseline-set> <candidate-set> `
   --samples 200000 --itn
 
 # 人工无法完成全部窗口时，只冻结评测前已标 complete 的明确预备子集
-allday-asr benchmark freeze-completed <truth-draft.jsonl> `
+allday-asr legacy benchmark freeze-completed <truth-draft.jsonl> `
   --name v2c2a-preliminary
 
 # 将全量 Qwen token 裁剪到非连续 review-region 后再做端到端评分
-allday-asr asr-v2 snapshot <run-id> --truth-set <truth-set-id> `
+allday-asr legacy asr snapshot <run-id> --truth-set <truth-set-id> `
   --name qwen-review-scoped
 ```
 
@@ -198,21 +221,21 @@ V2-C.2 对整段不可变 PCM 只计算 100 ms RMS 活动、持续活动、P90/R
 
 ```powershell
 # 1. 原子导入后先检查；没有独立备份时应得到 shadow_ready
-allday-asr session readiness <session-id>
+allday-asr legacy session readiness <session-id>
 
 # 2. 目标应是真正的独立设备或网络位置；命令从不覆盖既有备份
-allday-asr session backup <session-id> <backup-root> `
+allday-asr legacy session backup <session-id> <backup-root> `
   --storage-kind independent_device
 
 # 3. 当前字节和恢复演练通过后应得到 production_ready
-allday-asr session readiness <session-id>
+allday-asr legacy session readiness <session-id>
 
 # 4. 默认执行入口强制要求 production_ready
-allday-asr workflow-v2 run --session <session-id>
-allday-asr workflow-v2 status <session-id>
+allday-asr legacy workflow run --session <session-id>
+allday-asr legacy workflow status <session-id>
 
 # 只有明确接受风险的受监控实验才绕过生产门；仍会阻断损坏/gap/overlap
-allday-asr workflow-v2 run --session <session-id> --shadow
+allday-asr legacy workflow run --session <session-id> --shadow
 ```
 
 备份目录由会话键与输入指纹稳定寻址；既有目录只校验不覆盖，每个相同内容的真实文件实例仍分别备份。校验失败会撤销旧的恢复资格。阶段状态和子 run ID 持久保存在 SQLite；进程退出后仍可检查。输入指纹、阶段配置和本地模型签名一致时才复用完成阶段，V2-C 的失败 run 可按既有窗口 checkpoint 续跑。
@@ -226,14 +249,14 @@ allday-asr workflow-v2 run --session <session-id> --shadow
 所有一键参数集中在 [allday-asr.toml](allday-asr.toml)。先校验配置和数据库版本：
 
 ```powershell
-allday-asr config-show
+allday-asr legacy config-show
 ```
 
 可以直接传入新音频，也可以复用已经入库的 `recording_id`：
 
 ```powershell
-allday-asr daily-run data\watch_new.m4a
-allday-asr daily-run 1
+allday-asr legacy daily-run data\watch_new.m4a
+allday-asr legacy daily-run 1
 ```
 
 `daily-run` 是旧单文件 V1 兼容入口，会安全执行 ingest → process → diarization → 本人候选 → timeline → export，并生成 `daily-run.md/json`。它不是上面的 V2 分片会话工作流。重复运行时：
@@ -249,7 +272,7 @@ allday-asr daily-run 1
 启动本地网页：
 
 ```powershell
-allday-asr web
+allday-asr legacy web
 ```
 
 命令会自动打开一个带临时令牌的本机地址。网页默认按录音会话展示，新的
@@ -267,7 +290,7 @@ manifest 分片音频完成 V2 后会直接出现在会话下拉框和概览中�
 服务固定监听 `127.0.0.1`，不会对局域网开放；录音和真值不会上传。完整说明见 [本地网页工作台](docs/web-console.md)。
 
 工作台源码位于 `all_day_recording_front/`，使用 Vue 3、TypeScript 与 Vite。日常运行
-`allday-asr web` 不需要 Node：仓库同时保存 Vite 生成到
+`allday-asr legacy web` 不需要 Node：仓库同时保存 Vite 生成到
 `src/allday_asr/web_assets/` 的生产产物，Python wheel 也会携带这些文件。只有修改前端时
 才需要执行：
 
@@ -288,39 +311,39 @@ Python 侧的 `allday_asr.web` 是兼容入口；实际实现位于
 
 ```powershell
 # 1. 导入并去重
-allday-asr ingest data\watch_1787564356920.m4a
+allday-asr legacy ingest data\watch_1787564356920.m4a
 
 # 2. 标准化、VAD 和可断点续跑的 ASR
-allday-asr process 1 --max-segments 3
-allday-asr process 1
+allday-asr legacy process 1 --max-segments 3
+allday-asr legacy process 1
 
 # 3. 生成录音内匿名说话人标签；短片段和弱聚类保持 unknown
-allday-asr diarize 1
+allday-asr legacy diarize 1
 
 # 4. 首次使用时，从只有本人声音的独立录音建立声纹
-allday-asr enroll-self data\self-voice
-allday-asr voice-library sync
+allday-asr legacy enroll-self data\self-voice
+allday-asr legacy voice-library sync
 
 # 5. 只生成本人候选，不直接写入身份
-allday-asr self-candidates 1 --min-segment-seconds 0.8 --threshold 0.45 --top 30
+allday-asr legacy self-candidates 1 --min-segment-seconds 0.8 --threshold 0.45 --top 30
 
 # 6. 试听并修改 outputs\recording-000001\self-candidates\README.md 后导入
-allday-asr import-self-review 1 --threshold 0.36
+allday-asr legacy import-self-review 1 --threshold 0.36
 
 # 7. 将本次人工真值积累到留出集/负样本库，并查看状态
-allday-asr voice-library accumulate 1 --split holdout
-allday-asr voice-library status
+allday-asr legacy voice-library accumulate 1 --split holdout
+allday-asr legacy voice-library status
 
 # 8. 生成事件时间线和完整转写
-allday-asr timeline 1
-allday-asr export 1 --format markdown
-allday-asr export 1 --format jsonl
+allday-asr legacy timeline 1
+allday-asr legacy export 1 --format markdown
+allday-asr legacy export 1 --format jsonl
 ```
 
 默认中文识别；中英混说测试可使用：
 
 ```powershell
-allday-asr process 1 --language auto --reprocess-asr
+allday-asr legacy process 1 --language auto --reprocess-asr
 ```
 
 `--reprocess-asr` 会清除并重跑派生转写，普通续跑不要加这个参数。
@@ -338,22 +361,22 @@ allday-asr process 1 --language auto --reprocess-asr
 
 ```powershell
 # 导出匿名聚类试听样本，仅用于分析聚类质量
-allday-asr speaker-samples 1 --speaker speaker_01 --per-speaker 20
+allday-asr legacy speaker-samples 1 --speaker speaker_01 --per-speaker 20
 
 # 仅在逐段确认整个聚类纯净时才允许整簇标为本人
-allday-asr mark-self 1 speaker_03 --confirmed-pure
+allday-asr legacy mark-self 1 speaker_03 --confirmed-pure
 
 # 撤销该录音的本人绑定，保留独立声纹档案
-allday-asr unmark-self 1
+allday-asr legacy unmark-self 1
 
 # 只用于旧结果：在建立任何身份绑定前重新应用质量门槛
-allday-asr audit-speakers 1
+allday-asr legacy audit-speakers 1
 ```
 
 经对方知情同意后，可以登记固定人物的独立声纹：
 
 ```powershell
-allday-asr voice-library enroll-person "妈妈" data\voice-library\mother
+allday-asr legacy voice-library enroll-person "妈妈" data\voice-library\mother
 ```
 
 这一步目前只建立人物档案和样本库；**跨天自动识别该人物尚未实现**。V2-D.3 已能把冻结真值和候选人工结论保存为跨录音可复用的永久原音坐标参考集，但不会因累计时长接近门槛就自动生成声纹或绑定身份。日常对话无需要求所有人预先上传声纹，默认保留为会话级匿名人物。
@@ -364,16 +387,16 @@ allday-asr voice-library enroll-person "妈妈" data\voice-library\mother
 
 ```powershell
 # 前 15 分钟；start/end 也支持 MM:SS 和 HH:MM:SS
-allday-asr evaluation init 1 --name baseline-first-15m --start 0 --end 15:00
+allday-asr legacy evaluation init 1 --name baseline-first-15m --start 0 --end 15:00
 ```
 
 人工填写 `reference_text`、`reference_speaker`、`reference_identity` 和 `key_facts` 后运行：
 
 ```powershell
-allday-asr evaluation run state\evaluations\recording-000001\baseline-first-15m.jsonl
+allday-asr legacy evaluation run state\evaluations\recording-000001\baseline-first-15m.jsonl
 ```
 
-也可以启动 `allday-asr web`，在“评测标注”页逐段试听和保存，不必手工编辑 JSONL。
+也可以启动 `allday-asr legacy web`，在只读页面逐段试听；V3.0-G 后 Legacy 页面不再保存修改，新增评测数据必须使用明确的 Legacy CLI。
 
 报告包含 CER、说话人成对 F1、本人识别指标和关键事实召回率。真值和报告分别保存在已被 Git 忽略的 `state/` 与 `outputs/`。
 
@@ -383,15 +406,15 @@ allday-asr evaluation run state\evaluations\recording-000001\baseline-first-15m.
 
 ```powershell
 # 查看待确认项
-allday-asr actions 1 --status pending
+allday-asr legacy actions 1 --status pending
 
 # 确认、忽略，或同时人工修订字段
-allday-asr action-review 3 --status confirmed
-allday-asr action-review 3 --status confirmed `
+allday-asr legacy action-review 3 --status confirmed
+allday-asr legacy action-review 3 --status confirmed `
   --title "与老师见面" `
   --scheduled-at "2026-08-29T10:00:00+08:00" `
   --location "学校"
-allday-asr action-review 3 --status dismissed
+allday-asr legacy action-review 3 --status dismissed
 ```
 
 确认操作目前只更新本地候选状态，**不会写入任何真实日历或待办应用**。
@@ -403,7 +426,7 @@ allday-asr action-review 3 --status dismissed
 - SQLite、原音、转写、试听片段和声纹均不提交 Git。
 - 原始录音是永久保存的不可变证据，只能读取；所有派生音频写入独立缓存或 `outputs/`。
 - 当前 V1 已有的整段标准化 WAV 继续保留；V2-A 已支持按逻辑窗口临时解码，不再新增长期整段 PCM。
-- 任意片段可用 `allday-asr clip <segment-id>` 导出 WAV 回听。
+- 任意片段可用 `allday-asr legacy clip <segment-id>` 导出 WAV 回听。
 
 在持续录制他人前，应遵守当地法律，并在适当场景中完成告知和同意。
 

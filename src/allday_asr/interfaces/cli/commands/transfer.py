@@ -12,6 +12,7 @@ from allday_asr.interfaces.transfer.server import (
     serve_transfer,
 )
 from allday_asr.paths import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH, PROJECT_ROOT
+from allday_asr.v3.config import DeploymentMode, V3ConfigurationError, V3Settings
 
 
 DEFAULT_INBOX = PROJECT_ROOT / "data" / "phone-inbox"
@@ -152,9 +153,9 @@ def receive_command(
         help="自动导入和 V2 工作流使用的 SQLite 数据库。",
     ),
     enable_v3: bool = typer.Option(
-        False,
-        "--enable-v3",
-        help="启用仅限已配对 Phone 的 V3 Device API 和投影同步。",
+        True,
+        "--v3/--legacy-only",
+        help="默认启用 V3 Device API；仅回退诊断时才使用 --legacy-only。",
     ),
     v3_state_dir: Path = typer.Option(
         DEFAULT_V3_STATE_DIR,
@@ -167,6 +168,19 @@ def receive_command(
 ) -> None:
     """启动独立于本机网页工作台的可断点续传接收服务。"""
     try:
+        if enable_v3:
+            settings = V3Settings.from_environment()
+            if not settings.enabled:
+                raise V3ConfigurationError(
+                    "V3 Device API 已被 ALLDAY_V3_ENABLED=0 显式禁用"
+                )
+            if settings.deployment_mode is DeploymentMode.PRODUCTION and (
+                passkey_rp_id != settings.passkey_rp_id
+                or passkey_origin not in settings.passkey_origins
+            ):
+                raise V3ConfigurationError(
+                    "production Device listener 的 RP ID/origin 必须与发布环境完全一致"
+                )
         serve_transfer(
             inbox=inbox,
             host=host,

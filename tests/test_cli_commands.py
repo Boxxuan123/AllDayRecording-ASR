@@ -22,44 +22,44 @@ class CliCommandModuleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.runner = CliRunner()
 
-    def test_v2_command_groups_keep_existing_names_and_help(self) -> None:
+    def test_v2_command_groups_live_under_explicit_legacy_entry(self) -> None:
         cases = {
             "session": ("import-manifest", "backup-verify", "readiness"),
-            "transfer": ("receive",),
-            "workflow-v2": ("run", "status"),
-            "asr-v2": ("run", "status", "snapshot"),
-            "diarization-v2": (
+            "workflow": ("run", "status"),
+            "asr": ("run", "status", "snapshot"),
+            "diarization": (
                 "run",
                 "refine",
                 "identity-audit",
                 "mine-identities",
             ),
-            "semantic-v2": ("build", "export", "replay", "status"),
+            "semantic": ("build", "export", "replay", "status"),
         }
         for group, command_names in cases.items():
-            result = self.runner.invoke(app, [group, "--help"])
+            result = self.runner.invoke(app, ["legacy", group, "--help"])
             self.assertEqual(result.exit_code, 0, result.output)
             for command_name in command_names:
                 self.assertIn(command_name, result.output, group)
 
     def test_run_options_remain_visible_after_command_split(self) -> None:
         cases = {
-            "transfer": (
+            "device": (
                 "--auto-workflow",
                 "--workflow-shadow",
-                "--workflow-backup-root",
+                "--v3",
             ),
-            "workflow-v2": ("--session", "--shadow", "--profile"),
-            "asr-v2": ("--session", "--max-windows", "--resume-run-id"),
-            "diarization-v2": ("--session", "--asr-run", "--model-path"),
-            "semantic-v2": ("--session", "--episode-gap-seconds"),
+            "workflow": ("--session", "--shadow", "--profile"),
+            "asr": ("--session", "--max-windows", "--resume-run-id"),
+            "diarization": ("--session", "--asr-run", "--model-path"),
+            "semantic": ("--session", "--episode-gap-seconds"),
         }
         for group, options in cases.items():
             command = {
-                "semantic-v2": "build",
-                "transfer": "receive",
+                "semantic": "build",
+                "device": "receive",
             }.get(group, "run")
-            result = self.runner.invoke(app, [group, command, "--help"])
+            prefix = [] if group == "device" else ["legacy"]
+            result = self.runner.invoke(app, [*prefix, group, command, "--help"])
             self.assertEqual(result.exit_code, 0, result.output)
             for option in options:
                 self.assertIn(option, result.output, group)
@@ -76,7 +76,7 @@ class CliCommandModuleTests(unittest.TestCase):
             "voice-library": ("sync", "status", "accumulate", "enroll-person"),
         }
         for group, command_names in groups.items():
-            result = self.runner.invoke(app, [group, "--help"])
+            result = self.runner.invoke(app, ["legacy", group, "--help"])
             self.assertEqual(result.exit_code, 0, result.output)
             for command_name in command_names:
                 self.assertIn(command_name, result.output, group)
@@ -85,18 +85,35 @@ class CliCommandModuleTests(unittest.TestCase):
         self.assertEqual(root.exit_code, 0, root.output)
         for command_name in (
             "web",
+            "desktop",
+            "status",
+            "migrate",
+            "legacy-import",
+            "release-prepare",
+            "release-verify",
+            "worker",
+            "device",
+            "legacy",
+        ):
+            self.assertIn(command_name, root.output)
+        for legacy_only in ("daily-run", "ingest", "recordings", "timeline"):
+            self.assertNotIn(legacy_only, root.output)
+
+        legacy = self.runner.invoke(app, ["legacy", "--help"])
+        self.assertEqual(legacy.exit_code, 0, legacy.output)
+        for command_name in (
+            "web",
             "config-show",
             "daily-run",
             "doctor",
             "ingest",
             "recordings",
             "process",
-            "diarize",
             "timeline",
             "export",
             "clip",
         ):
-            self.assertIn(command_name, root.output)
+            self.assertIn(command_name, legacy.output)
 
     def test_root_cli_no_longer_defines_extracted_commands(self) -> None:
         tree = ast.parse(CLI_PATH.read_text(encoding="utf-8"), filename=str(CLI_PATH))

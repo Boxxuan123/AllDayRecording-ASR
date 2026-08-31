@@ -169,8 +169,8 @@ test('decodes the canonical V3 fixture and degrades future enums', () => {
   }
 })
 
-test('keeps the parallel V3 frontend feature disabled by default', () => {
-  assert.equal(isV3Enabled(undefined), false)
+test('enables the V3 frontend by default with an explicit rollback switch', () => {
+  assert.equal(isV3Enabled(undefined), true)
   assert.equal(isV3Enabled('0'), false)
   assert.equal(isV3Enabled('true'), true)
 })

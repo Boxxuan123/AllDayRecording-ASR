@@ -766,6 +766,17 @@ class SqliteEvidenceProjectionRepository:
             raise KeyError(f"utterance does not exist: {utterance_id}")
         return _utterance(row)
 
+    def speaker_label(self, speaker_track_id: str | None) -> str | None:
+        if speaker_track_id is None:
+            return None
+        row = self.connection.execute(
+            "SELECT label FROM speaker_tracks WHERE speaker_track_id = ?",
+            (speaker_track_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"speaker track does not exist: {speaker_track_id}")
+        return str(row["label"])
+
     def revise_utterance(
         self, utterance_id: str, expected_revision: int, text: str
     ) -> Utterance:

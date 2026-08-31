@@ -48,7 +48,23 @@
         "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
         "operation": {"$ref": "primitives.schema.json#/$defs/SyncOperation"},
         "resource": {"type": ["object", "null"]}
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "resource_type": {"const": "utterance"},
+              "operation": {"const": "upsert"}
+            },
+            "required": ["resource_type", "operation"]
+          },
+          "then": {
+            "properties": {
+              "resource": {"$ref": "utterance.schema.json"}
+            }
+          }
+        }
+      ]
     },
     "SyncRequest": {
       "type": "object",
