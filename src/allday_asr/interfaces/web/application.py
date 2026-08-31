@@ -35,6 +35,8 @@ class WebApplication(
         self.host = "127.0.0.1"
         self.port = 0
         self.job_registry = JobRegistry()
+        self.workflow_job_lock = threading.Lock()
+        self.workflow_jobs: dict[int, str] = {}
         self.truth_lock = threading.Lock()
         self.audio_lock = threading.Lock()
 

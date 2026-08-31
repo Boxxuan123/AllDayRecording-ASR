@@ -1,4 +1,5 @@
 import { api } from '../api/client.js'
+import { releaseAudioWithin } from '../audio/playback.js'
 import { sessionBody, sessionQuery, state } from '../state/workspace.js'
 import { formatDuration, formatOffset, metric } from '../utils/format.js'
 import { $, node, toast } from '../workspace/dom.js'
@@ -128,6 +129,7 @@ async function createSessionEvaluation(button) {
 export async function loadEvaluation() {
   const empty = $("#evaluation-empty");
   const list = $("#segment-list");
+  releaseAudioWithin(list);
   if (!state.evaluationName) {
     state.evaluation = null;
     empty.classList.toggle("hidden", !state.recordingId);
@@ -163,6 +165,7 @@ function isTextLabeled(segment) {
 
 export function renderEvaluationSegments() {
   const container = $("#segment-list");
+  releaseAudioWithin(container);
   container.replaceChildren();
   const rows = filteredSegments();
   const pages = Math.max(1, Math.ceil(rows.length / state.pageSize));

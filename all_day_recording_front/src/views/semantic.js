@@ -1,4 +1,5 @@
 import { api } from '../api/client.js'
+import { releaseAudioWithin, replaceAudioSource } from '../audio/playback.js'
 import { sessionBody, sessionQuery, state } from '../state/workspace.js'
 import { formatOffset } from '../utils/format.js'
 import { $, node, toast } from '../workspace/dom.js'
@@ -8,6 +9,7 @@ export function renderSemantic() {
   const payload = state.semantic;
   const empty = $("#semantic-empty");
   const workspace = $("#semantic-workspace");
+  releaseAudioWithin(workspace);
   const generate = $("#generate-semantic-button");
   if (!payload?.available) {
     empty.classList.remove("hidden");
@@ -206,8 +208,7 @@ function renderSemanticReviewPlayer(candidate) {
   const player = renderAudioPlayer("当前切片", candidate.review_clips[0].audio_url, `播放语义证据 ${candidate.id} 的回听切片`, "exact");
   const audio = player.querySelector("audio");
   select.addEventListener("change", () => {
-    audio.src = select.value;
-    audio.load();
+    replaceAudioSource(audio, select.value);
   });
   wrapper.append(label, player);
   return wrapper;

@@ -27,6 +27,37 @@ export function formatDate(value) {
   }).format(parsed)
 }
 
+export function formatRecordingTime(value, timeZone) {
+  if (!value) return '录制时间未知'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  let formatter
+  try {
+    formatter = new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+      timeZone: timeZone || undefined,
+    })
+  } catch (_error) {
+    formatter = new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+  }
+  const parts = Object.fromEntries(
+    formatter.formatToParts(parsed).map((part) => [part.type, part.value]),
+  )
+  return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`
+}
+
 export function metric(value) {
   return value === null || value === undefined ? 'N/A' : Number(value).toFixed(4)
 }

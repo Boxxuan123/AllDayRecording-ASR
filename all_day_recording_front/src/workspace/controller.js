@@ -1,5 +1,10 @@
 import { api } from '../api/client.js'
 import {
+  installExclusiveAudioPlayback,
+  pauseAllAudio,
+  releaseAudioWithin,
+} from '../audio/playback.js'
+import {
   resetSessionWorkspace,
   sessionQuery,
   state,
@@ -16,11 +21,16 @@ import {
 import { renderRuns } from '../views/runs.js'
 import { generateSemantic, renderSemantic } from '../views/semantic.js'
 import { renderSessionOptions } from '../views/sessions.js'
-import { renderTimelineOverview, selectTimelineQueue } from '../views/timeline.js'
+import {
+  renderTimelineOverview,
+  selectTimelineQueue,
+  stopTimelineAudioPlayback,
+} from '../views/timeline.js'
 import { $, $$, toast } from './dom.js'
 import { setWorkspaceReloader } from './reload.js'
 
 export async function initializeWorkbench() {
+  installExclusiveAudioPlayback();
   setWorkspaceReloader(loadSessionWorkspace);
   bindNavigation();
   bindToolbar();
@@ -59,8 +69,11 @@ function bindNavigation() {
 
 function bindToolbar() {
   $("#recording-select").addEventListener("change", async (event) => {
+    stopTimelineAudioPlayback();
+    releaseAudioWithin(document);
     selectSession(Number(event.target.value));
     resetSessionWorkspace();
+    renderWorkflowButton();
     await loadSessionWorkspace();
   });
   $("#evaluation-select").addEventListener("change", async (event) => {
@@ -69,11 +82,14 @@ function bindToolbar() {
     await loadEvaluation();
   });
   $("#run-evaluation-button").addEventListener("click", runEvaluation);
-  $("#run-daily-button").addEventListener("click", refreshWorkspace);
+  $("#run-workflow-button").addEventListener("click", startQualityWorkflow);
+  $("#refresh-workspace-button").addEventListener("click", refreshWorkspace);
   $("#generate-semantic-button").addEventListener("click", generateSemantic);
 }
 
 function switchView(view) {
+  stopTimelineAudioPlayback(undefined, false);
+  pauseAllAudio();
   state.activeView = view;
   const titles = {
     timeline: "说话人时间轴",
@@ -124,6 +140,7 @@ async function loadSessionWorkspace() {
     renderRuns();
     renderTimelineOverview();
     renderSemantic();
+    renderWorkflowButton();
     await loadEvaluation();
   } catch (error) {
     toast(error.message, "error");
@@ -131,7 +148,9 @@ async function loadSessionWorkspace() {
 }
 
 async function refreshWorkspace() {
-  const button = $("#run-daily-button");
+  const button = $("#refresh-workspace-button");
+  stopTimelineAudioPlayback();
+  releaseAudioWithin(document);
   button.disabled = true;
   button.textContent = "刷新中…";
   try {
@@ -151,59 +170,83 @@ async function refreshWorkspace() {
     toast(error.message, "error");
   } finally {
     button.disabled = false;
-    button.textContent = "刷新 V2 结果";
+    button.textContent = "刷新";
   }
 }
 
+function renderWorkflowButton() {
+  const button = $("#run-workflow-button")
+  const session = state.sessions.find((item) => item.id === state.sessionId)
+  if (!session || session.kind !== 'manifest') {
+    button.disabled = true
+    button.textContent = '仅分片会话可启动 V2'
+    return
+  }
+  const databaseRunning = state.dashboard?.workflow?.status === 'running'
+  if (state.workflowJobId || databaseRunning) {
+    button.disabled = true
+    button.textContent = 'V2 运行中…'
+    return
+  }
+  button.disabled = false
+  button.textContent = session.workflow_state
+    ? '重新运行 V2（Shadow）'
+    : '启动 V2（Shadow）'
+}
 
-
-
-
-
-
-async function startDailyRun() {
-  if (!state.recordingId) return;
-  const button = $("#run-daily-button");
+async function startQualityWorkflow() {
+  const session = state.sessions.find((item) => item.id === state.sessionId)
+  if (!session || session.kind !== 'manifest') return
+  const button = $("#run-workflow-button");
   button.disabled = true;
+  button.textContent = "正在提交…";
   try {
-    const job = await api("/api/daily-run", {
+    const job = await api("/api/workflow-v2", {
       method: "POST",
-      body: JSON.stringify({ recording_id: state.recordingId }),
+      body: JSON.stringify({ session_id: state.sessionId, shadow: true }),
     });
-    showJob(job);
-    pollJob(job.id);
+    state.workflowJobId = job.id
+    showWorkflowJob(job);
+    renderWorkflowButton();
+    pollWorkflowJob(job.id);
   } catch (error) {
-    button.disabled = false;
+    state.workflowJobId = null
+    renderWorkflowButton();
     toast(error.message, "error");
   }
 }
 
-function showJob(job) {
+function showWorkflowJob(job) {
   const banner = $("#job-banner");
   banner.classList.remove("hidden");
-  $("#job-title").textContent = job.status === "completed" ? "运行完成" : "正在生成一键日记";
+  $("#job-title").textContent = job.status === "completed"
+    ? "V2 工作流已完成"
+    : "正在运行 V2 工作流";
   $("#job-detail").textContent = `${job.stage} · ${job.detail}`;
 }
 
-function pollJob(jobId) {
+function pollWorkflowJob(jobId) {
   window.clearTimeout(state.jobTimer);
   state.jobTimer = window.setTimeout(async () => {
     try {
       const job = await api(`/api/jobs/${jobId}`);
-      showJob(job);
+      showWorkflowJob(job);
       if (job.status === "completed") {
-        $("#run-daily-button").disabled = false;
-        toast(`一键日记 run #${job.result.run_id} 已完成`);
-        await loadSessionWorkspace();
+        state.workflowJobId = null
+        toast(`V2 workflow #${job.result.workflow_run_id} 已完成`);
+        await refreshWorkspace();
+        renderWorkflowButton();
         window.setTimeout(() => $("#job-banner").classList.add("hidden"), 2600);
       } else if (job.status === "failed") {
-        $("#run-daily-button").disabled = false;
-        toast(job.error || "一键运行失败", "error");
+        state.workflowJobId = null
+        renderWorkflowButton();
+        toast(job.error || "V2 工作流失败", "error");
       } else {
-        pollJob(jobId);
+        pollWorkflowJob(jobId);
       }
     } catch (error) {
-      $("#run-daily-button").disabled = false;
+      state.workflowJobId = null
+      renderWorkflowButton();
       toast(error.message, "error");
     }
   }, 900);

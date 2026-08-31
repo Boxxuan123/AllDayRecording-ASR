@@ -1,5 +1,11 @@
 import { api } from '../api/client.js'
-import { seekAudio, waitForAudioMetadata } from '../audio/playback.js'
+import {
+  audioRangeSource,
+  releaseAudio,
+  replaceAudioSource,
+  seekAudio,
+  waitForAudioMetadata,
+} from '../audio/playback.js'
 import { sessionBody, sessionQuery, state } from '../state/workspace.js'
 import { formatDuration, formatOffset } from '../utils/format.js'
 import { $, $$, node, toast } from '../workspace/dom.js'
@@ -456,6 +462,7 @@ async function loadTimelineCandidate(candidateId) {
   state.timelineSelectedId = candidateId;
   renderTimelineCandidates();
   const detail = $("#timeline-detail");
+  stopTimelineAudioPlayback(detail);
   detail.replaceChildren(node("div", "timeline-loading", "正在读取时间轴…"));
   try {
     const payload = await api(
@@ -473,6 +480,7 @@ async function loadTimelineCandidate(candidateId) {
 
 function renderTimelineDetail(item, payload) {
   const detail = $("#timeline-detail");
+  stopTimelineAudioPlayback(detail);
   detail.replaceChildren();
   const header = node("header", "timeline-detail-header");
   const heading = node("div");
@@ -629,15 +637,11 @@ function renderManualIdentityControls(item, payload) {
     );
     button.type = "button";
     button.addEventListener("click", () => {
-      const changed = (
-        selection.start_ms !== suggestion.start_ms
-        || selection.end_ms !== suggestion.end_ms
-      );
       selection.start_ms = suggestion.start_ms;
       selection.end_ms = suggestion.end_ms;
       refreshSelection(startField.input, endField.input);
-      if (changed && preview) {
-        void playManualIdentitySelection(selection, payload, preview);
+      if (preview) {
+        void playManualIdentitySelection(selection, payload, preview, previewAudio);
       }
     });
     if (suggestion.recommended) button.classList.add("recommended");
@@ -676,7 +680,7 @@ function renderManualIdentityControls(item, payload) {
   const capture = node("button", "secondary-button", "截取刚才 3 秒");
   capture.type = "button";
   capture.addEventListener("click", () => {
-    const audio = $("#timeline-detail audio");
+    const audio = $("#timeline-detail .timeline-audio-block audio");
     if (!audio) return;
     const relativeEndMs = Math.round(Math.max(1000, audio.currentTime * 1000));
     selection.end_ms = Math.min(payload.end_ms, payload.start_ms + relativeEndMs);
@@ -688,8 +692,14 @@ function renderManualIdentityControls(item, payload) {
   });
   preview = node("button", "manual-identity-preview-button", "▶ 试听所选区间");
   preview.type = "button";
-  preview.addEventListener("click", () => playManualIdentitySelection(selection, payload, preview));
-  tools.append(capture, preview);
+  const previewAudio = node("audio");
+  previewAudio.preload = "metadata";
+  previewAudio.hidden = true;
+  previewAudio.setAttribute("aria-label", "人物真值所选区间试听");
+  preview.addEventListener("click", () => (
+    playManualIdentitySelection(selection, payload, preview, previewAudio)
+  ));
+  tools.append(capture, preview, previewAudio);
   wrapper.append(tools);
 
   wrapper.append(validationCopy);
@@ -714,7 +724,7 @@ function renderManualIdentityControls(item, payload) {
   wrapper.append(node(
     "p",
     "manual-identity-guidance",
-    "切换到不同区间会自动试听一次；重复点击当前区间不会重播。需要重听可用“试听所选区间”。",
+    "点击任一区间都会从该区间起点播放；再次点击会重新播放。",
   ));
   wrapper.append(renderManualIdentityList(item, payload));
   return wrapper;
@@ -836,11 +846,11 @@ function updateManualIdentitySelection(selection, payload, startInput, endInput,
     + ` · 共 ${((selection.end_ms - selection.start_ms) / 1000).toFixed(1)} 秒`;
 }
 
-async function playManualIdentitySelection(selection, payload, button) {
-  const audio = $("#timeline-detail audio");
-  if (!audio) return;
-  const startSeconds = (selection.start_ms - payload.start_ms) / 1000;
-  const endSeconds = (selection.end_ms - payload.start_ms) / 1000;
+async function playManualIdentitySelection(selection, payload, button, audio) {
+  const source = audioRangeSource(
+    payload.audio_url, selection.start_ms, selection.end_ms,
+  );
+  const endSeconds = (selection.end_ms - selection.start_ms) / 1000;
   const previous = manualIdentityPlayback.get(audio);
   if (previous) previous.cleanup();
   let cancelled = false;
@@ -859,10 +869,16 @@ async function playManualIdentitySelection(selection, payload, button) {
   button.disabled = true;
   button.textContent = "正在准备所选区间…";
   try {
+    if (audio.getAttribute("src") !== source) {
+      replaceAudioSource(audio, source);
+    } else {
+      audio.pause();
+    }
     await waitForAudioMetadata(audio);
     audio.pause();
-    await seekAudio(audio, startSeconds);
+    await seekAudio(audio, 0);
   } catch (error) {
+    if (cancelled || !audio.isConnected) return;
     preparation.cleanup();
     toast(`无法定位所选区间：${error.message}`, "error");
     return;
@@ -872,9 +888,10 @@ async function playManualIdentitySelection(selection, payload, button) {
   const cleanup = () => {
     cancelled = true;
     if (stopTimer !== null) window.clearInterval(stopTimer);
-    audio.pause();
+    audio.removeEventListener("pause", cleanup);
     audio.removeEventListener("timeupdate", stop);
     audio.removeEventListener("ended", cleanup);
+    audio.pause();
     if (manualIdentityPlayback.get(audio)?.cleanup === cleanup) {
       manualIdentityPlayback.delete(audio);
     }
@@ -887,17 +904,19 @@ async function playManualIdentitySelection(selection, payload, button) {
       cleanup();
     }
   };
-  audio.currentTime = startSeconds;
+  audio.currentTime = 0;
+  audio.addEventListener("pause", cleanup);
   audio.addEventListener("timeupdate", stop);
   audio.addEventListener("ended", cleanup);
   manualIdentityPlayback.set(audio, {cleanup});
   button.disabled = false;
-  button.textContent = `正在播放 ${startSeconds.toFixed(1)}–${endSeconds.toFixed(1)}s`;
+  button.textContent = `正在播放 ${formatOffset(selection.start_ms)}–${formatOffset(selection.end_ms)}`;
   try {
     await audio.play();
     if (cancelled) return;
     stopTimer = window.setInterval(stop, 40);
   } catch (error) {
+    if (cancelled || !audio.isConnected) return;
     cleanup();
     toast(`无法试听所选区间：${error.message}`, "error");
   }
@@ -1065,8 +1084,14 @@ function renderPossibleReviewControls(item, payload) {
   );
   const focusButton = node("button", "possible-focus-play-button", "▶ 只听琥珀区间");
   focusButton.type = "button";
-  focusButton.addEventListener("click", () => playPossibleFocus(item, focusButton));
-  focus.append(focusCopy, focusButton);
+  const focusAudio = node("audio");
+  focusAudio.preload = "metadata";
+  focusAudio.hidden = true;
+  focusAudio.setAttribute("aria-label", "琥珀区间试听");
+  focusButton.addEventListener("click", () => (
+    playPossibleFocus(item, payload, focusButton, focusAudio)
+  ));
+  focus.append(focusCopy, focusButton, focusAudio);
 
   const ruler = node("div", "possible-focus-ruler");
   const rulerTrack = node("span", "possible-focus-ruler-track");
@@ -1164,49 +1189,59 @@ async function submitPossibleIdentity(item, identityLabelValue, payload, actions
   }
 }
 
-function playPossibleFocus(item, button) {
-  const audio = $("#timeline-detail audio");
-  if (!audio) {
-    toast("播放器尚未准备好，请稍后再试。", "error");
-    return;
-  }
-  const focusStartSeconds = Math.max(0, (item.focus_start_ms - item.start_ms) / 1000);
-  const focusEndSeconds = Math.max(focusStartSeconds, (item.focus_end_ms - item.start_ms) / 1000);
+function playPossibleFocus(item, payload, button, audio) {
+  const source = audioRangeSource(
+    payload.audio_url, item.focus_start_ms, item.focus_end_ms,
+  );
+  const focusEndSeconds = Math.max(
+    0, (item.focus_end_ms - item.focus_start_ms) / 1000,
+  );
   const previous = possibleFocusPlayback.get(audio);
-  if (previous) {
-    audio.removeEventListener("timeupdate", previous.stop);
-    audio.removeEventListener("ended", previous.cleanup);
-    previous.cleanup();
-  }
+  if (previous) previous.cleanup();
 
+  let cancelled = false;
   const cleanup = () => {
+    cancelled = true;
+    audio.removeEventListener("loadedmetadata", startPlayback);
+    audio.removeEventListener("pause", cleanup);
     audio.removeEventListener("timeupdate", stop);
     audio.removeEventListener("ended", cleanup);
-    possibleFocusPlayback.delete(audio);
+    audio.pause();
+    if (possibleFocusPlayback.get(audio)?.cleanup === cleanup) {
+      possibleFocusPlayback.delete(audio);
+    }
     button.classList.remove("playing");
     button.textContent = "▶ 只听琥珀区间";
   };
   const stop = () => {
     if (audio.currentTime >= focusEndSeconds) {
-      audio.pause();
       audio.currentTime = focusEndSeconds;
       cleanup();
     }
   };
   const startPlayback = async () => {
-    audio.currentTime = focusStartSeconds;
+    if (cancelled || !audio.isConnected) return;
+    audio.currentTime = 0;
+    audio.addEventListener("pause", cleanup);
     audio.addEventListener("timeupdate", stop);
     audio.addEventListener("ended", cleanup);
-    possibleFocusPlayback.set(audio, {stop, cleanup});
     button.classList.add("playing");
-    button.textContent = `正在播放 ${focusStartSeconds.toFixed(1)}–${focusEndSeconds.toFixed(1)}s`;
+    button.textContent = `正在播放 ${formatOffset(item.focus_start_ms)}–${formatOffset(item.focus_end_ms)}`;
     try {
       await audio.play();
     } catch (error) {
+      if (cancelled || !audio.isConnected) return;
       cleanup();
       toast(`无法播放琥珀区间：${error.message}`, "error");
     }
   };
+  possibleFocusPlayback.set(audio, {stop, cleanup});
+  if (audio.getAttribute("src") !== source) {
+    replaceAudioSource(audio, source);
+  } else {
+    audio.pause();
+    audio.currentTime = 0;
+  }
   if (audio.readyState >= 1) {
     startPlayback();
   } else {
@@ -1471,8 +1506,20 @@ function speakerColor(label) {
   return state.timeline.speakers.find((speaker) => speaker.label === label)?.color || "#65717d";
 }
 
+export function stopTimelineAudioPlayback(
+  detail = $("#timeline-detail"), releaseSources = true,
+) {
+  detail?.querySelectorAll("audio").forEach((audio) => {
+    manualIdentityPlayback.get(audio)?.cleanup();
+    possibleFocusPlayback.get(audio)?.cleanup();
+    if (releaseSources) releaseAudio(audio);
+    else audio.pause();
+  });
+}
+
 function renderTimelineDetailEmpty(title, copy) {
   const detail = $("#timeline-detail");
+  stopTimelineAudioPlayback(detail);
   detail.replaceChildren();
   const empty = node("div", "timeline-detail-empty");
   empty.append(node("strong", "", title), node("p", "", copy));

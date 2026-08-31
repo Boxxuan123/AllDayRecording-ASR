@@ -59,10 +59,22 @@ def get_workspace(handler, parsed) -> bool:
 
 
 def post_workspace(handler, parsed, body) -> bool:
-    if parsed.path != "/api/daily-run":
-        return False
-    handler._send_json(
-        HTTPStatus.ACCEPTED,
-        handler.application.start_daily_run(int(body["recording_id"])),
-    )
-    return True
+    if parsed.path == "/api/daily-run":
+        handler._send_json(
+            HTTPStatus.ACCEPTED,
+            handler.application.start_daily_run(int(body["recording_id"])),
+        )
+        return True
+    if parsed.path == "/api/workflow-v2":
+        shadow = body.get("shadow")
+        if not isinstance(shadow, bool):
+            raise ValueError("shadow 必须是 boolean")
+        handler._send_json(
+            HTTPStatus.ACCEPTED,
+            handler.application.start_quality_workflow(
+                int(body["session_id"]),
+                shadow=shadow,
+            ),
+        )
+        return True
+    return False

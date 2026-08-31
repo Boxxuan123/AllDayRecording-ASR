@@ -24,6 +24,31 @@ python -m pip install -e . --no-deps
 allday-asr doctor
 ```
 
+## 手机到电脑文件接收
+
+电脑端已经提供独立的局域网接收服务；它不会把仅限本机的网页工作台或数据库接口开放给手机：
+
+```powershell
+allday-asr transfer receive
+```
+
+终端会显示配对二维码路径、局域网 HTTPS 地址、配对 CA 指纹和接收目录。手机首次扫码后用 Passkey 授权登记 HUKS 设备公钥；之后电脑通过 mDNS 广播当前地址，手机用稳定接收端标识自动发现，并以设备私钥静默签署一次性挑战。切换 Wi-Fi 不需要改地址或重新认证。协议同时支持按原相对路径保存、逐文件 SHA-256 完整性校验、幂等重试和服务重启后的断点续传；最终文件默认进入 `data\phone-inbox`，同路径的不同内容永不覆盖。接收服务默认拒绝明文 HTTP。
+
+鸿蒙手机上传端已支持扫码配对、自动发现和断点上传。完整接口和安全边界见 [手机到电脑文件传输协议](docs/phone-to-computer-transfer.md)。
+
+需要在整段会话上传完成后自动开始 V2 时，以最后一个
+`session_summary.json` 的完整校验作为提交信号。当前没有电脑可验证的独立备份时，
+需显式接受 shadow 模式：
+
+```powershell
+allday-asr transfer receive --auto-workflow --workflow-shadow
+```
+
+正式 production 自动流程改用
+`--workflow-backup-root <独立磁盘或网络目录>`；接收端会先自动导入并完成备份与恢复
+演练，再串行运行 V2，手机无需等待模型完成。接收服务重启后也会恢复尚未处理完的
+manifest 自动任务。
+
 ## V2-A/V2-A.1：不可变原音、分片会话与逻辑窗口
 
 schema v11 在原有 source/session 图上增加 `source_instance` 和不可变 `session_manifest`：SHA-256 相同的静音分片可共享内容对象，但每次真实采集仍有独立文件实例和时间位置。schema v12 再增加逐实例备份清单、当前字节校验和恢复演练证据。清单先完整检查所有文件、采样坐标、格式和哈希，再在单个事务中创建关闭会话；任何一条失败都不会留下半个会话。原始音频不移动、不改名、不重编码，关闭后的清单、会话、映射和备份文件证据均受触发器保护。
@@ -384,4 +409,4 @@ allday-asr action-review 3 --status dismissed
 
 ## 当前边界
 
-V2-A.1 的 schema v11、原子清单导入、重复静音文件实例、冻结会话和 session-native C/D/E 已实现；V2-W.1 的 schema v12、不可覆盖备份、逐文件复核、恢复演练、准入状态、自动显存档位、阶段复用和持久工作流也已实现。V2-C.3 双 VAD、V2-D Community-1 与 V2-E.0.2 本地语义证据继续作为质量主链。新的短会话在独立备份后可进入 CLI 正式工作流；尚未实现的是 Watch 传输客户端、超过 3 小时的分岛/缺口感知 V2-D、真实云端 LLM、独立新 holdout、跨天身份和真实日历写入，因此不能把“单会话 production_ready”扩张成“全天无人值守产品已完成”。
+V2-A.1 的 schema v11、原子清单导入、重复静音文件实例、冻结会话和 session-native C/D/E 已实现；V2-W.1 的 schema v12、不可覆盖备份、逐文件复核、恢复演练、准入状态、自动显存档位、阶段复用和持久工作流也已实现。V2-C.3 双 VAD、V2-D Community-1 与 V2-E.0.2 本地语义证据继续作为质量主链。新的短会话在独立备份后可进入 CLI 正式工作流；手机到电脑已具备一次扫码配对、自动发现和幂等断点传输。超过 3 小时的分岛/缺口感知 V2-D、真实云端 LLM、独立新 holdout、跨天身份和真实日历写入仍未完成，因此不能把“单会话 production_ready”扩张成“全天无人值守产品已完成”。

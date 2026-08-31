@@ -10,6 +10,7 @@ from allday_asr.interfaces.cli.commands.legacy import app as legacy_app
 from allday_asr.interfaces.cli.commands.library import app as library_app
 from allday_asr.interfaces.cli.commands.semantic import app as semantic_app
 from allday_asr.interfaces.cli.commands.sessions import app as session_app
+from allday_asr.interfaces.cli.commands.transfer import app as transfer_app
 from allday_asr.interfaces.cli.commands.utility import app as utility_app
 from allday_asr.interfaces.cli.commands.workflow import app as workflow_app
 
@@ -26,6 +27,7 @@ app.add_typer(asr_app, name="asr-v2")
 app.add_typer(diarization_app, name="diarization-v2")
 app.add_typer(semantic_app, name="semantic-v2")
 app.add_typer(session_app, name="session")
+app.add_typer(transfer_app, name="transfer")
 app.add_typer(workflow_app, name="workflow-v2")
 app.add_typer(utility_app)
 app.add_typer(legacy_app)

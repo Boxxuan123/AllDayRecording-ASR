@@ -6,10 +6,11 @@
     </div>
     <div class="topbar-actions">
       <label class="select-field">
-        <span>录音会话</span>
+        <span>录制时间</span>
         <select id="recording-select" aria-label="选择录音会话"></select>
       </label>
-      <button id="run-daily-button" class="primary-button">刷新 V2 结果</button>
+      <button id="run-workflow-button" class="primary-button">启动 V2（Shadow）</button>
+      <button id="refresh-workspace-button" class="secondary-button">刷新</button>
     </div>
   </header>
 

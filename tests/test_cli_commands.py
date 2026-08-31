@@ -25,6 +25,7 @@ class CliCommandModuleTests(unittest.TestCase):
     def test_v2_command_groups_keep_existing_names_and_help(self) -> None:
         cases = {
             "session": ("import-manifest", "backup-verify", "readiness"),
+            "transfer": ("receive",),
             "workflow-v2": ("run", "status"),
             "asr-v2": ("run", "status", "snapshot"),
             "diarization-v2": (
@@ -43,13 +44,21 @@ class CliCommandModuleTests(unittest.TestCase):
 
     def test_run_options_remain_visible_after_command_split(self) -> None:
         cases = {
+            "transfer": (
+                "--auto-workflow",
+                "--workflow-shadow",
+                "--workflow-backup-root",
+            ),
             "workflow-v2": ("--session", "--shadow", "--profile"),
             "asr-v2": ("--session", "--max-windows", "--resume-run-id"),
             "diarization-v2": ("--session", "--asr-run", "--model-path"),
             "semantic-v2": ("--session", "--episode-gap-seconds"),
         }
         for group, options in cases.items():
-            command = "build" if group == "semantic-v2" else "run"
+            command = {
+                "semantic-v2": "build",
+                "transfer": "receive",
+            }.get(group, "run")
             result = self.runner.invoke(app, [group, command, "--help"])
             self.assertEqual(result.exit_code, 0, result.output)
             for option in options:

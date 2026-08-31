@@ -187,6 +187,30 @@ class WebRouteTests(unittest.TestCase):
         self.assertEqual(handler.sent_json[-1][0], HTTPStatus.ACCEPTED)
 
         handler = _RouteHandler()
+        handler.application.start_quality_workflow.return_value = {
+            "status": "queued"
+        }
+        self.assertTrue(
+            post_workspace(
+                handler,
+                urlparse("/api/workflow-v2"),
+                {"session_id": 3, "shadow": True},
+            )
+        )
+        handler.application.start_quality_workflow.assert_called_once_with(
+            3,
+            shadow=True,
+        )
+        self.assertEqual(handler.sent_json[-1][0], HTTPStatus.ACCEPTED)
+
+        with self.assertRaisesRegex(ValueError, "shadow 必须"):
+            post_workspace(
+                _RouteHandler(),
+                urlparse("/api/workflow-v2"),
+                {"session_id": 3},
+            )
+
+        handler = _RouteHandler()
         handler.application.create_session_evaluation.return_value = {"run_id": 4}
         self.assertTrue(
             post_evaluation(

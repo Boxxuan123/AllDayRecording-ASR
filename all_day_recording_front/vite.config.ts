@@ -6,7 +6,15 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:8765',
+      '/api': {
+        target: 'http://127.0.0.1:8765',
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('proxyReq', (request) => {
+            request.setHeader('Origin', 'http://127.0.0.1:8765')
+          })
+        },
+      },
     },
   },
   build: {
