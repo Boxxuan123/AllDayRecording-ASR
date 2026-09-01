@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Protocol
 
 import numpy as np
 import soundfile as sf
@@ -20,50 +21,27 @@ from allday_asr.v3.domain.identity import (
     SelfIdentity,
     evaluate_voiceprint_calibration,
 )
+from allday_asr.v3.domain.identity_calibration import (
+    CalibrationWindow,
+    ThresholdMetrics,
+    calculate_threshold_metrics,
+    calibration_blockers,
+    merge_calibration_windows,
+    select_not_self_threshold,
+    select_self_threshold,
+    split_adaptation_windows,
+)
 
 
 IDENTITY_CALIBRATION_FORMAT = "AllDayRecording V3.1 identity calibration v1"
 IDENTITY_POLICY_FORMAT = "AllDayRecording V3.1 self identity policy v1"
 IDENTITY_RECEIPT_FORMAT = "AllDayRecording V3.1 identity receipt v1"
-CLEAN_LABELS = {
-    "self": SelfIdentity.SELF,
-    "mother": SelfIdentity.NOT_SELF,
-    "father": SelfIdentity.NOT_SELF,
-    "other_live": SelfIdentity.NOT_SELF,
-}
 
 
-@dataclass(frozen=True)
-class CalibrationWindow:
-    sample_id: str
-    session_id: int
-    session_key: str
-    start_ms: int
-    end_ms: int
-    identity: SelfIdentity
-    origin: str
-    provenance: tuple[str, ...]
-
-    @property
-    def duration_ms(self) -> int:
-        return self.end_ms - self.start_ms
-
-
-@dataclass(frozen=True)
-class ThresholdMetrics:
-    positives: int
-    negatives: int
-    true_accepts: int
-    false_rejects: int
-    false_accepts: int
-    true_rejects: int
-    false_accept_rate: float
-    false_reject_rate: float
-    true_accept_rate: float
-    true_reject_rate: float
-    auc: float
-    not_self_coverage: float
-    self_misreject_rate: float
+class _EmbeddingBackend(Protocol):
+    def extract_speaker_embeddings(
+        self, samples: list[np.ndarray], *, batch_size: int = 16
+    ) -> np.ndarray: ...
 
 
 @dataclass(frozen=True)
@@ -92,6 +70,7 @@ def run_identity_calibration(
     acceptance: IdentityAcceptancePolicy | None = None,
     adaptation_session_ids: frozenset[int] = frozenset(),
     voiceprint_path_override: Path | None = None,
+    backend_factory: Callable[[], _EmbeddingBackend] | None = None,
 ) -> IdentityCalibrationSummary:
     acceptance = acceptance or IdentityAcceptancePolicy()
     bundle = _read_json(bundle_path.resolve(strict=True))
@@ -152,11 +131,13 @@ def run_identity_calibration(
     voiceprint = np.load(voiceprint_path)
     references = l2_normalize(np.asarray(voiceprint["embeddings"], dtype=np.float32))
     centroid = np.asarray(voiceprint["centroid"], dtype=np.float32)
+    backend = (
+        backend_factory()
+        if backend_factory is not None
+        else FunASRBackend(device=device)
+    )
     all_embeddings = l2_normalize(
-        FunASRBackend(device=device).extract_speaker_embeddings(
-            waveforms,
-            batch_size=16,
-        )
+        backend.extract_speaker_embeddings(waveforms, batch_size=16)
     )
     embedding_by_id = {
         value.sample_id: embedding
@@ -367,104 +348,6 @@ def run_identity_calibration(
     )
 
 
-def merge_calibration_windows(
-    bundle: Mapping[str, Any],
-    progress: Mapping[str, Any],
-) -> list[CalibrationWindow]:
-    sessions = {
-        int(value["session_id"]): str(value["session_key"])
-        for value in bundle.get("sessions", [])
-        if isinstance(value, dict)
-        and value.get("session_id") is not None
-        and value.get("session_key")
-    }
-    selected: list[CalibrationWindow] = []
-    for raw in bundle.get("effective_identity_windows", []):
-        if not isinstance(raw, dict) or str(raw.get("identity")) not in {
-            "self",
-            "not_self",
-        }:
-            continue
-        session_id = int(raw["session_id"])
-        selected.append(
-            CalibrationWindow(
-                sample_id=str(raw["window_id"]),
-                session_id=session_id,
-                session_key=sessions.get(session_id, f"session:{session_id}"),
-                start_ms=int(raw["start_ms"]),
-                end_ms=int(raw["end_ms"]),
-                identity=SelfIdentity(str(raw["identity"])),
-                origin="legacy_migration",
-                provenance=tuple(
-                    str(value) for value in raw.get("provenance_record_ids", [])
-                ),
-            )
-        )
-    candidates = {
-        str(value["candidate_id"]): value
-        for value in progress.get("identity_candidates", [])
-        if isinstance(value, dict) and value.get("candidate_id")
-    }
-    temporary: list[CalibrationWindow] = []
-    for candidate_id, annotation in progress.get("identity_annotations", {}).items():
-        if not isinstance(annotation, dict):
-            continue
-        identity = CLEAN_LABELS.get(str(annotation.get("label") or ""))
-        candidate = candidates.get(str(candidate_id))
-        if identity is None or candidate is None:
-            continue
-        session_id = int(candidate["session_id"])
-        session_key = str(candidate.get("session_key") or sessions.get(session_id) or f"session:{session_id}")
-        temporary.append(
-            CalibrationWindow(
-                sample_id=f"temporary:{candidate_id}",
-                session_id=session_id,
-                session_key=session_key,
-                start_ms=int(annotation["start_ms"]),
-                end_ms=int(annotation["end_ms"]),
-                identity=identity,
-                origin="v31_temporary_human",
-                provenance=(str(candidate_id),),
-            )
-        )
-    temporary.sort(
-        key=lambda value: (
-            value.identity is not SelfIdentity.SELF,
-            value.session_id,
-            value.start_ms,
-        )
-    )
-    for value in temporary:
-        if value.duration_ms < 2_000 or value.duration_ms > 5_000:
-            continue
-        if any(
-            existing.session_id == value.session_id
-            and value.start_ms < existing.end_ms + 500
-            and value.end_ms > existing.start_ms - 500
-            for existing in selected
-        ):
-            continue
-        selected.append(value)
-    selected.sort(key=lambda value: (value.session_id, value.start_ms, value.sample_id))
-    return selected
-
-
-def split_adaptation_windows(
-    windows: Sequence[CalibrationWindow],
-    adaptation_session_ids: frozenset[int],
-) -> tuple[list[CalibrationWindow], list[CalibrationWindow]]:
-    adaptation = [
-        value
-        for value in windows
-        if value.session_id in adaptation_session_ids
-        and value.identity is SelfIdentity.SELF
-    ]
-    holdout = [
-        value for value in windows if value.session_id not in adaptation_session_ids
-    ]
-    return adaptation, holdout
-
-
 def combined_voiceprint_scores(
     embeddings: np.ndarray,
     centroid: np.ndarray,
@@ -477,98 +360,6 @@ def combined_voiceprint_scores(
         :, -top_k:
     ].mean(axis=1)
     return 0.7 * centroid_scores + 0.3 * top_reference_scores
-
-
-def select_self_threshold(
-    positive_scores: Sequence[float],
-    negative_scores: Sequence[float],
-    *,
-    max_false_accept_rate: float,
-) -> float:
-    if not positive_scores or not negative_scores:
-        raise ValueError("threshold selection requires positive and negative scores")
-    candidates = sorted(
-        {
-            -1.0,
-            1.0,
-            *(float(value) for value in positive_scores),
-            *(float(value) for value in negative_scores),
-            *(
-                float(np.nextafter(float(value), 1.0))
-                for value in negative_scores
-            ),
-        }
-    )
-    for threshold in candidates:
-        false_accept_rate = sum(
-            value >= threshold for value in negative_scores
-        ) / len(negative_scores)
-        if false_accept_rate <= max_false_accept_rate:
-            return threshold
-    return 1.0
-
-
-def select_not_self_threshold(
-    positive_scores: Sequence[float],
-    *,
-    self_threshold: float,
-) -> float:
-    if not positive_scores:
-        raise ValueError("not-self threshold selection requires positive scores")
-    threshold = float(np.nextafter(min(positive_scores), -1.0))
-    if threshold >= self_threshold:
-        threshold = float(np.nextafter(self_threshold, -1.0))
-    return max(-1.0, threshold)
-
-
-def calculate_threshold_metrics(
-    positive_scores: Sequence[float],
-    negative_scores: Sequence[float],
-    *,
-    self_threshold: float,
-    not_self_threshold: float,
-) -> ThresholdMetrics:
-    positives = len(positive_scores)
-    negatives = len(negative_scores)
-    true_accepts = sum(value >= self_threshold for value in positive_scores)
-    false_rejects = positives - true_accepts
-    false_accepts = sum(value >= self_threshold for value in negative_scores)
-    true_rejects = negatives - false_accepts
-    not_self_accepted = sum(value <= not_self_threshold for value in negative_scores)
-    self_misrejects = sum(value <= not_self_threshold for value in positive_scores)
-    return ThresholdMetrics(
-        positives=positives,
-        negatives=negatives,
-        true_accepts=true_accepts,
-        false_rejects=false_rejects,
-        false_accepts=false_accepts,
-        true_rejects=true_rejects,
-        false_accept_rate=false_accepts / negatives,
-        false_reject_rate=false_rejects / positives,
-        true_accept_rate=true_accepts / positives,
-        true_reject_rate=true_rejects / negatives,
-        auc=_auc(positive_scores, negative_scores),
-        not_self_coverage=not_self_accepted / negatives,
-        self_misreject_rate=self_misrejects / positives,
-    )
-
-
-def calibration_blockers(
-    calibration: Any,
-    acceptance: IdentityAcceptancePolicy,
-) -> tuple[str, ...]:
-    blockers: list[str] = []
-    if not calibration.disjoint_holdout:
-        blockers.append("holdout_not_disjoint")
-    if calibration.positive_holdout < acceptance.min_positive_holdout:
-        blockers.append("insufficient_positive_holdout")
-    if calibration.negative_holdout < acceptance.min_negative_holdout:
-        blockers.append("insufficient_negative_holdout")
-    if calibration.false_accept_rate > acceptance.max_false_accept_rate:
-        blockers.append("false_accept_rate_exceeds_limit")
-    if calibration.false_reject_rate > acceptance.max_false_reject_rate:
-        blockers.append("false_reject_rate_exceeds_limit")
-    return tuple(blockers)
 
 
 def _read_session_window(
@@ -642,17 +433,6 @@ def _read_audio_part(path: Path, start_ms: int, end_ms: int) -> np.ndarray:
     if len(samples) != frame_count:
         raise ValueError(f"评估原音长度不足：{path}")
     return np.asarray(samples, dtype=np.float32)
-
-
-def _auc(positive_scores: Sequence[float], negative_scores: Sequence[float]) -> float:
-    wins = 0.0
-    for positive in positive_scores:
-        for negative in negative_scores:
-            if positive > negative:
-                wins += 1.0
-            elif positive == negative:
-                wins += 0.5
-    return wins / (len(positive_scores) * len(negative_scores))
 
 
 def _score_summary(scores: Sequence[float]) -> dict[str, float]:

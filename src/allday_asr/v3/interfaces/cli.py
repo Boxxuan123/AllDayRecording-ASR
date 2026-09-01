@@ -34,6 +34,7 @@ from allday_asr.v3.adapters.models_v2 import (
     QualityWorkflowV2Adapter,
     V2SessionMaterializer,
 )
+from allday_asr.v3.adapters.identity_calibration import run_identity_calibration
 from allday_asr.v3.adapters.legacy_v2.label_migration import (
     migrate_legacy_labels,
 )
@@ -42,7 +43,6 @@ from allday_asr.v3.application import (
     LegacyImportCommand,
     RecordBackupEvidenceCommand,
     SubmitProcessingCommand,
-    run_identity_calibration,
     run_timeline_quality_audit,
 )
 from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core, start_empty_runtime

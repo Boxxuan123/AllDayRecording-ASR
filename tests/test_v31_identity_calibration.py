@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from allday_asr.v3.application.identity_calibration import (
+from allday_asr.v3.domain.identity_calibration import (
     CalibrationWindow,
     calculate_threshold_metrics,
     merge_calibration_windows,

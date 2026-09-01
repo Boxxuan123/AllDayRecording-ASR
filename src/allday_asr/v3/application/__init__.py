@@ -42,10 +42,6 @@ from allday_asr.v3.application.reminder_extraction import (
     ReminderGenerationFailed,
     ReminderGenerationUnavailable,
 )
-from allday_asr.v3.application.identity_calibration import (
-    IdentityCalibrationSummary,
-    run_identity_calibration,
-)
 from allday_asr.v3.application.people import SpeakerIdentityService
 from allday_asr.v3.application.person_memory import (
     PersonMemoryService,
@@ -66,7 +62,6 @@ __all__ = [
     "ReminderExtractionService",
     "ReminderGenerationFailed",
     "ReminderGenerationUnavailable",
-    "IdentityCalibrationSummary",
     "SpeakerIdentityService",
     "PersonMemoryService",
     "LegacyImportCommand",
@@ -83,7 +78,6 @@ __all__ = [
     "SessionPage",
     "processing_snapshot_dict",
     "run_timeline_quality_audit",
-    "run_identity_calibration",
     "cascade_derivations",
     "memory_draft_from_dict",
     "revision_from_dict",
