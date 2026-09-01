@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AllDayRecording Desktop API",
-    "version": "3.0.0",
-    "description": "Loopback-only query, media, correction, and durable-processing API for the independent Desktop frontend."
+    "version": "3.3.0",
+    "description": "Loopback-only query, media, correction, durable-processing, three-layer knowledge, and intelligent reminder API for the independent Desktop frontend."
   },
   "servers": [{"url": "http://127.0.0.1:8766"}],
   "security": [{"DesktopSession": []}],
@@ -51,9 +51,10 @@
       "parameters": [{"$ref": "#/components/parameters/UtteranceId"}],
       "post": {
         "operationId": "correctUtterance",
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["expected_revision", "text"], "properties": {"expected_revision": {"$ref": "../schemas/primitives.schema.json#/$defs/Revision"}, "text": {"type": "string"}}}}}},
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["expected_revision", "text", "speaker_track_id", "identity"], "properties": {"expected_revision": {"$ref": "../schemas/primitives.schema.json#/$defs/Revision"}, "text": {"type": "string"}, "speaker_track_id": {"oneOf": [{"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}, {"type": "null"}]}, "identity": {"type": "string", "enum": ["self", "not_self", "unknown"]}}}}}},
         "responses": {"200": {"description": "Canonical corrected Utterance DTO", "content": {"application/json": {"schema": {"$ref": "../schemas/utterance.schema.json"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}
-      }
+      },
+      "get": {"operationId": "getUtteranceCorrectionHistory", "responses": {"200": {"description": "Current utterance and immutable correction operations", "content": {"application/json": {"schema": {"type": "object"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
     },
     "/api/v3/devices": {"get": {"operationId": "listDesktopDevices", "responses": {"200": {"description": "Paired and known devices", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
     "/api/v3/data-health": {"get": {"operationId": "getDataHealth", "responses": {"200": {"description": "Local storage, replica, backup, and artifact counts", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
@@ -61,6 +62,72 @@
     "/api/v3/lab": {"get": {"operationId": "getLabBoundary", "responses": {"200": {"description": "Explicit disabled-by-default Lab boundary", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
     "/api/v3/media/{media_id}": {
       "get": {"operationId": "readMediaRange", "parameters": [{"$ref": "#/components/parameters/MediaId"}, {"name": "Range", "in": "header", "required": false, "schema": {"type": "string"}}], "responses": {"200": {"description": "Complete media bytes"}, "206": {"description": "Requested media byte range"}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/evidence-spans": {
+      "get": {"operationId": "listEvidenceSpans", "parameters": [{"name": "session_id", "in": "query", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}], "responses": {"200": {"description": "Materialized layer-one evidence spans", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "../schemas/knowledge.schema.json#/$defs/EvidenceSpan"}}}}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/events": {
+      "get": {"operationId": "listCurrentEvents", "parameters": [{"name": "session_id", "in": "query", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}], "responses": {"200": {"description": "Layer-two event current states", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "../schemas/knowledge.schema.json#/$defs/EventState"}}}}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/events/{event_id}/operations": {
+      "get": {"operationId": "listEventOperations", "parameters": [{"name": "event_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}], "responses": {"200": {"description": "Immutable layer-two event operation history", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "../schemas/knowledge.schema.json#/$defs/EventOperation"}}}}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/memories": {
+      "get": {"operationId": "listMemoryRecords", "parameters": [{"name": "session_id", "in": "query", "required": false, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}, {"name": "subject_type", "in": "query", "required": false, "schema": {"type": "string"}}, {"name": "subject_id", "in": "query", "required": false, "schema": {"type": "string"}}], "responses": {"200": {"description": "Versioned layer-three memory and interpretation records", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "../schemas/knowledge.schema.json#/$defs/MemoryRecord"}}}}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/knowledge-generations": {
+      "post": {"operationId": "submitKnowledgeGeneration", "description": "Validate and persist structured proposals without mutating event or memory state.", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "../schemas/knowledge.schema.json#/$defs/GenerationSubmission"}}}}, "responses": {"202": {"description": "Generation provenance and pending proposal identities", "content": {"application/json": {"schema": {"type": "object"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/knowledge-proposals": {
+      "get": {"operationId": "listKnowledgeProposals", "parameters": [{"name": "status", "in": "query", "required": false, "schema": {"type": "string", "enum": ["pending", "accepted", "rejected"]}}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Structured proposal review queue", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/knowledge-proposals/{proposal_id}/accept": {
+      "post": {"operationId": "acceptKnowledgeProposal", "parameters": [{"name": "proposal_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}], "responses": {"200": {"description": "Accepted proposal and resulting resource", "content": {"application/json": {"schema": {"$ref": "../schemas/knowledge.schema.json#/$defs/ProposalResolution"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/knowledge-proposals/{proposal_id}/reject": {
+      "post": {"operationId": "rejectKnowledgeProposal", "parameters": [{"name": "proposal_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["reason"], "properties": {"reason": {"type": "string", "minLength": 1}}}}}}, "responses": {"200": {"description": "Rejected proposal receipt", "content": {"application/json": {"schema": {"$ref": "../schemas/knowledge.schema.json#/$defs/ProposalResolution"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/derivations/affected": {
+      "get": {"operationId": "findAffectedDerivations", "parameters": [{"name": "source_type", "in": "query", "required": true, "schema": {"type": "string"}}, {"name": "source_id", "in": "query", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Transitive dependency closure", "content": {"application/json": {"schema": {"type": "object"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/invalidations": {
+      "get": {"operationId": "listInvalidations", "parameters": [{"name": "target_type", "in": "query", "required": false, "schema": {"type": "string"}}, {"name": "target_id", "in": "query", "required": false, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Immutable invalidation history", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/recompute-requests": {
+      "get": {"operationId": "listRecomputeRequests", "parameters": [{"name": "status", "in": "query", "required": false, "schema": {"type": "string", "enum": ["queued", "running", "succeeded", "failed", "cancelled"]}}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Durable recomputation queue", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminder-generations": {
+      "post": {"operationId": "submitReminderGeneration", "description": "Persist validated reminder candidates; fail-closed policy decides review versus tightly gated auto-apply.", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "../schemas/reminder.schema.json#/$defs/GenerationSubmission"}}}}, "responses": {"202": {"description": "Generation provenance and classified candidates", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminder-generations/codex": {
+      "post": {"operationId": "generateRemindersWithCodex", "description": "User-triggered reminder extraction from selected transcript text. Audio and local paths are never sent; Codex runs with denied approvals in an empty read-only working directory, and results enter the review queue by default.", "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["session_id"], "properties": {"session_id": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}, "reasoning_effort": {"type": "string", "enum": ["auto", "low", "medium", "high", "xhigh"], "default": "auto"}}}}}}, "responses": {"202": {"description": "Codex generation provenance and validated review candidates", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminder-candidates": {
+      "get": {"operationId": "listReminderCandidates", "parameters": [{"name": "status", "in": "query", "required": false, "schema": {"$ref": "../schemas/reminder.schema.json#/$defs/CandidateStatus"}}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Reminder review queue with evidence playback metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminder-candidates/{candidate_id}": {
+      "get": {"operationId": "getReminderCandidate", "parameters": [{"$ref": "#/components/parameters/CandidateId"}], "responses": {"200": {"description": "Reminder candidate with provenance and evidence", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminder-candidates/{candidate_id}/feedback": {
+      "get": {"operationId": "listReminderFeedback", "parameters": [{"$ref": "#/components/parameters/CandidateId"}], "responses": {"200": {"description": "Immutable candidate feedback history", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminder-candidates/{candidate_id}/confirm": {
+      "post": {"operationId": "confirmReminderCandidate", "parameters": [{"$ref": "#/components/parameters/CandidateId"}], "responses": {"200": {"description": "Accepted event and executable reminder schedule", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminder-candidates/{candidate_id}/modify": {
+      "post": {"operationId": "modifyReminderCandidate", "parameters": [{"$ref": "#/components/parameters/CandidateId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "minProperties": 1}}}}, "responses": {"200": {"description": "Original candidate superseded and edited replacement accepted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminder-candidates/{candidate_id}/ignore": {
+      "post": {"operationId": "ignoreReminderCandidate", "parameters": [{"$ref": "#/components/parameters/CandidateId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["reason"], "properties": {"reason": {"type": "string", "minLength": 1}}}}}}, "responses": {"200": {"description": "Candidate ignored without mutating event state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminders": {
+      "get": {"operationId": "listReminderSchedules", "parameters": [{"name": "status", "in": "query", "required": false, "schema": {"$ref": "../schemas/reminder.schema.json#/$defs/ScheduleStatus"}}, {"name": "session_id", "in": "query", "required": false, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Executable reminder schedules with internal delivery metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminders/due": {
+      "get": {"operationId": "listDueReminders", "parameters": [{"name": "at", "in": "query", "required": false, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/UtcDateTime"}}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Scheduled reminders due for local delivery", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/reminders/{event_id}/deliver": {
+      "post": {"operationId": "deliverReminder", "parameters": [{"name": "event_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}], "responses": {"200": {"description": "Reminder delivery receipt with internal delivery metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
     },
     "/api/v3/events/processing": {
       "get": {"operationId": "streamProcessingEvents", "parameters": [{"name": "after", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 0}}], "responses": {"200": {"description": "Resumable server-sent processing event stream", "content": {"text/event-stream": {"schema": {"type": "string"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
@@ -76,14 +143,15 @@
       "JobId": {"name": "job_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
       "RunId": {"name": "run_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
       "UtteranceId": {"name": "utterance_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
+      "CandidateId": {"name": "candidate_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
       "MediaId": {"name": "media_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}
     },
     "responses": {"ApiError": {"description": "Stable API error", "content": {"application/json": {"schema": {"$ref": "../schemas/primitives.schema.json#/$defs/ApiError"}}}}},
     "schemas": {
-      "RuntimeStatus": {"type": "object", "additionalProperties": false, "required": ["contract_version", "enabled", "state"], "properties": {"contract_version": {"const": "3.0.0"}, "enabled": {"type": "boolean"}, "state": {"enum": ["empty_ready", "ready"]}}},
+      "RuntimeStatus": {"type": "object", "additionalProperties": false, "required": ["contract_version", "enabled", "state"], "properties": {"contract_version": {"const": "3.3.0"}, "enabled": {"type": "boolean"}, "state": {"enum": ["empty_ready", "ready"]}}},
       "ObjectProjection": {"type": "object"},
       "ItemList": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"type": "object"}}}},
-      "SessionDetail": {"type": "object", "additionalProperties": false, "required": ["session", "segments", "runs", "utterances", "artifacts", "backups"], "properties": {"session": {"$ref": "../schemas/recording-session.schema.json"}, "segments": {"type": "array", "items": {"type": "object"}}, "runs": {"type": "array", "items": {"type": "object"}}, "utterances": {"type": "array", "items": {"$ref": "../schemas/utterance.schema.json"}}, "artifacts": {"type": "array", "items": {"type": "object"}}, "backups": {"type": "array", "items": {"type": "object"}}}},
+      "SessionDetail": {"type": "object", "additionalProperties": false, "required": ["session", "segments", "runs", "speaker_tracks", "utterances", "artifacts", "backups"], "properties": {"session": {"$ref": "../schemas/recording-session.schema.json"}, "segments": {"type": "array", "items": {"type": "object"}}, "runs": {"type": "array", "items": {"type": "object"}}, "speaker_tracks": {"type": "array", "items": {"type": "object"}}, "utterances": {"type": "array", "items": {"$ref": "../schemas/utterance.schema.json"}}, "artifacts": {"type": "array", "items": {"type": "object"}}, "backups": {"type": "array", "items": {"type": "object"}}}},
       "ProcessingSnapshot": {"type": "object", "additionalProperties": false, "required": ["job", "run", "stages", "attempts"], "properties": {"job": {"type": "object"}, "run": {"type": "object"}, "stages": {"type": "array", "items": {"type": "object"}}, "attempts": {"type": "array", "items": {"type": "object"}}}}
     }
   }

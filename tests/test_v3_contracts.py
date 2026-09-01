@@ -12,6 +12,7 @@ from allday_asr.v3 import CONTRACT_VERSION, PROJECTION_VERSION
 from allday_asr.v3.adapters.sqlite.migrations import MIGRATIONS
 from allday_asr.v3.contracts import (
     UTTERANCE_DTO_SCHEMA,
+    validate_reminder_dto,
     validate_utterance_dto,
 )
 from allday_asr.v3.contracts.decoders import KNOWN_ENUMS, decode_contract_fixture
@@ -54,7 +55,7 @@ class V3ContractTests(unittest.TestCase):
         self.assertEqual(
             release["core_schema_version"], max(item.version for item in MIGRATIONS)
         )
-        self.assertEqual(release["phone_projection_schema_version"], 4)
+        self.assertEqual(release["phone_projection_schema_version"], 7)
         self.assertEqual(
             release["default_entries"],
             {"desktop": "v3", "phone": "v3", "legacy": "read_only"},
@@ -78,6 +79,7 @@ class V3ContractTests(unittest.TestCase):
             ("audio_asset", "asset_id"),
             ("processing_run", "run_id"),
             ("utterance", "utterance_id"),
+            ("reminder", "event_id"),
         ):
             self.assertRegex(
                 fixture[resource_name][id_field],
@@ -85,6 +87,7 @@ class V3ContractTests(unittest.TestCase):
             )
         self.assertRegex(fixture["audio_asset"]["sha256"], r"^[0-9a-f]{64}$")
         self.assertNotIn("path", fixture["audio_asset"])
+        self.assertEqual(validate_reminder_dto(fixture["reminder"]), fixture["reminder"])
 
     def test_utterance_dto_is_canonical_and_runtime_validated(self) -> None:
         schema = _read_json(CONTRACT_ROOT / "schemas" / "utterance.schema.json")
@@ -195,6 +198,65 @@ class V3ContractTests(unittest.TestCase):
             for scope in operation.get("x-required-scopes", [])
         }
         self.assertEqual(scopes, allowed_scopes)
+
+        knowledge_paths = {
+            "/api/v3/evidence-spans",
+            "/api/v3/events",
+            "/api/v3/events/{event_id}/operations",
+            "/api/v3/memories",
+            "/api/v3/knowledge-generations",
+            "/api/v3/knowledge-proposals",
+            "/api/v3/knowledge-proposals/{proposal_id}/accept",
+            "/api/v3/knowledge-proposals/{proposal_id}/reject",
+            "/api/v3/derivations/affected",
+            "/api/v3/invalidations",
+            "/api/v3/recompute-requests",
+        }
+        self.assertTrue(knowledge_paths.issubset(desktop_paths))
+        self.assertTrue(knowledge_paths.isdisjoint(device_paths))
+        reminder_paths = {
+            "/api/v3/reminder-generations",
+            "/api/v3/reminder-generations/codex",
+            "/api/v3/reminder-candidates",
+            "/api/v3/reminder-candidates/{candidate_id}",
+            "/api/v3/reminder-candidates/{candidate_id}/feedback",
+            "/api/v3/reminder-candidates/{candidate_id}/confirm",
+            "/api/v3/reminder-candidates/{candidate_id}/modify",
+            "/api/v3/reminder-candidates/{candidate_id}/ignore",
+            "/api/v3/reminders",
+            "/api/v3/reminders/due",
+            "/api/v3/reminders/{event_id}/deliver",
+        }
+        self.assertTrue(reminder_paths.issubset(desktop_paths))
+        self.assertTrue(reminder_paths.isdisjoint(device_paths))
+        knowledge = _read_json(
+            CONTRACT_ROOT / "schemas" / "knowledge.schema.json"
+        )["$defs"]
+        self.assertTrue(
+            {
+                "EvidenceSpan",
+                "EventState",
+                "EventOperation",
+                "MemoryRecord",
+                "GenerationSubmission",
+                "ProposalResolution",
+            }.issubset(knowledge)
+        )
+        reminder = _read_json(
+            CONTRACT_ROOT / "schemas" / "reminder.schema.json"
+        )
+        self.assertFalse(reminder["additionalProperties"])
+        self.assertEqual(
+            reminder["$defs"]["ReminderOperation"]["enum"],
+            [
+                "CREATE_TASK",
+                "CREATE_APPOINTMENT",
+                "UPDATE_EVENT",
+                "CANCEL_EVENT",
+                "MARK_DONE",
+                "IGNORE",
+            ],
+        )
 
     def test_harmony_consumer_receipt_when_checkout_is_available(self) -> None:
         configured = os.environ.get("ALLDAY_HARMONY_REPO")

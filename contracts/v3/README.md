@@ -6,8 +6,8 @@ generated decoders, but they must not redefine server enums or resource shapes.
 
 ## Versioning
 
-- Contract version: `3.0.0`
-- Mobile projection version: `1`
+- Contract version: `3.3.0`
+- Mobile projection version: `4`
 - JSON Schema dialect: 2020-12
 - OpenAPI version: 3.1
 
@@ -29,6 +29,20 @@ new API path and contract major version.
 - `fixtures/core-resources.json` is the cross-language acceptance fixture.
   `fixtures/forward-enums.json` intentionally contains future enum values and is
   a consumer-compatibility fixture, not a producer-valid resource.
+- `schemas/timeline-quality.schema.json` freezes the V3.1-C reviewed seam audit
+  input and content-hashed release receipt. It is a Computer-side release gate,
+  not a Phone projection resource.
+- `schemas/knowledge.schema.json` freezes the V3.2 evidence, event, memory,
+  generation-provenance, and proposal-review resources.
+- `schemas/reminder.schema.json` freezes V3.3 reminder operations, generation
+  submissions, accepted schedules, and the Phone projection. Only accepted
+  schedules cross the device boundary; unconfirmed model candidates remain in
+  the Desktop review queue. Projection `4` resets the Phone cursor so existing
+  accepted reminders are replayed safely.
+- `POST /api/v3/reminder-generations/codex` is the user-triggered Codex adapter.
+  It sends transcript text but never audio or local paths, uses an empty
+  read-only working directory with approvals denied, and keeps generated
+  candidates behind the Desktop review boundary by default.
 
 The OpenAPI documents deliberately have disjoint paths and security schemes:
 Desktop endpoints live under `/api/v3`, while paired-device endpoints live under

@@ -5,6 +5,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from urllib.parse import urlparse
 
 
@@ -15,6 +16,62 @@ class DeploymentMode(StrEnum):
 
 class V3ConfigurationError(ValueError):
     pass
+
+
+class CodexEffortSetting(StrEnum):
+    AUTO = "auto"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+
+
+@dataclass(frozen=True)
+class CodexReminderSettings:
+    enabled: bool = True
+    workdir: Path = Path.home() / ".alldayrecording_codex"
+    model: str | None = None
+    reasoning_effort: CodexEffortSetting = CodexEffortSetting.AUTO
+    allow_auto_apply: bool = False
+
+    @classmethod
+    def from_environment(
+        cls, environ: Mapping[str, str] | None = None
+    ) -> CodexReminderSettings:
+        values = os.environ if environ is None else environ
+        raw_workdir = values.get(
+            "ALLDAY_V3_CODEX_WORKDIR",
+            str(Path.home() / ".alldayrecording_codex"),
+        ).strip()
+        if not raw_workdir:
+            raise V3ConfigurationError(
+                "ALLDAY_V3_CODEX_WORKDIR must name the dedicated empty directory"
+            )
+        raw_effort = values.get(
+            "ALLDAY_V3_CODEX_REASONING_EFFORT", "auto"
+        ).strip().lower()
+        try:
+            effort = CodexEffortSetting(raw_effort)
+        except ValueError as exc:
+            raise V3ConfigurationError(
+                "ALLDAY_V3_CODEX_REASONING_EFFORT must be auto, low, medium, "
+                "high or xhigh"
+            ) from exc
+        settings = cls(
+            enabled=_parse_bool(values.get("ALLDAY_V3_CODEX_ENABLED", "1")),
+            workdir=Path(raw_workdir).expanduser(),
+            model=_optional_model(values.get("ALLDAY_V3_CODEX_MODEL")),
+            reasoning_effort=effort,
+            allow_auto_apply=_parse_bool(
+                values.get("ALLDAY_V3_CODEX_AUTO_APPLY", "0")
+            ),
+        )
+        settings.validate()
+        return settings
+
+    def validate(self) -> None:
+        if not str(self.workdir).strip():
+            raise V3ConfigurationError("Codex workdir must not be empty")
 
 
 @dataclass(frozen=True)
@@ -84,6 +141,12 @@ def _optional(value: str | None) -> str | None:
     return value.strip().lower()
 
 
+def _optional_model(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    return value.strip()
+
+
 def _is_placeholder_rp_id(value: str) -> bool:
     candidate = value.strip().lower().rstrip(".")
     if "://" in candidate or "/" in candidate or "." not in candidate:
@@ -120,6 +183,8 @@ def _is_trusted_origin(value: str) -> bool:
 
 
 __all__ = [
+    "CodexEffortSetting",
+    "CodexReminderSettings",
     "DeploymentMode",
     "V3ConfigurationError",
     "V3Settings",

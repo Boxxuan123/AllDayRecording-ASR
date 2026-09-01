@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Any
 
 
-PROJECTION_VERSION = 1
+PROJECTION_VERSION = 4
 MAX_SYNC_OPERATIONS = 500
 MAX_SYNC_CHANGES = 500
 

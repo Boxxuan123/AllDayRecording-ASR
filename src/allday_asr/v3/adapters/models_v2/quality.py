@@ -13,6 +13,7 @@ from allday_asr.application.semantic.inputs import semantic_tokens
 from allday_asr.domain.hashing import canonical_json
 from allday_asr.storage.database import Database
 from allday_asr.v3.domain.ids import stable_ulid
+from allday_asr.v3.domain.identity import SelfIdentity, unknown_identity_evidence
 from allday_asr.v3.ports.processing import (
     ArtifactDependencyOutput,
     SpeakerProjectionOutput,
@@ -178,6 +179,8 @@ class QualityWorkflowV2Adapter:
                     text=str(value["text"]),
                     speaker_label=str(value.get("speaker") or "unassigned"),
                     evidence=dict(value["evidence"]),
+                    identity=_identity(value),
+                    identity_evidence=_identity_evidence(value),
                 )
                 for index, value in enumerate(snapshot["utterances"])
             )
@@ -302,6 +305,26 @@ def _snapshot_counts(snapshot: Mapping[str, Any]) -> dict[str, int]:
         "turn_count": len(snapshot["turns"]),
         "utterance_count": len(snapshot["utterances"]),
     }
+
+
+def _identity(value: Mapping[str, Any]) -> SelfIdentity:
+    try:
+        return SelfIdentity(str(value.get("identity", SelfIdentity.UNKNOWN.value)))
+    except ValueError as exc:
+        raise ValueError("V2 snapshot utterance identity is invalid") from exc
+
+
+def _identity_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    identity = _identity(value)
+    evidence = value.get("identity_evidence")
+    if evidence is None:
+        return unknown_identity_evidence("v2_snapshot_has_no_identity_evidence")
+    if not isinstance(evidence, Mapping):
+        raise ValueError("V2 snapshot utterance identity evidence is invalid")
+    output = dict(evidence)
+    if output.get("decision") != identity.value:
+        raise ValueError("V2 snapshot identity evidence decision does not match identity")
+    return output
 
 
 def _validate_source_reference(label: str, value: object) -> None:

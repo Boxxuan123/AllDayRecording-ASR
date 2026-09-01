@@ -1,5 +1,5 @@
 {
-  "contract_version": "3.0.0",
+  "contract_version": "3.3.0",
   "recording_session": {
     "session_id": "01990d5a-7c00-7000-8000-000000000001",
     "captured_start": "2026-09-01T02:23:15Z",
@@ -38,9 +38,23 @@
     "session_id": "01990d5a-7c00-7000-8000-000000000001",
     "speaker_track_id": "01990d5a-7c00-7000-8000-000000000014",
     "speaker_label": "SPEAKER_00",
+    "original_speaker_track_id": "01990d5a-7c00-7000-8000-000000000014",
+    "original_speaker_label": "SPEAKER_00",
+    "identity": "unknown",
+    "original_identity": "unknown",
+    "identity_evidence": {
+      "source": "voiceprint",
+      "decision": "unknown",
+      "reason": "insufficient_positive_holdout",
+      "policy_version": "self-voiceprint-provisional-1",
+      "calibration_accepted": false
+    },
     "start_ms": 5000,
     "end_ms": 9000,
+    "start_at": "2026-09-01T02:23:20Z",
+    "end_at": "2026-09-01T02:23:24Z",
     "text": "我下午把修改后的文档发给你",
+    "original_text": "我下午把修改后的文档发给你",
     "revision": 1,
     "status": "active",
     "evidence": {
@@ -49,24 +63,40 @@
       "end_ms": 9000
     }
   },
+  "reminder": {
+    "event_id": "01990d5a-7c00-7000-8000-000000000008",
+    "session_id": "01990d5a-7c00-7000-8000-000000000001",
+    "event_revision": 1,
+    "source_candidate_id": "01990d5a-7c00-7000-8000-000000000009",
+    "title": "把修订后的文档发给张同学",
+    "actor_person_id": "self",
+    "commitment_direction": "self_to_other",
+    "related_person_ids": ["person-zhang"],
+    "scheduled_at": "2026-09-02T02:00:00Z",
+    "location": "学校",
+    "status": "scheduled",
+    "updated_at": "2026-09-01T02:29:00Z"
+  },
   "device_sync_request": {
-    "projection_version": 1,
+    "projection_version": 4,
     "cursor": "cursor-41",
     "client_operations": [
       {
         "operation_id": "01990d5a-7c00-7000-8000-000000000006",
-        "kind": "utterance.correct_text",
+        "kind": "utterance.correct",
         "base_revision": 1,
         "payload": {
           "utterance_id": "01990d5a-7c00-7000-8000-000000000004",
-          "text": "我下午把修改后的文档发给你"
+          "text": "我下午把修订后的文档发给你",
+          "speaker_track_id": "01990d5a-7c00-7000-8000-000000000014",
+          "identity": "self"
         }
       }
     ],
     "pull_limit": 500
   },
   "device_sync_response": {
-    "projection_version": 1,
+    "projection_version": 4,
     "receipts": [
       {
         "operation_id": "01990d5a-7c00-7000-8000-000000000006",
@@ -87,9 +117,23 @@
         "session_id": "01990d5a-7c00-7000-8000-000000000001",
         "speaker_track_id": "01990d5a-7c00-7000-8000-000000000014",
         "speaker_label": "SPEAKER_00",
+        "original_speaker_track_id": "01990d5a-7c00-7000-8000-000000000014",
+        "original_speaker_label": "SPEAKER_00",
+        "identity": "self",
+        "original_identity": "unknown",
+        "identity_evidence": {
+          "source": "voiceprint",
+          "decision": "unknown",
+          "reason": "insufficient_positive_holdout",
+          "policy_version": "self-voiceprint-provisional-1",
+          "calibration_accepted": false
+        },
         "start_ms": 5000,
         "end_ms": 9000,
+        "start_at": "2026-09-01T02:23:20Z",
+        "end_at": "2026-09-01T02:23:24Z",
         "text": "我下午把修订后的文档发给你",
+        "original_text": "我下午把修改后的文档发给你",
         "revision": 2,
         "status": "active",
         "evidence": {
@@ -105,7 +149,7 @@
     "server_time": "2026-09-01T02:29:00Z"
   },
   "expected_decode": {
-    "contract_version": "3.0.0",
+    "contract_version": "3.3.0",
     "session_state": "ready_for_processing",
     "aggregate_status": "ready",
     "processing_status": "running",

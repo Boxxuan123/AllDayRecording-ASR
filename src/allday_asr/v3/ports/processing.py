@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from allday_asr.v3.domain.models import Artifact
+from allday_asr.v3.domain.identity import SelfIdentity, unknown_identity_evidence
 from allday_asr.v3.domain.processing import ProcessingClaim
 
 
@@ -42,6 +43,8 @@ class UtteranceProjectionOutput:
     text: str
     speaker_label: str | None
     evidence: dict[str, Any]
+    identity: SelfIdentity = SelfIdentity.UNKNOWN
+    identity_evidence: dict[str, Any] = field(default_factory=unknown_identity_evidence)
 
 
 @dataclass(frozen=True)

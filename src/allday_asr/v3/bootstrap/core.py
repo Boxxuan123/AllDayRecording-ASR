@@ -7,6 +7,7 @@ from pathlib import Path
 
 from allday_asr.paths import PROJECT_ROOT
 from allday_asr.v3.adapters.files import ContentAddressedStore
+from allday_asr.v3.adapters.codex import CodexReminderGenerator
 from allday_asr.v3.adapters.legacy_v2 import LegacyV2Importer
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.application import (
@@ -15,8 +16,14 @@ from allday_asr.v3.application import (
     DurableProcessingService,
     DesktopQueryService,
     ImportLegacyV2,
+    IntelligentReminderService,
+    KnowledgeArchitectureService,
     MobileSyncService,
+    ReminderExtractionService,
+    UtteranceCorrectionOperationHandler,
 )
+from allday_asr.v3.config import CodexReminderSettings
+from allday_asr.v3.ports.reminder_generation import ReminderModelGenerator
 
 
 @dataclass(frozen=True)
@@ -62,6 +69,9 @@ class V3Core:
     processing: DurableProcessingService
     corrections: CorrectionInvalidationService
     desktop: DesktopQueryService
+    knowledge: KnowledgeArchitectureService
+    reminders: IntelligentReminderService
+    reminder_extraction: ReminderExtractionService
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -70,10 +80,19 @@ class V3Core:
         self.artifact_store.initialize()
         return version
 
+    def close(self) -> None:
+        self.reminder_extraction.close()
 
-def compose_v3_core(paths: V3CorePaths | None = None) -> V3Core:
+
+def compose_v3_core(
+    paths: V3CorePaths | None = None,
+    *,
+    codex_settings: CodexReminderSettings | None = None,
+    reminder_generator: ReminderModelGenerator | None = None,
+) -> V3Core:
     """Wire the V3 Core without opening databases or creating directories."""
     selected = paths or V3CorePaths.from_environment()
+    selected_codex = codex_settings or CodexReminderSettings.from_environment()
     database = V3Database(selected.database_path)
     audio_store = ContentAddressedStore(selected.audio_store_path)
     artifact_store = ContentAddressedStore(selected.artifact_store_path)
@@ -82,7 +101,10 @@ def compose_v3_core(paths: V3CorePaths | None = None) -> V3Core:
         audio_store,
         artifact_store,
     )
-    mobile_sync = MobileSyncService(lambda: SqliteUnitOfWork(database))
+    mobile_sync = MobileSyncService(
+        lambda: SqliteUnitOfWork(database),
+        operation_handler=UtteranceCorrectionOperationHandler(),
+    )
     admission = AdmissionService(lambda: SqliteUnitOfWork(database))
     processing = DurableProcessingService(
         lambda: SqliteUnitOfWork(database), artifact_store
@@ -90,7 +112,27 @@ def compose_v3_core(paths: V3CorePaths | None = None) -> V3Core:
     corrections = CorrectionInvalidationService(
         lambda: SqliteUnitOfWork(database)
     )
-    desktop = DesktopQueryService(lambda: SqliteUnitOfWork(database))
+    knowledge = KnowledgeArchitectureService(lambda: SqliteUnitOfWork(database))
+    reminders = IntelligentReminderService(
+        lambda: SqliteUnitOfWork(database), knowledge
+    )
+    generator = reminder_generator
+    if generator is None and selected_codex.enabled:
+        generator = CodexReminderGenerator(
+            selected_codex.workdir,
+            model=selected_codex.model,
+        )
+    desktop = DesktopQueryService(
+        lambda: SqliteUnitOfWork(database),
+        codex_reminders_enabled=generator is not None,
+    )
+    reminder_extraction = ReminderExtractionService(
+        lambda: SqliteUnitOfWork(database),
+        reminders,
+        generator,
+        default_effort=selected_codex.reasoning_effort.value,
+        allow_auto_apply=selected_codex.allow_auto_apply,
+    )
     return V3Core(
         paths=selected,
         database=database,
@@ -102,6 +144,9 @@ def compose_v3_core(paths: V3CorePaths | None = None) -> V3Core:
         processing=processing,
         corrections=corrections,
         desktop=desktop,
+        knowledge=knowledge,
+        reminders=reminders,
+        reminder_extraction=reminder_extraction,
     )
 
 

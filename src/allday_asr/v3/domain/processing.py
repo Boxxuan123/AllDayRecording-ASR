@@ -5,6 +5,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from allday_asr.v3.domain.identity import SelfIdentity
+
 from allday_asr.v3.domain.models import ProcessingRun
 
 
@@ -170,10 +172,17 @@ class Utterance:
     run_id: str
     source_artifact_id: str
     speaker_track_id: str | None
+    original_speaker_track_id: str | None
     ordinal: int
     start_ms: int
     end_ms: int
+    start_at: datetime
+    end_at: datetime
     text: str
+    original_text: str
+    identity: SelfIdentity
+    original_identity: SelfIdentity
+    identity_evidence: dict[str, Any]
     evidence: dict[str, Any]
     revision: int
     status: str
@@ -183,8 +192,12 @@ class Utterance:
     def __post_init__(self) -> None:
         if self.ordinal < 0 or self.start_ms < 0 or self.end_ms <= self.start_ms:
             raise ValueError("utterance coordinates are invalid")
+        if self.end_at <= self.start_at:
+            raise ValueError("utterance absolute coordinates are invalid")
         if self.revision < 1:
             raise ValueError("utterance revision must be positive")
+        if self.identity_evidence.get("decision") != self.original_identity.value:
+            raise ValueError("utterance identity evidence must match original identity")
 
 
 @dataclass(frozen=True)

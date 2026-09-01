@@ -9,8 +9,8 @@ import soundfile as sf
 
 from allday_asr.asr.funasr_backend import FunASRBackend
 from allday_asr.audio.embeddings import l2_normalize, normalize_speech_level
-from allday_asr.audio.tools import extract_clip
-from allday_asr.paths import recording_output_dir
+from allday_asr.audio.tools import extract_clip, sha256_file
+from allday_asr.paths import STATE_DIR, recording_output_dir
 from allday_asr.storage.database import Database
 
 
@@ -25,24 +25,35 @@ class SelfCandidateSummary:
     json_path: Path
 
 
+ACTIVE_SELF_POLICY_PATH = (
+    STATE_DIR / "v3" / "identity" / "active-self-identity-policy.json"
+)
+
+
 def export_self_candidates(
     database: Database,
     recording_id: int,
     *,
     device: str = "auto",
-    threshold: float = 0.70,
+    threshold: float | None = None,
+    fallback_threshold: float = 0.70,
     min_segment_ms: int = 2_000,
     top: int = 20,
     window_seconds: float = 4.0,
 ) -> SelfCandidateSummary:
-    if not 0 < threshold <= 1:
-        raise ValueError("threshold 必须在 0 到 1 之间")
     profile = database.get_self_profile()
     if profile is None or not profile["embedding_path"]:
         raise RuntimeError("尚未登记本人声纹，请先执行 enroll-self")
     voiceprint_path = Path(profile["embedding_path"])
     if not voiceprint_path.is_file():
         raise RuntimeError(f"本人声纹文件不存在：{voiceprint_path}")
+    selected_threshold = threshold
+    if selected_threshold is None:
+        selected_threshold = load_active_self_threshold(voiceprint_path)
+    if selected_threshold is None:
+        selected_threshold = fallback_threshold
+    if not 0 < selected_threshold <= 1:
+        raise ValueError("threshold 必须在 0 到 1 之间")
     voiceprint = np.load(voiceprint_path)
     profile_embeddings = l2_normalize(voiceprint["embeddings"])
     centroid = np.asarray(voiceprint["centroid"], dtype=np.float32)
@@ -114,7 +125,7 @@ def export_self_candidates(
                 "score_min": minimum,
                 "score_median": median,
                 "score_max": maximum,
-                "strict_candidate": minimum >= threshold,
+                "strict_candidate": minimum >= selected_threshold,
             }
         )
     rows.sort(key=lambda item: (item["score_min"], item["score_median"]), reverse=True)
@@ -135,7 +146,7 @@ def export_self_candidates(
         "",
         "> 这些结果只用于人工试听校准，尚未写入本人身份。",
         "",
-        f"严格阈值：`{threshold:.3f}`；要求片段内每个窗口均达到阈值。",
+        f"严格阈值：`{selected_threshold:.3f}`；要求片段内每个窗口均达到阈值。",
         "",
     ]
     for rank, row in enumerate(rows[:top], start=1):
@@ -172,7 +183,7 @@ def export_self_candidates(
         json.dumps(
             {
                 "recording_id": recording_id,
-                "threshold": threshold,
+                "threshold": selected_threshold,
                 "min_segment_ms": min_segment_ms,
                 "scored_segments": len(rows),
                 "strict_candidates": sum(item["strict_candidate"] for item in rows),
@@ -187,11 +198,32 @@ def export_self_candidates(
         recording_id=recording_id,
         scored_segments=len(rows),
         strict_candidates=sum(item["strict_candidate"] for item in rows),
-        threshold=threshold,
+        threshold=selected_threshold,
         directory=root,
         manifest_path=manifest_path,
         json_path=json_path,
     )
+
+
+def load_active_self_threshold(
+    voiceprint_path: Path,
+    *,
+    policy_path: Path = ACTIVE_SELF_POLICY_PATH,
+) -> float | None:
+    if not policy_path.is_file():
+        return None
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        if policy.get("accepted") is not True or policy.get("blockers"):
+            return None
+        if str(policy.get("voiceprint_sha256") or "") != sha256_file(
+            voiceprint_path
+        ):
+            return None
+        threshold = float(policy["self_threshold"])
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return threshold if 0 < threshold <= 1 else None
 
 
 def split_verification_windows(

@@ -3,11 +3,11 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 
 import PageState from '../components/PageState.vue'
 import { desktopApi } from '../core/api'
-import { formatBytes, formatDate, formatDuration, formatOffset, statusLabel } from '../core/format'
+import { formatBytes, formatDate, formatDuration, formatOffset, formatTimestamp, statusLabel } from '../core/format'
 import { playRange, release, stop } from '../core/media'
 import { useQuery } from '../core/query'
 import { navigate, route } from '../core/router'
-import type { Utterance } from '../core/types'
+import type { SegmentSummary, SelfIdentity, Utterance } from '../core/types'
 
 const sessionId = route.value.sessionId ?? ''
 const query = useQuery(`session:${sessionId}`, () => desktopApi.session(sessionId))
@@ -17,6 +17,8 @@ const tabs = [
 const activeTab = computed(() => tabs.some(([key]) => key === route.value.tab) ? route.value.tab ?? 'overview' : 'overview')
 const editing = ref<Utterance | null>(null)
 const draft = ref('')
+const draftSpeakerTrackId = ref('')
+const draftIdentity = ref<SelfIdentity>('unknown')
 const saving = ref(false)
 const saveError = ref('')
 const speakers = computed(() => {
@@ -38,16 +40,48 @@ function selectTab(tab: string): void {
 function edit(item: Utterance): void {
   editing.value = item
   draft.value = item.text
+  draftSpeakerTrackId.value = item.speaker_track_id ?? ''
+  draftIdentity.value = item.identity
   saveError.value = ''
 }
 
+function hasCorrectionChanges(): boolean {
+  return editing.value !== null && (
+    draft.value.trim() !== editing.value.text ||
+    (draftSpeakerTrackId.value || null) !== editing.value.speaker_track_id ||
+    draftIdentity.value !== editing.value.identity
+  )
+}
+
+function identityLabel(identity: SelfIdentity): string {
+  return identity === 'self' ? '本人' : identity === 'not_self' ? '非本人' : '未知'
+}
+
+function utteranceSegment(item: Utterance): SegmentSummary | undefined {
+  return query.data.value?.segments.find((candidate) =>
+    candidate.session_start_ms <= item.start_ms && candidate.session_end_ms >= item.end_ms)
+}
+
+function playUtterance(item: Utterance): void {
+  const segment = utteranceSegment(item)
+  if (!segment) return
+  const start = segment.source_start_ms + item.start_ms - segment.session_start_ms
+  playRange(segment.media_id, start, start + item.end_ms - item.start_ms)
+}
+
 async function saveCorrection(): Promise<void> {
-  if (!editing.value || !draft.value.trim()) return
+  if (!editing.value || !draft.value.trim() || !hasCorrectionChanges()) return
   if (!window.confirm('保存会新增 correction revision，并只将依赖该 utterance 的制品标记为 stale。继续吗？')) return
   saving.value = true
   saveError.value = ''
   try {
-    await desktopApi.correctUtterance(editing.value.utterance_id, editing.value.revision, draft.value.trim())
+    await desktopApi.correctUtterance(
+      editing.value.utterance_id,
+      editing.value.revision,
+      draft.value.trim(),
+      draftSpeakerTrackId.value || null,
+      draftIdentity.value,
+    )
     editing.value = null
     await query.refresh(true)
   } catch (error) {
@@ -80,9 +114,9 @@ async function saveCorrection(): Promise<void> {
         <section v-else-if="activeTab === 'timeline'" class="panel timeline-panel">
           <header><div><p class="section-kicker">UTTERANCE TIMELINE</p><h2>对话时间线</h2></div><span>{{ query.data.value.utterances.length }} 条</span></header>
           <article v-for="item in query.data.value.utterances" :key="item.utterance_id" class="utterance-row">
-            <button class="play-dot" :disabled="!query.data.value.session.media_id" aria-label="播放对应原音" @click="query.data.value.session.media_id && playRange(query.data.value.session.media_id, item.start_ms, item.end_ms)">▶</button>
-            <span class="utterance-time">{{ formatOffset(item.start_ms) }}</span>
-            <div><strong>{{ item.speaker_label ?? '未分配说话人' }}</strong><p>{{ item.text }}</p><small>revision {{ item.revision }} · {{ formatOffset(item.end_ms - item.start_ms) }}</small></div>
+            <button class="play-dot" :disabled="!utteranceSegment(item)" aria-label="播放对应原音" @click="playUtterance(item)">▶</button>
+            <span class="utterance-time">{{ formatTimestamp(item.start_at) }}</span>
+            <div><strong>{{ item.speaker_label ?? '未分配说话人' }} <span class="identity-chip" :data-identity="item.identity">{{ identityLabel(item.identity) }}</span></strong><p>{{ item.text }}</p><small>{{ formatOffset(item.start_ms) }} · revision {{ item.revision }} · {{ formatOffset(item.end_ms - item.start_ms) }}<template v-if="item.revision > 1"> · 已人工校正</template><template v-if="item.identity !== item.original_identity"> · 身份原始值 {{ identityLabel(item.original_identity) }}</template></small></div>
             <button class="text-button" @click="edit(item)">校正</button>
           </article>
         </section>
@@ -111,9 +145,12 @@ async function saveCorrection(): Promise<void> {
     <div v-if="editing" class="dialog-backdrop" @click.self="editing = null">
       <form class="dialog" @submit.prevent="saveCorrection">
         <p class="section-kicker">CORRECTION OPERATION</p><h2>校正 utterance</h2><p>原始证据不会被覆盖；保存后创建 revision {{ editing.revision + 1 }}。</p>
-        <textarea v-model="draft" rows="5" aria-label="校正文本"></textarea>
+        <p class="correction-baseline"><strong>模型原始结果 · {{ editing.original_speaker_label ?? '未分配说话人' }} · {{ identityLabel(editing.original_identity) }}</strong>{{ editing.original_text }}</p>
+        <label><span>说话人轨道</span><select v-model="draftSpeakerTrackId"><option value="">未分配 / unknown</option><option v-for="track in query.data.value?.speaker_tracks ?? []" :key="track.speaker_track_id" :value="track.speaker_track_id">{{ track.label }}</option></select></label>
+        <label><span>本人身份</span><select v-model="draftIdentity"><option value="self">本人</option><option value="not_self">非本人</option><option value="unknown">未知 / 证据不足</option></select></label>
+        <label><span>转写文本</span><textarea v-model="draft" rows="5" aria-label="校正文本"></textarea></label>
         <p v-if="saveError" class="form-error">{{ saveError }}</p>
-        <div><button type="button" class="quiet-button" @click="editing = null">取消</button><button class="primary-action" :disabled="saving || !draft.trim()">{{ saving ? '保存中' : '保存新 revision' }}</button></div>
+        <div><button type="button" class="quiet-button" @click="editing = null">取消</button><button class="primary-action" :disabled="saving || !draft.trim() || !hasCorrectionChanges()">{{ saving ? '保存中' : '保存新 revision' }}</button></div>
       </form>
     </div>
   </section>

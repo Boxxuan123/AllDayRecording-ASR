@@ -133,7 +133,8 @@
         "audio_asset",
         "processing_run",
         "utterance",
-        "review_item"
+        "review_item",
+        "reminder"
       ]
     },
     "ApiError": {

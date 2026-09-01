@@ -63,6 +63,8 @@ export interface SegmentSummary {
   sequence: number
   session_start_ms: number
   session_end_ms: number
+  source_start_ms: number
+  source_end_ms: number
   asset_id: string
   media_id: string
   sha256: string
@@ -95,12 +97,30 @@ export interface Utterance {
   session_id: string
   speaker_track_id: string | null
   speaker_label: string | null
+  original_speaker_track_id: string | null
+  original_speaker_label: string | null
+  identity: SelfIdentity
+  original_identity: SelfIdentity
+  identity_evidence: Record<string, unknown>
   start_ms: number
   end_ms: number
+  start_at: string
+  end_at: string
   text: string
+  original_text: string
   revision: number
   status: 'active' | 'stale'
   evidence: Record<string, unknown>
+}
+
+export type SelfIdentity = 'self' | 'not_self' | 'unknown'
+
+export interface SpeakerTrackSummary {
+  speaker_track_id: string
+  session_id: string
+  label: string
+  source_artifact_id: string
+  created_at: string
 }
 
 export interface ArtifactSummary {
@@ -131,6 +151,7 @@ export interface SessionDetail {
   session: SessionSummary
   segments: SegmentSummary[]
   runs: RunSummary[]
+  speaker_tracks: SpeakerTrackSummary[]
   utterances: Utterance[]
   artifacts: ArtifactSummary[]
   backups: BackupSummary[]
@@ -199,4 +220,78 @@ export interface DataHealth {
   artifacts: number
   artifact_bytes: number
   stale_artifacts: number
+}
+
+export interface ReminderEvidenceSpan {
+  evidence_span_id: string
+  utterance_id: string
+  media_id: string
+  text: string
+  identity: SelfIdentity
+  asset_start_ms: number
+  asset_end_ms: number
+  session_start_ms: number
+  session_end_ms: number
+}
+
+export type ReminderCandidateStatus =
+  | 'pending_confirmation'
+  | 'auto_applied'
+  | 'confirmed'
+  | 'modified'
+  | 'ignored'
+  | 'duplicate'
+  | 'conflict'
+
+export interface ReminderCandidate {
+  candidate_id: string
+  proposal_id: string
+  generation_id: string
+  operation: 'CREATE_TASK' | 'CREATE_APPOINTMENT' | 'UPDATE_EVENT' | 'CANCEL_EVENT' | 'MARK_DONE' | 'IGNORE'
+  session_id: string
+  title: string | null
+  actor_person_id: string
+  commitment_direction: 'self_to_other' | 'other_to_self' | 'mutual' | 'not_applicable'
+  related_person_ids: string[]
+  scheduled_at: string | null
+  location: string | null
+  confidence: number
+  needs_confirmation: boolean
+  target_event_id: string | null
+  expected_revision: number
+  status: ReminderCandidateStatus
+  proposal_status: 'pending' | 'accepted' | 'rejected'
+  matched_event_id: string | null
+  conflict_reason: string | null
+  created_at: string
+  evidence_utterance_ids: string[]
+  evidence: ReminderEvidenceSpan[]
+}
+
+export interface ReminderSchedule {
+  event_id: string
+  session_id: string
+  event_revision: number
+  source_candidate_id: string
+  title: string
+  actor_person_id: string
+  commitment_direction: ReminderCandidate['commitment_direction']
+  related_person_ids: string[]
+  scheduled_at: string
+  location: string | null
+  status: 'scheduled' | 'delivered' | 'completed' | 'cancelled' | 'stale'
+  delivered_at: string | null
+  event_status: string
+}
+
+export interface CodexReminderGeneration {
+  generation_id: string
+  status: 'succeeded'
+  candidates: ReminderCandidate[]
+  codex: {
+    turn_id: string
+    model: string
+    reasoning_effort: 'low' | 'medium' | 'high' | 'xhigh'
+    usage: Record<string, unknown>
+  }
 }

@@ -1,0 +1,269 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:alldayrecording:contracts:v3:knowledge",
+  "title": "AllDayRecording V3.2 three-layer knowledge resources",
+  "$defs": {
+    "KnowledgeLayer": {
+      "type": "string",
+      "enum": ["evidence", "event", "memory"]
+    },
+    "EventKind": {
+      "type": "string",
+      "enum": [
+        "task",
+        "request",
+        "commitment",
+        "appointment",
+        "decision",
+        "person_fact",
+        "important_experience"
+      ]
+    },
+    "EventOperationKind": {
+      "type": "string",
+      "enum": ["create", "update", "cancel", "complete", "reopen"]
+    },
+    "MemoryKind": {
+      "type": "string",
+      "enum": [
+        "daily_summary",
+        "person_memory",
+        "person_fact",
+        "relationship_observation",
+        "interaction_statistic",
+        "model_inference"
+      ]
+    },
+    "EvidenceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_type", "evidence_id", "evidence_revision"],
+      "properties": {
+        "evidence_type": {"type": "string", "enum": ["utterance", "event"]},
+        "evidence_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "evidence_revision": {"$ref": "primitives.schema.json#/$defs/Revision"}
+      }
+    },
+    "EvidenceSpan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_span_id",
+        "session_id",
+        "asset_id",
+        "artifact_id",
+        "utterance_id",
+        "session_start_ms",
+        "session_end_ms",
+        "asset_start_ms",
+        "asset_end_ms",
+        "created_at",
+        "media_id",
+        "asset_sha256",
+        "text",
+        "speaker_track_id",
+        "identity",
+        "utterance_revision"
+      ],
+      "properties": {
+        "evidence_span_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "asset_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "artifact_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "utterance_id": {
+          "oneOf": [
+            {"$ref": "primitives.schema.json#/$defs/StableId"},
+            {"type": "null"}
+          ]
+        },
+        "session_start_ms": {"type": "integer", "minimum": 0},
+        "session_end_ms": {"type": "integer", "minimum": 1},
+        "asset_start_ms": {"type": "integer", "minimum": 0},
+        "asset_end_ms": {"type": "integer", "minimum": 1},
+        "created_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+        "media_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "asset_sha256": {"$ref": "primitives.schema.json#/$defs/Sha256"},
+        "text": {"type": ["string", "null"]},
+        "speaker_track_id": {
+          "oneOf": [
+            {"$ref": "primitives.schema.json#/$defs/StableId"},
+            {"type": "null"}
+          ]
+        },
+        "identity": {"type": ["string", "null"]},
+        "utterance_revision": {
+          "oneOf": [
+            {"$ref": "primitives.schema.json#/$defs/Revision"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "EventState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "session_id",
+        "event_kind",
+        "status",
+        "revision",
+        "payload",
+        "latest_operation_id",
+        "created_at",
+        "updated_at",
+        "derivation_status",
+        "evidence"
+      ],
+      "properties": {
+        "event_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "event_kind": {"$ref": "#/$defs/EventKind"},
+        "status": {"type": "string", "enum": ["active", "cancelled", "completed"]},
+        "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+        "payload": {"type": "object"},
+        "latest_operation_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "created_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+        "updated_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+        "derivation_status": {"type": "string", "enum": ["active", "stale"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceReference"}}
+      }
+    },
+    "EventOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "event_id",
+        "session_id",
+        "event_kind",
+        "operation_kind",
+        "event_revision",
+        "payload",
+        "actor",
+        "generation_id",
+        "proposal_id",
+        "created_at",
+        "evidence"
+      ],
+      "properties": {
+        "operation_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "event_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "event_kind": {"$ref": "#/$defs/EventKind"},
+        "operation_kind": {"$ref": "#/$defs/EventOperationKind"},
+        "event_revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+        "payload": {"type": "object"},
+        "actor": {"type": "string", "minLength": 1},
+        "generation_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "proposal_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "created_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceReference"}}
+      }
+    },
+    "MemoryRecord": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "memory_id",
+        "version",
+        "session_id",
+        "kind",
+        "subject_type",
+        "subject_id",
+        "content",
+        "generation_id",
+        "created_at",
+        "derivation_status",
+        "evidence"
+      ],
+      "properties": {
+        "memory_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "version": {"$ref": "primitives.schema.json#/$defs/Revision"},
+        "session_id": {
+          "oneOf": [
+            {"$ref": "primitives.schema.json#/$defs/StableId"},
+            {"type": "null"}
+          ]
+        },
+        "kind": {"$ref": "#/$defs/MemoryKind"},
+        "subject_type": {"type": "string", "minLength": 1},
+        "subject_id": {"type": "string", "minLength": 1},
+        "content": {"type": "object"},
+        "generation_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "created_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+        "derivation_status": {"type": "string", "enum": ["active", "stale", "superseded"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceReference"}}
+      }
+    },
+    "GenerationSubmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layer",
+        "producer",
+        "producer_version",
+        "model",
+        "prompt_version",
+        "extractor_version",
+        "input_scope",
+        "proposals"
+      ],
+      "properties": {
+        "layer": {"$ref": "#/$defs/KnowledgeLayer"},
+        "producer": {"type": "string", "minLength": 1},
+        "producer_version": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "prompt_version": {"type": "string", "minLength": 1},
+        "extractor_version": {"type": "string", "minLength": 1},
+        "input_scope": {"type": "object", "minProperties": 1},
+        "proposals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "payload", "evidence_utterance_ids"],
+            "properties": {
+              "kind": {"type": "string", "enum": ["event_operation", "memory_record"]},
+              "payload": {"type": "object"},
+              "evidence_utterance_ids": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {"$ref": "primitives.schema.json#/$defs/StableId"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "ProposalResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_id",
+        "status",
+        "resource_type",
+        "resource_id",
+        "resource_revision"
+      ],
+      "properties": {
+        "proposal_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "status": {"type": "string", "enum": ["accepted", "rejected"]},
+        "resource_type": {"type": ["string", "null"]},
+        "resource_id": {
+          "oneOf": [
+            {"$ref": "primitives.schema.json#/$defs/StableId"},
+            {"type": "null"}
+          ]
+        },
+        "resource_revision": {
+          "oneOf": [
+            {"$ref": "primitives.schema.json#/$defs/Revision"},
+            {"type": "null"}
+          ]
+        }
+      }
+    }
+  }
+}

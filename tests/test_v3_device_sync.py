@@ -43,6 +43,7 @@ from allday_asr.v3.domain import (
     stable_ulid,
 )
 from allday_asr.v3.interfaces.device_gateway import DeviceGateway
+from allday_asr.v3 import PROJECTION_VERSION
 
 
 RECEIVER_ID = "a" * 64
@@ -171,7 +172,7 @@ class V3DeviceSyncTests(unittest.TestCase):
                 payload={"decision": "accepted"},
             )
             request = SyncRequest(
-                projection_version=1,
+                projection_version=PROJECTION_VERSION,
                 cursor=None,
                 client_operations=(operation,),
                 pull_limit=100,
@@ -195,7 +196,7 @@ class V3DeviceSyncTests(unittest.TestCase):
             reused = service.synchronize(
                 device_id,
                 SyncRequest(
-                    projection_version=1,
+                    projection_version=PROJECTION_VERSION,
                     cursor=first.next_cursor,
                     client_operations=(
                         ClientOperation(
@@ -229,7 +230,7 @@ class V3DeviceSyncTests(unittest.TestCase):
                 )
                 for kind in ("review.apply", "review.conflict", "review.reject")
             )
-            request = SyncRequest(1, None, operations, 100)
+            request = SyncRequest(PROJECTION_VERSION, None, operations, 100)
             device_id = trust.domain_device_id(record.device_id)
 
             first = service.synchronize(device_id, request)
@@ -280,7 +281,9 @@ class V3DeviceSyncTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "injected handler crash"):
                 service.synchronize(
                     device_id,
-                    SyncRequest(1, first.next_cursor, (crashing,), 100),
+                    SyncRequest(
+                        PROJECTION_VERSION, first.next_cursor, (crashing,), 100
+                    ),
                 )
             with database.read() as connection:
                 self.assertEqual(
@@ -438,7 +441,7 @@ class V3DeviceSyncTests(unittest.TestCase):
             thread.start()
             base_url = f"http://127.0.0.1:{server.port}"
             payload = {
-                "projection_version": 1,
+                "projection_version": PROJECTION_VERSION,
                 "cursor": None,
                 "client_operations": [
                     {
@@ -494,7 +497,9 @@ class V3DeviceSyncTests(unittest.TestCase):
                 )
                 with urllib.request.urlopen(request, timeout=3) as response:
                     result = json.loads(response.read())
-                self.assertEqual(result["projection_version"], 1)
+                self.assertEqual(
+                    result["projection_version"], PROJECTION_VERSION
+                )
                 self.assertEqual(result["receipts"][0]["status"], "applied")
                 self.assertEqual(handler.calls, 1)
 

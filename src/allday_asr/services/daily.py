@@ -353,7 +353,8 @@ def _handle_identity_candidates(
         database,
         recording_id,
         device=config.runtime.device,
-        threshold=config.identity.threshold,
+        threshold=None,
+        fallback_threshold=config.identity.threshold,
         min_segment_ms=round(config.identity.min_segment_seconds * 1000),
         top=config.identity.top,
     )

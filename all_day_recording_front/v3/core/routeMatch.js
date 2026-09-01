@@ -2,6 +2,7 @@ const ROUTE_NAMES = {
   '/': 'overview',
   '/recordings': 'recordings',
   '/reviews': 'reviews',
+  '/reminders': 'reminders',
   '/processing': 'processing',
   '/devices': 'devices',
   '/data': 'data',

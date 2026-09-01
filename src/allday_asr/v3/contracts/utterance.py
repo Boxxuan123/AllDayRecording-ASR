@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any, Protocol, TypedDict, cast
 
 _STABLE_ID_SCHEMA: dict[str, Any] = {
@@ -29,9 +30,17 @@ UTTERANCE_DTO_SCHEMA: dict[str, Any] = {
         "session_id",
         "speaker_track_id",
         "speaker_label",
+        "original_speaker_track_id",
+        "original_speaker_label",
+        "identity",
+        "original_identity",
+        "identity_evidence",
         "start_ms",
         "end_ms",
+        "start_at",
+        "end_at",
         "text",
+        "original_text",
         "revision",
         "status",
         "evidence",
@@ -43,9 +52,22 @@ UTTERANCE_DTO_SCHEMA: dict[str, Any] = {
             "oneOf": [_STABLE_ID_SCHEMA, {"type": "null"}],
         },
         "speaker_label": {"type": ["string", "null"]},
+        "original_speaker_track_id": {
+            "oneOf": [_STABLE_ID_SCHEMA, {"type": "null"}],
+        },
+        "original_speaker_label": {"type": ["string", "null"]},
+        "identity": {"type": "string", "enum": ["self", "not_self", "unknown"]},
+        "original_identity": {
+            "type": "string",
+            "enum": ["self", "not_self", "unknown"],
+        },
+        "identity_evidence": {"type": "object"},
         "start_ms": {"type": "integer", "minimum": 0},
         "end_ms": {"type": "integer", "minimum": 1},
+        "start_at": {"type": "string", "format": "date-time"},
+        "end_at": {"type": "string", "format": "date-time"},
         "text": {"type": "string"},
+        "original_text": {"type": "string"},
         "revision": {"type": "integer", "minimum": 1},
         "status": {"type": "string", "enum": ["active", "stale"]},
         "evidence": {"type": "object"},
@@ -64,9 +86,17 @@ class UtteranceDto(TypedDict):
     session_id: str
     speaker_track_id: str | None
     speaker_label: str | None
+    original_speaker_track_id: str | None
+    original_speaker_label: str | None
+    identity: str
+    original_identity: str
+    identity_evidence: dict[str, Any]
     start_ms: int
     end_ms: int
+    start_at: str
+    end_at: str
     text: str
+    original_text: str
     revision: int
     status: str
     evidence: dict[str, Any]
@@ -76,16 +106,26 @@ class UtteranceSource(Protocol):
     utterance_id: str
     session_id: str
     speaker_track_id: str | None
+    original_speaker_track_id: str | None
+    identity: Any
+    original_identity: Any
+    identity_evidence: dict[str, Any]
     start_ms: int
     end_ms: int
+    start_at: datetime
+    end_at: datetime
     text: str
+    original_text: str
     revision: int
     status: str
     evidence: dict[str, Any]
 
 
 def utterance_dto(
-    value: UtteranceSource, *, speaker_label: str | None
+    value: UtteranceSource,
+    *,
+    speaker_label: str | None,
+    original_speaker_label: str | None,
 ) -> UtteranceDto:
     return validate_utterance_dto(
         {
@@ -93,9 +133,17 @@ def utterance_dto(
             "session_id": value.session_id,
             "speaker_track_id": value.speaker_track_id,
             "speaker_label": speaker_label,
+            "original_speaker_track_id": value.original_speaker_track_id,
+            "original_speaker_label": original_speaker_label,
+            "identity": value.identity.value,
+            "original_identity": value.original_identity.value,
+            "identity_evidence": value.identity_evidence,
             "start_ms": value.start_ms,
             "end_ms": value.end_ms,
+            "start_at": _datetime(value.start_at),
+            "end_at": _datetime(value.end_at),
             "text": value.text,
+            "original_text": value.original_text,
             "revision": value.revision,
             "status": value.status,
             "evidence": value.evidence,
@@ -117,14 +165,37 @@ def validate_utterance_dto(payload: Mapping[str, Any]) -> UtteranceDto:
     speaker_label = value["speaker_label"]
     if speaker_label is not None and not isinstance(speaker_label, str):
         raise ValueError("utterance DTO speaker_label violates schema")
+    original_speaker_track_id = value["original_speaker_track_id"]
+    if original_speaker_track_id is not None and not _stable_id(
+        original_speaker_track_id
+    ):
+        raise ValueError("utterance DTO original_speaker_track_id violates schema")
+    original_speaker_label = value["original_speaker_label"]
+    if original_speaker_label is not None and not isinstance(
+        original_speaker_label, str
+    ):
+        raise ValueError("utterance DTO original_speaker_label violates schema")
+    if value["identity"] not in {"self", "not_self", "unknown"}:
+        raise ValueError("utterance DTO identity violates schema")
+    if value["original_identity"] not in {"self", "not_self", "unknown"}:
+        raise ValueError("utterance DTO original_identity violates schema")
+    if not isinstance(value["identity_evidence"], Mapping):
+        raise ValueError("utterance DTO identity_evidence violates schema")
+    value["identity_evidence"] = dict(value["identity_evidence"])
     start_ms = value["start_ms"]
     end_ms = value["end_ms"]
     if not _integer(start_ms) or start_ms < 0:
         raise ValueError("utterance DTO start_ms violates schema")
     if not _integer(end_ms) or end_ms <= start_ms:
         raise ValueError("utterance DTO end_ms violates schema")
+    start_at = _parse_datetime(value["start_at"], "start_at")
+    end_at = _parse_datetime(value["end_at"], "end_at")
+    if end_at <= start_at:
+        raise ValueError("utterance DTO absolute range violates schema")
     if not isinstance(value["text"], str):
         raise ValueError("utterance DTO text violates schema")
+    if not isinstance(value["original_text"], str):
+        raise ValueError("utterance DTO original_text violates schema")
     revision = value["revision"]
     if not _integer(revision) or revision < 1:
         raise ValueError("utterance DTO revision violates schema")
@@ -142,6 +213,28 @@ def _stable_id(value: object) -> bool:
 
 def _integer(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _datetime(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("utterance timestamp must be timezone-aware")
+    return (
+        value.astimezone(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _parse_datetime(value: object, field: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"utterance DTO {field} violates schema")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"utterance DTO {field} violates schema") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"utterance DTO {field} violates schema")
+    return parsed
 
 
 __all__ = [

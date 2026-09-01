@@ -8,6 +8,7 @@ import OverviewView from './views/OverviewView.vue'
 import ProcessingView from './views/ProcessingView.vue'
 import RecordingsView from './views/RecordingsView.vue'
 import ReviewsView from './views/ReviewsView.vue'
+import RemindersView from './views/RemindersView.vue'
 import SessionDetailView from './views/SessionDetailView.vue'
 import SettingsView from './views/SettingsView.vue'
 </script>
@@ -18,6 +19,7 @@ import SettingsView from './views/SettingsView.vue'
     <RecordingsView v-else-if="route.name === 'recordings'" />
     <SessionDetailView v-else-if="route.name === 'session'" :key="route.sessionId ?? ''" />
     <ReviewsView v-else-if="route.name === 'reviews'" />
+    <RemindersView v-else-if="route.name === 'reminders'" />
     <ProcessingView v-else-if="route.name === 'processing'" />
     <DevicesView v-else-if="route.name === 'devices'" />
     <DataView v-else-if="route.name === 'data'" />

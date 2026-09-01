@@ -9,9 +9,17 @@
     "session_id",
     "speaker_track_id",
     "speaker_label",
+    "original_speaker_track_id",
+    "original_speaker_label",
+    "identity",
+    "original_identity",
+    "identity_evidence",
     "start_ms",
     "end_ms",
+    "start_at",
+    "end_at",
     "text",
+    "original_text",
     "revision",
     "status",
     "evidence"
@@ -26,9 +34,22 @@
       ]
     },
     "speaker_label": {"type": ["string", "null"]},
+    "original_speaker_track_id": {
+      "oneOf": [
+        {"$ref": "primitives.schema.json#/$defs/StableId"},
+        {"type": "null"}
+      ]
+    },
+    "original_speaker_label": {"type": ["string", "null"]},
+    "identity": {"type": "string", "enum": ["self", "not_self", "unknown"]},
+    "original_identity": {"type": "string", "enum": ["self", "not_self", "unknown"]},
+    "identity_evidence": {"type": "object"},
     "start_ms": {"type": "integer", "minimum": 0},
     "end_ms": {"type": "integer", "minimum": 1},
+    "start_at": {"type": "string", "format": "date-time"},
+    "end_at": {"type": "string", "format": "date-time"},
     "text": {"type": "string"},
+    "original_text": {"type": "string"},
     "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
     "status": {"type": "string", "enum": ["active", "stale"]},
     "evidence": {"type": "object"}

@@ -12,6 +12,13 @@ from allday_asr.v3.adapters.sqlite.processing_repositories import (
 from allday_asr.v3.adapters.sqlite.desktop_repository import (
     SqliteDesktopReadRepository,
 )
+from allday_asr.v3.adapters.sqlite.knowledge_repositories import (
+    SqliteDerivationRepository,
+    SqliteKnowledgeRepository,
+)
+from allday_asr.v3.adapters.sqlite.reminder_repository import (
+    SqliteReminderRepository,
+)
 from allday_asr.v3.adapters.sqlite.repositories import (
     Clock,
     SqliteArtifactRepository,
@@ -61,6 +68,9 @@ class SqliteUnitOfWork:
             connection, now=self.now
         )
         self.desktop = SqliteDesktopReadRepository(connection)
+        self.knowledge = SqliteKnowledgeRepository(connection)
+        self.derivations = SqliteDerivationRepository(connection)
+        self.reminders = SqliteReminderRepository(connection)
         return self
 
     def __exit__(

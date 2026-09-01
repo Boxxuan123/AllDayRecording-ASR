@@ -17,6 +17,12 @@ export function formatDate(value: string | null): string {
   }).format(new Date(value))
 }
 
+export function formatTimestamp(value: string): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(new Date(value))
+}
+
 export function formatDuration(value: number): string {
   const seconds = Math.floor(value / 1000)
   const hours = Math.floor(seconds / 3600)

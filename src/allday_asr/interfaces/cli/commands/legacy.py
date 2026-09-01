@@ -248,7 +248,12 @@ def enroll_self_command(
 @app.command(name="self-candidates")
 def self_candidates(
     recording_id: int = typer.Argument(..., min=1),
-    threshold: float = typer.Option(0.70, min=0.01, max=1.0, help="严格候选阈值。"),
+    threshold: Optional[float] = typer.Option(
+        None,
+        min=0.01,
+        max=1.0,
+        help="严格候选阈值；省略时优先使用已通过评估的正式阈值。",
+    ),
     top: int = typer.Option(20, min=1, max=100, help="导出多少个最高分片段。"),
     min_segment_seconds: float = typer.Option(
         2.0, min=0.8, help="参与候选评分的最短片段时长。"
@@ -401,4 +406,3 @@ def clip(
         int(segment["end_ms"]),
     )
     console.print(f"[green]已生成[/green] {destination.resolve()}")
-

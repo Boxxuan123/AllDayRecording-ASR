@@ -66,6 +66,16 @@ class V3MigrationTests(unittest.TestCase):
                 "utterances",
                 "artifact_dependencies",
                 "artifact_status_events",
+                "evidence_spans",
+                "generation_records",
+                "structured_change_proposals",
+                "event_operations",
+                "event_current_states",
+                "memory_records",
+                "evidence_links",
+                "derivation_dependencies",
+                "invalidation_events",
+                "recompute_requests",
             }.issubset(tables)
         )
         self.assertNotIn("source_objects", tables)
@@ -176,6 +186,197 @@ class V3MigrationTests(unittest.TestCase):
             )
         self.assertEqual(payload["session_id"], "session-1")
         self.assertEqual(payload["status_code"], "ready")
+
+    def test_v31_migration_backfills_timeline_baseline_and_resets_projection(
+        self,
+    ) -> None:
+        path = self.directory / "core.sqlite3"
+        V3MigrationRunner(path, migrations=MIGRATIONS[:3]).initialize()
+        timestamp = "2026-08-31T02:00:00.000000Z"
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                "INSERT INTO devices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "phone-1",
+                    "phone",
+                    "Phone",
+                    "active",
+                    1,
+                    None,
+                    None,
+                    None,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO recording_sessions (
+                    session_id, captured_start, captured_end, timezone, state,
+                    revision, status_code, current_stage, progress,
+                    blocking_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "session-1",
+                    timestamp,
+                    "2026-08-31T02:01:00.000000Z",
+                    "Asia/Singapore",
+                    "ready_for_processing",
+                    1,
+                    "ready",
+                    None,
+                    1.0,
+                    None,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO processing_runs (
+                    run_id, session_id, pipeline_version, input_revision,
+                    status, config_digest, current_stage, progress,
+                    completed_at, error, created_at, updated_at, revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "run-1",
+                    "session-1",
+                    "pipeline-1",
+                    1,
+                    "succeeded",
+                    "config",
+                    None,
+                    1.0,
+                    timestamp,
+                    None,
+                    timestamp,
+                    timestamp,
+                    1,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO artifacts (
+                    artifact_id, run_id, kind, producer, producer_version,
+                    config_digest, input_refs_json, storage_ref, status,
+                    metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "artifact-1",
+                    "run-1",
+                    "asr_segments",
+                    "test",
+                    "1",
+                    "config",
+                    "[]",
+                    "artifact.json",
+                    "active",
+                    "{}",
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO speaker_tracks VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "speaker-1",
+                    "session-1",
+                    "run-1",
+                    "SPEAKER_00",
+                    "artifact-1",
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO utterances VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    "utterance-1",
+                    "session-1",
+                    "run-1",
+                    "artifact-1",
+                    "speaker-1",
+                    0,
+                    125,
+                    900,
+                    "已校正文本",
+                    "{}",
+                    2,
+                    "active",
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO sync_cursors VALUES (?, ?, ?, ?)",
+                ("phone-1", 1, 42, timestamp),
+            )
+            connection.execute(
+                """
+                INSERT INTO change_events (
+                    resource_type, resource_id, revision, operation,
+                    payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "utterance",
+                    "utterance-1",
+                    2,
+                    "upsert",
+                    json.dumps(
+                        {
+                            "utterance_id": "utterance-1",
+                            "speaker_track_id": "speaker-1",
+                            "speaker_label": "SPEAKER_00",
+                            "start_ms": 125,
+                            "end_ms": 900,
+                            "text": "模型文本",
+                            "revision": 2,
+                        }
+                    ),
+                    timestamp,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        self.assertEqual(V3Database(path).initialize(), LATEST_V3_SCHEMA_VERSION)
+
+        with V3Database(path).read() as migrated:
+            utterance = migrated.execute(
+                "SELECT * FROM utterances WHERE utterance_id = 'utterance-1'"
+            ).fetchone()
+            cursor = migrated.execute(
+                "SELECT projection_version, acknowledged_sequence FROM sync_cursors"
+            ).fetchone()
+            payload = json.loads(
+                migrated.execute(
+                    "SELECT payload_json FROM change_events WHERE resource_type = 'utterance'"
+                ).fetchone()[0]
+            )
+        self.assertEqual(utterance["original_speaker_track_id"], "speaker-1")
+        self.assertEqual(utterance["text"], "已校正文本")
+        self.assertEqual(utterance["original_text"], "模型文本")
+        self.assertEqual(utterance["start_at"], "2026-08-31T02:00:00.125Z")
+        self.assertEqual(utterance["end_at"], "2026-08-31T02:00:00.900Z")
+        self.assertEqual(tuple(cursor), (4, 0))
+        self.assertEqual(utterance["identity"], "unknown")
+        self.assertEqual(utterance["original_identity"], "unknown")
+        self.assertEqual(
+            json.loads(utterance["identity_evidence_json"])["reason"],
+            "predates_v31b_identity",
+        )
+        self.assertEqual(payload["original_text"], "模型文本")
+        self.assertEqual(payload["original_speaker_label"], "SPEAKER_00")
+        self.assertEqual(payload["start_at"], utterance["start_at"])
+        self.assertEqual(payload["identity"], "unknown")
 
     def test_transaction_rolls_back_all_writes_on_error(self) -> None:
         database = V3Database.open(self.directory / "core.sqlite3")

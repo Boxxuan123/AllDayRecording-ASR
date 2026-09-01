@@ -7,7 +7,12 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Protocol
 
-from allday_asr.v3.contracts import validate_utterance_dto
+from allday_asr.v3.contracts import validate_reminder_dto, validate_utterance_dto
+from allday_asr.v3.application.durable_processing import (
+    CorrectUtteranceCommand,
+    UtteranceRevisionConflict,
+    apply_utterance_correction,
+)
 from allday_asr.v3.domain.device_sync import (
     PROJECTION_VERSION,
     ClientOperation,
@@ -18,6 +23,7 @@ from allday_asr.v3.domain.device_sync import (
     SyncResponse,
 )
 from allday_asr.v3.domain.ids import new_ulid
+from allday_asr.v3.domain.identity import SelfIdentity
 from allday_asr.v3.ports.repositories import UnitOfWork
 
 
@@ -45,6 +51,77 @@ class RejectingClientOperationHandler:
                 "UNSUPPORTED_OPERATION",
                 f"unsupported client operation: {operation.kind}",
             ),
+        )
+
+
+class UtteranceCorrectionOperationHandler:
+    """Apply Phone outbox corrections through the same Core transaction."""
+
+    def __init__(self, *, now: DateTimeClock | None = None) -> None:
+        self._now = now or (lambda: datetime.now(timezone.utc))
+
+    def apply(
+        self, operation: ClientOperation, uow: UnitOfWork
+    ) -> OperationReceipt:
+        if operation.kind != "utterance.correct":
+            return RejectingClientOperationHandler().apply(operation, uow)
+        payload = operation.payload
+        if (
+            operation.base_revision is None
+            or set(payload) != {
+                "utterance_id", "text", "speaker_track_id", "identity"
+            }
+            or not isinstance(payload["utterance_id"], str)
+            or not isinstance(payload["text"], str)
+            or (
+                payload["speaker_track_id"] is not None
+                and not isinstance(payload["speaker_track_id"], str)
+            )
+            or payload["identity"] not in {value.value for value in SelfIdentity}
+        ):
+            return OperationReceipt(
+                operation_id=operation.operation_id,
+                status=ClientOperationStatus.REJECTED,
+                resource_revision=None,
+                error=_error(
+                    "INVALID_CORRECTION",
+                    "utterance correction payload is invalid",
+                ),
+            )
+        try:
+            value = apply_utterance_correction(
+                uow,
+                CorrectUtteranceCommand(
+                    utterance_id=payload["utterance_id"],
+                    expected_revision=operation.base_revision,
+                    text=payload["text"],
+                    actor="phone-user",
+                    speaker_track_id=payload["speaker_track_id"],
+                    change_speaker=True,
+                    identity=SelfIdentity(payload["identity"]),
+                    change_identity=True,
+                ),
+                self._now(),
+            )
+        except UtteranceRevisionConflict as exc:
+            return OperationReceipt(
+                operation_id=operation.operation_id,
+                status=ClientOperationStatus.CONFLICT,
+                resource_revision=None,
+                error=_error("REVISION_CONFLICT", str(exc)),
+            )
+        except (KeyError, ValueError) as exc:
+            return OperationReceipt(
+                operation_id=operation.operation_id,
+                status=ClientOperationStatus.REJECTED,
+                resource_revision=None,
+                error=_error("INVALID_CORRECTION", str(exc)),
+            )
+        return OperationReceipt(
+            operation_id=operation.operation_id,
+            status=ClientOperationStatus.APPLIED,
+            resource_revision=value["revision"],
+            error=None,
         )
 
 
@@ -81,6 +158,9 @@ class MobileSyncService:
                     resource=(
                         validate_utterance_dto(event.payload)
                         if event.resource_type == "utterance"
+                        and event.payload is not None
+                        else validate_reminder_dto(event.payload)
+                        if event.resource_type == "reminder"
                         and event.payload is not None
                         else event.payload
                     ),
@@ -193,4 +273,5 @@ __all__ = [
     "ClientOperationHandler",
     "MobileSyncService",
     "RejectingClientOperationHandler",
+    "UtteranceCorrectionOperationHandler",
 ]

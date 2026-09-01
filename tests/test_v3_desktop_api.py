@@ -161,6 +161,93 @@ class V3DesktopApiTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(payload["code"], "cross_origin_denied")
 
+    def test_v32_three_layer_routes_start_empty_and_reject_unproven_events(
+        self,
+    ) -> None:
+        for path in (
+            "/api/v3/evidence-spans?session_id=session-1",
+            "/api/v3/events?session_id=session-1",
+            "/api/v3/memories?session_id=session-1",
+            "/api/v3/knowledge-proposals",
+            "/api/v3/invalidations",
+            "/api/v3/recompute-requests",
+            "/api/v3/reminder-candidates",
+            "/api/v3/reminders",
+            "/api/v3/reminders/due",
+        ):
+            status, payload, _ = self._request(path)
+            self.assertEqual(status, 200, path)
+            self.assertEqual(payload["items"], [], path)
+
+        status, payload, _ = self._request(
+            "/api/v3/knowledge-generations",
+            method="POST",
+            body={
+                "layer": "event",
+                "producer": "desktop-test",
+                "producer_version": "1",
+                "model": "fixture",
+                "prompt_version": "1",
+                "extractor_version": "1",
+                "input_scope": {"session_id": "session-1"},
+                "proposals": [
+                    {
+                        "kind": "event_operation",
+                        "payload": {
+                            "operation": "create",
+                            "session_id": "session-1",
+                            "event_kind": "task",
+                            "expected_revision": 0,
+                            "patch": {"title": "unproven"},
+                        },
+                        "evidence_utterance_ids": ["missing-utterance"],
+                    }
+                ],
+            },
+            headers={"Origin": self.server.application.base_url},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["code"], "invalid_request")
+
+        status, payload, _ = self._request(
+            "/api/v3/reminder-generations",
+            method="POST",
+            body={
+                "producer": "desktop-test",
+                "producer_version": "1",
+                "model": "fixture",
+                "prompt_version": "1",
+                "extractor_version": "1",
+                "input_scope": {"session_id": "session-1"},
+                "intents": [
+                    {
+                        "operation": "CREATE_TASK",
+                        "session_id": "session-1",
+                        "title": "unproven reminder",
+                        "actor_person_id": "self",
+                        "commitment_direction": "self_to_other",
+                        "related_person_ids": [],
+                        "scheduled_at": "2026-09-02T10:00:00+08:00",
+                        "confidence": 0.9,
+                        "evidence_utterance_ids": ["missing-utterance"],
+                        "needs_confirmation": True,
+                    }
+                ],
+            },
+            headers={"Origin": self.server.application.base_url},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["code"], "invalid_request")
+
+        status, payload, _ = self._request(
+            "/api/v3/reminder-generations/codex",
+            method="POST",
+            body={"session_id": "session-1", "reasoning_effort": "auto"},
+            headers={"Origin": self.server.application.base_url},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["code"], "invalid_request")
+
     def _start_server(self) -> None:
         self.thread = threading.Thread(
             target=self.server.serve_forever,

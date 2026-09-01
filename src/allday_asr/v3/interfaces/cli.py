@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sqlite3
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Optional
@@ -32,15 +34,23 @@ from allday_asr.v3.adapters.models_v2 import (
     QualityWorkflowV2Adapter,
     V2SessionMaterializer,
 )
+from allday_asr.v3.adapters.legacy_v2.label_migration import (
+    migrate_legacy_labels,
+)
 from allday_asr.v3.application import (
     DurableProcessingWorker,
     LegacyImportCommand,
     RecordBackupEvidenceCommand,
     SubmitProcessingCommand,
+    run_identity_calibration,
+    run_timeline_quality_audit,
 )
 from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core, start_empty_runtime
 from allday_asr.v3.config import V3ConfigurationError, V3Settings
 from allday_asr.v3.interfaces.desktop_server import serve_v3_desktop
+from allday_asr.v3.interfaces.temporary_label_server import (
+    serve_temporary_labeler,
+)
 from allday_asr.v3 import CONTRACT_VERSION, PROJECTION_VERSION
 
 
@@ -105,6 +115,223 @@ def migrate_command(
             sort_keys=True,
         )
     )
+
+
+@app.command(name="seam-audit")
+def timeline_audit_command(
+    source: Annotated[
+        Path,
+        typer.Argument(exists=True, dir_okay=False, resolve_path=True),
+    ],
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", dir_okay=False, resolve_path=True),
+    ] = None,
+) -> None:
+    """Evaluate reviewed long-recording chunk seams and write a hashed receipt."""
+
+    _enabled_settings()
+    try:
+        summary = run_timeline_quality_audit(source, receipt_path=output)
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "accepted": summary.accepted,
+                "blockers": summary.blockers,
+                "input_sha256": summary.input_sha256,
+                "receipt_sha256": summary.receipt_sha256,
+                "receipt": str(summary.receipt_path.resolve()),
+                "metrics": summary.metrics,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    if not summary.accepted:
+        raise typer.Exit(code=2)
+
+
+@app.command(name="label-migrate")
+def label_migrate_command(
+    source_database: Annotated[
+        Path,
+        typer.Argument(exists=True, dir_okay=False, resolve_path=True),
+    ] = DEFAULT_DB_PATH,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", file_okay=False, resolve_path=True),
+    ] = None,
+) -> None:
+    """Normalize all auditable V2 human labels and assess V3.1 gaps."""
+
+    _enabled_settings()
+    selected_output = output_dir or (
+        V3CorePaths.from_environment().state_dir / "labels"
+    )
+    try:
+        summary = migrate_legacy_labels(
+            source_database,
+            output_dir=selected_output,
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "bundle": str(summary.bundle_path.resolve()),
+                "receipt": str(summary.receipt_path.resolve()),
+                "report": str(summary.report_path.resolve()),
+                "source_database_sha256": summary.source_database_sha256,
+                "bundle_sha256": summary.bundle_sha256,
+                "receipt_sha256": summary.receipt_sha256,
+                "counts": summary.counts,
+                "assessment": summary.assessment,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+@app.command(name="label-web")
+def temporary_label_web_command(
+    bundle: Annotated[
+        Path | None,
+        typer.Option(
+            "--bundle",
+            exists=True,
+            dir_okay=False,
+            resolve_path=True,
+            help="Legacy label migration bundle; newest r2 bundle is used by default.",
+        ),
+    ] = None,
+    source_database: Annotated[
+        Path,
+        typer.Option(
+            "--database",
+            exists=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_DB_PATH,
+    state_dir: Annotated[
+        Path | None,
+        typer.Option("--state-dir", file_okay=False, resolve_path=True),
+    ] = None,
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8774,
+    open_browser: Annotated[bool, typer.Option("--open/--no-open")] = True,
+) -> None:
+    """Start the disposable, loopback-only V3.1 human-labeling page."""
+
+    _enabled_settings()
+    paths = V3CorePaths.from_environment()
+    label_dir = paths.state_dir / "labels"
+    selected_bundle = bundle or _newest_label_bundle(label_dir)
+    selected_state = state_dir or (paths.state_dir / "labeling" / "v31-temporary")
+    try:
+        serve_temporary_labeler(
+            selected_bundle,
+            source_database,
+            state_dir=selected_state,
+            host="127.0.0.1",
+            port=port,
+            open_browser=open_browser,
+        )
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+@app.command(name="identity-evaluate")
+def identity_evaluate_command(
+    bundle: Annotated[
+        Path | None,
+        typer.Option("--bundle", exists=True, dir_okay=False, resolve_path=True),
+    ] = None,
+    progress: Annotated[
+        Path | None,
+        typer.Option("--progress", exists=True, dir_okay=False, resolve_path=True),
+    ] = None,
+    source_database: Annotated[
+        Path,
+        typer.Option(
+            "--database",
+            exists=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_DB_PATH,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", file_okay=False, resolve_path=True),
+    ] = None,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+    adapt_session: Annotated[
+        list[int] | None,
+        typer.Option(
+            "--adapt-session",
+            help="Use self labels from this session to adapt the voiceprint; exclude the whole session from holdout.",
+        ),
+    ] = None,
+    voiceprint: Annotated[
+        Path | None,
+        typer.Option(
+            "--voiceprint",
+            exists=True,
+            dir_okay=False,
+            resolve_path=True,
+            help="Evaluate an explicit candidate voiceprint without installing it.",
+        ),
+    ] = None,
+) -> None:
+    """Score the independent self holdout and publish a V3.1 identity policy."""
+
+    _enabled_settings()
+    paths = V3CorePaths.from_environment()
+    selected_bundle = bundle or _newest_label_bundle(paths.state_dir / "labels")
+    selected_progress = progress or (
+        paths.state_dir / "labeling" / "v31-temporary" / "progress.json"
+    )
+    selected_output = output_dir or (paths.state_dir / "identity")
+    try:
+        summary = run_identity_calibration(
+            selected_bundle,
+            selected_progress,
+            source_database,
+            output_dir=selected_output,
+            device=device,
+            adaptation_session_ids=frozenset(adapt_session or []),
+            voiceprint_path_override=voiceprint,
+        )
+    except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "accepted": summary.accepted,
+                "blockers": summary.blockers,
+                "self_threshold": summary.self_threshold,
+                "not_self_threshold": summary.not_self_threshold,
+                "metrics": asdict(summary.metrics),
+                "calibration": str(summary.calibration_path.resolve()),
+                "policy": str(summary.policy_path.resolve()),
+                "receipt": str(summary.receipt_path.resolve()),
+                "candidate_voiceprint": (
+                    str(summary.candidate_voiceprint_path.resolve())
+                    if summary.candidate_voiceprint_path is not None
+                    else None
+                ),
+                "calibration_sha256": summary.calibration_sha256,
+                "policy_sha256": summary.policy_sha256,
+                "receipt_sha256": summary.receipt_sha256,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    if not summary.accepted:
+        raise typer.Exit(code=2)
 
 
 @app.command(name="desktop")
@@ -514,6 +741,23 @@ def _enabled_settings() -> V3Settings:
             "V3 is disabled; set ALLDAY_V3_ENABLED=1 before modifying V3 state"
         )
     return settings
+
+
+def _newest_label_bundle(directory: Path) -> Path:
+    candidates = sorted(
+        (
+            path
+            for path in directory.glob("legacy-v2-labels-r2-*.json")
+            if not path.name.endswith(".receipt.json")
+        ),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+    if not candidates:
+        raise typer.BadParameter(
+            "找不到 R2 标注迁移包，请先运行 allday-asr label-migrate"
+        )
+    return candidates[0]
 
 
 def _initialized_core(state_dir: Path | None):

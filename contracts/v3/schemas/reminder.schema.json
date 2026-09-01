@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:alldayrecording:contracts:v3:reminder",
+  "title": "Accepted reminder schedule projection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "session_id",
+    "event_revision",
+    "source_candidate_id",
+    "title",
+    "actor_person_id",
+    "commitment_direction",
+    "related_person_ids",
+    "scheduled_at",
+    "location",
+    "status",
+    "updated_at"
+  ],
+  "properties": {
+    "event_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "event_revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+    "source_candidate_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+    "title": {"type": "string", "minLength": 1},
+    "actor_person_id": {"type": "string", "minLength": 1},
+    "commitment_direction": {
+      "type": "string",
+      "enum": ["self_to_other", "other_to_self", "mutual", "not_applicable"]
+    },
+    "related_person_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "scheduled_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+    "location": {"type": ["string", "null"]},
+    "status": {
+      "type": "string",
+      "enum": ["scheduled", "delivered", "completed", "cancelled", "stale"]
+    },
+    "updated_at": {"$ref": "primitives.schema.json#/$defs/UtcDateTime"}
+  },
+  "$defs": {
+    "ReminderOperation": {
+      "type": "string",
+      "enum": [
+        "CREATE_TASK",
+        "CREATE_APPOINTMENT",
+        "UPDATE_EVENT",
+        "CANCEL_EVENT",
+        "MARK_DONE",
+        "IGNORE"
+      ]
+    },
+    "CommitmentDirection": {
+      "type": "string",
+      "enum": ["self_to_other", "other_to_self", "mutual", "not_applicable"]
+    },
+    "CandidateStatus": {
+      "type": "string",
+      "enum": [
+        "pending_confirmation",
+        "auto_applied",
+        "confirmed",
+        "modified",
+        "ignored",
+        "duplicate",
+        "conflict"
+      ]
+    },
+    "ScheduleStatus": {
+      "type": "string",
+      "enum": ["scheduled", "delivered", "completed", "cancelled", "stale"]
+    },
+    "ReminderIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "session_id",
+        "actor_person_id",
+        "commitment_direction",
+        "confidence",
+        "evidence_utterance_ids",
+        "needs_confirmation"
+      ],
+      "properties": {
+        "operation": {"$ref": "#/$defs/ReminderOperation"},
+        "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "title": {"type": ["string", "null"]},
+        "actor_person_id": {"type": "string", "minLength": 1},
+        "commitment_direction": {"$ref": "#/$defs/CommitmentDirection"},
+        "related_person_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "scheduled_at": {
+          "oneOf": [
+            {"$ref": "primitives.schema.json#/$defs/UtcDateTime"},
+            {"type": "null"}
+          ]
+        },
+        "location": {"type": ["string", "null"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence_utterance_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "primitives.schema.json#/$defs/StableId"}
+        },
+        "needs_confirmation": {"type": "boolean"},
+        "target_event_id": {
+          "oneOf": [
+            {"$ref": "primitives.schema.json#/$defs/StableId"},
+            {"type": "null"}
+          ]
+        },
+        "expected_revision": {"type": "integer", "minimum": 0},
+        "reason": {"type": ["string", "null"]}
+      }
+    },
+    "GenerationSubmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer",
+        "producer_version",
+        "model",
+        "prompt_version",
+        "extractor_version",
+        "input_scope",
+        "intents"
+      ],
+      "properties": {
+        "producer": {"type": "string", "minLength": 1},
+        "producer_version": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "prompt_version": {"type": "string", "minLength": 1},
+        "extractor_version": {"type": "string", "minLength": 1},
+        "input_scope": {"type": "object", "minProperties": 1},
+        "intents": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/ReminderIntent"}
+        }
+      }
+    }
+  }
+}

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AllDayRecording Device API",
-    "version": "3.0.0",
+    "version": "3.3.0",
     "description": "Restricted paired-device API. It does not expose Desktop administration, Lab, database, or arbitrary file operations."
   },
   "servers": [
@@ -115,8 +115,8 @@
         "additionalProperties": false,
         "required": ["contract_version", "projection_version", "server_time"],
         "properties": {
-          "contract_version": {"const": "3.0.0"},
-          "projection_version": {"const": 1},
+          "contract_version": {"const": "3.3.0"},
+          "projection_version": {"const": 4},
           "server_time": {"$ref": "../schemas/primitives.schema.json#/$defs/UtcDateTime"}
         }
       },

@@ -383,6 +383,35 @@ class SqliteCorrectionRepository:
         )
         return cursor.rowcount == 1
 
+    def list_for_target(
+        self, target_type: str, target_id: str
+    ) -> tuple[CorrectionOperation, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM correction_operations
+            WHERE target_type = ? AND target_id = ?
+            ORDER BY before_revision, created_at, correction_id
+            """,
+            (target_type, target_id),
+        ).fetchall()
+        return tuple(
+            CorrectionOperation(
+                correction_id=str(row["correction_id"]),
+                target_type=str(row["target_type"]),
+                target_id=str(row["target_id"]),
+                before_revision=(
+                    int(row["before_revision"])
+                    if row["before_revision"] is not None
+                    else None
+                ),
+                patch=_json_object(row["patch_json"]),
+                actor=str(row["actor"]),
+                legacy_ref=row["legacy_ref"],
+                created_at=_parse_datetime(row["created_at"]),
+            )
+            for row in rows
+        )
+
 
 class SqliteChangeLogRepository:
     def __init__(self, connection: sqlite3.Connection, *, now: Clock) -> None:
@@ -932,6 +961,13 @@ def _optional_parse_datetime(value: object) -> datetime | None:
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _json_object(value: object) -> dict[str, Any]:
+    decoded = json.loads(str(value))
+    if not isinstance(decoded, dict):
+        raise ValueError("stored JSON value is not an object")
+    return decoded
 
 
 def utc_now() -> str:

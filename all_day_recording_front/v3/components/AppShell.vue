@@ -8,6 +8,7 @@ const navigation: { name: RouteName; label: string; eyebrow: string; path: strin
   { name: 'overview', label: '总览', eyebrow: 'NOW', path: '/' },
   { name: 'recordings', label: '录音库', eyebrow: 'AUDIO', path: '/recordings' },
   { name: 'reviews', label: '审核', eyebrow: 'INBOX', path: '/reviews' },
+  { name: 'reminders', label: '提醒', eyebrow: 'ACT', path: '/reminders' },
   { name: 'processing', label: '处理中心', eyebrow: 'RUNS', path: '/processing' },
   { name: 'devices', label: '设备与传输', eyebrow: 'LINK', path: '/devices' },
   { name: 'data', label: '数据与备份', eyebrow: 'SAFE', path: '/data' },

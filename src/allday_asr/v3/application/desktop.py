@@ -24,8 +24,14 @@ class SessionPage:
 
 
 class DesktopQueryService:
-    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+    def __init__(
+        self,
+        uow_factory: UnitOfWorkFactory,
+        *,
+        codex_reminders_enabled: bool = False,
+    ) -> None:
         self._uow_factory = uow_factory
+        self._codex_reminders_enabled = codex_reminders_enabled
 
     def status(self) -> dict[str, Any]:
         return {
@@ -104,7 +110,19 @@ class DesktopQueryService:
             },
             "privacy": {
                 "network_boundary": "loopback",
-                "cloud_upload": False,
+                "audio_cloud_upload": False,
+                "transcript_cloud_processing": self._codex_reminders_enabled,
+            },
+            "knowledge": {
+                "three_layers": True,
+                "model_write_boundary": "structured_proposals_only",
+                "recursive_invalidation": True,
+                "recompute_queue": True,
+            },
+            "reminders": {
+                "codex_enabled": self._codex_reminders_enabled,
+                "codex_workspace": "isolated_empty_read_only",
+                "model_write_boundary": "structured_candidates_only",
             },
         }
 

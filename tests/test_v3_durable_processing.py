@@ -22,6 +22,7 @@ from allday_asr.v3.application import (
     DurableProcessingWorker,
     RecordBackupEvidenceCommand,
     SubmitProcessingCommand,
+    UtteranceCorrectionOperationHandler,
 )
 from allday_asr.v3.domain import (
     AudioAsset,
@@ -29,6 +30,7 @@ from allday_asr.v3.domain import (
     AudioReplica,
     AudioReplicaState,
     CaptureSegment,
+    ClientOperation,
     Device,
     DeviceKind,
     DeviceStatus,
@@ -206,6 +208,14 @@ class _StaticV2Executor:
                     "end_ms": 600,
                     "speaker": "SPEAKER_00",
                     "text": "你好",
+                    "identity": "self",
+                    "identity_evidence": {
+                        "source": "voiceprint",
+                        "decision": "self",
+                        "reason": "all_clean_windows_above_self_threshold",
+                        "policy_version": "holdout-accepted-1",
+                        "calibration_accepted": True,
+                    },
                     "evidence": {"token_ids": [1, 2], "source_refs": [source]},
                 }
             ],
@@ -286,15 +296,32 @@ class V3DurableProcessingTests(unittest.TestCase):
                 "session_id",
                 "speaker_track_id",
                 "speaker_label",
+                "original_speaker_track_id",
+                "original_speaker_label",
+                "identity",
+                "original_identity",
+                "identity_evidence",
                 "start_ms",
                 "end_ms",
+                "start_at",
+                "end_at",
                 "text",
+                "original_text",
                 "revision",
                 "status",
                 "evidence",
             },
         )
         self.assertEqual(desktop_utterance["speaker_label"], "speaker-1")
+        self.assertEqual(desktop_utterance["original_text"], "测试")
+        self.assertEqual(desktop_utterance["identity"], "unknown")
+        self.assertEqual(
+            desktop_utterance["identity_evidence"]["reason"],
+            "no_identity_evidence",
+        )
+        self.assertEqual(
+            desktop_utterance["start_at"], "2026-08-31T02:00:00.100000Z"
+        )
         corrected = CorrectionInvalidationService(
             self.uow_factory, now=self.clock.now
         ).correct_utterance(
@@ -308,6 +335,58 @@ class V3DurableProcessingTests(unittest.TestCase):
         self.assertEqual(corrected["revision"], 2)
         self.assertEqual(set(corrected), set(desktop_utterance))
         self.assertEqual(corrected["speaker_label"], "speaker-1")
+        self.assertEqual(corrected["original_text"], "测试")
+        with self.uow_factory() as uow:
+            receipt = UtteranceCorrectionOperationHandler(
+                now=self.clock.now
+            ).apply(
+                ClientOperation(
+                    operation_id=stable_ulid("phone-correction", "one"),
+                    kind="utterance.correct",
+                    base_revision=2,
+                    payload={
+                        "utterance_id": str(utterance["utterance_id"]),
+                        "text": "修正后的测试",
+                        "speaker_track_id": None,
+                        "identity": "self",
+                    },
+                ),
+                uow,
+            )
+        self.assertEqual(receipt.status.value, "applied")
+        self.assertEqual(receipt.resource_revision, 3)
+        history = CorrectionInvalidationService(
+            self.uow_factory, now=self.clock.now
+        ).correction_history(str(utterance["utterance_id"]))
+        self.assertEqual(history["utterance"]["speaker_label"], None)
+        self.assertEqual(history["utterance"]["identity"], "self")
+        self.assertEqual(history["utterance"]["original_identity"], "unknown")
+        self.assertEqual(len(history["operations"]), 2)
+        with self.uow_factory() as uow:
+            rejected = UtteranceCorrectionOperationHandler(
+                now=self.clock.now
+            ).apply(
+                ClientOperation(
+                    operation_id=stable_ulid("phone-correction", "invalid-track"),
+                    kind="utterance.correct",
+                    base_revision=3,
+                    payload={
+                        "utterance_id": str(utterance["utterance_id"]),
+                        "text": "不会提交的文本",
+                        "speaker_track_id": stable_ulid(
+                            "speaker-track", "another-session"
+                        ),
+                        "identity": "not_self",
+                    },
+                ),
+                uow,
+            )
+        self.assertEqual(rejected.status.value, "rejected")
+        after_rejection = CorrectionInvalidationService(
+            self.uow_factory, now=self.clock.now
+        ).correction_history(str(utterance["utterance_id"]))
+        self.assertEqual(after_rejection["utterance"]["revision"], 3)
+        self.assertEqual(len(after_rejection["operations"]), 2)
         with self.database.read() as connection:
             stale = connection.execute(
                 "SELECT artifact_id FROM artifact_status_events"
@@ -321,7 +400,7 @@ class V3DurableProcessingTests(unittest.TestCase):
             backup_after = connection.execute(
                 "SELECT digest, status FROM backup_evidence"
             ).fetchone()
-        self.assertEqual(len(stale), 1)
+        self.assertEqual(len(stale), 2)
         self.assertEqual(available_audio, "available")
         self.assertEqual(attempts_after, attempt_count)
         self.assertEqual(tuple(backup_after), tuple(backup_before))
@@ -469,6 +548,12 @@ class V3DurableProcessingTests(unittest.TestCase):
         self.assertEqual(metadata["utterance_count"], 1)
         self.assertEqual((utterance["start_ms"], utterance["end_ms"]), (100, 600))
         self.assertEqual(utterance["text"], "你好")
+        self.assertEqual(utterance["identity"], "self")
+        self.assertEqual(utterance["original_identity"], "self")
+        self.assertEqual(
+            json.loads(utterance["identity_evidence_json"])["policy_version"],
+            "holdout-accepted-1",
+        )
         self.assertEqual(
             snapshot["tokens"][0]["source_refs"][0]["source_start_ms"], 100
         )

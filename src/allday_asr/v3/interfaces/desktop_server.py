@@ -6,6 +6,7 @@ import re
 import secrets
 import time
 import webbrowser
+from datetime import datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,7 +16,22 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from allday_asr.v3.application import (
     CorrectUtteranceCommand,
+    ReminderGenerationFailed,
+    ReminderGenerationUnavailable,
+    UtteranceRevisionConflict,
     processing_snapshot_dict,
+)
+from allday_asr.v3.domain.identity import SelfIdentity
+from allday_asr.v3.domain.knowledge import (
+    GenerationSubmission,
+    KnowledgeLayer,
+    ProposalKind,
+)
+from allday_asr.v3.domain.reminders import (
+    CommitmentDirection,
+    ReminderGenerationSubmission,
+    ReminderIntent,
+    ReminderOperation,
 )
 from allday_asr.v3.bootstrap import V3Core, V3CorePaths, compose_v3_core
 from allday_asr.v3.domain import new_ulid
@@ -29,10 +45,32 @@ _MEDIA_ROUTE = re.compile(r"^/api/v3/media/([^/]+)$")
 _RETRY_ROUTE = re.compile(r"^/api/v3/processing-jobs/([^/]+)/retry$")
 _CANCEL_ROUTE = re.compile(r"^/api/v3/processing-jobs/([^/]+)/cancel$")
 _CORRECTION_ROUTE = re.compile(r"^/api/v3/utterances/([^/]+)/corrections$")
+_EVENT_OPERATIONS_ROUTE = re.compile(r"^/api/v3/events/([^/]+)/operations$")
+_PROPOSAL_ACCEPT_ROUTE = re.compile(
+    r"^/api/v3/knowledge-proposals/([^/]+)/accept$"
+)
+_PROPOSAL_REJECT_ROUTE = re.compile(
+    r"^/api/v3/knowledge-proposals/([^/]+)/reject$"
+)
+_REMINDER_CANDIDATE_ROUTE = re.compile(r"^/api/v3/reminder-candidates/([^/]+)$")
+_REMINDER_FEEDBACK_ROUTE = re.compile(
+    r"^/api/v3/reminder-candidates/([^/]+)/feedback$"
+)
+_REMINDER_CONFIRM_ROUTE = re.compile(
+    r"^/api/v3/reminder-candidates/([^/]+)/confirm$"
+)
+_REMINDER_MODIFY_ROUTE = re.compile(
+    r"^/api/v3/reminder-candidates/([^/]+)/modify$"
+)
+_REMINDER_IGNORE_ROUTE = re.compile(
+    r"^/api/v3/reminder-candidates/([^/]+)/ignore$"
+)
+_REMINDER_DELIVER_ROUTE = re.compile(r"^/api/v3/reminders/([^/]+)/deliver$")
 _FRONTEND_ROUTES = {
     "/",
     "/recordings",
     "/reviews",
+    "/reminders",
     "/processing",
     "/devices",
     "/data",
@@ -51,6 +89,9 @@ class V3DesktopApplication:
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    def close(self) -> None:
+        self.core.close()
 
 
 class V3DesktopRequestHandler(BaseHTTPRequestHandler):
@@ -76,6 +117,27 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
         except KeyError as exc:
             self._send_error(
                 HTTPStatus.NOT_FOUND, "not_found", str(exc), request_id=request_id
+            )
+        except UtteranceRevisionConflict as exc:
+            self._send_error(
+                HTTPStatus.CONFLICT,
+                "revision_conflict",
+                str(exc),
+                request_id=request_id,
+            )
+        except ReminderGenerationUnavailable as exc:
+            self._send_error(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "codex_unavailable",
+                str(exc),
+                request_id=request_id,
+            )
+        except ReminderGenerationFailed as exc:
+            self._send_error(
+                HTTPStatus.BAD_GATEWAY,
+                "codex_generation_failed",
+                str(exc),
+                request_id=request_id,
             )
         except ValueError as exc:
             self._send_error(
@@ -147,11 +209,158 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
             )
             self._send_json(HTTPStatus.OK, processing_snapshot_dict(snapshot)["run"])
             return
+        if match := _CORRECTION_ROUTE.fullmatch(path):
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.corrections.correction_history(
+                    unquote(match.group(1))
+                ),
+            )
+            return
         if path == "/api/v3/reviews":
             limit = _integer(query.get("limit", ["100"])[0], "limit")
             self._send_json(
                 HTTPStatus.OK,
                 {"items": self.application.core.desktop.list_reviews(limit)},
+            )
+            return
+        if path == "/api/v3/evidence-spans":
+            session_id = _required_query(query, "session_id")
+            self._send_json(
+                HTTPStatus.OK,
+                {"items": self.application.core.knowledge.list_evidence(session_id)},
+            )
+            return
+        if path == "/api/v3/events":
+            session_id = _required_query(query, "session_id")
+            self._send_json(
+                HTTPStatus.OK,
+                {"items": self.application.core.knowledge.list_events(session_id)},
+            )
+            return
+        if match := _EVENT_OPERATIONS_ROUTE.fullmatch(path):
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.knowledge.event_history(
+                        unquote(match.group(1))
+                    )
+                },
+            )
+            return
+        if path == "/api/v3/memories":
+            session_id = query.get("session_id", [None])[0]
+            subject_type = query.get("subject_type", [None])[0]
+            subject_id = query.get("subject_id", [None])[0]
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.knowledge.list_memories(
+                        session_id=session_id,
+                        subject_type=subject_type,
+                        subject_id=subject_id,
+                    )
+                },
+            )
+            return
+        if path == "/api/v3/knowledge-proposals":
+            status = query.get("status", [None])[0]
+            limit = _integer(query.get("limit", ["100"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.knowledge.list_proposals(
+                        status, limit
+                    )
+                },
+            )
+            return
+        if path == "/api/v3/derivations/affected":
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.knowledge.affected_by(
+                    _required_query(query, "source_type"),
+                    _required_query(query, "source_id"),
+                ),
+            )
+            return
+        if path == "/api/v3/invalidations":
+            target_type = query.get("target_type", [None])[0]
+            target_id = query.get("target_id", [None])[0]
+            limit = _integer(query.get("limit", ["100"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.knowledge.list_invalidations(
+                        target_type, target_id, limit
+                    )
+                },
+            )
+            return
+        if path == "/api/v3/recompute-requests":
+            status = query.get("status", [None])[0]
+            limit = _integer(query.get("limit", ["100"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.knowledge.list_recompute_requests(
+                        status, limit
+                    )
+                },
+            )
+            return
+        if path == "/api/v3/reminder-candidates":
+            status = query.get("status", [None])[0]
+            limit = _integer(query.get("limit", ["100"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.reminders.list_candidates(
+                        status, limit
+                    )
+                },
+            )
+            return
+        if match := _REMINDER_FEEDBACK_ROUTE.fullmatch(path):
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.reminders.feedback(
+                        unquote(match.group(1))
+                    )
+                },
+            )
+            return
+        if match := _REMINDER_CANDIDATE_ROUTE.fullmatch(path):
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.reminders.candidate(unquote(match.group(1))),
+            )
+            return
+        if path == "/api/v3/reminders/due":
+            at = query.get("at", [None])[0]
+            limit = _integer(query.get("limit", ["100"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.reminders.due(
+                        _reminder_datetime(at) if at is not None else None,
+                        limit,
+                    )
+                },
+            )
+            return
+        if path == "/api/v3/reminders":
+            status = query.get("status", [None])[0]
+            session_id = query.get("session_id", [None])[0]
+            limit = _integer(query.get("limit", ["100"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.reminders.list_schedules(
+                        status=status, session_id=session_id, limit=limit
+                    )
+                },
             )
             return
         if path == "/api/v3/devices":
@@ -198,16 +407,25 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.ACCEPTED, processing_snapshot_dict(snapshot))
             return
         if match := _CORRECTION_ROUTE.fullmatch(path):
-            required = {"expected_revision", "text"}
+            required = {
+                "expected_revision", "text", "speaker_track_id", "identity"
+            }
             if set(body) != required:
                 raise ValueError("utterance correction fields are invalid")
             revision = body["expected_revision"]
             text = body["text"]
+            speaker_track_id = body["speaker_track_id"]
+            identity = body["identity"]
             if (
                 isinstance(revision, bool)
                 or not isinstance(revision, int)
                 or revision < 1
                 or not isinstance(text, str)
+                or (
+                    speaker_track_id is not None
+                    and not isinstance(speaker_track_id, str)
+                )
+                or identity not in {value.value for value in SelfIdentity}
             ):
                 raise ValueError("utterance correction values are invalid")
             value = self.application.core.corrections.correct_utterance(
@@ -216,9 +434,100 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                     expected_revision=revision,
                     text=text,
                     actor="desktop-user",
+                    speaker_track_id=speaker_track_id,
+                    change_speaker=True,
+                    identity=SelfIdentity(identity),
+                    change_identity=True,
                 )
             )
             self._send_json(HTTPStatus.OK, value)
+            return
+        if path == "/api/v3/knowledge-generations":
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                self.application.core.knowledge.submit_generation(
+                    _generation_submission(body)
+                ),
+            )
+            return
+        if path == "/api/v3/reminder-generations":
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                self.application.core.reminders.submit_generation(
+                    _reminder_generation_submission(body)
+                ),
+            )
+            return
+        if path == "/api/v3/reminder-generations/codex":
+            if set(body) not in ({"session_id"}, {"session_id", "reasoning_effort"}):
+                raise ValueError("Codex reminder generation fields are invalid")
+            session_id = body.get("session_id")
+            effort = body.get("reasoning_effort")
+            if not isinstance(session_id, str) or not session_id:
+                raise ValueError("Codex reminder generation session_id is required")
+            if effort is not None and not isinstance(effort, str):
+                raise ValueError("Codex reminder reasoning_effort is invalid")
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                self.application.core.reminder_extraction.extract(
+                    session_id,
+                    reasoning_effort=effort,
+                ),
+            )
+            return
+        if match := _PROPOSAL_ACCEPT_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("proposal accept request body must be empty")
+            resolution = self.application.core.knowledge.accept_proposal(
+                unquote(match.group(1)), "desktop-user"
+            )
+            self._send_json(HTTPStatus.OK, resolution.as_dict())
+            return
+        if match := _PROPOSAL_REJECT_ROUTE.fullmatch(path):
+            reason = body.get("reason")
+            if set(body) != {"reason"} or not isinstance(reason, str) or not reason:
+                raise ValueError("proposal rejection requires a reason")
+            resolution = self.application.core.knowledge.reject_proposal(
+                unquote(match.group(1)), "desktop-user", reason
+            )
+            self._send_json(HTTPStatus.OK, resolution.as_dict())
+            return
+        if match := _REMINDER_CONFIRM_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("reminder confirmation body must be empty")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.reminders.confirm(
+                    unquote(match.group(1)), "desktop-user"
+                ),
+            )
+            return
+        if match := _REMINDER_MODIFY_ROUTE.fullmatch(path):
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.reminders.modify(
+                    unquote(match.group(1)), "desktop-user", body
+                ),
+            )
+            return
+        if match := _REMINDER_IGNORE_ROUTE.fullmatch(path):
+            reason = body.get("reason")
+            if set(body) != {"reason"} or not isinstance(reason, str) or not reason:
+                raise ValueError("reminder ignore request requires a reason")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.reminders.ignore(
+                    unquote(match.group(1)), "desktop-user", reason
+                ),
+            )
+            return
+        if match := _REMINDER_DELIVER_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("reminder delivery body must be empty")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.reminders.deliver(unquote(match.group(1))),
+            )
             return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found", "V3 命令不存在。")
 
@@ -417,6 +726,12 @@ class V3DesktopHTTPServer(ThreadingHTTPServer):
         self.application = application
         super().__init__(server_address, V3DesktopRequestHandler)
 
+    def server_close(self) -> None:
+        try:
+            self.application.close()
+        finally:
+            super().server_close()
+
 
 def create_v3_desktop_server(
     *,
@@ -463,6 +778,187 @@ def _integer(value: str, label: str) -> int:
         parsed = int(value)
     except ValueError as exc:
         raise ValueError(f"{label} must be an integer") from exc
+    return parsed
+
+
+def _required_query(query: dict[str, list[str]], name: str) -> str:
+    value = query.get(name, [None])[0]
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} query parameter is required")
+    return value
+
+
+def _generation_submission(body: dict[str, Any]) -> GenerationSubmission:
+    required = {
+        "layer",
+        "producer",
+        "producer_version",
+        "model",
+        "prompt_version",
+        "extractor_version",
+        "input_scope",
+        "proposals",
+    }
+    if set(body) != required:
+        raise ValueError("generation submission fields are invalid")
+    for name in (
+        "producer",
+        "producer_version",
+        "model",
+        "prompt_version",
+        "extractor_version",
+    ):
+        if not isinstance(body[name], str) or not body[name].strip():
+            raise ValueError(f"generation {name} is required")
+    if not isinstance(body["input_scope"], dict):
+        raise ValueError("generation input_scope must be an object")
+    raw_proposals = body["proposals"]
+    if not isinstance(raw_proposals, list):
+        raise ValueError("generation proposals must be an array")
+    proposals: list[tuple[ProposalKind, dict[str, Any], tuple[str, ...]]] = []
+    for raw in raw_proposals:
+        if not isinstance(raw, dict) or set(raw) != {
+            "kind",
+            "payload",
+            "evidence_utterance_ids",
+        }:
+            raise ValueError("generation proposal fields are invalid")
+        if not isinstance(raw["payload"], dict) or not isinstance(
+            raw["evidence_utterance_ids"], list
+        ):
+            raise ValueError("generation proposal values are invalid")
+        proposals.append(
+            (
+                ProposalKind(raw["kind"]),
+                raw["payload"],
+                tuple(raw["evidence_utterance_ids"]),
+            )
+        )
+    return GenerationSubmission(
+        layer=KnowledgeLayer(body["layer"]),
+        producer=body["producer"],
+        producer_version=body["producer_version"],
+        model=body["model"],
+        prompt_version=body["prompt_version"],
+        extractor_version=body["extractor_version"],
+        input_scope=body["input_scope"],
+        proposals=tuple(proposals),
+    )
+
+
+def _reminder_generation_submission(
+    body: dict[str, Any],
+) -> ReminderGenerationSubmission:
+    required = {
+        "producer",
+        "producer_version",
+        "model",
+        "prompt_version",
+        "extractor_version",
+        "input_scope",
+        "intents",
+    }
+    if set(body) != required:
+        raise ValueError("reminder generation submission fields are invalid")
+    for name in (
+        "producer",
+        "producer_version",
+        "model",
+        "prompt_version",
+        "extractor_version",
+    ):
+        if not isinstance(body[name], str) or not body[name].strip():
+            raise ValueError(f"reminder generation {name} is required")
+    if not isinstance(body["input_scope"], dict) or not isinstance(
+        body["intents"], list
+    ):
+        raise ValueError("reminder generation scope and intents are invalid")
+    intents: list[ReminderIntent] = []
+    intent_required = {
+        "operation",
+        "session_id",
+        "actor_person_id",
+        "commitment_direction",
+        "confidence",
+        "evidence_utterance_ids",
+        "needs_confirmation",
+    }
+    intent_allowed = intent_required | {
+        "title",
+        "related_person_ids",
+        "scheduled_at",
+        "location",
+        "target_event_id",
+        "expected_revision",
+        "reason",
+    }
+    for raw in body["intents"]:
+        if (
+            not isinstance(raw, dict)
+            or set(raw) - intent_allowed
+            or not intent_required.issubset(raw)
+        ):
+            raise ValueError("reminder intent fields are invalid")
+        related = raw.get("related_person_ids", [])
+        evidence = raw["evidence_utterance_ids"]
+        confidence = raw["confidence"]
+        revision = raw.get("expected_revision", 0)
+        if (
+            not isinstance(related, list)
+            or not all(isinstance(value, str) for value in related)
+            or not isinstance(evidence, list)
+            or not all(isinstance(value, str) for value in evidence)
+            or isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not isinstance(raw["needs_confirmation"], bool)
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
+        ):
+            raise ValueError("reminder intent values are invalid")
+        intents.append(
+            ReminderIntent(
+                operation=ReminderOperation(raw["operation"]),
+                session_id=raw["session_id"],
+                title=raw.get("title"),
+                actor_person_id=raw["actor_person_id"],
+                commitment_direction=CommitmentDirection(
+                    raw["commitment_direction"]
+                ),
+                related_person_ids=tuple(related),
+                scheduled_at=(
+                    _reminder_datetime(raw["scheduled_at"])
+                    if raw.get("scheduled_at") is not None
+                    else None
+                ),
+                location=raw.get("location"),
+                confidence=float(confidence),
+                evidence_utterance_ids=tuple(evidence),
+                needs_confirmation=raw["needs_confirmation"],
+                target_event_id=raw.get("target_event_id"),
+                expected_revision=revision,
+                reason=raw.get("reason"),
+            )
+        )
+    return ReminderGenerationSubmission(
+        producer=body["producer"],
+        producer_version=body["producer_version"],
+        model=body["model"],
+        prompt_version=body["prompt_version"],
+        extractor_version=body["extractor_version"],
+        input_scope=body["input_scope"],
+        intents=tuple(intents),
+    )
+
+
+def _reminder_datetime(value: object) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError("reminder timestamp is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("reminder timestamp is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("reminder timestamp requires a timezone")
     return parsed
 
 

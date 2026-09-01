@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from allday_asr.domain.hashing import canonical_json_sha256
 from allday_asr.v3.contracts import UtteranceDto, utterance_dto
 from allday_asr.v3.domain.ids import new_ulid, stable_ulid
+from allday_asr.v3.domain.identity import SelfIdentity
 from allday_asr.v3.domain.models import (
     Artifact,
     ChangeOperation,
@@ -38,10 +39,15 @@ from allday_asr.v3.ports.processing import (
 )
 from allday_asr.v3.ports.repositories import UnitOfWork
 from allday_asr.v3.ports.stores import ContentStore
+from allday_asr.v3.application.knowledge import cascade_derivations
 
 
 UnitOfWorkFactory = Callable[[], UnitOfWork]
 DateTimeClock = Callable[[], datetime]
+
+
+class UtteranceRevisionConflict(ValueError):
+    """The caller corrected an utterance revision that is no longer current."""
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,10 @@ class CorrectUtteranceCommand:
     expected_revision: int
     text: str
     actor: str
+    speaker_track_id: str | None = None
+    change_speaker: bool = False
+    identity: SelfIdentity | None = None
+    change_identity: bool = False
 
 
 class AdmissionService:
@@ -329,6 +339,9 @@ class DurableProcessingService:
 
             tracks: dict[str, str] = {}
             if source is not None:
+                captured_start = uow.catalog.get_session(
+                    claim.run.session_id
+                ).captured_start
                 for speaker in result.speakers:
                     track_id = stable_ulid(
                         "speaker-track", claim.run.run_id, speaker.label
@@ -345,6 +358,11 @@ class DurableProcessingService:
                     )
                     tracks[speaker.label] = track_id
                 for value in result.utterances:
+                    speaker_track_id = (
+                        tracks.get(value.speaker_label)
+                        if value.speaker_label is not None
+                        else None
+                    )
                     utterance = Utterance(
                         utterance_id=stable_ulid(
                             "utterance", claim.run.run_id, value.ordinal
@@ -352,15 +370,18 @@ class DurableProcessingService:
                         session_id=claim.run.session_id,
                         run_id=claim.run.run_id,
                         source_artifact_id=source.artifact_id,
-                        speaker_track_id=(
-                            tracks.get(value.speaker_label)
-                            if value.speaker_label is not None
-                            else None
-                        ),
+                        speaker_track_id=speaker_track_id,
+                        original_speaker_track_id=speaker_track_id,
                         ordinal=value.ordinal,
                         start_ms=value.start_ms,
                         end_ms=value.end_ms,
+                        start_at=captured_start + timedelta(milliseconds=value.start_ms),
+                        end_at=captured_start + timedelta(milliseconds=value.end_ms),
                         text=value.text,
+                        original_text=value.text,
+                        identity=SelfIdentity(value.identity),
+                        original_identity=SelfIdentity(value.identity),
+                        identity_evidence=dict(value.identity_evidence),
                         evidence=value.evidence,
                         revision=1,
                         status="active",
@@ -374,7 +395,9 @@ class DurableProcessingService:
                             utterance.revision,
                             ChangeOperation.UPSERT.value,
                             utterance_dto(
-                                utterance, speaker_label=value.speaker_label
+                                utterance,
+                                speaker_label=value.speaker_label,
+                                original_speaker_label=value.speaker_label,
                             ),
                         )
 
@@ -490,59 +513,145 @@ class CorrectionInvalidationService:
         self._now = now or _utc_now
 
     def correct_utterance(self, command: CorrectUtteranceCommand) -> UtteranceDto:
-        if not command.text.strip():
-            raise ValueError("utterance text cannot be empty")
         now = self._now()
         with self._uow_factory() as uow:
-            before = uow.evidence.get_utterance(command.utterance_id)
-            if before.revision != command.expected_revision:
-                raise ValueError("utterance revision conflict")
-            correction_id = new_ulid()
-            uow.corrections.add(
-                CorrectionOperation(
-                    correction_id=correction_id,
-                    target_type="utterance",
-                    target_id=command.utterance_id,
-                    before_revision=before.revision,
-                    patch={"text": command.text},
-                    actor=command.actor,
-                    created_at=now,
-                )
+            return apply_utterance_correction(uow, command, now)
+
+    def correction_history(self, utterance_id: str) -> dict[str, Any]:
+        with self._uow_factory() as uow:
+            utterance = uow.evidence.get_utterance(utterance_id)
+            current_label = uow.evidence.speaker_label(
+                utterance.speaker_track_id
             )
-            updated = uow.evidence.revise_utterance(
-                command.utterance_id, command.expected_revision, command.text
+            original_label = uow.evidence.speaker_label(
+                utterance.original_speaker_track_id
             )
-            speaker_label = uow.evidence.speaker_label(updated.speaker_track_id)
-            for artifact_id in uow.artifacts.dependent_ids(
-                "utterance", command.utterance_id
-            ):
-                uow.artifacts.invalidate(
-                    ArtifactInvalidation(
-                        status_event_id=new_ulid(),
-                        artifact_id=artifact_id,
-                        status="stale",
-                        reason="utterance_revision_changed",
-                        source_type="utterance",
-                        source_id=updated.utterance_id,
-                        source_revision=updated.revision,
-                        created_at=now,
-                    )
-                )
-            uow.changes.append(
-                "utterance",
-                updated.utterance_id,
-                updated.revision,
-                ChangeOperation.UPSERT.value,
-                utterance_dto(updated, speaker_label=speaker_label),
+            operations = uow.corrections.list_for_target(
+                "utterance", utterance_id
             )
-            uow.audit.append(
-                "utterance.corrected",
-                command.actor,
-                "utterance",
-                updated.utterance_id,
-                {"revision": updated.revision, "correction_id": correction_id},
+            return {
+                "utterance": utterance_dto(
+                    utterance,
+                    speaker_label=current_label,
+                    original_speaker_label=original_label,
+                ),
+                "operations": [
+                    {
+                        "correction_id": operation.correction_id,
+                        "before_revision": operation.before_revision,
+                        "patch": operation.patch,
+                        "actor": operation.actor,
+                        "created_at": operation.created_at.isoformat(),
+                    }
+                    for operation in operations
+                ],
+            }
+
+
+def apply_utterance_correction(
+    uow: UnitOfWork,
+    command: CorrectUtteranceCommand,
+    now: datetime,
+) -> UtteranceDto:
+    text = command.text.strip()
+    if not text:
+        raise ValueError("utterance text cannot be empty")
+    before = uow.evidence.get_utterance(command.utterance_id)
+    if before.revision != command.expected_revision:
+        raise UtteranceRevisionConflict("utterance revision conflict")
+    patch: dict[str, Any] = {}
+    if before.text != text:
+        patch["text"] = text
+    selected_speaker_track_id = (
+        command.speaker_track_id
+        if command.change_speaker
+        else before.speaker_track_id
+    )
+    if before.speaker_track_id != selected_speaker_track_id:
+        patch["speaker_track_id"] = selected_speaker_track_id
+    if command.change_identity and command.identity is None:
+        raise ValueError("utterance identity correction is missing")
+    selected_identity = (
+        SelfIdentity(command.identity)
+        if command.change_identity
+        else before.identity
+    )
+    if before.identity != selected_identity:
+        patch["identity"] = selected_identity.value
+    if not patch:
+        raise ValueError("utterance correction does not change anything")
+    correction_id = new_ulid()
+    updated = uow.evidence.revise_utterance(
+        command.utterance_id,
+        command.expected_revision,
+        text,
+        selected_speaker_track_id,
+        selected_identity.value,
+    )
+    correction_added = uow.corrections.add(
+        CorrectionOperation(
+            correction_id=correction_id,
+            target_type="utterance",
+            target_id=command.utterance_id,
+            before_revision=before.revision,
+            patch=patch,
+            actor=command.actor,
+            created_at=now,
+        )
+    )
+    if not correction_added:
+        raise RuntimeError("utterance correction operation already exists")
+    speaker_label = uow.evidence.speaker_label(updated.speaker_track_id)
+    original_speaker_label = uow.evidence.speaker_label(
+        updated.original_speaker_track_id
+    )
+    for artifact_id in uow.artifacts.dependent_ids(
+        "utterance", command.utterance_id
+    ):
+        uow.artifacts.invalidate(
+            ArtifactInvalidation(
+                status_event_id=new_ulid(),
+                artifact_id=artifact_id,
+                status="stale",
+                reason="utterance_revision_changed",
+                source_type="utterance",
+                source_id=updated.utterance_id,
+                source_revision=updated.revision,
+                created_at=now,
             )
-            return utterance_dto(updated, speaker_label=speaker_label)
+        )
+    cascade_derivations(
+        uow,
+        source_type="utterance",
+        source_id=updated.utterance_id,
+        source_revision=updated.revision,
+        reason="utterance_revision_changed",
+        now=now,
+    )
+    dto = utterance_dto(
+        updated,
+        speaker_label=speaker_label,
+        original_speaker_label=original_speaker_label,
+    )
+    uow.changes.append(
+        "utterance",
+        updated.utterance_id,
+        updated.revision,
+        ChangeOperation.UPSERT.value,
+        dto,
+    )
+    uow.audit.append(
+        "utterance.corrected",
+        command.actor,
+        "utterance",
+        updated.utterance_id,
+        {
+            "revision": updated.revision,
+            "correction_id": correction_id,
+            "fields": sorted(patch),
+        },
+    )
+    return dto
 
 
 class DurableProcessingWorker:

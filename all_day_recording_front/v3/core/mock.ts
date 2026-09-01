@@ -99,6 +99,8 @@ export const mockSessionDetail: SessionDetail = {
     sequence: index,
     session_start_ms: index * 60_000,
     session_end_ms: (index + 1) * 60_000,
+    source_start_ms: 0,
+    source_end_ms: 60_000,
     asset_id: `01K4ASSET000000000000000${index}`,
     media_id: current.media_id ?? '',
     sha256: `${index}`.repeat(64),
@@ -124,10 +126,14 @@ export const mockSessionDetail: SessionDetail = {
     updated_at: '2026-08-31T03:18:00Z',
     completed_at: null,
   }],
+  speaker_tracks: [
+    { speaker_track_id: '01K4SPEAKER000000000000001', session_id: current.session_id, label: 'SPEAKER_00', source_artifact_id: '01K4ARTIFACT00000000000001', created_at: '2026-08-31T03:02:00Z' },
+    { speaker_track_id: '01K4SPEAKER000000000000002', session_id: current.session_id, label: 'SPEAKER_01', source_artifact_id: '01K4ARTIFACT00000000000001', created_at: '2026-08-31T03:02:00Z' },
+  ],
   utterances: [
-    { utterance_id: '01K4UTTERANCE0000000000001', session_id: current.session_id, speaker_track_id: '01K4SPEAKER000000000000001', speaker_label: 'SPEAKER_00', start_ms: 12_400, end_ms: 17_900, text: '今天先把这段录音的备份和处理状态核对一下。', revision: 1, status: 'active', evidence: { token_ids: [1, 2, 3] } },
-    { utterance_id: '01K4UTTERANCE0000000000002', session_id: current.session_id, speaker_track_id: '01K4SPEAKER000000000000002', speaker_label: 'SPEAKER_01', start_ms: 19_200, end_ms: 24_600, text: '好，原音和结果都要能追溯。', revision: 1, status: 'active', evidence: { token_ids: [4, 5] } },
-    { utterance_id: '01K4UTTERANCE0000000000003', session_id: current.session_id, speaker_track_id: '01K4SPEAKER000000000000001', speaker_label: 'SPEAKER_00', start_ms: 31_000, end_ms: 39_800, text: '处理失败的话保留旧 attempt，再从 checkpoint 恢复。', revision: 1, status: 'active', evidence: { token_ids: [6, 7, 8] } },
+    { utterance_id: '01K4UTTERANCE0000000000001', session_id: current.session_id, speaker_track_id: '01K4SPEAKER000000000000001', speaker_label: 'SPEAKER_00', original_speaker_track_id: '01K4SPEAKER000000000000001', original_speaker_label: 'SPEAKER_00', identity: 'self', original_identity: 'self', identity_evidence: { source: 'voiceprint', decision: 'self', policy_version: 'holdout-accepted-1' }, start_ms: 12_400, end_ms: 17_900, start_at: '2026-08-31T01:05:12.400Z', end_at: '2026-08-31T01:05:17.900Z', text: '今天先把这段录音的备份和处理状态核对一下。', original_text: '今天先把这段录音的备份和处理状态核对一下。', revision: 1, status: 'active', evidence: { token_ids: [1, 2, 3] } },
+    { utterance_id: '01K4UTTERANCE0000000000002', session_id: current.session_id, speaker_track_id: '01K4SPEAKER000000000000002', speaker_label: 'SPEAKER_01', original_speaker_track_id: '01K4SPEAKER000000000000002', original_speaker_label: 'SPEAKER_01', identity: 'not_self', original_identity: 'not_self', identity_evidence: { source: 'voiceprint', decision: 'not_self', policy_version: 'holdout-accepted-1' }, start_ms: 19_200, end_ms: 24_600, start_at: '2026-08-31T01:05:19.200Z', end_at: '2026-08-31T01:05:24.600Z', text: '好，原音和结果都要能追溯。', original_text: '好，原音和结果都要能追溯。', revision: 1, status: 'active', evidence: { token_ids: [4, 5] } },
+    { utterance_id: '01K4UTTERANCE0000000000003', session_id: current.session_id, speaker_track_id: '01K4SPEAKER000000000000001', speaker_label: 'SPEAKER_00', original_speaker_track_id: '01K4SPEAKER000000000000001', original_speaker_label: 'SPEAKER_00', identity: 'unknown', original_identity: 'unknown', identity_evidence: { source: 'voiceprint', decision: 'unknown', reason: 'score_in_unknown_band' }, start_ms: 31_000, end_ms: 39_800, start_at: '2026-08-31T01:05:31.000Z', end_at: '2026-08-31T01:05:39.800Z', text: '处理失败的话保留旧 attempt，再从 checkpoint 恢复。', original_text: '处理失败的话保留旧 attempt，再从 checkpoint 恢复。', revision: 1, status: 'active', evidence: { token_ids: [6, 7, 8] } },
   ],
   artifacts: [
     { artifact_id: '01K4ARTIFACT00000000000001', run_id: mockOverview.active_jobs[0].run_id, kind: 'v2_evidence_snapshot', producer: 'existing-v2-quality-workflow', producer_version: 'v2-workflow.0', status: 'active', sha256: 'a'.repeat(64), size_bytes: 8421, metadata: { token_count: 146, turn_count: 12, utterance_count: 38 }, created_at: '2026-08-31T03:02:00Z' },

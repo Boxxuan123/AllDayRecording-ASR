@@ -119,7 +119,8 @@ class SqliteDesktopReadRepository:
         segments = self.connection.execute(
             """
             SELECT seg.segment_id, seg.sequence, seg.session_start_ms,
-              seg.session_end_ms, a.asset_id, a.media_id, a.sha256,
+              seg.session_end_ms, seg.source_start_ms, seg.source_end_ms,
+              a.asset_id, a.media_id, a.sha256,
               a.size_bytes, a.duration_ms, a.format, r.replica_id,
               r.state AS replica_state, d.name AS device_name
             FROM capture_segments seg
@@ -140,10 +141,21 @@ class SqliteDesktopReadRepository:
         ).fetchall()
         utterances = self.connection.execute(
             """
-            SELECT u.*, t.label AS speaker_label FROM utterances u
+            SELECT u.*, t.label AS speaker_label,
+              original.label AS original_speaker_label FROM utterances u
             LEFT JOIN speaker_tracks t ON t.speaker_track_id = u.speaker_track_id
+            LEFT JOIN speaker_tracks original
+              ON original.speaker_track_id = u.original_speaker_track_id
             WHERE u.session_id = ? ORDER BY u.start_ms, u.end_ms, u.utterance_id
             LIMIT 500
+            """,
+            (session_id,),
+        ).fetchall()
+        speaker_tracks = self.connection.execute(
+            """
+            SELECT speaker_track_id, session_id, label, source_artifact_id, created_at
+            FROM speaker_tracks WHERE session_id = ?
+            ORDER BY label, speaker_track_id
             """,
             (session_id,),
         ).fetchall()
@@ -165,6 +177,7 @@ class SqliteDesktopReadRepository:
             "session": _session(row),
             "segments": [_dict(value) for value in segments],
             "runs": [_run(value) for value in runs],
+            "speaker_tracks": [_dict(value) for value in speaker_tracks],
             "utterances": [_utterance(value) for value in utterances],
             "artifacts": [_artifact(value) for value in artifacts],
             "backups": [_backup(value) for value in backups],
@@ -313,9 +326,17 @@ def _utterance(row: sqlite3.Row) -> dict[str, Any]:
         "session_id": str(row["session_id"]),
         "speaker_track_id": row["speaker_track_id"],
         "speaker_label": row["speaker_label"],
+        "original_speaker_track_id": row["original_speaker_track_id"],
+        "original_speaker_label": row["original_speaker_label"],
+        "identity": str(row["identity"]),
+        "original_identity": str(row["original_identity"]),
+        "identity_evidence": _json_object(row["identity_evidence_json"]),
         "start_ms": int(row["start_ms"]),
         "end_ms": int(row["end_ms"]),
+        "start_at": str(row["start_at"]),
+        "end_at": str(row["end_at"]),
         "text": str(row["text"]),
+        "original_text": str(row["original_text"]),
         "revision": int(row["revision"]),
         "status": str(row["status"]),
         "evidence": _json_object(row["evidence_json"]),

@@ -63,6 +63,20 @@
               "resource": {"$ref": "utterance.schema.json"}
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "resource_type": {"const": "reminder"},
+              "operation": {"const": "upsert"}
+            },
+            "required": ["resource_type", "operation"]
+          },
+          "then": {
+            "properties": {
+              "resource": {"$ref": "reminder.schema.json"}
+            }
+          }
         }
       ]
     },
@@ -71,7 +85,7 @@
       "additionalProperties": false,
       "required": ["projection_version", "cursor", "client_operations", "pull_limit"],
       "properties": {
-        "projection_version": {"const": 1},
+        "projection_version": {"const": 4},
         "cursor": {"type": ["string", "null"], "minLength": 1},
         "client_operations": {
           "type": "array",
@@ -93,7 +107,7 @@
         "server_time"
       ],
       "properties": {
-        "projection_version": {"const": 1},
+        "projection_version": {"const": 4},
         "receipts": {
           "type": "array",
           "items": {"$ref": "#/$defs/OperationReceipt"}

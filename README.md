@@ -2,7 +2,7 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-V3.0-G 已把 V3 Core、版本化 Desktop API 和独立前端设为默认入口。V2-A.1 至 V2-E.0.2 的模型、证据和评测能力仍完整保留，但只通过 `allday-asr legacy ...` 作为可执行回退或 V3 adapter 使用；Legacy 网页强制 query-only，拒绝所有写请求。项目运行时仍未接入云端 LLM。五块 V2-C 开发集仍需新的未见 holdout；现有人工 speaker 标注不穷尽电视声，不能直接报告公平 DER/JER。
+V3.0-G 已把 V3 Core、版本化 Desktop API 和独立前端设为默认入口。V3.1-A/B/C 已完成可靠统一对话时间线；V3.2 已完成证据、事件、记忆三层数据架构；V3.3 进一步完成提醒候选校验、去重、冲突处理、人工确认、事件更新/取消/完成、证据回听、Phone 投影与 HarmonyOS 系统定时提醒闭环，并接入本机已登录的 Codex 做用户触发的文本提取。Codex 只接收所选 utterance 和同会话活动提醒，不上传音频或本地路径，在专用空目录中以只读沙箱、拒绝审批方式运行；候选默认仍须审核。V2-A.1 至 V2-E.0.2 的模型、证据和评测能力仍完整保留，但只通过 `allday-asr legacy ...` 作为可执行回退或 V3 adapter 使用；Legacy 网页强制 query-only，拒绝所有写请求。现有本人校准只有 2 个正例，且真实连续真值均为 `alignment=none`，所以旧数据身份保持 `unknown`、真实跨切片发布门禁保持拒绝；系统不会把候选分数或缺失真值冒充成功证据。
 
 ## V3.0 默认入口与回退
 
@@ -18,14 +18,24 @@ allday-asr legacy --help
 allday-asr legacy web
 ```
 
-V3.0 的契约、Core schema、Phone projection schema 和默认入口冻结在
-`contracts/v3/release-lock.json`。本次真实 V2 数据切换使用 `release-prepare` 创建两份
+当前完整 V3.3 的契约、Core schema、Phone projection schema 和默认入口冻结在
+`contracts/v3/release-lock.json`；V3.0 的切换证据仍保留在独立验收文档与 Git 历史中。本次真实 V2 数据切换使用 `release-prepare` 创建两份
 逐文件 SHA-256 校验、不可覆盖且只读的数据库/音频快照；`release-verify` 可随时复算证据。
 生产 Device listener 还必须通过 `ALLDAY_V3_DEPLOYMENT=production`、真实 Passkey RP ID
 和可信 origin 的 fail-closed 校验。
 
 真实迁移证据、回退步骤与尚待执行的生产/三端真机签字项见
 [V3.0-G 迁移、切换与发布验收](docs/V3/V3.0-G-migration-cutover-release.md)。
+V3.1 统一时间线与校正闭环的边界、迁移和自动化证据见
+[V3.1-A 统一时间轴与校正闭环](docs/V3/V3.1-A-unified-timeline-corrections.md)。
+本人身份三态投影、阈值门禁和校正边界见
+[V3.1-B 本人身份投影与阈值证据](docs/V3/V3.1-B-self-identity-projection.md)。
+跨切片接缝真值、错位指标和发布门禁见
+[V3.1-C 跨切片对齐评测与完成门禁](docs/V3/V3.1-C-cross-chunk-alignment-gate.md)。
+三层对象、模型写入边界、来源追溯与重算闭环见
+[V3.2 三层知识架构与可重算闭环](docs/V3/V3.2-three-layer-knowledge-architecture.md)。
+提醒候选审批、事件生命周期、证据回听、跨端投影和系统定时提醒边界见
+[V3.3 智能提醒闭环](docs/V3/V3.3-intelligent-reminder-loop.md)。
 
 实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，新分片正式使用前的堵点和准入顺序见 [新音频正式使用前准入审计](docs/new-audio-production-readiness.md)。V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0.2 Episode 证据层](docs/v2-e0-semantic-evidence.md)。
 

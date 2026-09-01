@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.alldayrecording.local/v3/timeline-quality.schema.json",
+  "title": "V3.1 timeline seam audit document or receipt",
+  "oneOf": [
+    {"$ref": "#/$defs/AuditInput"},
+    {"$ref": "#/$defs/AuditReceipt"}
+  ],
+  "$defs": {
+    "Completeness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alignment", "transcript", "speaker", "overlap"],
+      "properties": {
+        "alignment": {"enum": ["exhaustive", "sparse", "none"]},
+        "transcript": {"enum": ["exhaustive", "sparse", "none"]},
+        "speaker": {"enum": ["exhaustive", "sparse", "none"]},
+        "overlap": {"enum": ["exhaustive", "sparse", "none"]}
+      }
+    },
+    "Seam": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seam_id", "offset_ms", "left_chunk_id", "right_chunk_id", "reviewed"],
+      "properties": {
+        "seam_id": {"type": "string", "minLength": 1},
+        "offset_ms": {"type": "integer", "minimum": 1},
+        "left_chunk_id": {"type": "string", "minLength": 1},
+        "right_chunk_id": {"type": "string", "minLength": 1},
+        "reviewed": {"type": "boolean"}
+      }
+    },
+    "ReferenceUtterance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["utterance_id", "start_ms", "end_ms", "text", "speaker_id", "has_overlap"],
+      "properties": {
+        "utterance_id": {"type": "string", "minLength": 1},
+        "start_ms": {"type": "integer", "minimum": 0},
+        "end_ms": {"type": "integer", "minimum": 1},
+        "text": {"type": "string", "minLength": 1},
+        "speaker_id": {"type": "string", "minLength": 1},
+        "has_overlap": {"type": "boolean"}
+      }
+    },
+    "PredictedUtterance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["utterance_id", "start_ms", "end_ms", "text", "speaker_id", "source_chunk_ids"],
+      "properties": {
+        "utterance_id": {"type": "string", "minLength": 1},
+        "start_ms": {"type": "integer", "minimum": 0},
+        "end_ms": {"type": "integer", "minimum": 1},
+        "text": {"type": "string"},
+        "speaker_id": {"type": "string", "minLength": 1},
+        "source_chunk_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "AuditInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "session_id", "truth_completeness", "seams", "reference_utterances", "predicted_utterances", "metadata"],
+      "properties": {
+        "format": {"const": "AllDayRecording V3.1 timeline seam audit v1"},
+        "session_id": {"type": "string", "minLength": 1},
+        "truth_completeness": {"$ref": "#/$defs/Completeness"},
+        "seams": {"type": "array", "items": {"$ref": "#/$defs/Seam"}},
+        "reference_utterances": {"type": "array", "items": {"$ref": "#/$defs/ReferenceUtterance"}},
+        "predicted_utterances": {"type": "array", "items": {"$ref": "#/$defs/PredictedUtterance"}},
+        "metadata": {"type": "object"}
+      }
+    },
+    "NullableRate": {
+      "oneOf": [
+        {"type": "number", "minimum": 0, "maximum": 1},
+        {"type": "null"}
+      ]
+    },
+    "NullableNonnegative": {
+      "oneOf": [
+        {"type": "number", "minimum": 0},
+        {"type": "null"}
+      ]
+    },
+    "Policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_version", "seam_window_ms", "min_reviewed_seams", "min_reference_utterances", "min_overlap_utterances", "gross_boundary_error_ms", "gross_utterance_cer", "max_missed_reference_rate", "max_extra_prediction_rate", "max_gross_misalignment_rate", "max_p95_boundary_error_ms", "max_seam_cer", "max_speaker_confusion_rate", "max_speaker_continuity_error_rate", "max_overlap_error_rate"],
+      "properties": {
+        "policy_version": {"const": "v3.1-c.1"},
+        "seam_window_ms": {"type": "integer", "minimum": 1},
+        "min_reviewed_seams": {"type": "integer", "minimum": 1},
+        "min_reference_utterances": {"type": "integer", "minimum": 1},
+        "min_overlap_utterances": {"type": "integer", "minimum": 1},
+        "gross_boundary_error_ms": {"type": "integer", "minimum": 1},
+        "gross_utterance_cer": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_missed_reference_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_extra_prediction_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_gross_misalignment_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_p95_boundary_error_ms": {"type": "integer", "minimum": 1},
+        "max_seam_cer": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_speaker_confusion_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_speaker_continuity_error_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_overlap_error_rate": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "Metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewed_seams", "seam_count", "reference_utterances", "predicted_utterances", "matched_utterances", "missed_reference_rate", "extra_prediction_rate", "gross_misalignment_rate", "boundary", "asr", "speaker", "overlap"],
+      "properties": {
+        "reviewed_seams": {"type": "integer", "minimum": 0},
+        "seam_count": {"type": "integer", "minimum": 0},
+        "reference_utterances": {"type": "integer", "minimum": 0},
+        "predicted_utterances": {"type": "integer", "minimum": 0},
+        "matched_utterances": {"type": "integer", "minimum": 0},
+        "missed_reference_rate": {"$ref": "#/$defs/NullableRate"},
+        "extra_prediction_rate": {"$ref": "#/$defs/NullableNonnegative"},
+        "gross_misalignment_rate": {"$ref": "#/$defs/NullableRate"},
+        "boundary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mean_absolute_error_ms", "p95_absolute_error_ms", "max_absolute_error_ms"],
+          "properties": {
+            "mean_absolute_error_ms": {"$ref": "#/$defs/NullableNonnegative"},
+            "p95_absolute_error_ms": {"$ref": "#/$defs/NullableNonnegative"},
+            "max_absolute_error_ms": {"$ref": "#/$defs/NullableNonnegative"}
+          }
+        },
+        "asr": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["character_error_rate", "edit_distance", "reference_characters"],
+          "properties": {
+            "character_error_rate": {"$ref": "#/$defs/NullableNonnegative"},
+            "edit_distance": {"type": "integer", "minimum": 0},
+            "reference_characters": {"type": "integer", "minimum": 0}
+          }
+        },
+        "speaker": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["confusion_rate", "continuity_checks", "continuity_errors", "continuity_error_rate"],
+          "properties": {
+            "confusion_rate": {"$ref": "#/$defs/NullableRate"},
+            "continuity_checks": {"type": "integer", "minimum": 0},
+            "continuity_errors": {"type": "integer", "minimum": 0},
+            "continuity_error_rate": {"$ref": "#/$defs/NullableRate"}
+          }
+        },
+        "overlap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reference_utterances", "error_utterances", "error_rate"],
+          "properties": {
+            "reference_utterances": {"type": "integer", "minimum": 0},
+            "error_utterances": {"type": "integer", "minimum": 0},
+            "error_rate": {"$ref": "#/$defs/NullableRate"}
+          }
+        }
+      }
+    },
+    "AuditReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "receipt_version", "session_id", "input_sha256", "policy", "decision", "blockers", "metrics", "receipt_sha256"],
+      "properties": {
+        "format": {"const": "AllDayRecording V3.1 timeline seam audit v1"},
+        "receipt_version": {"const": 1},
+        "session_id": {"type": "string", "minLength": 1},
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "policy": {"$ref": "#/$defs/Policy"},
+        "decision": {"enum": ["accepted", "rejected"]},
+        "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "metrics": {"$ref": "#/$defs/Metrics"},
+        "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}
