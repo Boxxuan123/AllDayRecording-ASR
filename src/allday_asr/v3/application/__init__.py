@@ -48,6 +48,12 @@ from allday_asr.v3.application.person_memory import (
     memory_draft_from_dict,
     revision_from_dict,
 )
+from allday_asr.v3.application.insights import (
+    DailyInsightService,
+    InsightGenerationFailed,
+    InsightGenerationUnavailable,
+    observations_from_dict,
+)
 
 __all__ = [
     "ClientOperationHandler",
@@ -64,6 +70,9 @@ __all__ = [
     "ReminderGenerationUnavailable",
     "SpeakerIdentityService",
     "PersonMemoryService",
+    "DailyInsightService",
+    "InsightGenerationFailed",
+    "InsightGenerationUnavailable",
     "LegacyImportCommand",
     "LegacyImportResult",
     "KnowledgeArchitectureService",
@@ -81,5 +90,6 @@ __all__ = [
     "cascade_derivations",
     "memory_draft_from_dict",
     "revision_from_dict",
+    "observations_from_dict",
     "AUTO_APPLY_CONFIDENCE",
 ]

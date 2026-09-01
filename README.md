@@ -2,7 +2,7 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-V3.0-G 已把 V3 Core、版本化 Desktop API 和独立前端设为默认入口。V3.1-A/B/C 已完成可靠统一对话时间线；V3.2 已完成证据、事件、记忆三层数据架构；V3.3 完成智能提醒与 Codex 文本提取闭环；V3.4 接通开放集声纹聚类和稳定人物 ID；V3.5 在此基础上完成跨天人物资料、互动时间线、事实/偏好/短期状态/计划/承诺/模型观察的明确分型、有效期、置信度、原话证据、不可变修订、过期/撤回/撤销、身份纠正迁移与提醒关联。未知始终是合法结果，只有人工确认才会把多个不可变原型写入稳定声纹库；模型观察不会伪装成事实，缺少事件或原话证据的人物记忆会被拒绝。Codex 只接收所选 utterance 和同会话活动提醒，不上传音频或本地路径，在专用空目录中以只读沙箱、拒绝审批方式运行；候选默认仍须审核。V2-A.1 至 V2-E.0.2 的模型、证据和评测能力仍完整保留，但只通过 `allday-asr legacy ...` 作为可执行回退或 V3 adapter 使用；Legacy 网页强制 query-only，拒绝所有写请求。
+V3.0-G 已把 V3 Core、版本化 Desktop API 和独立前端设为默认入口。V3.1-A/B/C 已完成可靠统一对话时间线；V3.2 已完成证据、事件、记忆三层数据架构；V3.3 完成智能提醒与 Codex 文本提取闭环；V3.4 接通开放集声纹聚类和稳定人物 ID；V3.5 完成跨天人物记忆；V3.6 进一步接通每日总结和 7/30 天关系观察。客观统计由程序计算，Codex 只归纳事件层与允许的关键原话；事实和模型观察分栏，所有结果绑定证据、保存不可变 revision，并会在底层纠正后过期重算。未知始终是合法结果，只有人工确认才会把多个不可变原型写入稳定声纹库。Codex 不上传音频或本地路径，在专用空目录中以只读沙箱、拒绝审批方式运行，`ReasoningEffort` 可自动或按需指定。V2-A.1 至 V2-E.0.2 的模型、证据和评测能力仍完整保留，但只通过 `allday-asr legacy ...` 作为可执行回退或 V3 adapter 使用；Legacy 网页强制 query-only，拒绝所有写请求。
 
 ## V3.0 默认入口与回退
 
@@ -18,7 +18,7 @@ allday-asr legacy --help
 allday-asr legacy web
 ```
 
-当前完整 V3.5 的契约、Core schema、Phone projection schema 和默认入口冻结在
+当前完整 V3.6 的契约、Core schema、Phone projection schema 和默认入口冻结在
 `contracts/v3/release-lock.json`；V3.0 的切换证据仍保留在独立验收文档与 Git 历史中。本次真实 V2 数据切换使用 `release-prepare` 创建两份
 逐文件 SHA-256 校验、不可覆盖且只读的数据库/音频快照；`release-verify` 可随时复算证据。
 生产 Device listener 还必须通过 `ALLDAY_V3_DEPLOYMENT=production`、真实 Passkey RP ID
@@ -40,6 +40,8 @@ V3.1 统一时间线与校正闭环的边界、迁移和自动化证据见
 [V3.4 未知说话人聚类与标注](docs/V3/V3.4-open-speaker-identity.md)。
 跨天人物记忆、事实与推断、有效期、身份迁移和提醒关联边界见
 [V3.5 跨天人物记忆](docs/V3/V3.5-cross-day-person-memory.md)。
+每日事件总结、7/30 天关系观察、证据约束和重算边界见
+[V3.6 每日总结与关系观察](docs/V3/V3.6-daily-summary-and-relationship-observation.md)。
 
 实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，新分片正式使用前的堵点和准入顺序见 [新音频正式使用前准入审计](docs/new-audio-production-readiness.md)。V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0.2 Episode 证据层](docs/v2-e0-semantic-evidence.md)。
 

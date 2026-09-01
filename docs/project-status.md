@@ -3,6 +3,7 @@
 > 盘点日期：2026-08-30
 > 当前阶段：可维护性重构阶段 0 至阶段 7 已全部完成；项目已有统一 CLI composition root、稳定 semantic/diarization 入口、八个核心 repository、显式数据库生命周期、七段式质量工作流、Vue 3/Vite 前端和模块化 Web 接口层。`AppPaths` 可按环境映射构造并注入配置加载器与模型 runtime，模型对象构造不再创建缓存目录或修改缓存环境，关键 Web payload 已具备静态 DTO。V2-A.1 多分片准入与 V2-W.1 备份/准入/持久工作流已完成代码和合成数据回归；最近一次浏览器冒烟读取既有本地会话并按页面既有行为请求派生试听缓存，没有修改数据库、运行 ASR/说话人模型或分析 `data` 中的新增音频。V2-D Community-1、V2-E.0.2 四轨 Episode 证据和旧录音验收结果继续保留；真实云端 LLM 尚未接入。
 > V3.0-G 更新（2026-08-31）：本页保留 V2 质量路线盘点；当前默认入口、真实迁移证据与待签字项以 [V3.0-G 迁移、切换与发布验收](V3/V3.0-G-migration-cutover-release.md) 为准。V2 命令现统一位于 `allday-asr legacy ...`，旧网页只读。
+> V3.6 更新（2026-09-01）：Contract `3.6.0`、Core schema `10`、Phone projection `4`；每日总结、7/30 天关系观察、程序化客观统计、Codex 证据约束归纳、不可变修订、撤回/恢复与底层纠正后的过期重算均已完成工程实现。完整边界见 [V3.6 每日总结与关系观察](V3/V3.6-daily-summary-and-relationship-observation.md)。真实全天内容质量仍需独立人工评测。
 
 ## 1. 结论
 

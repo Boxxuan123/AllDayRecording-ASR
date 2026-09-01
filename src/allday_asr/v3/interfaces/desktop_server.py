@@ -16,10 +16,13 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from allday_asr.v3.application import (
     CorrectUtteranceCommand,
+    InsightGenerationFailed,
+    InsightGenerationUnavailable,
     ReminderGenerationFailed,
     ReminderGenerationUnavailable,
     UtteranceRevisionConflict,
     memory_draft_from_dict,
+    observations_from_dict,
     processing_snapshot_dict,
     revision_from_dict,
 )
@@ -93,12 +96,26 @@ _PERSON_MEMORY_RETRACT_ROUTE = re.compile(
 _PERSON_MEMORY_UNDO_ROUTE = re.compile(
     r"^/api/v3/person-memories/([^/]+)/undo$"
 )
+_DAILY_SUMMARY_ROUTE = re.compile(r"^/api/v3/daily-summaries/([^/]+)$")
+_RELATIONSHIP_OBSERVATION_ROUTE = re.compile(
+    r"^/api/v3/relationship-observations/([^/]+)$"
+)
+_RELATIONSHIP_OBSERVATION_REVISE_ROUTE = re.compile(
+    r"^/api/v3/relationship-observations/([^/]+)/revise$"
+)
+_RELATIONSHIP_OBSERVATION_RETRACT_ROUTE = re.compile(
+    r"^/api/v3/relationship-observations/([^/]+)/retract$"
+)
+_RELATIONSHIP_OBSERVATION_UNDO_ROUTE = re.compile(
+    r"^/api/v3/relationship-observations/([^/]+)/undo$"
+)
 _FRONTEND_ROUTES = {
     "/",
     "/recordings",
     "/reviews",
     "/reminders",
     "/people",
+    "/insights",
     "/processing",
     "/devices",
     "/data",
@@ -161,6 +178,20 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                 request_id=request_id,
             )
         except ReminderGenerationFailed as exc:
+            self._send_error(
+                HTTPStatus.BAD_GATEWAY,
+                "codex_generation_failed",
+                str(exc),
+                request_id=request_id,
+            )
+        except InsightGenerationUnavailable as exc:
+            self._send_error(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "codex_unavailable",
+                str(exc),
+                request_id=request_id,
+            )
+        except InsightGenerationFailed as exc:
             self._send_error(
                 HTTPStatus.BAD_GATEWAY,
                 "codex_generation_failed",
@@ -397,6 +428,40 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                 {"items": self.application.core.people.list_people()},
             )
             return
+        if path == "/api/v3/daily-summaries":
+            limit = _integer(query.get("limit", ["31"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                {"items": self.application.core.insights.list_daily(limit)},
+            )
+            return
+        if match := _DAILY_SUMMARY_ROUTE.fullmatch(path):
+            timezone_name = _required_query(query, "timezone")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.insights.daily(
+                    unquote(match.group(1)), timezone_name
+                ),
+            )
+            return
+        if path == "/api/v3/relationship-observations":
+            person_id = query.get("person_id", [None])[0]
+            limit = _integer(query.get("limit", ["100"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.insights.relationships(
+                        person_id, limit
+                    )
+                },
+            )
+            return
+        if match := _RELATIONSHIP_OBSERVATION_ROUTE.fullmatch(path):
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.insights.relationship(unquote(match.group(1))),
+            )
+            return
         if match := _PERSON_ROUTE.fullmatch(path):
             limit = _integer(query.get("limit", ["200"])[0], "limit")
             self._send_json(
@@ -600,6 +665,86 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 HTTPStatus.OK,
                 self.application.core.person_memory.undo(unquote(match.group(1))),
+            )
+            return
+        if path == "/api/v3/daily-summaries/generate":
+            required = {"summary_date", "timezone"}
+            allowed = required | {"reasoning_effort"}
+            if set(body) - allowed or not required.issubset(body):
+                raise ValueError("daily summary generation fields are invalid")
+            summary_date = body["summary_date"]
+            timezone_name = body["timezone"]
+            effort = body.get("reasoning_effort")
+            if (
+                not isinstance(summary_date, str)
+                or not isinstance(timezone_name, str)
+                or (effort is not None and not isinstance(effort, str))
+            ):
+                raise ValueError("daily summary generation values are invalid")
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                self.application.core.insights.generate_daily(
+                    summary_date,
+                    timezone_name,
+                    reasoning_effort=effort,
+                ),
+            )
+            return
+        if path == "/api/v3/relationship-observations/generate":
+            required = {"person_id", "window_days", "end_date", "timezone"}
+            allowed = required | {"reasoning_effort"}
+            if set(body) - allowed or not required.issubset(body):
+                raise ValueError("relationship generation fields are invalid")
+            effort = body.get("reasoning_effort")
+            if (
+                not isinstance(body["person_id"], str)
+                or isinstance(body["window_days"], bool)
+                or not isinstance(body["window_days"], int)
+                or not isinstance(body["end_date"], str)
+                or not isinstance(body["timezone"], str)
+                or (effort is not None and not isinstance(effort, str))
+            ):
+                raise ValueError("relationship generation values are invalid")
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                self.application.core.insights.generate_relationship(
+                    body["person_id"],
+                    body["window_days"],
+                    body["end_date"],
+                    body["timezone"],
+                    reasoning_effort=effort,
+                ),
+            )
+            return
+        if match := _RELATIONSHIP_OBSERVATION_REVISE_ROUTE.fullmatch(path):
+            if set(body) != {"observations"}:
+                raise ValueError("relationship revision fields are invalid")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.insights.revise_relationship(
+                    unquote(match.group(1)),
+                    observations_from_dict(body["observations"]),
+                ),
+            )
+            return
+        if match := _RELATIONSHIP_OBSERVATION_RETRACT_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("relationship retract body must be empty")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.insights.retract_relationship(
+                    unquote(match.group(1))
+                ),
+            )
+            return
+        if match := _RELATIONSHIP_OBSERVATION_UNDO_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("relationship undo body must be empty")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.insights.undo_relationship(
+                    unquote(match.group(1))
+                ),
             )
             return
         if match := _SPEAKER_LABEL_ROUTE.fullmatch(path):

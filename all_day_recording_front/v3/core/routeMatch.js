@@ -4,6 +4,7 @@ const ROUTE_NAMES = {
   '/reviews': 'reviews',
   '/reminders': 'reminders',
   '/people': 'people',
+  '/insights': 'insights',
   '/processing': 'processing',
   '/devices': 'devices',
   '/data': 'data',

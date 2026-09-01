@@ -6,7 +6,7 @@ generated decoders, but they must not redefine server enums or resource shapes.
 
 ## Versioning
 
-- Contract version: `3.5.0`
+- Contract version: `3.6.0`
 - Mobile projection version: `4`
 - JSON Schema dialect: 2020-12
 - OpenAPI version: 3.1
@@ -54,6 +54,11 @@ new API path and contract major version.
   Model observations remain distinct from facts. No person-memory resource is
   added to the Phone projection; accepted reminders continue to cross through
   the existing projection `4` boundary.
+- `schemas/insight.schema.json` freezes V3.6 Desktop-only daily summaries,
+  objective statistics, relationship facts, evidence-bound model observations,
+  immutable revisions, and correction operations. Summaries are regenerated
+  from the current event layer rather than prior summaries. Insight resources
+  do not enter the Phone projection, which remains on projection `4`.
 
 The OpenAPI documents deliberately have disjoint paths and security schemes:
 Desktop endpoints live under `/api/v3`, while paired-device endpoints live under

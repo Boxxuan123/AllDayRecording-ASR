@@ -135,6 +135,13 @@ from allday_asr.v3.domain.person_memory import (
     PersonMemorySource,
     PersonMemoryStatus,
 )
+from allday_asr.v3.domain.insights import (
+    DAILY_NARRATIVE_SECTIONS,
+    InsightEvidenceReference,
+    InsightStatus,
+    ModelObservation,
+    NarrativeItem,
+)
 
 __all__ = [
     "DEFAULT_PHONE_SCOPES",
@@ -179,15 +186,20 @@ __all__ = [
     "GenerationStatus",
     "GenerationSubmission",
     "IdentityAcceptancePolicy",
+    "InsightEvidenceReference",
+    "InsightStatus",
     "CalibrationWindow",
     "IdentityDecision",
     "IdentityHoldoutSample",
     "DEFAULT_PROCESSING_STAGES",
+    "DAILY_NARRATIVE_SECTIONS",
     "LeaseStatus",
     "InvalidationEvent",
     "KnowledgeLayer",
     "MemoryKind",
     "MemoryRecord",
+    "ModelObservation",
+    "NarrativeItem",
     "MatchDecision",
     "Person",
     "PersonKind",

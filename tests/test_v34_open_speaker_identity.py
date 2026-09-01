@@ -15,7 +15,7 @@ import numpy as np
 
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.speaker_embeddings import FunASRSpeakerEmbeddingProvider
-from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork
+from allday_asr.v3.adapters.sqlite import LATEST_V3_SCHEMA_VERSION, SqliteUnitOfWork
 from allday_asr.v3.application.knowledge import KnowledgeArchitectureService
 from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core
 from allday_asr.v3.config import CodexReminderSettings
@@ -87,7 +87,7 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
             codex_settings=CodexReminderSettings(enabled=False),
             speaker_embedding_provider=self.provider,
         )
-        self.assertEqual(self.core.initialize(), 9)
+        self.assertEqual(self.core.initialize(), LATEST_V3_SCHEMA_VERSION)
         with self.core.database.transaction() as connection:
             connection.execute(
                 """

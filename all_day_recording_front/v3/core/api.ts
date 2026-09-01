@@ -9,6 +9,7 @@ import type {
   ApiErrorBody,
   CodexReminderGeneration,
   DataHealth,
+  DailySummary,
   DeviceSummary,
   Overview,
   ProcessingJobSummary,
@@ -16,6 +17,8 @@ import type {
   ReviewItem,
   ReminderCandidate,
   ReminderSchedule,
+  RelationshipObservation,
+  RelationshipReport,
   PersonSummary,
   PersonDetail,
   PersonMemory,
@@ -105,6 +108,29 @@ export const desktopApi = {
     method: 'POST',
     body: JSON.stringify({ session_id: sessionId, reasoning_effort: reasoningEffort }),
   }),
+  dailySummaries: () => request<{ items: DailySummary[] }>('/api/v3/daily-summaries?limit=31'),
+  generateDailySummary: (
+    summaryDate: string,
+    timezone: string,
+    reasoningEffort: 'auto' | 'low' | 'medium' | 'high' | 'xhigh',
+  ) => request<DailySummary>('/api/v3/daily-summaries/generate', {
+    method: 'POST',
+    body: JSON.stringify({ summary_date: summaryDate, timezone, reasoning_effort: reasoningEffort }),
+  }),
+  relationshipReports: (personId = '') => request<{ items: RelationshipReport[] }>(`/api/v3/relationship-observations?limit=100${personId ? `&person_id=${encodeURIComponent(personId)}` : ''}`),
+  generateRelationshipReport: (
+    personId: string,
+    windowDays: 7 | 30,
+    endDate: string,
+    timezone: string,
+    reasoningEffort: 'auto' | 'low' | 'medium' | 'high' | 'xhigh',
+  ) => request<RelationshipReport>('/api/v3/relationship-observations/generate', {
+    method: 'POST',
+    body: JSON.stringify({ person_id: personId, window_days: windowDays, end_date: endDate, timezone, reasoning_effort: reasoningEffort }),
+  }),
+  reviseRelationshipReport: (reportId: string, observations: RelationshipObservation[]) => request<RelationshipReport>(`/api/v3/relationship-observations/${encodeURIComponent(reportId)}/revise`, { method: 'POST', body: JSON.stringify({ observations }) }),
+  retractRelationshipReport: (reportId: string) => request<RelationshipReport>(`/api/v3/relationship-observations/${encodeURIComponent(reportId)}/retract`, { method: 'POST', body: '{}' }),
+  undoRelationshipReport: (reportId: string) => request<RelationshipReport>(`/api/v3/relationship-observations/${encodeURIComponent(reportId)}/undo`, { method: 'POST', body: '{}' }),
   confirmReminder: (candidateId: string) => request(`/api/v3/reminder-candidates/${encodeURIComponent(candidateId)}/confirm`, { method: 'POST', body: '{}' }),
   modifyReminder: (candidateId: string, changes: { title: string; scheduled_at: string; location: string | null }) => request(`/api/v3/reminder-candidates/${encodeURIComponent(candidateId)}/modify`, { method: 'POST', body: JSON.stringify(changes) }),
   ignoreReminder: (candidateId: string, reason: string) => request(`/api/v3/reminder-candidates/${encodeURIComponent(candidateId)}/ignore`, { method: 'POST', body: JSON.stringify({ reason }) }),
@@ -132,6 +158,8 @@ async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   } as T
   if (path.startsWith('/api/v3/reminder-candidates')) return { items: [] } as T
   if (path.startsWith('/api/v3/reminders')) return { items: [] } as T
+  if (path.startsWith('/api/v3/daily-summaries')) return (path.endsWith('/generate') ? {} : { items: [] }) as T
+  if (path.startsWith('/api/v3/relationship-observations')) return (path.includes('/generate') || /\/(revise|retract|undo)$/.test(path) ? {} : { items: [] }) as T
   if (path === '/api/v3/persons') return { items: [] } as T
   if (/\/api\/v3\/persons\/[^/]+/.test(path)) throw new ApiError('mock person 不存在', 'not_found', 'mock')
   if (path.startsWith('/api/v3/speaker-clusters')) return { items: [] } as T
@@ -142,7 +170,7 @@ async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   } as T
   if (path === '/api/v3/devices') return { items: mockDevices } as T
   if (path === '/api/v3/data-health') return mockDataHealth as T
-  if (path === '/api/v3/settings') return { contract_version: '3.5.0', deployment: 'local_only', processing: { durable_jobs: true, backup_admission_required: true, automatic_source_deletion: false }, privacy: { network_boundary: 'loopback', audio_cloud_upload: false, transcript_cloud_processing: true }, reminders: { codex_enabled: true, codex_workspace: 'isolated_empty_read_only', model_write_boundary: 'structured_candidates_only' }, speaker_identity: { open_set: true, unknown_is_legal: true, audio_processing: 'local_only', stable_prototype_policy: 'explicit_user_confirmation', phone_projection: false }, person_memory: { cross_day: true, evidence_required: true, facts_and_inferences_separated: true, phone_projection: false } } as T
+  if (path === '/api/v3/settings') return { contract_version: '3.6.0', deployment: 'local_only', processing: { durable_jobs: true, backup_admission_required: true, automatic_source_deletion: false }, privacy: { network_boundary: 'loopback', audio_cloud_upload: false, transcript_cloud_processing: true }, reminders: { codex_enabled: true, codex_workspace: 'isolated_empty_read_only', model_write_boundary: 'structured_candidates_only' }, speaker_identity: { open_set: true, unknown_is_legal: true, audio_processing: 'local_only', stable_prototype_policy: 'explicit_user_confirmation', phone_projection: false }, person_memory: { cross_day: true, evidence_required: true, facts_and_inferences_separated: true, phone_projection: false }, insights: { codex_enabled: true, source_layer: 'events_not_prior_summaries', relationship_windows_days: [7, 30] } } as T
   if (path === '/api/v3/lab') return { enabled: false, label: '实验室', message: '实验与 benchmark 工具保留在独立 Legacy/Lab 入口。' } as T
   if (path.includes('/corrections') && init?.body) {
     const utteranceId = decodeURIComponent(path.split('/')[4])

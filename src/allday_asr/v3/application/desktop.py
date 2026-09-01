@@ -29,9 +29,11 @@ class DesktopQueryService:
         uow_factory: UnitOfWorkFactory,
         *,
         codex_reminders_enabled: bool = False,
+        codex_insights_enabled: bool = False,
     ) -> None:
         self._uow_factory = uow_factory
         self._codex_reminders_enabled = codex_reminders_enabled
+        self._codex_insights_enabled = codex_insights_enabled
 
     def status(self) -> dict[str, Any]:
         return {
@@ -111,7 +113,9 @@ class DesktopQueryService:
             "privacy": {
                 "network_boundary": "loopback",
                 "audio_cloud_upload": False,
-                "transcript_cloud_processing": self._codex_reminders_enabled,
+                "transcript_cloud_processing": (
+                    self._codex_reminders_enabled or self._codex_insights_enabled
+                ),
             },
             "knowledge": {
                 "three_layers": True,
@@ -135,6 +139,16 @@ class DesktopQueryService:
                 "cross_day": True,
                 "evidence_required": True,
                 "facts_and_inferences_separated": True,
+                "versioned_corrections": True,
+                "phone_projection": False,
+            },
+            "insights": {
+                "codex_enabled": self._codex_insights_enabled,
+                "codex_workspace": "isolated_empty_read_only",
+                "source_layer": "events_not_prior_summaries",
+                "objective_statistics": "program_verified",
+                "model_output": "evidence_bound_language_only",
+                "relationship_windows_days": [7, 30],
                 "versioned_corrections": True,
                 "phone_projection": False,
             },

@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alldayrecording.local/contracts/v3/insight.schema.json",
+  "title": "V3.6 grounded daily summary and relationship observation resources",
+  "$defs": {
+    "InsightEvidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["event_id", "event_revision", "utterance_id", "utterance_revision"],
+      "properties": {
+        "event_id": {"type": ["string", "null"]},
+        "event_revision": {"type": ["integer", "null"], "minimum": 1},
+        "utterance_id": {"type": ["string", "null"]},
+        "utterance_revision": {"type": ["integer", "null"], "minimum": 1},
+        "text": {"type": ["string", "null"]},
+        "media_id": {"type": ["string", "null"]},
+        "start_ms": {"type": ["integer", "null"], "minimum": 0},
+        "end_ms": {"type": ["integer", "null"], "minimum": 1}
+      },
+      "anyOf": [
+        {"required": ["event_id"], "properties": {"event_id": {"type": "string"}}},
+        {"required": ["utterance_id"], "properties": {"utterance_id": {"type": "string"}}}
+      ]
+    },
+    "NarrativeItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "evidence_event_ids", "evidence_utterance_ids"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "evidence_event_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "evidence_utterance_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "anyOf": [
+        {"properties": {"evidence_event_ids": {"minItems": 1}}},
+        {"properties": {"evidence_utterance_ids": {"minItems": 1}}}
+      ]
+    },
+    "ModelObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "confidence", "rationale", "evidence_event_ids", "evidence_utterance_ids"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "rationale": {"type": "string", "minLength": 1},
+        "evidence_event_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "evidence_utterance_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "anyOf": [
+        {"properties": {"evidence_event_ids": {"minItems": 1}}},
+        {"properties": {"evidence_utterance_ids": {"minItems": 1}}}
+      ]
+    },
+    "DailySummary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["summary_id", "revision", "summary_date", "timezone", "objective", "narrative", "input_sha256", "provenance", "status", "derivation_status", "evidence"],
+      "properties": {
+        "summary_id": {"type": "string", "minLength": 1},
+        "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+        "summary_date": {"type": "string", "format": "date"},
+        "timezone": {"type": "string", "minLength": 1},
+        "objective": {"type": "object"},
+        "narrative": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["what_happened", "decisions", "new_todos", "completed", "unresolved", "important_people_interactions", "memorable_quotes", "tomorrow_attention"],
+          "properties": {
+            "what_happened": {"type": "array", "items": {"$ref": "#/$defs/NarrativeItem"}},
+            "decisions": {"type": "array", "items": {"$ref": "#/$defs/NarrativeItem"}},
+            "new_todos": {"type": "array", "items": {"$ref": "#/$defs/NarrativeItem"}},
+            "completed": {"type": "array", "items": {"$ref": "#/$defs/NarrativeItem"}},
+            "unresolved": {"type": "array", "items": {"$ref": "#/$defs/NarrativeItem"}},
+            "important_people_interactions": {"type": "array", "items": {"$ref": "#/$defs/NarrativeItem"}},
+            "memorable_quotes": {"type": "array", "items": {"$ref": "#/$defs/NarrativeItem"}},
+            "tomorrow_attention": {"type": "array", "items": {"$ref": "#/$defs/NarrativeItem"}}
+          }
+        },
+        "input_sha256": {"$ref": "primitives.schema.json#/$defs/Sha256"},
+        "provenance": {"type": "object"},
+        "status": {"type": "string", "enum": ["active", "retracted"]},
+        "derivation_status": {"type": "string", "enum": ["active", "stale", "retracted"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/InsightEvidence"}}
+      }
+    },
+    "RelationshipObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["report_id", "revision", "person_id", "window_days", "end_date", "timezone", "verified_facts", "observations", "input_sha256", "provenance", "status", "derivation_status", "evidence"],
+      "properties": {
+        "report_id": {"type": "string", "minLength": 1},
+        "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+        "person_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "window_days": {"type": "integer", "enum": [7, 30]},
+        "end_date": {"type": "string", "format": "date"},
+        "timezone": {"type": "string", "minLength": 1},
+        "verified_facts": {"type": "object"},
+        "observations": {"type": "array", "items": {"$ref": "#/$defs/ModelObservation"}},
+        "input_sha256": {"$ref": "primitives.schema.json#/$defs/Sha256"},
+        "provenance": {"type": "object"},
+        "status": {"type": "string", "enum": ["active", "retracted"]},
+        "derivation_status": {"type": "string", "enum": ["active", "stale", "retracted"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/InsightEvidence"}}
+      }
+    },
+    "DailyGenerationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary_date", "timezone"],
+      "properties": {
+        "summary_date": {"type": "string", "format": "date"},
+        "timezone": {"type": "string", "minLength": 1},
+        "reasoning_effort": {"type": "string", "enum": ["auto", "low", "medium", "high", "xhigh"], "default": "auto"}
+      }
+    },
+    "RelationshipGenerationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["person_id", "window_days", "end_date", "timezone"],
+      "properties": {
+        "person_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "window_days": {"type": "integer", "enum": [7, 30]},
+        "end_date": {"type": "string", "format": "date"},
+        "timezone": {"type": "string", "minLength": 1},
+        "reasoning_effort": {"type": "string", "enum": ["auto", "low", "medium", "high", "xhigh"], "default": "auto"}
+      }
+    }
+  }
+}

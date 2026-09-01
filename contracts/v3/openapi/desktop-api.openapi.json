@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AllDayRecording Desktop API",
-    "version": "3.5.0",
-    "description": "Loopback-only query, media, correction, durable-processing, knowledge, reminder, open-set speaker identity, and cross-day person memory API for the independent Desktop frontend."
+    "version": "3.6.0",
+    "description": "Loopback-only query, media, correction, durable-processing, knowledge, reminder, people, daily-summary, and relationship-observation API for the independent Desktop frontend."
   },
   "servers": [{"url": "http://127.0.0.1:8766"}],
   "security": [{"DesktopSession": []}],
@@ -181,6 +181,33 @@
     "/api/v3/reminders/{event_id}/deliver": {
       "post": {"operationId": "deliverReminder", "parameters": [{"name": "event_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}], "responses": {"200": {"description": "Reminder delivery receipt with internal delivery metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
     },
+    "/api/v3/daily-summaries": {
+      "get": {"operationId": "listDailySummaries", "parameters": [{"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Latest immutable daily-summary revisions", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "../schemas/insight.schema.json#/$defs/DailySummary"}}}}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/daily-summaries/generate": {
+      "post": {"operationId": "generateDailySummary", "description": "Rebuild a daily summary from event-layer facts and evidence. No prior summary is an input.", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "../schemas/insight.schema.json#/$defs/DailyGenerationRequest"}}}}, "responses": {"202": {"description": "Program-verified objective facts and evidence-bound Codex language", "content": {"application/json": {"schema": {"$ref": "../schemas/insight.schema.json#/$defs/DailySummary"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/daily-summaries/{summary_date}": {
+      "get": {"operationId": "getDailySummary", "parameters": [{"name": "summary_date", "in": "path", "required": true, "schema": {"type": "string", "format": "date"}}, {"name": "timezone", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1}}], "responses": {"200": {"description": "Latest revision for a date and timezone", "content": {"application/json": {"schema": {"$ref": "../schemas/insight.schema.json#/$defs/DailySummary"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/relationship-observations": {
+      "get": {"operationId": "listRelationshipObservations", "parameters": [{"name": "person_id", "in": "query", "required": false, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Latest relationship-observation revisions", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "../schemas/insight.schema.json#/$defs/RelationshipObservation"}}}}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/relationship-observations/generate": {
+      "post": {"operationId": "generateRelationshipObservation", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "../schemas/insight.schema.json#/$defs/RelationshipGenerationRequest"}}}}, "responses": {"202": {"description": "Program-verified window facts and separate evidence-bound model observations", "content": {"application/json": {"schema": {"$ref": "../schemas/insight.schema.json#/$defs/RelationshipObservation"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/relationship-observations/{report_id}": {
+      "get": {"operationId": "getRelationshipObservation", "parameters": [{"name": "report_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}}], "responses": {"200": {"description": "Latest immutable relationship-observation revision", "content": {"application/json": {"schema": {"$ref": "../schemas/insight.schema.json#/$defs/RelationshipObservation"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/relationship-observations/{report_id}/revise": {
+      "post": {"operationId": "reviseRelationshipObservation", "parameters": [{"name": "report_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["observations"], "properties": {"observations": {"type": "array", "items": {"$ref": "../schemas/insight.schema.json#/$defs/ModelObservation"}}}}}}}, "responses": {"200": {"description": "User-corrected append-only observation revision", "content": {"application/json": {"schema": {"$ref": "../schemas/insight.schema.json#/$defs/RelationshipObservation"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/relationship-observations/{report_id}/retract": {
+      "post": {"operationId": "retractRelationshipObservation", "parameters": [{"name": "report_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}}], "responses": {"200": {"description": "Retracted append-only observation revision", "content": {"application/json": {"schema": {"$ref": "../schemas/insight.schema.json#/$defs/RelationshipObservation"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/relationship-observations/{report_id}/undo": {
+      "post": {"operationId": "undoRelationshipObservationOperation", "parameters": [{"name": "report_id", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1}}], "responses": {"200": {"description": "Append-only restoration of the last retraction", "content": {"application/json": {"schema": {"$ref": "../schemas/insight.schema.json#/$defs/RelationshipObservation"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
     "/api/v3/events/processing": {
       "get": {"operationId": "streamProcessingEvents", "parameters": [{"name": "after", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 0}}], "responses": {"200": {"description": "Resumable server-sent processing event stream", "content": {"text/event-stream": {"schema": {"type": "string"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
     }
@@ -201,7 +228,7 @@
     },
     "responses": {"ApiError": {"description": "Stable API error", "content": {"application/json": {"schema": {"$ref": "../schemas/primitives.schema.json#/$defs/ApiError"}}}}},
     "schemas": {
-      "RuntimeStatus": {"type": "object", "additionalProperties": false, "required": ["contract_version", "enabled", "state"], "properties": {"contract_version": {"const": "3.5.0"}, "enabled": {"type": "boolean"}, "state": {"enum": ["empty_ready", "ready"]}}},
+      "RuntimeStatus": {"type": "object", "additionalProperties": false, "required": ["contract_version", "enabled", "state"], "properties": {"contract_version": {"const": "3.6.0"}, "enabled": {"type": "boolean"}, "state": {"enum": ["empty_ready", "ready"]}}},
       "ObjectProjection": {"type": "object"},
       "ItemList": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"type": "object"}}}},
       "SessionDetail": {"type": "object", "additionalProperties": false, "required": ["session", "segments", "runs", "speaker_tracks", "utterances", "artifacts", "backups"], "properties": {"session": {"$ref": "../schemas/recording-session.schema.json"}, "segments": {"type": "array", "items": {"type": "object"}}, "runs": {"type": "array", "items": {"type": "object"}}, "speaker_tracks": {"type": "array", "items": {"type": "object"}}, "utterances": {"type": "array", "items": {"$ref": "../schemas/utterance.schema.json"}}, "artifacts": {"type": "array", "items": {"type": "object"}}, "backups": {"type": "array", "items": {"type": "object"}}}},

@@ -9,6 +9,7 @@ export type RouteName =
   | 'reviews'
   | 'reminders'
   | 'people'
+  | 'insights'
   | 'processing'
   | 'devices'
   | 'data'

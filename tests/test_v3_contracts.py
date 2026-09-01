@@ -250,6 +250,19 @@ class V3ContractTests(unittest.TestCase):
         }
         self.assertTrue(people_paths.issubset(desktop_paths))
         self.assertTrue(people_paths.isdisjoint(device_paths))
+        insight_paths = {
+            "/api/v3/daily-summaries",
+            "/api/v3/daily-summaries/generate",
+            "/api/v3/daily-summaries/{summary_date}",
+            "/api/v3/relationship-observations",
+            "/api/v3/relationship-observations/generate",
+            "/api/v3/relationship-observations/{report_id}",
+            "/api/v3/relationship-observations/{report_id}/revise",
+            "/api/v3/relationship-observations/{report_id}/retract",
+            "/api/v3/relationship-observations/{report_id}/undo",
+        }
+        self.assertTrue(insight_paths.issubset(desktop_paths))
+        self.assertTrue(insight_paths.isdisjoint(device_paths))
         knowledge = _read_json(
             CONTRACT_ROOT / "schemas" / "knowledge.schema.json"
         )["$defs"]
@@ -302,6 +315,21 @@ class V3ContractTests(unittest.TestCase):
         self.assertNotIn("local_path", serialized_memory)
         self.assertIn("confirmation_status", serialized_memory)
         self.assertIn("valid_until", serialized_memory)
+        insight = _read_json(
+            CONTRACT_ROOT / "schemas" / "insight.schema.json"
+        )["$defs"]
+        self.assertEqual(
+            insight["RelationshipObservation"]["properties"]["window_days"]["enum"],
+            [7, 30],
+        )
+        self.assertEqual(
+            set(insight["DailySummary"]["properties"]["narrative"]["required"]),
+            {
+                "what_happened", "decisions", "new_todos", "completed",
+                "unresolved", "important_people_interactions",
+                "memorable_quotes", "tomorrow_attention",
+            },
+        )
 
     def test_harmony_consumer_receipt_when_checkout_is_available(self) -> None:
         configured = os.environ.get("ALLDAY_HARMONY_REPO")

@@ -7,13 +7,14 @@ from pathlib import Path
 
 from allday_asr.paths import PROJECT_ROOT
 from allday_asr.v3.adapters.files import ContentAddressedStore
-from allday_asr.v3.adapters.codex import CodexReminderGenerator
+from allday_asr.v3.adapters.codex import CodexInsightGenerator, CodexReminderGenerator
 from allday_asr.v3.adapters.legacy_v2 import LegacyV2Importer
 from allday_asr.v3.adapters.speaker_embeddings import FunASRSpeakerEmbeddingProvider
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.application import (
     AdmissionService,
     CorrectionInvalidationService,
+    DailyInsightService,
     DurableProcessingService,
     DesktopQueryService,
     ImportLegacyV2,
@@ -27,6 +28,7 @@ from allday_asr.v3.application import (
 )
 from allday_asr.v3.config import CodexReminderSettings
 from allday_asr.v3.ports.reminder_generation import ReminderModelGenerator
+from allday_asr.v3.ports.insight_generation import InsightModelGenerator
 from allday_asr.v3.ports.speaker_embeddings import SpeakerEmbeddingProvider
 
 
@@ -78,6 +80,7 @@ class V3Core:
     reminder_extraction: ReminderExtractionService
     people: SpeakerIdentityService
     person_memory: PersonMemoryService
+    insights: DailyInsightService
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -88,6 +91,7 @@ class V3Core:
 
     def close(self) -> None:
         self.reminder_extraction.close()
+        self.insights.close()
 
 
 def compose_v3_core(
@@ -95,6 +99,7 @@ def compose_v3_core(
     *,
     codex_settings: CodexReminderSettings | None = None,
     reminder_generator: ReminderModelGenerator | None = None,
+    insight_generator: InsightModelGenerator | None = None,
     speaker_embedding_provider: SpeakerEmbeddingProvider | None = None,
 ) -> V3Core:
     """Wire the V3 Core without opening databases or creating directories."""
@@ -137,9 +142,16 @@ def compose_v3_core(
             selected_codex.workdir,
             model=selected_codex.model,
         )
+    narrative_generator = insight_generator
+    if narrative_generator is None and selected_codex.enabled:
+        narrative_generator = CodexInsightGenerator(
+            selected_codex.workdir,
+            model=selected_codex.model,
+        )
     desktop = DesktopQueryService(
         lambda: SqliteUnitOfWork(database),
         codex_reminders_enabled=generator is not None,
+        codex_insights_enabled=narrative_generator is not None,
     )
     reminder_extraction = ReminderExtractionService(
         lambda: SqliteUnitOfWork(database),
@@ -147,6 +159,9 @@ def compose_v3_core(
         generator,
         default_effort=selected_codex.reasoning_effort.value,
         allow_auto_apply=selected_codex.allow_auto_apply,
+    )
+    insights = DailyInsightService(
+        lambda: SqliteUnitOfWork(database), narrative_generator
     )
     return V3Core(
         paths=selected,
@@ -164,6 +179,7 @@ def compose_v3_core(
         reminder_extraction=reminder_extraction,
         people=people,
         person_memory=person_memory,
+        insights=insights,
     )
 
 
