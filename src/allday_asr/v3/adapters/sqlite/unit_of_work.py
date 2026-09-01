@@ -20,6 +20,9 @@ from allday_asr.v3.adapters.sqlite.reminder_repository import (
     SqliteReminderRepository,
 )
 from allday_asr.v3.adapters.sqlite.people_repository import SqlitePeopleRepository
+from allday_asr.v3.adapters.sqlite.person_memory_repository import (
+    SqlitePersonMemoryRepository,
+)
 from allday_asr.v3.adapters.sqlite.repositories import (
     Clock,
     SqliteArtifactRepository,
@@ -73,6 +76,7 @@ class SqliteUnitOfWork:
         self.derivations = SqliteDerivationRepository(connection)
         self.reminders = SqliteReminderRepository(connection)
         self.people = SqlitePeopleRepository(connection)
+        self.person_memories = SqlitePersonMemoryRepository(connection)
         return self
 
     def __exit__(

@@ -384,6 +384,15 @@ class SqlitePeopleRepository:
             """,
             (person_id, display_name, kind, created_at, created_at),
         )
+        self.connection.execute(
+            """
+            INSERT INTO person_profile_revisions (
+              person_id, revision, display_name, aliases_json,
+              relationship_labels_json, notes, actor, created_at
+            ) VALUES (?, 1, ?, '[]', '[]', '', 'desktop-user', ?)
+            """,
+            (person_id, display_name, created_at),
+        )
 
     def label_cluster(
         self, cluster_id: str, person_id: str, actor: str, operation_id: str, created_at: str

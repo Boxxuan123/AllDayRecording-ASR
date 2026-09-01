@@ -20,6 +20,7 @@ from allday_asr.v3.application import (
     IntelligentReminderService,
     KnowledgeArchitectureService,
     MobileSyncService,
+    PersonMemoryService,
     ReminderExtractionService,
     SpeakerIdentityService,
     UtteranceCorrectionOperationHandler,
@@ -76,6 +77,7 @@ class V3Core:
     reminders: IntelligentReminderService
     reminder_extraction: ReminderExtractionService
     people: SpeakerIdentityService
+    person_memory: PersonMemoryService
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -125,6 +127,7 @@ def compose_v3_core(
     people = SpeakerIdentityService(
         lambda: SqliteUnitOfWork(database), speaker_provider, knowledge
     )
+    person_memory = PersonMemoryService(lambda: SqliteUnitOfWork(database))
     reminders = IntelligentReminderService(
         lambda: SqliteUnitOfWork(database), knowledge
     )
@@ -160,6 +163,7 @@ def compose_v3_core(
         reminders=reminders,
         reminder_extraction=reminder_extraction,
         people=people,
+        person_memory=person_memory,
     )
 
 

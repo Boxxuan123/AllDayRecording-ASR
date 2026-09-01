@@ -307,6 +307,69 @@ export interface PersonSummary {
   revision: number
   cluster_count: number
   prototype_count: number
+  memory_count: number
+  interaction_count: number
+  last_interaction_at: string | null
+}
+
+export type PersonMemoryKind = 'stable_fact' | 'preference' | 'short_term_state' | 'plan' | 'commitment' | 'model_observation'
+export type PersonMemoryStatus = 'active' | 'expired' | 'retracted'
+
+export interface PersonMemoryEvidence {
+  event_id: string | null
+  event_revision: number | null
+  utterance_id: string | null
+  session_id: string | null
+  start_at: string | null
+  end_at: string | null
+  start_ms: number | null
+  end_ms: number | null
+  text: string | null
+  media_id: string | null
+}
+
+export interface PersonMemory {
+  memory_id: string
+  revision: number
+  person_id: string
+  kind: PersonMemoryKind
+  summary: string
+  details: Record<string, unknown> & { topics?: string[]; commitment_direction?: string | null }
+  source: 'human' | 'event_projection' | 'model'
+  confidence: number
+  confirmation_status: 'confirmed' | 'unconfirmed' | 'inferred'
+  valid_from: string
+  valid_until: string | null
+  status: PersonMemoryStatus
+  event_id: string | null
+  reminder_event_id: string | null
+  reminder: ReminderSchedule | null
+  evidence: PersonMemoryEvidence[]
+}
+
+export interface PersonInteraction {
+  interaction_type: 'encounter' | 'event'
+  session_id: string
+  occurred_at: string
+  title: string
+  event_id: string | null
+  event_kind: string | null
+  status?: string
+  utterance_count?: number
+  evidence_utterance_ids?: string[]
+}
+
+export interface PersonDetail extends PersonSummary {
+  profile_revision: number
+  aliases: string[]
+  relationship_labels: string[]
+  notes: string
+  first_seen_at: string | null
+  last_seen_at: string | null
+  interactions: PersonInteraction[]
+  memories: PersonMemory[]
+  commitments: PersonMemory[]
+  topics: Array<{ label: string; count: number }>
 }
 
 export interface SpeakerClusterMember {

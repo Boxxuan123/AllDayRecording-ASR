@@ -87,7 +87,7 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
             codex_settings=CodexReminderSettings(enabled=False),
             speaker_embedding_provider=self.provider,
         )
-        self.assertEqual(self.core.initialize(), 8)
+        self.assertEqual(self.core.initialize(), 9)
         with self.core.database.transaction() as connection:
             connection.execute(
                 """

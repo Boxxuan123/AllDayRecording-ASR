@@ -19,7 +19,9 @@ from allday_asr.v3.application import (
     ReminderGenerationFailed,
     ReminderGenerationUnavailable,
     UtteranceRevisionConflict,
+    memory_draft_from_dict,
     processing_snapshot_dict,
+    revision_from_dict,
 )
 from allday_asr.v3.domain.identity import SelfIdentity
 from allday_asr.v3.domain.people import PersonKind
@@ -73,6 +75,24 @@ _SPEAKER_MERGE_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/merge$")
 _SPEAKER_SPLIT_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/split$")
 _SPEAKER_IGNORE_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/ignore$")
 _SPEAKER_UNDO_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/undo$")
+_PERSON_ROUTE = re.compile(r"^/api/v3/persons/([^/]+)$")
+_PERSON_PROFILE_ROUTE = re.compile(r"^/api/v3/persons/([^/]+)/profile$")
+_PERSON_MEMORY_REFRESH_ROUTE = re.compile(
+    r"^/api/v3/persons/([^/]+)/memories/refresh$"
+)
+_PERSON_MEMORIES_ROUTE = re.compile(r"^/api/v3/persons/([^/]+)/memories$")
+_PERSON_MEMORY_REVISE_ROUTE = re.compile(
+    r"^/api/v3/person-memories/([^/]+)/revise$"
+)
+_PERSON_MEMORY_EXPIRE_ROUTE = re.compile(
+    r"^/api/v3/person-memories/([^/]+)/expire$"
+)
+_PERSON_MEMORY_RETRACT_ROUTE = re.compile(
+    r"^/api/v3/person-memories/([^/]+)/retract$"
+)
+_PERSON_MEMORY_UNDO_ROUTE = re.compile(
+    r"^/api/v3/person-memories/([^/]+)/undo$"
+)
 _FRONTEND_ROUTES = {
     "/",
     "/recordings",
@@ -377,6 +397,15 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                 {"items": self.application.core.people.list_people()},
             )
             return
+        if match := _PERSON_ROUTE.fullmatch(path):
+            limit = _integer(query.get("limit", ["200"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.person_memory.person(
+                    unquote(match.group(1)), limit
+                ),
+            )
+            return
         if path == "/api/v3/speaker-clusters":
             status = query.get("status", [None])[0]
             limit = _integer(query.get("limit", ["100"])[0], "limit")
@@ -498,6 +527,79 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                 self.application.core.people.create_person(
                     body["display_name"], PersonKind(body.get("kind", "known"))
                 ),
+            )
+            return
+        if match := _PERSON_PROFILE_ROUTE.fullmatch(path):
+            required = {"display_name", "aliases", "relationship_labels", "notes"}
+            aliases = body.get("aliases")
+            labels = body.get("relationship_labels")
+            if (
+                set(body) != required
+                or not isinstance(body.get("display_name"), str)
+                or not isinstance(body.get("notes"), str)
+                or not isinstance(aliases, list)
+                or not all(isinstance(value, str) for value in aliases)
+                or not isinstance(labels, list)
+                or not all(isinstance(value, str) for value in labels)
+            ):
+                raise ValueError("person profile fields are invalid")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.person_memory.update_profile(
+                    unquote(match.group(1)),
+                    display_name=body["display_name"],
+                    aliases=aliases,
+                    relationship_labels=labels,
+                    notes=body["notes"],
+                ),
+            )
+            return
+        if match := _PERSON_MEMORY_REFRESH_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("person memory refresh body must be empty")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.person_memory.refresh(unquote(match.group(1))),
+            )
+            return
+        if match := _PERSON_MEMORIES_ROUTE.fullmatch(path):
+            draft = memory_draft_from_dict(unquote(match.group(1)), body)
+            self._send_json(
+                HTTPStatus.CREATED,
+                self.application.core.person_memory.create(draft),
+            )
+            return
+        if match := _PERSON_MEMORY_REVISE_ROUTE.fullmatch(path):
+            values = revision_from_dict(body)
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.person_memory.revise(
+                    unquote(match.group(1)), **values
+                ),
+            )
+            return
+        if match := _PERSON_MEMORY_EXPIRE_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("person memory expire body must be empty")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.person_memory.expire(unquote(match.group(1))),
+            )
+            return
+        if match := _PERSON_MEMORY_RETRACT_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("person memory retract body must be empty")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.person_memory.retract(unquote(match.group(1))),
+            )
+            return
+        if match := _PERSON_MEMORY_UNDO_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("person memory undo body must be empty")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.person_memory.undo(unquote(match.group(1))),
             )
             return
         if match := _SPEAKER_LABEL_ROUTE.fullmatch(path):

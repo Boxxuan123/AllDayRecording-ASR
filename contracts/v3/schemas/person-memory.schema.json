@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alldayrecording.local/contracts/v3/person-memory.schema.json",
+  "title": "V3.5 cross-day person memory resources",
+  "$defs": {
+    "MemoryKind": {
+      "type": "string",
+      "enum": ["stable_fact", "preference", "short_term_state", "plan", "commitment", "model_observation"]
+    },
+    "MemoryStatus": {
+      "type": "string",
+      "enum": ["active", "expired", "retracted"]
+    },
+    "MemoryEvidence": {
+      "type": "object",
+      "required": ["event_id", "event_revision", "utterance_id", "session_id", "start_at", "end_at", "start_ms", "end_ms", "text", "media_id"],
+      "properties": {
+        "event_id": {"type": ["string", "null"]},
+        "event_revision": {"type": ["integer", "null"], "minimum": 1},
+        "utterance_id": {"type": ["string", "null"]},
+        "session_id": {"type": ["string", "null"]},
+        "start_at": {"type": ["string", "null"]},
+        "end_at": {"type": ["string", "null"]},
+        "start_ms": {"type": ["integer", "null"], "minimum": 0},
+        "end_ms": {"type": ["integer", "null"], "minimum": 1},
+        "text": {"type": ["string", "null"]},
+        "media_id": {"type": ["string", "null"]}
+      }
+    },
+    "PersonMemory": {
+      "type": "object",
+      "required": ["memory_id", "revision", "person_id", "kind", "summary", "details", "source", "confidence", "confirmation_status", "valid_from", "valid_until", "status", "event_id", "reminder_event_id", "evidence"],
+      "properties": {
+        "memory_id": {"type": "string", "minLength": 1},
+        "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+        "person_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "kind": {"$ref": "#/$defs/MemoryKind"},
+        "summary": {"type": "string", "minLength": 1},
+        "details": {"type": "object"},
+        "source": {"type": "string", "enum": ["human", "event_projection", "model"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "confirmation_status": {"type": "string", "enum": ["confirmed", "unconfirmed", "inferred"]},
+        "valid_from": {"type": "string"},
+        "valid_until": {"type": ["string", "null"]},
+        "status": {"$ref": "#/$defs/MemoryStatus"},
+        "event_id": {"type": ["string", "null"]},
+        "reminder_event_id": {"type": ["string", "null"]},
+        "reminder": {"type": ["object", "null"]},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/MemoryEvidence"}}
+      }
+    },
+    "PersonDetail": {
+      "allOf": [
+        {"$ref": "person.schema.json#/$defs/Person"},
+        {
+          "type": "object",
+          "required": ["aliases", "relationship_labels", "notes", "first_seen_at", "last_seen_at", "interaction_count", "memory_count", "interactions", "memories", "commitments", "topics"],
+          "properties": {
+            "aliases": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+            "relationship_labels": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+            "notes": {"type": "string"},
+            "first_seen_at": {"type": ["string", "null"]},
+            "last_seen_at": {"type": ["string", "null"]},
+            "interaction_count": {"type": "integer", "minimum": 0},
+            "memory_count": {"type": "integer", "minimum": 0},
+            "interactions": {"type": "array", "items": {"type": "object"}},
+            "memories": {"type": "array", "items": {"$ref": "#/$defs/PersonMemory"}},
+            "commitments": {"type": "array", "items": {"$ref": "#/$defs/PersonMemory"}},
+            "topics": {"type": "array", "items": {"type": "object", "required": ["label", "count"], "properties": {"label": {"type": "string"}, "count": {"type": "integer", "minimum": 1}}}}
+          }
+        }
+      ]
+    },
+    "ProfileUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["display_name", "aliases", "relationship_labels", "notes"],
+      "properties": {
+        "display_name": {"type": "string", "minLength": 1},
+        "aliases": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "relationship_labels": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "notes": {"type": "string"}
+      }
+    },
+    "MemoryDraft": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "summary", "valid_from"],
+      "properties": {
+        "kind": {"$ref": "#/$defs/MemoryKind"},
+        "summary": {"type": "string", "minLength": 1},
+        "details": {"type": "object"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "valid_from": {"type": "string"},
+        "valid_until": {"type": ["string", "null"]},
+        "event_id": {"type": ["string", "null"]},
+        "reminder_event_id": {"type": ["string", "null"]},
+        "evidence_utterance_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "MemoryRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "details", "confidence", "valid_from"],
+      "properties": {
+        "summary": {"type": "string", "minLength": 1},
+        "details": {"type": "object"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "valid_from": {"type": "string"},
+        "valid_until": {"type": ["string", "null"]},
+        "reminder_event_id": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

@@ -438,6 +438,34 @@ class PeopleRepository(Protocol):
     ) -> tuple[str, ...]: ...
 
 
+class PersonMemoryRepository(Protocol):
+    def profile(self, person_id: str) -> dict[str, Any]: ...
+    def update_profile(
+        self, person_id: str, display_name: str, aliases: tuple[str, ...],
+        relationship_labels: tuple[str, ...], notes: str, actor: str,
+        created_at: str,
+    ) -> dict[str, Any]: ...
+    def event_sources(self, person_id: str) -> tuple[dict[str, Any], ...]: ...
+    def current_memory(self, memory_id: str) -> dict[str, Any]: ...
+    def add_revision(self, **values: Any) -> dict[str, Any]: ...
+    def person_detail(self, person_id: str, limit: int = 200) -> dict[str, Any]: ...
+    def list_current(
+        self, person_id: str, *, limit: int, include_inactive: bool
+    ) -> tuple[dict[str, Any], ...]: ...
+    def summary_counts(self) -> dict[str, dict[str, Any]]: ...
+    def revise_status(
+        self, memory_id: str, status: str, actor: str, operation_id: str,
+        operation_kind: str, created_at: str,
+    ) -> dict[str, Any]: ...
+    def undo(
+        self, memory_id: str, actor: str, operation_id: str, created_at: str
+    ) -> dict[str, Any]: ...
+    def reconcile_identity(
+        self, cluster_id: str, old_person_id: str | None,
+        new_person_id: str | None, actor: str, created_at: str,
+    ) -> int: ...
+
+
 class UnitOfWork(Protocol):
     catalog: RecordingCatalogRepository
     devices: DeviceRepository
@@ -459,6 +487,7 @@ class UnitOfWork(Protocol):
     derivations: DerivationRepository
     reminders: ReminderRepository
     people: PeopleRepository
+    person_memories: PersonMemoryRepository
 
     def __enter__(self) -> Self: ...
 
@@ -491,5 +520,6 @@ __all__ = [
     "DerivationRepository",
     "ReminderRepository",
     "PeopleRepository",
+    "PersonMemoryRepository",
     "UnitOfWork",
 ]

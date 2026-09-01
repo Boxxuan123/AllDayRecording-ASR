@@ -231,6 +231,14 @@ class V3ContractTests(unittest.TestCase):
         self.assertTrue(reminder_paths.isdisjoint(device_paths))
         people_paths = {
             "/api/v3/persons",
+            "/api/v3/persons/{person_id}",
+            "/api/v3/persons/{person_id}/profile",
+            "/api/v3/persons/{person_id}/memories",
+            "/api/v3/persons/{person_id}/memories/refresh",
+            "/api/v3/person-memories/{memory_id}/revise",
+            "/api/v3/person-memories/{memory_id}/expire",
+            "/api/v3/person-memories/{memory_id}/retract",
+            "/api/v3/person-memories/{memory_id}/undo",
             "/api/v3/speaker-cluster-runs",
             "/api/v3/speaker-clusters",
             "/api/v3/speaker-clusters/{cluster_id}",
@@ -276,6 +284,24 @@ class V3ContractTests(unittest.TestCase):
             ["active", "merged", "split", "ignored"],
         )
         self.assertNotIn("vector", person["$defs"]["SpeakerPrototype"]["properties"])
+        person_memory = _read_json(
+            CONTRACT_ROOT / "schemas" / "person-memory.schema.json"
+        )
+        self.assertEqual(
+            person_memory["$defs"]["MemoryKind"]["enum"],
+            [
+                "stable_fact",
+                "preference",
+                "short_term_state",
+                "plan",
+                "commitment",
+                "model_observation",
+            ],
+        )
+        serialized_memory = json.dumps(person_memory, sort_keys=True).lower()
+        self.assertNotIn("local_path", serialized_memory)
+        self.assertIn("confirmation_status", serialized_memory)
+        self.assertIn("valid_until", serialized_memory)
 
     def test_harmony_consumer_receipt_when_checkout_is_available(self) -> None:
         configured = os.environ.get("ALLDAY_HARMONY_REPO")

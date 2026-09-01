@@ -131,6 +131,13 @@ class DesktopQueryService:
                 "stable_prototype_policy": "explicit_user_confirmation",
                 "phone_projection": False,
             },
+            "person_memory": {
+                "cross_day": True,
+                "evidence_required": True,
+                "facts_and_inferences_separated": True,
+                "versioned_corrections": True,
+                "phone_projection": False,
+            },
         }
 
     def lab(self) -> dict[str, Any]:

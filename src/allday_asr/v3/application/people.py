@@ -134,7 +134,22 @@ class SpeakerIdentityService:
 
     def list_people(self) -> tuple[dict[str, Any], ...]:
         with self._uow_factory() as uow:
-            return uow.people.list_people()
+            people = uow.people.list_people()
+            counts = uow.person_memories.summary_counts()
+        return tuple(
+            {
+                **person,
+                **counts.get(
+                    str(person["person_id"]),
+                    {
+                        "memory_count": 0,
+                        "interaction_count": 0,
+                        "last_interaction_at": None,
+                    },
+                ),
+            }
+            for person in people
+        )
 
     def list_clusters(
         self, status: str | None = None, limit: int = 100
@@ -193,6 +208,14 @@ class SpeakerIdentityService:
                 rebound.append(str(event["event_id"]))
             except ValueError as exc:
                 warnings.append(f"event {event['event_id']}: {exc}")
+        with self._uow_factory() as uow:
+            migrated_memories = uow.person_memories.reconcile_identity(
+                cluster_id,
+                previous_person_id,
+                person_id,
+                actor,
+                _datetime(self._now()),
+            )
         return {
             "operation_id": operation_id,
             "cluster_id": cluster_id,
@@ -200,6 +223,7 @@ class SpeakerIdentityService:
             "previous_person_id": previous_person_id,
             "rebound_event_ids": rebound,
             "warnings": warnings,
+            "migrated_memory_count": migrated_memories,
         }
 
     def create_and_label(
@@ -291,12 +315,27 @@ class SpeakerIdentityService:
                     rebound.append(str(event["event_id"]))
                 except ValueError as exc:
                     warnings.append(f"event {event['event_id']}: {exc}")
+            with self._uow_factory() as uow:
+                migrated_memories = uow.person_memories.reconcile_identity(
+                    cluster_id,
+                    str(current["person_id"]),
+                    (
+                        str(reverted["payload"]["previous_person_id"])
+                        if reverted["payload"].get("previous_person_id")
+                        else None
+                    ),
+                    actor,
+                    _datetime(self._now()),
+                )
+        else:
+            migrated_memories = 0
         return {
             "operation_id": operation_id,
             "cluster_id": cluster_id,
             "reverted_operation_id": reverted["operation_id"],
             "rebound_event_ids": rebound,
             "warnings": warnings,
+            "migrated_memory_count": migrated_memories,
         }
 
     def _rebind_event(

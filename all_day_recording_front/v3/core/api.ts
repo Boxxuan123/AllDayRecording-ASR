@@ -17,6 +17,9 @@ import type {
   ReminderCandidate,
   ReminderSchedule,
   PersonSummary,
+  PersonDetail,
+  PersonMemory,
+  PersonMemoryKind,
   SpeakerAnalysisResult,
   SpeakerCluster,
   SessionDetail,
@@ -78,6 +81,14 @@ export const desktopApi = {
   reminderCandidates: () => request<{ items: ReminderCandidate[] }>('/api/v3/reminder-candidates?limit=100'),
   reminders: () => request<{ items: ReminderSchedule[] }>('/api/v3/reminders?limit=100'),
   people: () => request<{ items: PersonSummary[] }>('/api/v3/persons'),
+  person: (personId: string) => request<PersonDetail>(`/api/v3/persons/${encodeURIComponent(personId)}`),
+  updatePersonProfile: (personId: string, value: { display_name: string; aliases: string[]; relationship_labels: string[]; notes: string }) => request<PersonDetail>(`/api/v3/persons/${encodeURIComponent(personId)}/profile`, { method: 'POST', body: JSON.stringify(value) }),
+  refreshPersonMemories: (personId: string) => request<{ created_count: number; revised_count: number; expired_count: number }>(`/api/v3/persons/${encodeURIComponent(personId)}/memories/refresh`, { method: 'POST', body: '{}' }),
+  createPersonMemory: (personId: string, value: { kind: PersonMemoryKind; summary: string; details: Record<string, unknown>; confidence: number; valid_from: string; valid_until: string | null; event_id: string | null; reminder_event_id: string | null; evidence_utterance_ids: string[] }) => request<PersonMemory>(`/api/v3/persons/${encodeURIComponent(personId)}/memories`, { method: 'POST', body: JSON.stringify(value) }),
+  revisePersonMemory: (memoryId: string, value: { summary: string; details: Record<string, unknown>; confidence: number; valid_from: string; valid_until: string | null; reminder_event_id: string | null }) => request<PersonMemory>(`/api/v3/person-memories/${encodeURIComponent(memoryId)}/revise`, { method: 'POST', body: JSON.stringify(value) }),
+  expirePersonMemory: (memoryId: string) => request<PersonMemory>(`/api/v3/person-memories/${encodeURIComponent(memoryId)}/expire`, { method: 'POST', body: '{}' }),
+  retractPersonMemory: (memoryId: string) => request<PersonMemory>(`/api/v3/person-memories/${encodeURIComponent(memoryId)}/retract`, { method: 'POST', body: '{}' }),
+  undoPersonMemory: (memoryId: string) => request<PersonMemory>(`/api/v3/person-memories/${encodeURIComponent(memoryId)}/undo`, { method: 'POST', body: '{}' }),
   speakerClusters: () => request<{ items: SpeakerCluster[] }>('/api/v3/speaker-clusters?limit=100'),
   speakerCluster: (clusterId: string) => request<SpeakerCluster>(`/api/v3/speaker-clusters/${encodeURIComponent(clusterId)}`),
   analyzeSpeakers: (sessionId: string) => request<SpeakerAnalysisResult>('/api/v3/speaker-cluster-runs', { method: 'POST', body: JSON.stringify({ session_id: sessionId }) }),
@@ -122,6 +133,7 @@ async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.startsWith('/api/v3/reminder-candidates')) return { items: [] } as T
   if (path.startsWith('/api/v3/reminders')) return { items: [] } as T
   if (path === '/api/v3/persons') return { items: [] } as T
+  if (/\/api\/v3\/persons\/[^/]+/.test(path)) throw new ApiError('mock person 不存在', 'not_found', 'mock')
   if (path.startsWith('/api/v3/speaker-clusters')) return { items: [] } as T
   if (path === '/api/v3/speaker-cluster-runs') return {
     cluster_run_id: 'mock-cluster-run', session_id: 'mock-session', status: 'succeeded',
@@ -130,7 +142,7 @@ async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   } as T
   if (path === '/api/v3/devices') return { items: mockDevices } as T
   if (path === '/api/v3/data-health') return mockDataHealth as T
-  if (path === '/api/v3/settings') return { contract_version: '3.4.0', deployment: 'local_only', processing: { durable_jobs: true, backup_admission_required: true, automatic_source_deletion: false }, privacy: { network_boundary: 'loopback', audio_cloud_upload: false, transcript_cloud_processing: true }, reminders: { codex_enabled: true, codex_workspace: 'isolated_empty_read_only', model_write_boundary: 'structured_candidates_only' }, speaker_identity: { open_set: true, unknown_is_legal: true, audio_processing: 'local_only', stable_prototype_policy: 'explicit_user_confirmation', phone_projection: false } } as T
+  if (path === '/api/v3/settings') return { contract_version: '3.5.0', deployment: 'local_only', processing: { durable_jobs: true, backup_admission_required: true, automatic_source_deletion: false }, privacy: { network_boundary: 'loopback', audio_cloud_upload: false, transcript_cloud_processing: true }, reminders: { codex_enabled: true, codex_workspace: 'isolated_empty_read_only', model_write_boundary: 'structured_candidates_only' }, speaker_identity: { open_set: true, unknown_is_legal: true, audio_processing: 'local_only', stable_prototype_policy: 'explicit_user_confirmation', phone_projection: false }, person_memory: { cross_day: true, evidence_required: true, facts_and_inferences_separated: true, phone_projection: false } } as T
   if (path === '/api/v3/lab') return { enabled: false, label: '实验室', message: '实验与 benchmark 工具保留在独立 Legacy/Lab 入口。' } as T
   if (path.includes('/corrections') && init?.body) {
     const utteranceId = decodeURIComponent(path.split('/')[4])

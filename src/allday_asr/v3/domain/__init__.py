@@ -117,6 +117,14 @@ from allday_asr.v3.domain.people import (
     conservative_match,
     cosine_similarity,
 )
+from allday_asr.v3.domain.person_memory import (
+    PersonMemoryConfirmation,
+    PersonMemoryDraft,
+    PersonMemoryKind,
+    PersonMemoryOperationKind,
+    PersonMemorySource,
+    PersonMemoryStatus,
+)
 
 __all__ = [
     "DEFAULT_PHONE_SCOPES",
@@ -173,6 +181,12 @@ __all__ = [
     "Person",
     "PersonKind",
     "PersonOperationKind",
+    "PersonMemoryConfirmation",
+    "PersonMemoryDraft",
+    "PersonMemoryKind",
+    "PersonMemoryOperationKind",
+    "PersonMemorySource",
+    "PersonMemoryStatus",
     "ProcessingClaim",
     "ProcessingJob",
     "ProcessingRun",

@@ -6,7 +6,7 @@ generated decoders, but they must not redefine server enums or resource shapes.
 
 ## Versioning
 
-- Contract version: `3.4.0`
+- Contract version: `3.5.0`
 - Mobile projection version: `4`
 - JSON Schema dialect: 2020-12
 - OpenAPI version: 3.1
@@ -48,6 +48,12 @@ new API path and contract major version.
   is a first-class Desktop result. Only explicit confirmation publishes stable,
   multi-prototype voiceprints; clusters and candidate prototypes never enter the
   Phone projection, which remains on projection `4`.
+- `schemas/person-memory.schema.json` freezes V3.5 Desktop-only person profiles,
+  cross-day interactions, typed memories, validity, confirmation state, event /
+  utterance evidence, reminder links, and append-only correction responses.
+  Model observations remain distinct from facts. No person-memory resource is
+  added to the Phone projection; accepted reminders continue to cross through
+  the existing projection `4` boundary.
 
 The OpenAPI documents deliberately have disjoint paths and security schemes:
 Desktop endpoints live under `/api/v3`, while paired-device endpoints live under

@@ -47,6 +47,11 @@ from allday_asr.v3.application.identity_calibration import (
     run_identity_calibration,
 )
 from allday_asr.v3.application.people import SpeakerIdentityService
+from allday_asr.v3.application.person_memory import (
+    PersonMemoryService,
+    memory_draft_from_dict,
+    revision_from_dict,
+)
 
 __all__ = [
     "ClientOperationHandler",
@@ -63,6 +68,7 @@ __all__ = [
     "ReminderGenerationUnavailable",
     "IdentityCalibrationSummary",
     "SpeakerIdentityService",
+    "PersonMemoryService",
     "LegacyImportCommand",
     "LegacyImportResult",
     "KnowledgeArchitectureService",
@@ -79,5 +85,7 @@ __all__ = [
     "run_timeline_quality_audit",
     "run_identity_calibration",
     "cascade_derivations",
+    "memory_draft_from_dict",
+    "revision_from_dict",
     "AUTO_APPLY_CONFIDENCE",
 ]

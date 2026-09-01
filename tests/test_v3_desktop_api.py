@@ -277,6 +277,55 @@ class V3DesktopApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["code"], "invalid_request")
 
+    def test_v35_person_memory_routes_keep_evidence_and_profile_boundaries(self) -> None:
+        _, person, _ = self._request(
+            "/api/v3/persons",
+            method="POST",
+            body={"display_name": "张同学"},
+            headers={"Origin": self.server.application.base_url},
+        )
+        person_id = person["person_id"]
+        status, detail, _ = self._request(f"/api/v3/persons/{person_id}")
+        self.assertEqual(status, 200)
+        self.assertEqual(detail["memory_count"], 0)
+        self.assertEqual(detail["interactions"], [])
+
+        status, profile, _ = self._request(
+            f"/api/v3/persons/{person_id}/profile",
+            method="POST",
+            body={
+                "display_name": "张老师",
+                "aliases": ["老张", "张同学"],
+                "relationship_labels": ["项目成员"],
+                "notes": "合同项目",
+            },
+            headers={"Origin": self.server.application.base_url},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(profile["aliases"], ["老张", "张同学"])
+
+        status, refresh, _ = self._request(
+            f"/api/v3/persons/{person_id}/memories/refresh",
+            method="POST",
+            body={},
+            headers={"Origin": self.server.application.base_url},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(refresh["created_count"], 0)
+
+        status, error, _ = self._request(
+            f"/api/v3/persons/{person_id}/memories",
+            method="POST",
+            body={
+                "kind": "stable_fact",
+                "summary": "没有证据的事实",
+                "valid_from": "2026-09-01T08:00:00+00:00",
+            },
+            headers={"Origin": self.server.application.base_url},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(error["code"], "invalid_request")
+
     def _start_server(self) -> None:
         self.thread = threading.Thread(
             target=self.server.serve_forever,
