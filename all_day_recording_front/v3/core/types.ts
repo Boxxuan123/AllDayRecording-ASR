@@ -121,6 +121,9 @@ export interface SpeakerTrackSummary {
   label: string
   source_artifact_id: string
   created_at: string
+  speaker_cluster_id: string | null
+  person_id: string | null
+  person_name: string | null
 }
 
 export interface ArtifactSummary {
@@ -294,4 +297,68 @@ export interface CodexReminderGeneration {
     reasoning_effort: 'low' | 'medium' | 'high' | 'xhigh'
     usage: Record<string, unknown>
   }
+}
+
+export interface PersonSummary {
+  person_id: string
+  display_name: string
+  kind: 'self' | 'known'
+  user_confirmed: 0 | 1
+  revision: number
+  cluster_count: number
+  prototype_count: number
+}
+
+export interface SpeakerClusterMember {
+  membership_id: string
+  speaker_track_id: string
+  session_id: string
+  label: string
+  source: 'automatic' | 'human'
+  confidence: number
+}
+
+export interface RepresentativeClip {
+  media_id: string
+  start_ms: number
+  end_ms: number
+  utterance_id: string | null
+}
+
+export interface SpeakerPrototype {
+  prototype_id: string
+  speaker_track_id: string
+  status: 'candidate' | 'accepted'
+  quality_score: number
+  representative_clips: RepresentativeClip[]
+  created_at: string
+}
+
+export interface SpeakerCluster {
+  cluster_id: string
+  display_label: string
+  status: 'active' | 'merged' | 'split' | 'ignored'
+  revision: number
+  person_id: string | null
+  person_name: string | null
+  suggested_person_id: string | null
+  suggestion_confidence: number | null
+  track_count: number
+  session_count: number
+  latest_session_id: string | null
+  members?: SpeakerClusterMember[]
+  prototypes?: SpeakerPrototype[]
+  operations?: Array<Record<string, unknown>>
+}
+
+export interface SpeakerAnalysisResult {
+  cluster_run_id: string
+  session_id: string
+  status: 'succeeded'
+  track_count: number
+  embedded_track_count: number
+  new_cluster_count: number
+  matched_track_count: number
+  person_suggestion_count: number
+  unusable_track_ids: string[]
 }

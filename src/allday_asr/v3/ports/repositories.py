@@ -49,6 +49,7 @@ from allday_asr.v3.domain.reminders import (
     ReminderFeedback,
     ReminderSchedule,
 )
+from allday_asr.v3.ports.speaker_embeddings import SpeakerTrackInput
 
 
 class RecordingCatalogRepository(Protocol):
@@ -386,6 +387,57 @@ class ReminderRepository(Protocol):
     def list_feedback(self, candidate_id: str) -> tuple[dict[str, Any], ...]: ...
 
 
+class PeopleRepository(Protocol):
+    def analysis_inputs(self, session_id: str) -> tuple[SpeakerTrackInput, ...]: ...
+    def start_run(
+        self, run_id: str, session_id: str, model: str, model_version: str,
+        policy: dict[str, Any], track_count: int, created_at: str,
+    ) -> None: ...
+    def finish_run(
+        self, run_id: str, status: str, completed_at: str, error: str | None
+    ) -> None: ...
+    def cluster_vectors(
+        self, model: str, model_version: str
+    ) -> tuple[tuple[str, tuple[float, ...]], ...]: ...
+    def person_vectors(
+        self, model: str, model_version: str
+    ) -> tuple[tuple[str, tuple[float, ...]], ...]: ...
+    def record_embedding(self, **values: Any) -> None: ...
+    def list_people(self) -> tuple[dict[str, Any], ...]: ...
+    def list_clusters(
+        self, status: str | None, limit: int
+    ) -> tuple[dict[str, Any], ...]: ...
+    def cluster_detail(self, cluster_id: str) -> dict[str, Any]: ...
+    def create_person(
+        self, person_id: str, display_name: str, kind: str, created_at: str
+    ) -> None: ...
+    def label_cluster(
+        self, cluster_id: str, person_id: str, actor: str,
+        operation_id: str, created_at: str,
+    ) -> tuple[str | None, tuple[str, ...], tuple[str, ...]]: ...
+    def merge_clusters(
+        self, source_cluster_ids: tuple[str, ...], target_cluster_id: str,
+        actor: str, operation_id: str, created_at: str,
+    ) -> None: ...
+    def split_cluster(
+        self, cluster_id: str, speaker_track_ids: tuple[str, ...],
+        new_cluster_id: str, new_label: str, actor: str,
+        operation_id: str, created_at: str,
+    ) -> None: ...
+    def ignore_cluster(
+        self, cluster_id: str, reason: str, actor: str,
+        operation_id: str, created_at: str,
+    ) -> None: ...
+    def undo(
+        self, cluster_id: str, actor: str, undo_operation_id: str, created_at: str
+    ) -> dict[str, Any]: ...
+    def events_referencing(self, reference_id: str) -> tuple[dict[str, Any], ...]: ...
+    def events_by_ids(self, event_ids: tuple[str, ...]) -> tuple[dict[str, Any], ...]: ...
+    def cluster_evidence_ids(
+        self, cluster_id: str, session_id: str | None = None
+    ) -> tuple[str, ...]: ...
+
+
 class UnitOfWork(Protocol):
     catalog: RecordingCatalogRepository
     devices: DeviceRepository
@@ -406,6 +458,7 @@ class UnitOfWork(Protocol):
     knowledge: KnowledgeRepository
     derivations: DerivationRepository
     reminders: ReminderRepository
+    people: PeopleRepository
 
     def __enter__(self) -> Self: ...
 
@@ -437,5 +490,6 @@ __all__ = [
     "TombstoneRepository",
     "DerivationRepository",
     "ReminderRepository",
+    "PeopleRepository",
     "UnitOfWork",
 ]

@@ -229,6 +229,19 @@ class V3ContractTests(unittest.TestCase):
         }
         self.assertTrue(reminder_paths.issubset(desktop_paths))
         self.assertTrue(reminder_paths.isdisjoint(device_paths))
+        people_paths = {
+            "/api/v3/persons",
+            "/api/v3/speaker-cluster-runs",
+            "/api/v3/speaker-clusters",
+            "/api/v3/speaker-clusters/{cluster_id}",
+            "/api/v3/speaker-clusters/{cluster_id}/label",
+            "/api/v3/speaker-clusters/{cluster_id}/merge",
+            "/api/v3/speaker-clusters/{cluster_id}/split",
+            "/api/v3/speaker-clusters/{cluster_id}/ignore",
+            "/api/v3/speaker-clusters/{cluster_id}/undo",
+        }
+        self.assertTrue(people_paths.issubset(desktop_paths))
+        self.assertTrue(people_paths.isdisjoint(device_paths))
         knowledge = _read_json(
             CONTRACT_ROOT / "schemas" / "knowledge.schema.json"
         )["$defs"]
@@ -257,6 +270,12 @@ class V3ContractTests(unittest.TestCase):
                 "IGNORE",
             ],
         )
+        person = _read_json(CONTRACT_ROOT / "schemas" / "person.schema.json")
+        self.assertEqual(
+            person["$defs"]["ClusterStatus"]["enum"],
+            ["active", "merged", "split", "ignored"],
+        )
+        self.assertNotIn("vector", person["$defs"]["SpeakerPrototype"]["properties"])
 
     def test_harmony_consumer_receipt_when_checkout_is_available(self) -> None:
         configured = os.environ.get("ALLDAY_HARMONY_REPO")

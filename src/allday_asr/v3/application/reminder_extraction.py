@@ -165,8 +165,15 @@ class ReminderExtractionService:
                 due_before=None,
                 limit=100,
             )
+        speaker_references = {
+            str(value["speaker_track_id"]): value
+            for value in detail["speaker_tracks"]
+        }
         utterances = tuple(
-            _utterance(value)
+            _utterance(
+                value,
+                speaker_references.get(str(value.get("speaker_track_id"))),
+            )
             for value in detail["utterances"]
             if value.get("status") == "active" and str(value.get("text", "")).strip()
         )
@@ -267,12 +274,20 @@ def _intent(value: dict[str, Any], request: ReminderModelRequest) -> ReminderInt
     )
 
 
-def _utterance(value: dict[str, Any]) -> dict[str, Any]:
+def _utterance(
+    value: dict[str, Any], speaker_reference: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    speaker_reference = speaker_reference or {}
     return {
         "utterance_id": str(value["utterance_id"]),
         "start_at": str(value["start_at"]),
         "end_at": str(value["end_at"]),
         "speaker_label": value.get("speaker_label"),
+        "speaker_reference_id": (
+            speaker_reference.get("person_id")
+            or speaker_reference.get("speaker_cluster_id")
+            or value.get("speaker_track_id")
+        ),
         "identity": str(value.get("identity") or "unknown"),
         "text": str(value["text"]),
         "revision": int(value["revision"]),

@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AllDayRecording Desktop API",
-    "version": "3.3.0",
-    "description": "Loopback-only query, media, correction, durable-processing, three-layer knowledge, and intelligent reminder API for the independent Desktop frontend."
+    "version": "3.4.0",
+    "description": "Loopback-only query, media, correction, durable-processing, three-layer knowledge, intelligent reminder, and open-set speaker identity API for the independent Desktop frontend."
   },
   "servers": [{"url": "http://127.0.0.1:8766"}],
   "security": [{"DesktopSession": []}],
@@ -55,6 +55,34 @@
         "responses": {"200": {"description": "Canonical corrected Utterance DTO", "content": {"application/json": {"schema": {"$ref": "../schemas/utterance.schema.json"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}
       },
       "get": {"operationId": "getUtteranceCorrectionHistory", "responses": {"200": {"description": "Current utterance and immutable correction operations", "content": {"application/json": {"schema": {"type": "object"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/persons": {
+      "get": {"operationId": "listPeople", "responses": {"200": {"description": "Explicitly confirmed local people with stable prototype counts", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "../schemas/person.schema.json#/$defs/Person"}}}}}}}, "default": {"$ref": "#/components/responses/ApiError"}}},
+      "post": {"operationId": "createPerson", "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["display_name"], "properties": {"display_name": {"type": "string", "minLength": 1}, "kind": {"type": "string", "enum": ["self", "known"], "default": "known"}}}}}}, "responses": {"201": {"description": "Created local person", "content": {"application/json": {"schema": {"$ref": "../schemas/person.schema.json#/$defs/Person"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/speaker-cluster-runs": {
+      "post": {"operationId": "analyzeSpeakerClusters", "description": "Extract local speaker embeddings and conservatively match anonymous clusters. A known-person match is suggestion-only.", "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["session_id"], "properties": {"session_id": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}}}}}, "responses": {"200": {"description": "Completed local cluster run", "content": {"application/json": {"schema": {"$ref": "../schemas/person.schema.json#/$defs/ClusterRunResult"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/speaker-clusters": {
+      "get": {"operationId": "listSpeakerClusters", "parameters": [{"name": "status", "in": "query", "required": false, "schema": {"$ref": "../schemas/person.schema.json#/$defs/ClusterStatus"}}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Desktop-only anonymous and labeled cluster review list", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "../schemas/person.schema.json#/$defs/SpeakerCluster"}}}}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/speaker-clusters/{cluster_id}": {
+      "get": {"operationId": "getSpeakerCluster", "parameters": [{"$ref": "#/components/parameters/ClusterId"}], "responses": {"200": {"description": "Cluster members, representative clips, prototypes, and immutable operations", "content": {"application/json": {"schema": {"$ref": "../schemas/person.schema.json#/$defs/SpeakerCluster"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/speaker-clusters/{cluster_id}/label": {
+      "post": {"operationId": "labelSpeakerCluster", "parameters": [{"$ref": "#/components/parameters/ClusterId"}], "description": "Explicit user confirmation links a person and publishes multiple immutable stable prototypes.", "requestBody": {"required": true, "content": {"application/json": {"schema": {"oneOf": [{"type": "object", "additionalProperties": false, "required": ["person_id"], "properties": {"person_id": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}}, {"type": "object", "additionalProperties": false, "required": ["display_name"], "properties": {"display_name": {"type": "string", "minLength": 1}}}]}}}}, "responses": {"200": {"description": "Label operation and event-reference rebind receipt", "content": {"application/json": {"schema": {"type": "object"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/speaker-clusters/{cluster_id}/merge": {
+      "post": {"operationId": "mergeSpeakerClusters", "parameters": [{"$ref": "#/components/parameters/ClusterId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["source_cluster_ids"], "properties": {"source_cluster_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}}}}}}, "responses": {"200": {"description": "Reversible merge receipt", "content": {"application/json": {"schema": {"type": "object"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/speaker-clusters/{cluster_id}/split": {
+      "post": {"operationId": "splitSpeakerCluster", "parameters": [{"$ref": "#/components/parameters/ClusterId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["speaker_track_ids"], "properties": {"speaker_track_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}}}}}}, "responses": {"200": {"description": "Reversible split receipt", "content": {"application/json": {"schema": {"type": "object"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/speaker-clusters/{cluster_id}/ignore": {
+      "post": {"operationId": "ignoreSpeakerCluster", "parameters": [{"$ref": "#/components/parameters/ClusterId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["reason"], "properties": {"reason": {"type": "string", "minLength": 1}}}}}}, "responses": {"200": {"description": "Media or environment exclusion receipt", "content": {"application/json": {"schema": {"type": "object"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/speaker-clusters/{cluster_id}/undo": {
+      "post": {"operationId": "undoSpeakerClusterOperation", "parameters": [{"$ref": "#/components/parameters/ClusterId"}], "responses": {"200": {"description": "Append-only undo receipt", "content": {"application/json": {"schema": {"type": "object"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
     },
     "/api/v3/devices": {"get": {"operationId": "listDesktopDevices", "responses": {"200": {"description": "Paired and known devices", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
     "/api/v3/data-health": {"get": {"operationId": "getDataHealth", "responses": {"200": {"description": "Local storage, replica, backup, and artifact counts", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
@@ -144,11 +172,12 @@
       "RunId": {"name": "run_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
       "UtteranceId": {"name": "utterance_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
       "CandidateId": {"name": "candidate_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
+      "ClusterId": {"name": "cluster_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
       "MediaId": {"name": "media_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}}
     },
     "responses": {"ApiError": {"description": "Stable API error", "content": {"application/json": {"schema": {"$ref": "../schemas/primitives.schema.json#/$defs/ApiError"}}}}},
     "schemas": {
-      "RuntimeStatus": {"type": "object", "additionalProperties": false, "required": ["contract_version", "enabled", "state"], "properties": {"contract_version": {"const": "3.3.0"}, "enabled": {"type": "boolean"}, "state": {"enum": ["empty_ready", "ready"]}}},
+      "RuntimeStatus": {"type": "object", "additionalProperties": false, "required": ["contract_version", "enabled", "state"], "properties": {"contract_version": {"const": "3.4.0"}, "enabled": {"type": "boolean"}, "state": {"enum": ["empty_ready", "ready"]}}},
       "ObjectProjection": {"type": "object"},
       "ItemList": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"type": "object"}}}},
       "SessionDetail": {"type": "object", "additionalProperties": false, "required": ["session", "segments", "runs", "speaker_tracks", "utterances", "artifacts", "backups"], "properties": {"session": {"$ref": "../schemas/recording-session.schema.json"}, "segments": {"type": "array", "items": {"type": "object"}}, "runs": {"type": "array", "items": {"type": "object"}}, "speaker_tracks": {"type": "array", "items": {"type": "object"}}, "utterances": {"type": "array", "items": {"$ref": "../schemas/utterance.schema.json"}}, "artifacts": {"type": "array", "items": {"type": "object"}}, "backups": {"type": "array", "items": {"type": "object"}}}},

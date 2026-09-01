@@ -5,6 +5,7 @@ import DataView from './views/DataView.vue'
 import DevicesView from './views/DevicesView.vue'
 import LabView from './views/LabView.vue'
 import OverviewView from './views/OverviewView.vue'
+import PeopleView from './views/PeopleView.vue'
 import ProcessingView from './views/ProcessingView.vue'
 import RecordingsView from './views/RecordingsView.vue'
 import ReviewsView from './views/ReviewsView.vue'
@@ -20,6 +21,7 @@ import SettingsView from './views/SettingsView.vue'
     <SessionDetailView v-else-if="route.name === 'session'" :key="route.sessionId ?? ''" />
     <ReviewsView v-else-if="route.name === 'reviews'" />
     <RemindersView v-else-if="route.name === 'reminders'" />
+    <PeopleView v-else-if="route.name === 'people'" />
     <ProcessingView v-else-if="route.name === 'processing'" />
     <DevicesView v-else-if="route.name === 'devices'" />
     <DataView v-else-if="route.name === 'data'" />

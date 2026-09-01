@@ -124,6 +124,13 @@ class DesktopQueryService:
                 "codex_workspace": "isolated_empty_read_only",
                 "model_write_boundary": "structured_candidates_only",
             },
+            "speaker_identity": {
+                "open_set": True,
+                "unknown_is_legal": True,
+                "audio_processing": "local_only",
+                "stable_prototype_policy": "explicit_user_confirmation",
+                "phone_projection": False,
+            },
         }
 
     def lab(self) -> dict[str, Any]:

@@ -127,8 +127,8 @@ export const mockSessionDetail: SessionDetail = {
     completed_at: null,
   }],
   speaker_tracks: [
-    { speaker_track_id: '01K4SPEAKER000000000000001', session_id: current.session_id, label: 'SPEAKER_00', source_artifact_id: '01K4ARTIFACT00000000000001', created_at: '2026-08-31T03:02:00Z' },
-    { speaker_track_id: '01K4SPEAKER000000000000002', session_id: current.session_id, label: 'SPEAKER_01', source_artifact_id: '01K4ARTIFACT00000000000001', created_at: '2026-08-31T03:02:00Z' },
+    { speaker_track_id: '01K4SPEAKER000000000000001', session_id: current.session_id, label: 'SPEAKER_00', source_artifact_id: '01K4ARTIFACT00000000000001', created_at: '2026-08-31T03:02:00Z', speaker_cluster_id: null, person_id: null, person_name: null },
+    { speaker_track_id: '01K4SPEAKER000000000000002', session_id: current.session_id, label: 'SPEAKER_01', source_artifact_id: '01K4ARTIFACT00000000000001', created_at: '2026-08-31T03:02:00Z', speaker_cluster_id: null, person_id: null, person_name: null },
   ],
   utterances: [
     { utterance_id: '01K4UTTERANCE0000000000001', session_id: current.session_id, speaker_track_id: '01K4SPEAKER000000000000001', speaker_label: 'SPEAKER_00', original_speaker_track_id: '01K4SPEAKER000000000000001', original_speaker_label: 'SPEAKER_00', identity: 'self', original_identity: 'self', identity_evidence: { source: 'voiceprint', decision: 'self', policy_version: 'holdout-accepted-1' }, start_ms: 12_400, end_ms: 17_900, start_at: '2026-08-31T01:05:12.400Z', end_at: '2026-08-31T01:05:17.900Z', text: '今天先把这段录音的备份和处理状态核对一下。', original_text: '今天先把这段录音的备份和处理状态核对一下。', revision: 1, status: 'active', evidence: { token_ids: [1, 2, 3] } },

@@ -192,6 +192,7 @@ test('restores a nested V3 recording route and its selected tab', () => {
     tab: null,
   })
   assert.equal(matchV3Route('/reminders').name, 'reminders')
+  assert.equal(matchV3Route('/people').name, 'people')
 })
 
 test('keeps V3 independent from the legacy DOM workspace controller', () => {

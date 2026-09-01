@@ -6,7 +6,7 @@ generated decoders, but they must not redefine server enums or resource shapes.
 
 ## Versioning
 
-- Contract version: `3.3.0`
+- Contract version: `3.4.0`
 - Mobile projection version: `4`
 - JSON Schema dialect: 2020-12
 - OpenAPI version: 3.1
@@ -43,6 +43,11 @@ new API path and contract major version.
   It sends transcript text but never audio or local paths, uses an empty
   read-only working directory with approvals denied, and keeps generated
   candidates behind the Desktop review boundary by default.
+- `schemas/person.schema.json` freezes V3.4 open-set speaker clusters, explicit
+  person links, representative clips, and reversible human operations. Unknown
+  is a first-class Desktop result. Only explicit confirmation publishes stable,
+  multi-prototype voiceprints; clusters and candidate prototypes never enter the
+  Phone projection, which remains on projection `4`.
 
 The OpenAPI documents deliberately have disjoint paths and security schemes:
 Desktop endpoints live under `/api/v3`, while paired-device endpoints live under

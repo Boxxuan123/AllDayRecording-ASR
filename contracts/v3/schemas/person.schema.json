@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alldayrecording.local/contracts/v3/person.schema.json",
+  "title": "V3.4 Open-set speaker identity resources",
+  "$defs": {
+    "ClusterStatus": {
+      "type": "string",
+      "enum": ["active", "merged", "split", "ignored"]
+    },
+    "Person": {
+      "type": "object",
+      "required": ["person_id", "display_name", "kind"],
+      "properties": {
+        "person_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "display_name": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "enum": ["self", "known"]},
+        "user_confirmed": {"oneOf": [{"type": "boolean"}, {"type": "integer", "enum": [0, 1]}]},
+        "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+        "cluster_count": {"type": "integer", "minimum": 0},
+        "prototype_count": {"type": "integer", "minimum": 0},
+        "created_at": {"type": "string"},
+        "updated_at": {"type": "string"}
+      }
+    },
+    "RepresentativeClip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["media_id", "start_ms", "end_ms", "utterance_id"],
+      "properties": {
+        "media_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "start_ms": {"type": "integer", "minimum": 0},
+        "end_ms": {"type": "integer", "minimum": 1},
+        "utterance_id": {"oneOf": [{"$ref": "primitives.schema.json#/$defs/StableId"}, {"type": "null"}]}
+      }
+    },
+    "SpeakerPrototype": {
+      "type": "object",
+      "required": ["prototype_id", "speaker_track_id", "status", "quality_score", "representative_clips"],
+      "properties": {
+        "prototype_id": {"type": "string", "minLength": 1},
+        "speaker_track_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "status": {"type": "string", "enum": ["candidate", "accepted"]},
+        "quality_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "representative_clips": {"type": "array", "items": {"$ref": "#/$defs/RepresentativeClip"}},
+        "created_at": {"type": "string"}
+      }
+    },
+    "SpeakerCluster": {
+      "type": "object",
+      "required": ["cluster_id", "display_label", "status", "revision", "track_count", "session_count"],
+      "properties": {
+        "cluster_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "display_label": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/ClusterStatus"},
+        "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
+        "person_id": {"oneOf": [{"$ref": "primitives.schema.json#/$defs/StableId"}, {"type": "null"}]},
+        "person_name": {"type": ["string", "null"]},
+        "suggested_person_id": {"oneOf": [{"$ref": "primitives.schema.json#/$defs/StableId"}, {"type": "null"}]},
+        "suggestion_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "track_count": {"type": "integer", "minimum": 0},
+        "session_count": {"type": "integer", "minimum": 0},
+        "members": {"type": "array", "items": {"type": "object"}},
+        "prototypes": {"type": "array", "items": {"$ref": "#/$defs/SpeakerPrototype"}},
+        "operations": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "ClusterRunResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cluster_run_id", "session_id", "status", "track_count", "embedded_track_count", "new_cluster_count", "matched_track_count", "person_suggestion_count", "unusable_track_ids"],
+      "properties": {
+        "cluster_run_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "status": {"const": "succeeded"},
+        "track_count": {"type": "integer", "minimum": 0},
+        "embedded_track_count": {"type": "integer", "minimum": 0},
+        "new_cluster_count": {"type": "integer", "minimum": 0},
+        "matched_track_count": {"type": "integer", "minimum": 0},
+        "person_suggestion_count": {"type": "integer", "minimum": 0},
+        "unusable_track_ids": {"type": "array", "items": {"$ref": "primitives.schema.json#/$defs/StableId"}}
+      }
+    }
+  }
+}

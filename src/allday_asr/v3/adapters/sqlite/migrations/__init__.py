@@ -14,6 +14,9 @@ from allday_asr.v3.adapters.sqlite.migrations.v006_three_layer_knowledge import 
 from allday_asr.v3.adapters.sqlite.migrations.v007_intelligent_reminders import (
     SQL as V007_SQL,
 )
+from allday_asr.v3.adapters.sqlite.migrations.v008_open_speaker_identity import (
+    SQL as V008_SQL,
+)
 
 
 MIGRATIONS = (
@@ -24,6 +27,7 @@ MIGRATIONS = (
     V3Migration(version=5, name="v31_self_identity", sql=V005_SQL),
     V3Migration(version=6, name="v32_three_layer_knowledge", sql=V006_SQL),
     V3Migration(version=7, name="v33_intelligent_reminders", sql=V007_SQL),
+    V3Migration(version=8, name="v34_open_speaker_identity", sql=V008_SQL),
 )
 
 __all__ = ["MIGRATIONS"]

@@ -46,6 +46,7 @@ from allday_asr.v3.application.identity_calibration import (
     IdentityCalibrationSummary,
     run_identity_calibration,
 )
+from allday_asr.v3.application.people import SpeakerIdentityService
 
 __all__ = [
     "ClientOperationHandler",
@@ -61,6 +62,7 @@ __all__ = [
     "ReminderGenerationFailed",
     "ReminderGenerationUnavailable",
     "IdentityCalibrationSummary",
+    "SpeakerIdentityService",
     "LegacyImportCommand",
     "LegacyImportResult",
     "KnowledgeArchitectureService",

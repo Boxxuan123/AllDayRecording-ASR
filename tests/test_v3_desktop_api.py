@@ -161,6 +161,35 @@ class V3DesktopApiTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(payload["code"], "cross_origin_denied")
 
+    def test_v34_people_routes_keep_unknown_legal_and_audio_local(self) -> None:
+        status, people, _ = self._request("/api/v3/persons")
+        self.assertEqual(status, 200)
+        self.assertEqual(people["items"], [])
+        status, person, _ = self._request(
+            "/api/v3/persons",
+            method="POST",
+            body={"display_name": "张老师"},
+            headers={"Origin": self.server.application.base_url},
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(person["display_name"], "张老师")
+        _, clusters, _ = self._request("/api/v3/speaker-clusters")
+        self.assertEqual(clusters["items"], [])
+        status, run, _ = self._request(
+            "/api/v3/speaker-cluster-runs",
+            method="POST",
+            body={"session_id": "session-1"},
+            headers={"Origin": self.server.application.base_url},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(run["embedded_track_count"], 0)
+        _, settings, _ = self._request("/api/v3/settings")
+        self.assertTrue(settings["speaker_identity"]["unknown_is_legal"])
+        self.assertEqual(settings["speaker_identity"]["audio_processing"], "local_only")
+        status, html, _ = self._request("/people")
+        self.assertEqual(status, 200)
+        self.assertIn("AllDay Recording V3", html)
+
     def test_v32_three_layer_routes_start_empty_and_reject_unproven_events(
         self,
     ) -> None:

@@ -22,6 +22,7 @@ from allday_asr.v3.application import (
     processing_snapshot_dict,
 )
 from allday_asr.v3.domain.identity import SelfIdentity
+from allday_asr.v3.domain.people import PersonKind
 from allday_asr.v3.domain.knowledge import (
     GenerationSubmission,
     KnowledgeLayer,
@@ -66,11 +67,18 @@ _REMINDER_IGNORE_ROUTE = re.compile(
     r"^/api/v3/reminder-candidates/([^/]+)/ignore$"
 )
 _REMINDER_DELIVER_ROUTE = re.compile(r"^/api/v3/reminders/([^/]+)/deliver$")
+_SPEAKER_CLUSTER_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)$")
+_SPEAKER_LABEL_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/label$")
+_SPEAKER_MERGE_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/merge$")
+_SPEAKER_SPLIT_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/split$")
+_SPEAKER_IGNORE_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/ignore$")
+_SPEAKER_UNDO_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/undo$")
 _FRONTEND_ROUTES = {
     "/",
     "/recordings",
     "/reviews",
     "/reminders",
+    "/people",
     "/processing",
     "/devices",
     "/data",
@@ -363,6 +371,26 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if path == "/api/v3/persons":
+            self._send_json(
+                HTTPStatus.OK,
+                {"items": self.application.core.people.list_people()},
+            )
+            return
+        if path == "/api/v3/speaker-clusters":
+            status = query.get("status", [None])[0]
+            limit = _integer(query.get("limit", ["100"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                {"items": self.application.core.people.list_clusters(status, limit)},
+            )
+            return
+        if match := _SPEAKER_CLUSTER_ROUTE.fullmatch(path):
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.people.cluster(unquote(match.group(1))),
+            )
+            return
         if path == "/api/v3/devices":
             self._send_json(
                 HTTPStatus.OK,
@@ -448,6 +476,89 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                 self.application.core.knowledge.submit_generation(
                     _generation_submission(body)
                 ),
+            )
+            return
+        if path == "/api/v3/speaker-cluster-runs":
+            if set(body) != {"session_id"} or not isinstance(body["session_id"], str):
+                raise ValueError("speaker analysis requires session_id")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.people.analyze(body["session_id"]),
+            )
+            return
+        if path == "/api/v3/persons":
+            if set(body) not in ({"display_name"}, {"display_name", "kind"}):
+                raise ValueError("person fields are invalid")
+            if not isinstance(body["display_name"], str) or not isinstance(
+                body.get("kind", "known"), str
+            ):
+                raise ValueError("person values are invalid")
+            self._send_json(
+                HTTPStatus.CREATED,
+                self.application.core.people.create_person(
+                    body["display_name"], PersonKind(body.get("kind", "known"))
+                ),
+            )
+            return
+        if match := _SPEAKER_LABEL_ROUTE.fullmatch(path):
+            cluster_id = unquote(match.group(1))
+            if set(body) == {"person_id"} and isinstance(body["person_id"], str):
+                result = self.application.core.people.label_cluster(
+                    cluster_id, body["person_id"]
+                )
+            elif set(body) == {"display_name"} and isinstance(
+                body["display_name"], str
+            ):
+                result = self.application.core.people.create_and_label(
+                    cluster_id, body["display_name"]
+                )
+            else:
+                raise ValueError("speaker label requires person_id or display_name")
+            self._send_json(HTTPStatus.OK, result)
+            return
+        if match := _SPEAKER_MERGE_ROUTE.fullmatch(path):
+            sources = body.get("source_cluster_ids")
+            if set(body) != {"source_cluster_ids"} or not isinstance(sources, list) or not all(
+                isinstance(value, str) for value in sources
+            ):
+                raise ValueError("speaker merge requires source_cluster_ids")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.people.merge(
+                    tuple(sources), unquote(match.group(1))
+                ),
+            )
+            return
+        if match := _SPEAKER_SPLIT_ROUTE.fullmatch(path):
+            track_ids = body.get("speaker_track_ids")
+            if set(body) != {"speaker_track_ids"} or not isinstance(track_ids, list) or not all(
+                isinstance(value, str) for value in track_ids
+            ):
+                raise ValueError("speaker split requires speaker_track_ids")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.people.split(
+                    unquote(match.group(1)), tuple(track_ids)
+                ),
+            )
+            return
+        if match := _SPEAKER_IGNORE_ROUTE.fullmatch(path):
+            reason = body.get("reason")
+            if set(body) != {"reason"} or not isinstance(reason, str):
+                raise ValueError("speaker ignore requires a reason")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.people.ignore(
+                    unquote(match.group(1)), reason
+                ),
+            )
+            return
+        if match := _SPEAKER_UNDO_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("speaker undo request body must be empty")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.people.undo(unquote(match.group(1))),
             )
             return
         if path == "/api/v3/reminder-generations":

@@ -8,6 +8,7 @@ export type RouteName =
   | 'session'
   | 'reviews'
   | 'reminders'
+  | 'people'
   | 'processing'
   | 'devices'
   | 'data'

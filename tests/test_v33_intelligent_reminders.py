@@ -121,6 +121,7 @@ class V33IntelligentReminderTests(unittest.TestCase):
                 "start_at",
                 "end_at",
                 "speaker_label",
+                "speaker_reference_id",
                 "identity",
                 "text",
                 "revision",

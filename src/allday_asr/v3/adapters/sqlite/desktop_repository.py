@@ -153,9 +153,18 @@ class SqliteDesktopReadRepository:
         ).fetchall()
         speaker_tracks = self.connection.execute(
             """
-            SELECT speaker_track_id, session_id, label, source_artifact_id, created_at
-            FROM speaker_tracks WHERE session_id = ?
-            ORDER BY label, speaker_track_id
+            SELECT t.speaker_track_id, t.session_id, t.label,
+              t.source_artifact_id, t.created_at,
+              m.cluster_id AS speaker_cluster_id,
+              l.person_id, p.display_name AS person_name
+            FROM speaker_tracks t
+            LEFT JOIN speaker_cluster_memberships m
+              ON m.speaker_track_id = t.speaker_track_id AND m.state = 'active'
+            LEFT JOIN person_cluster_links l
+              ON l.cluster_id = m.cluster_id AND l.status = 'active'
+            LEFT JOIN persons p ON p.person_id = l.person_id
+            WHERE t.session_id = ?
+            ORDER BY t.label, t.speaker_track_id
             """,
             (session_id,),
         ).fetchall()

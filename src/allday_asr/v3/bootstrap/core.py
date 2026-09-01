@@ -9,6 +9,7 @@ from allday_asr.paths import PROJECT_ROOT
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.codex import CodexReminderGenerator
 from allday_asr.v3.adapters.legacy_v2 import LegacyV2Importer
+from allday_asr.v3.adapters.speaker_embeddings import FunASRSpeakerEmbeddingProvider
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.application import (
     AdmissionService,
@@ -20,10 +21,12 @@ from allday_asr.v3.application import (
     KnowledgeArchitectureService,
     MobileSyncService,
     ReminderExtractionService,
+    SpeakerIdentityService,
     UtteranceCorrectionOperationHandler,
 )
 from allday_asr.v3.config import CodexReminderSettings
 from allday_asr.v3.ports.reminder_generation import ReminderModelGenerator
+from allday_asr.v3.ports.speaker_embeddings import SpeakerEmbeddingProvider
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,7 @@ class V3Core:
     knowledge: KnowledgeArchitectureService
     reminders: IntelligentReminderService
     reminder_extraction: ReminderExtractionService
+    people: SpeakerIdentityService
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -89,6 +93,7 @@ def compose_v3_core(
     *,
     codex_settings: CodexReminderSettings | None = None,
     reminder_generator: ReminderModelGenerator | None = None,
+    speaker_embedding_provider: SpeakerEmbeddingProvider | None = None,
 ) -> V3Core:
     """Wire the V3 Core without opening databases or creating directories."""
     selected = paths or V3CorePaths.from_environment()
@@ -113,6 +118,13 @@ def compose_v3_core(
         lambda: SqliteUnitOfWork(database)
     )
     knowledge = KnowledgeArchitectureService(lambda: SqliteUnitOfWork(database))
+    speaker_provider = speaker_embedding_provider or FunASRSpeakerEmbeddingProvider(
+        audio_store,
+        device=os.environ.get("ALLDAY_V3_SPEAKER_DEVICE", "auto"),
+    )
+    people = SpeakerIdentityService(
+        lambda: SqliteUnitOfWork(database), speaker_provider, knowledge
+    )
     reminders = IntelligentReminderService(
         lambda: SqliteUnitOfWork(database), knowledge
     )
@@ -147,6 +159,7 @@ def compose_v3_core(
         knowledge=knowledge,
         reminders=reminders,
         reminder_extraction=reminder_extraction,
+        people=people,
     )
 
 
