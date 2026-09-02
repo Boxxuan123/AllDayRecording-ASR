@@ -11,6 +11,7 @@ import urllib.request
 from contextlib import contextmanager
 from http import HTTPStatus
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -31,6 +32,7 @@ from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.adapters.transfer import (
     TransferDeviceTrustAdapter,
+    V3AutomaticWorkflowRunner,
     V3UploadIngestAdapter,
 )
 from allday_asr.v3.application import MobileSyncService
@@ -136,6 +138,58 @@ class _ReceiptMatrixOperationHandler:
 
 
 class V3DeviceSyncTests(unittest.TestCase):
+    def test_automation_retry_preserves_completed_processing_job(self) -> None:
+        session_id = "session-existing"
+        written: dict[str, object] = {}
+        runner = object.__new__(V3AutomaticWorkflowRunner)
+        runner._lock = threading.RLock()
+        runner._closed = False
+        runner._active = set()
+        runner._queue = SimpleNamespace(put=lambda selected: None)
+        runner.status = lambda selected: {
+            "session_id": selected,
+            "status": "failed",
+            "stage": "speaker_identity",
+            "job_id": "job-existing",
+        }
+        runner._write = lambda selected, value: written.update(value)
+
+        runner.submit(
+            SimpleNamespace(upload_id="upload-retry"),
+            {"session_id": session_id},
+        )
+
+        self.assertEqual(written["status"], "queued")
+        self.assertEqual(written["job_id"], "job-existing")
+
+    def test_automation_reuses_completed_processing_when_postprocessing_retries(
+        self,
+    ) -> None:
+        session_id = "session-existing"
+        snapshot = SimpleNamespace(
+            job=SimpleNamespace(job_id="job-existing", status="succeeded"),
+            run=SimpleNamespace(
+                session_id=session_id,
+                pipeline_version="v3-native.1",
+            ),
+        )
+        runner = object.__new__(V3AutomaticWorkflowRunner)
+        runner.core = SimpleNamespace(
+            processing=SimpleNamespace(get=lambda job_id: snapshot)
+        )
+        runner.pipeline_version = "v3-native.1"
+        runner.status = lambda selected: {
+            "session_id": selected,
+            "status": "failed",
+            "stage": "speaker_identity",
+            "job_id": "job-existing",
+        }
+
+        reused = runner._completed_processing_snapshot(session_id)
+
+        self.assertIs(reused, snapshot)
+        self.assertIsNone(runner._completed_processing_snapshot("other-session"))
+
     def _environment(self, root: Path):
         database = V3Database.open(root / "core.sqlite3")
         private_key = ec.generate_private_key(ec.SECP256R1())
@@ -335,6 +389,7 @@ class V3DeviceSyncTests(unittest.TestCase):
             artifact_store = ContentAddressedStore(root / "artifacts")
             directory = "pcm_session_1767225600000"
             chunks = []
+            completed_recordings = []
             for index in range(2):
                 name = f"segment_{index}_first_{index * 100}.wav"
                 content = bytes([index + 1]) * 244
@@ -346,6 +401,7 @@ class V3DeviceSyncTests(unittest.TestCase):
                 )
                 completed = store.append_chunk(upload.upload_id, offset=0, data=content)
                 self.assertEqual(completed.status, "completed")
+                completed_recordings.append(completed)
                 chunks.append(
                     {
                         "index": index,
@@ -380,6 +436,29 @@ class V3DeviceSyncTests(unittest.TestCase):
             manifest_record = store.append_chunk(
                 upload.upload_id, offset=0, data=manifest_bytes
             )
+            existing_asset_id = stable_ulid("historical-import-asset", "first")
+            existing_media = audio_store.put_file(
+                store.completed_path(completed_recordings[0]),
+                expected_sha256=completed_recordings[0].sha256,
+            )
+            with database.transaction() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO audio_assets (
+                        asset_id, sha256, size_bytes, duration_ms, format,
+                        media_id, legacy_ref, created_at
+                    ) VALUES (?, ?, ?, ?, 'wav', ?, ?, ?)
+                    """,
+                    (
+                        existing_asset_id,
+                        completed_recordings[0].sha256,
+                        completed_recordings[0].size,
+                        6,
+                        existing_media.media_id,
+                        "historical-import:first",
+                        "2026-01-01T00:00:00Z",
+                    ),
+                )
             ingest = V3UploadIngestAdapter(
                 trust,
                 lambda: SqliteUnitOfWork(database),
@@ -389,9 +468,48 @@ class V3DeviceSyncTests(unittest.TestCase):
 
             first = ingest.ingest_completed(record.device_id, manifest_record, store)
             replay = ingest.ingest_completed(record.device_id, manifest_record, store)
+            alternate_trust = TransferDeviceTrustAdapter(
+                trust.legacy,
+                lambda: SqliteUnitOfWork(database),
+                "b" * 64,
+            )
+            alternate_ref = (
+                f"phone-upload:{'b' * 64}:{record.device_id}:"
+                f"{manifest['sessionKey']}"
+            )
+            orphan_session_id = stable_ulid(alternate_ref)
+            with database.transaction() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO recording_sessions (
+                        session_id, captured_start, captured_end, timezone,
+                        state, revision, status_code, current_stage, progress,
+                        blocking_reason, legacy_ref, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 'admission_pending', 1,
+                        'backup_required', 'backup_admission', 0.0,
+                        'backup_restore_evidence_required', ?, ?, ?)
+                    """,
+                    (
+                        orphan_session_id,
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T00:00:01Z",
+                        "Asia/Singapore",
+                        alternate_ref,
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T00:00:00Z",
+                    ),
+                )
+            canonical_replay = V3UploadIngestAdapter(
+                alternate_trust,
+                lambda: SqliteUnitOfWork(database),
+                audio_store,
+                artifact_store,
+            ).ingest_completed(record.device_id, manifest_record, store)
 
             self.assertEqual(first, replay)
             self.assertEqual(first["status"], "ingested")
+            self.assertEqual(canonical_replay["status"], "already_ingested")
+            self.assertEqual(canonical_replay["session_id"], first["session_id"])
             with database.read() as connection:
                 counts = {
                     table: connection.execute(
@@ -409,16 +527,48 @@ class V3DeviceSyncTests(unittest.TestCase):
                     "SELECT resource_type, payload_json "
                     "FROM change_events ORDER BY sequence"
                 ).fetchall()
-            self.assertEqual(counts["recording_sessions"], 1)
+                reused_asset_id = connection.execute(
+                    "SELECT asset_id FROM audio_replicas "
+                    "WHERE legacy_ref LIKE ?",
+                    ("%:chunk:0",),
+                ).fetchone()[0]
+                segment_bounds = connection.execute(
+                    "SELECT session_start_ms, session_end_ms "
+                    "FROM capture_segments ORDER BY sequence"
+                ).fetchall()
+                orphan = connection.execute(
+                    "SELECT state, status_code, tombstoned_at "
+                    "FROM recording_sessions WHERE session_id = ?",
+                    (orphan_session_id,),
+                ).fetchone()
+                active_sessions = connection.execute(
+                    "SELECT COUNT(*) FROM recording_sessions "
+                    "WHERE tombstoned_at IS NULL"
+                ).fetchone()[0]
+            self.assertEqual(counts["recording_sessions"], 2)
+            self.assertEqual(active_sessions, 1)
             self.assertEqual(counts["audio_assets"], 2)
             self.assertEqual(counts["audio_replicas"], 2)
             self.assertEqual(counts["capture_segments"], 2)
             self.assertEqual(counts["session_manifests"], 1)
+            self.assertEqual(reused_asset_id, existing_asset_id)
+            self.assertEqual(
+                [tuple(row) for row in segment_bounds],
+                [(0, 6), (6, 12)],
+            )
+            self.assertEqual(orphan["state"], "quarantined")
+            self.assertEqual(orphan["status_code"], "stale")
+            self.assertIsNotNone(orphan["tombstoned_at"])
             self.assertEqual(
                 [row["resource_type"] for row in changes],
-                ["audio_asset", "audio_asset", "recording_session"],
+                [
+                    "audio_asset",
+                    "audio_asset",
+                    "recording_session",
+                    "recording_session",
+                ],
             )
-            session_projection = json.loads(changes[-1]["payload_json"])
+            session_projection = json.loads(changes[-2]["payload_json"])
             self.assertEqual(
                 session_projection["session_key"],
                 manifest["sessionKey"],

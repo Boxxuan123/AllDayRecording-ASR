@@ -30,10 +30,12 @@ class DesktopQueryService:
         *,
         codex_reminders_enabled: bool = False,
         codex_insights_enabled: bool = False,
+        codex_semantic_events_enabled: bool = False,
     ) -> None:
         self._uow_factory = uow_factory
         self._codex_reminders_enabled = codex_reminders_enabled
         self._codex_insights_enabled = codex_insights_enabled
+        self._codex_semantic_events_enabled = codex_semantic_events_enabled
 
     def status(self) -> dict[str, Any]:
         return {
@@ -115,6 +117,7 @@ class DesktopQueryService:
                 "audio_cloud_upload": False,
                 "transcript_cloud_processing": (
                     self._codex_reminders_enabled or self._codex_insights_enabled
+                    or self._codex_semantic_events_enabled
                 ),
             },
             "knowledge": {
@@ -122,6 +125,8 @@ class DesktopQueryService:
                 "model_write_boundary": "structured_proposals_only",
                 "recursive_invalidation": True,
                 "recompute_queue": True,
+                "codex_event_generation_enabled": self._codex_semantic_events_enabled,
+                "event_auto_accept_policy": "record_only_high_confidence",
             },
             "reminders": {
                 "codex_enabled": self._codex_reminders_enabled,

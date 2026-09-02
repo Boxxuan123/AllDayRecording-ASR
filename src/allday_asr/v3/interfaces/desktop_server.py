@@ -12,7 +12,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 from allday_asr.v3.application import (
     CorrectUtteranceCommand,
@@ -78,8 +78,14 @@ _SPEAKER_MERGE_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/merge$")
 _SPEAKER_SPLIT_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/split$")
 _SPEAKER_IGNORE_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/ignore$")
 _SPEAKER_UNDO_ROUTE = re.compile(r"^/api/v3/speaker-clusters/([^/]+)/undo$")
+_VOICE_PROTOTYPE_REVIEW_ROUTE = re.compile(
+    r"^/api/v3/voice-prototypes/([^/]+)/reviews$"
+)
 _PERSON_ROUTE = re.compile(r"^/api/v3/persons/([^/]+)$")
 _PERSON_PROFILE_ROUTE = re.compile(r"^/api/v3/persons/([^/]+)/profile$")
+_PERSON_IDENTITY_POLICY_ROUTE = re.compile(
+    r"^/api/v3/persons/([^/]+)/identity-policy$"
+)
 _PERSON_MEMORY_REFRESH_ROUTE = re.compile(
     r"^/api/v3/persons/([^/]+)/memories/refresh$"
 )
@@ -122,6 +128,7 @@ _FRONTEND_ROUTES = {
     "/settings",
     "/lab",
 }
+_SESSION_RECOVERY_ROUTE = "/api/v3/desktop-session"
 
 
 class V3DesktopApplication:
@@ -158,6 +165,14 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
     def _handle(self, callback) -> None:
         request_id = new_ulid()
         try:
+            if not self._trusted_host():
+                self._send_error(
+                    HTTPStatus.MISDIRECTED_REQUEST,
+                    "invalid_desktop_host",
+                    "V3 工作台只接受本机地址。",
+                    request_id=request_id,
+                )
+                return
             callback()
         except KeyError as exc:
             self._send_error(
@@ -219,14 +234,17 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if self._consume_token(parsed):
             return
+        path = parsed.path.rstrip("/") or "/"
         if not self._authenticated():
+            if self._recoverable_navigation(path):
+                self._establish_session(_location_without_token(parsed))
+                return
             self._send_error(
                 HTTPStatus.FORBIDDEN,
                 "desktop_session_required",
-                "请从启动命令提供的安全链接打开 V3 工作台。",
+                "请打开本机 V3 工作台短地址；浏览器会自动恢复会话。",
             )
             return
-        path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
         if path == "/api/v3/status":
             self._send_json(HTTPStatus.OK, self.application.core.desktop.status())
@@ -428,6 +446,20 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                 {"items": self.application.core.people.list_people()},
             )
             return
+        if path == "/api/v3/voice-prototype-candidates":
+            person_id = query.get("person_id", [None])[0]
+            raw_status = query.get("status", ["pending"])[0]
+            status = None if raw_status == "all" else raw_status
+            limit = _integer(query.get("limit", ["100"])[0], "limit")
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "items": self.application.core.people.list_review_candidates(
+                        person_id, status, limit
+                    )
+                },
+            )
+            return
         if path == "/api/v3/daily-summaries":
             limit = _integer(query.get("limit", ["31"])[0], "limit")
             self._send_json(
@@ -509,9 +541,24 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
         self._send_frontend(path)
 
     def _dispatch_post(self) -> None:
+        path = urlparse(self.path).path.rstrip("/")
+        if path == _SESSION_RECOVERY_ROUTE:
+            if not self._recoverable_fetch():
+                self._send_error(
+                    HTTPStatus.FORBIDDEN,
+                    "desktop_session_recovery_denied",
+                    "只允许 V3 工作台本身恢复本机会话。",
+                )
+                return
+            self._send_bytes(
+                HTTPStatus.NO_CONTENT,
+                b"",
+                "application/json; charset=utf-8",
+                headers={"Set-Cookie": self._session_cookie()},
+            )
+            return
         if not self._authorized_mutation():
             return
-        path = urlparse(self.path).path.rstrip("/")
         body = self._read_json()
         if match := _RETRY_ROUTE.fullmatch(path):
             if body:
@@ -578,6 +625,17 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 HTTPStatus.OK,
                 self.application.core.people.analyze(body["session_id"]),
+            )
+            return
+        if path == "/api/v3/speaker-clusters/rematch":
+            if set(body) not in (set(), {"session_id"}):
+                raise ValueError("speaker rematch fields are invalid")
+            session_id = body.get("session_id")
+            if session_id is not None and not isinstance(session_id, str):
+                raise ValueError("speaker rematch session_id is invalid")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.people.rematch_existing(session_id),
             )
             return
         if path == "/api/v3/persons":
@@ -808,6 +866,37 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                 self.application.core.people.undo(unquote(match.group(1))),
             )
             return
+        if match := _VOICE_PROTOTYPE_REVIEW_ROUTE.fullmatch(path):
+            allowed = {"person_id", "decision", "note"}
+            if (
+                set(body) - allowed
+                or not {"person_id", "decision"}.issubset(body)
+                or not isinstance(body.get("person_id"), str)
+                or not isinstance(body.get("decision"), str)
+                or not isinstance(body.get("note", ""), str)
+            ):
+                raise ValueError("voice prototype review fields are invalid")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.people.review_prototype(
+                    unquote(match.group(1)),
+                    body["person_id"],
+                    body["decision"],
+                    note=body.get("note", ""),
+                ),
+            )
+            return
+        if match := _PERSON_IDENTITY_POLICY_ROUTE.fullmatch(path):
+            enabled = body.get("auto_match_enabled")
+            if set(body) != {"auto_match_enabled"} or not isinstance(enabled, bool):
+                raise ValueError("person identity policy fields are invalid")
+            self._send_json(
+                HTTPStatus.OK,
+                self.application.core.people.update_identity_policy(
+                    unquote(match.group(1)), auto_match_enabled=enabled
+                ),
+            )
+            return
         if path == "/api/v3/reminder-generations":
             self._send_json(
                 HTTPStatus.ACCEPTED,
@@ -898,16 +987,49 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.FORBIDDEN, "invalid_desktop_link", "安全链接已失效。"
             )
             return True
+        self._establish_session(_location_without_token(parsed))
+        return True
+
+    def _establish_session(self, location: str) -> None:
         self.send_response(HTTPStatus.SEE_OTHER)
-        self.send_header("Location", parsed.path or "/")
-        self.send_header(
-            "Set-Cookie",
-            f"{self.session_cookie_name}={self.application.token}; "
-            "Path=/; HttpOnly; SameSite=Strict",
-        )
+        self.send_header("Location", location)
+        self.send_header("Set-Cookie", self._session_cookie())
         self._security_headers()
         self.end_headers()
-        return True
+
+    def _session_cookie(self) -> str:
+        return (
+            f"{self.session_cookie_name}={self.application.token}; "
+            "Path=/; HttpOnly; SameSite=Strict"
+        )
+
+    def _recoverable_navigation(self, path: str) -> bool:
+        if not _is_frontend_path(path):
+            return False
+        return (
+            self.headers.get("Sec-Fetch-Mode") == "navigate"
+            and self.headers.get("Sec-Fetch-Dest") == "document"
+            and self.headers.get("Sec-Fetch-Site") in {"none", "same-origin"}
+        )
+
+    def _recoverable_fetch(self) -> bool:
+        origin = self.headers.get("Origin")
+        return (
+            self.headers.get("X-AllDay-Desktop-Recovery") == "1"
+            and self.headers.get("Sec-Fetch-Site") in {None, "same-origin"}
+            and origin
+            in {
+                self.application.base_url,
+                f"http://localhost:{self.application.port}",
+            }
+        )
+
+    def _trusted_host(self) -> bool:
+        authority = self.headers.get("Host", "").lower()
+        return authority in {
+            f"127.0.0.1:{self.application.port}",
+            f"localhost:{self.application.port}",
+        }
 
     def _authenticated(self) -> bool:
         header = self.headers.get("X-AllDay-Desktop-Session")
@@ -957,7 +1079,7 @@ class V3DesktopRequestHandler(BaseHTTPRequestHandler):
         return value
 
     def _send_frontend(self, path: str) -> None:
-        if path in _FRONTEND_ROUTES or path.startswith("/recordings/"):
+        if _is_frontend_path(path):
             self._send_asset("index.html", "text/html; charset=utf-8")
             return
         if path.startswith("/assets/") or path in {"/favicon.svg", "/icons.svg"}:
@@ -1118,8 +1240,9 @@ def serve_v3_desktop(
     open_browser: bool = True,
 ) -> None:
     server = create_v3_desktop_server(paths=paths, host=host, port=port)
-    url = f"{server.application.base_url}/?token={server.application.token}"
+    url = f"{server.application.base_url}/"
     print(f"AllDayRecording V3 工作台：{url}")
+    print("这个短地址可直接重新打开或刷新；浏览器会自动恢复本机会话。")
     print("仅监听本机；按 Ctrl+C 停止。")
     if open_browser:
         webbrowser.open(url)
@@ -1137,6 +1260,17 @@ def _integer(value: str, label: str) -> int:
     except ValueError as exc:
         raise ValueError(f"{label} must be an integer") from exc
     return parsed
+
+
+def _is_frontend_path(path: str) -> bool:
+    return path in _FRONTEND_ROUTES or path.startswith("/recordings/")
+
+
+def _location_without_token(parsed) -> str:
+    query = urlencode(
+        [(key, value) for key, value in parse_qsl(parsed.query) if key != "token"]
+    )
+    return f"{parsed.path or '/'}{'?' + query if query else ''}"
 
 
 def _required_query(query: dict[str, list[str]], name: str) -> str:

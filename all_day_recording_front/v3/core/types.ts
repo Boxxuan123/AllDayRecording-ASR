@@ -192,14 +192,24 @@ export interface ProcessingSnapshot {
   attempts: AttemptSummary[]
 }
 
+export type ReviewKind = 'processing_gate' | 'reminder' | 'person_memory' | 'voice_identity'
+export type ReviewPriority = 'high' | 'normal'
+
 export interface ReviewItem {
-  run_id: string
-  session_id: string
-  stage_run_id: string
-  stage: string
-  status: string
-  error: string | null
+  review_id: string
+  kind: ReviewKind
+  priority: ReviewPriority
+  source_id: string
+  source_revision: number | null
+  session_id: string | null
+  person_id: string | null
+  title: string
+  summary: string
+  reason: string
+  evidence_count: number
+  created_at: string
   updated_at: string
+  context: Record<string, string | number | boolean | null | undefined>
 }
 
 export interface DeviceSummary {
@@ -223,6 +233,33 @@ export interface DataHealth {
   artifacts: number
   artifact_bytes: number
   stale_artifacts: number
+}
+
+export interface DesktopSettings {
+  contract_version: string
+  deployment: string
+  processing: {
+    durable_jobs: boolean
+    backup_admission_required: boolean
+    automatic_source_deletion: boolean
+  }
+  privacy: {
+    network_boundary: string
+    audio_cloud_upload: boolean
+    transcript_cloud_processing: boolean
+  }
+  reminders: {
+    codex_enabled: boolean
+    codex_workspace: string
+    model_write_boundary: string
+  }
+  insights: {
+    codex_enabled: boolean
+    codex_workspace: string
+    source_layer: string
+    relationship_windows_days: number[]
+    versioned_corrections: boolean
+  }
 }
 
 export interface ReminderEvidenceSpan {
@@ -310,6 +347,25 @@ export interface PersonSummary {
   memory_count: number
   interaction_count: number
   last_interaction_at: string | null
+  enrollment_reference_count: number
+  auto_identity_enabled: boolean
+  identity_policy_version: string | null
+  voice_policy_revision: number | null
+  voice_maturity_status: 'seed' | 'learning' | 'calibrated' | 'suspended' | null
+  known_auto_match_enabled: boolean
+  suggest_threshold: number | null
+  auto_accept_threshold: number | null
+  minimum_margin: number | null
+  minimum_quality: number | null
+  voice_calibration: {
+    positive_count?: number
+    positive_session_count?: number
+    negative_count?: number
+    positive_recall?: number
+    false_accept_rate?: number
+  }
+  rejected_prototype_count: number
+  pending_voice_review_count: number
 }
 
 export type PersonMemoryKind = 'stable_fact' | 'preference' | 'short_term_state' | 'plan' | 'commitment' | 'model_observation'
@@ -324,8 +380,19 @@ export interface PersonMemoryEvidence {
   end_at: string | null
   start_ms: number | null
   end_ms: number | null
+  session_start_ms: number | null
+  session_end_ms: number | null
+  evidence_span_id: string | null
+  asset_id: string | null
   text: string | null
   media_id: string | null
+}
+
+export interface PersonMemoryActions {
+  can_revise: boolean
+  can_expire: boolean
+  can_retract: boolean
+  can_undo: boolean
 }
 
 export interface PersonMemory {
@@ -345,6 +412,7 @@ export interface PersonMemory {
   reminder_event_id: string | null
   reminder: ReminderSchedule | null
   evidence: PersonMemoryEvidence[]
+  available_actions: PersonMemoryActions
 }
 
 export interface PersonInteraction {
@@ -395,6 +463,36 @@ export interface SpeakerPrototype {
   quality_score: number
   representative_clips: RepresentativeClip[]
   created_at: string
+  decision_tier: SpeakerMatchTier | null
+  candidate_person_id: string | null
+  best_score: number | null
+  second_best_score: number | null
+  score_margin: number | null
+  match_reason: string | null
+  reviewed_person_id: string | null
+  review_status: VoicePrototypeReviewStatus | null
+  review_note: string | null
+}
+
+export type SpeakerMatchTier = 'insufficient_evidence' | 'auto_matched' | 'suggested' | 'no_known_match'
+export type VoicePrototypeReviewStatus = 'pending' | 'confirmed' | 'rejected' | 'uncertain' | 'retracted'
+
+export interface VoicePrototypeCandidate {
+  prototype_id: string
+  speaker_track_id: string
+  cluster_id: string
+  session_id: string
+  quality_score: number
+  person_id: string
+  person_name: string
+  decision_tier: SpeakerMatchTier | null
+  best_score: number | null
+  second_best_score: number | null
+  score_margin: number | null
+  match_reason: string | null
+  review_status: VoicePrototypeReviewStatus
+  representative_clips: RepresentativeClip[]
+  created_at: string
 }
 
 export interface SpeakerCluster {
@@ -404,11 +502,15 @@ export interface SpeakerCluster {
   revision: number
   person_id: string | null
   person_name: string | null
+  suggested_person_name: string | null
   suggested_person_id: string | null
   suggestion_confidence: number | null
   track_count: number
   session_count: number
   latest_session_id: string | null
+  session_ids: string[]
+  link_source: 'human' | 'automatic' | null
+  link_confidence: number | null
   members?: SpeakerClusterMember[]
   prototypes?: SpeakerPrototype[]
   operations?: Array<Record<string, unknown>>
@@ -423,6 +525,12 @@ export interface SpeakerAnalysisResult {
   new_cluster_count: number
   matched_track_count: number
   person_suggestion_count: number
+  rematched_prototype_count: number
+  suggested_cluster_count: number
+  auto_identified_known_cluster_count: number
+  auto_known_identity_updated_utterance_count: number
+  auto_identified_self_cluster_count: number
+  auto_identity_updated_utterance_count: number
   unusable_track_ids: string[]
 }
 

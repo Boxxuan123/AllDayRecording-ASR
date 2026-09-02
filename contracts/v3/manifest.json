@@ -1,11 +1,11 @@
 {
-  "contract_version": "3.6.0",
+  "contract_version": "3.7.0",
   "projection_version": 4,
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi_version": "3.1.0",
   "release_lock": {
     "path": "release-lock.json",
-    "sha256": "2a63001add6f74cf7a0be9286ce42b73508a8b4355e49405c65be1e8cddfe718"
+    "sha256": "73ba6bcc73f5bf46600cf303dc1337b649302f91d5f043e77afc02edaa2da006"
   },
   "schemas": {
     "primitives": {
@@ -46,7 +46,7 @@
     },
     "person": {
       "path": "schemas/person.schema.json",
-      "sha256": "b2073f068e3ac86ea345717ed59a53d889d9ca823817044bfa2682579612d234"
+      "sha256": "a9eba5af61c37d068759fbdd4edbd66ccacab2169f6015636fdae57ae03ca7fd"
     },
     "person_memory": {
       "path": "schemas/person-memory.schema.json",
@@ -60,21 +60,21 @@
   "apis": {
     "desktop": {
       "path": "openapi/desktop-api.openapi.json",
-      "sha256": "90758e0d634915442f6d9acaa605c8dc63c72981ff909a54122a7bde9ff9337d"
+      "sha256": "8912ecaa43f0f8788f801a8b2119d860b7a3b545d92967ff082062fa12c6f1b2"
     },
     "device": {
       "path": "openapi/device-api.openapi.json",
-      "sha256": "8b886c52c2458adb57ff5b1a4f1beb7551669bf392b34818d2a8e31440107985"
+      "sha256": "1b20867084a901bb66da6a3ee597d2220d1abe09e83882f2b559bf1debe0bd57"
     }
   },
   "fixtures": {
     "core_resources": {
       "path": "fixtures/core-resources.json",
-      "sha256": "2bf6e96f2187bb28659bcdc3b21a347fc55b7e549f2a6ac34f70d65cdb90a7a1"
+      "sha256": "8961166c0ed6eda9f080838a19965a95dbd2cda5976b8780f2c89ed78d5f68ec"
     },
     "forward_enums": {
       "path": "fixtures/forward-enums.json",
-      "sha256": "09aaf5c5fe7323950b0f281d5ab8ae4a861f8a0db36195d2a129275a8bb194aa"
+      "sha256": "6ab1af886c296c54ae09167482ce99bda0e0e8f5b59186dca68089e764576296"
     }
   }
 }

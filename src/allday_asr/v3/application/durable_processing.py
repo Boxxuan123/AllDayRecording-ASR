@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import threading
 from typing import Any
 
 from allday_asr.domain.hashing import canonical_json_sha256
@@ -58,6 +59,8 @@ class SubmitProcessingCommand:
     config: dict[str, Any]
     priority: int = 0
     stages: tuple[StageDefinition, ...] = DEFAULT_PROCESSING_STAGES
+    admission_mode: str = "production"
+    force_reprocess: bool = False
 
 
 @dataclass(frozen=True)
@@ -167,12 +170,25 @@ class DurableProcessingService:
             command.stages
         ):
             raise ValueError("processing stage plan must be non-empty and unique")
-        config_digest = canonical_json_sha256(command.config)
+        if command.admission_mode not in {"production", "shadow"}:
+            raise ValueError("processing admission mode must be production or shadow")
+        effective_config = {
+            **command.config,
+            "admission_mode": command.admission_mode,
+        }
+        config_digest = canonical_json_sha256(effective_config)
         now = self._now()
         with self._uow_factory() as uow:
             admitted, reason = uow.admission.evaluate(command.session_id)
             if not admitted:
-                raise ValueError(f"session is not admitted for processing: {reason}")
+                session = uow.catalog.get_session(command.session_id)
+                shadow_allowed = (
+                    command.admission_mode == "shadow"
+                    and session.state.value == "admission_pending"
+                    and reason == "backup_restore_evidence_required"
+                )
+                if not shadow_allowed:
+                    raise ValueError(f"session is not admitted for processing: {reason}")
             existing = uow.processing.find_effective_run(
                 command.session_id,
                 command.input_revision,
@@ -184,6 +200,15 @@ class DurableProcessingService:
                         "an effective processing run already exists with different config"
                     )
                 return uow.processing.get_snapshot_for_run(existing.run_id)
+            if not command.force_reprocess:
+                succeeded = uow.processing.find_succeeded_run(
+                    command.session_id,
+                    command.input_revision,
+                    command.pipeline_version,
+                    config_digest,
+                )
+                if succeeded is not None:
+                    return uow.processing.get_snapshot_for_run(succeeded.run_id)
             run_id = new_ulid()
             job_id = new_ulid()
             run = ProcessingRun(
@@ -208,7 +233,8 @@ class DurableProcessingService:
                     "session_id": command.session_id,
                     "pipeline_version": command.pipeline_version,
                     "input_revision": command.input_revision,
-                    "config": command.config,
+                    "admission_mode": command.admission_mode,
+                    "config": effective_config,
                     "stage_plan": [
                         {"name": stage.name, "optional": stage.optional}
                         for stage in command.stages
@@ -322,7 +348,11 @@ class DurableProcessingService:
                     )
                 created[artifact.kind] = artifact
 
-            source = created.get("v2_evidence_snapshot")
+            source = created.get("v3_transcript_evidence")
+            if source is None:
+                # Historical processing runs remain readable, but new V3-native
+                # runs always use v3_transcript_evidence.
+                source = created.get("v2_evidence_snapshot")
             if source is None:
                 source = next(
                     (
@@ -330,7 +360,8 @@ class DurableProcessingService:
                         for artifact in uow.artifacts.list_active_for_run(
                             claim.run.run_id
                         )
-                        if artifact.kind == "v2_evidence_snapshot"
+                        if artifact.kind
+                        in {"v3_transcript_evidence", "v2_evidence_snapshot"}
                     ),
                     None,
                 )
@@ -662,13 +693,22 @@ class DurableProcessingWorker:
         *,
         worker_id: str,
         config: dict[str, Any] | None = None,
+        heartbeat_interval_seconds: float | None = None,
     ) -> None:
         if not worker_id:
             raise ValueError("worker id is required")
+        selected_interval = (
+            max(1.0, service.lease_seconds / 3.0)
+            if heartbeat_interval_seconds is None
+            else heartbeat_interval_seconds
+        )
+        if selected_interval <= 0 or selected_interval >= service.lease_seconds:
+            raise ValueError("worker heartbeat interval must be within the lease")
         self.service = service
         self.adapter = adapter
         self.worker_id = worker_id
         self.config = dict(config or {})
+        self.heartbeat_interval_seconds = selected_interval
 
     def run_once(self) -> bool:
         self.service.recover_expired()
@@ -680,13 +720,21 @@ class DurableProcessingWorker:
             if control.heartbeat(claim.resume_checkpoint):
                 self.service.cancel_claim(claim, "cancelled before stage execution")
                 return True
-            result = self.adapter.execute(
-                StageExecutionContext(
-                    claim=claim,
-                    prior_artifacts=self.service.prior_artifacts(claim.run.run_id),
-                ),
-                control,
+            lease_heartbeat = _LeaseHeartbeat(
+                control, self.heartbeat_interval_seconds
             )
+            lease_heartbeat.start()
+            try:
+                result = self.adapter.execute(
+                    StageExecutionContext(
+                        claim=claim,
+                        prior_artifacts=self.service.prior_artifacts(claim.run.run_id),
+                    ),
+                    control,
+                )
+            finally:
+                lease_heartbeat.stop()
+            lease_heartbeat.raise_if_failed()
             if control.heartbeat(result.checkpoint):
                 self.service.cancel_claim(claim, "cancelled at safe checkpoint")
             else:
@@ -720,13 +768,49 @@ class _WorkerControl(StageExecutionControl):
         self.service = service
         self.claim = claim
         self._cancelled = False
+        self._lock = threading.Lock()
 
     def heartbeat(self, checkpoint: dict[str, Any] | None = None) -> bool:
-        self._cancelled = self.service.heartbeat(self.claim, checkpoint)
-        return self._cancelled
+        with self._lock:
+            self._cancelled = (
+                self.service.heartbeat(self.claim, checkpoint) or self._cancelled
+            )
+            return self._cancelled
 
     def cancellation_requested(self) -> bool:
         return self._cancelled
+
+
+class _LeaseHeartbeat:
+    def __init__(self, control: _WorkerControl, interval_seconds: float) -> None:
+        self.control = control
+        self.interval_seconds = interval_seconds
+        self._stopped = threading.Event()
+        self._failure: Exception | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="allday-v3-worker-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self._thread.join()
+
+    def raise_if_failed(self) -> None:
+        if self._failure is not None:
+            raise RuntimeError("worker lease heartbeat failed") from self._failure
+
+    def _run(self) -> None:
+        while not self._stopped.wait(self.interval_seconds):
+            try:
+                self.control.heartbeat()
+            except Exception as exc:  # noqa: BLE001 - surface in the worker thread
+                self._failure = exc
+                return
 
 
 def _publish_processing(uow: UnitOfWork, snapshot: ProcessingSnapshot) -> None:

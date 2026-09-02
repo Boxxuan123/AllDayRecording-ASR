@@ -35,6 +35,20 @@ class PersonOperationKind(StrEnum):
     UNDO = "undo"
 
 
+class SpeakerMatchTier(StrEnum):
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    AUTO_MATCHED = "auto_matched"
+    SUGGESTED = "suggested"
+    NO_KNOWN_MATCH = "no_known_match"
+
+
+class PersonIdentityMaturity(StrEnum):
+    SEED = "seed"
+    LEARNING = "learning"
+    CALIBRATED = "calibrated"
+    SUSPENDED = "suspended"
+
+
 @dataclass(frozen=True)
 class Person:
     person_id: str
@@ -120,9 +134,50 @@ class ClusterMatchPolicy:
 
 
 @dataclass(frozen=True)
+class PersonIdentityPolicy:
+    person_id: str
+    revision: int = 1
+    maturity_status: PersonIdentityMaturity = PersonIdentityMaturity.SEED
+    auto_match_enabled: bool = False
+    suggest_threshold: float = 0.82
+    auto_accept_threshold: float = 0.92
+    minimum_margin: float = 0.05
+    minimum_quality: float = 0.50
+
+    def __post_init__(self) -> None:
+        if not self.person_id:
+            raise ValueError("person identity policy requires person_id")
+        if self.revision < 1:
+            raise ValueError("person identity policy revision must be positive")
+        if not -1 <= self.suggest_threshold <= 1:
+            raise ValueError("person suggestion threshold is invalid")
+        if not -1 <= self.auto_accept_threshold <= 1:
+            raise ValueError("person automatic threshold is invalid")
+        if self.auto_accept_threshold < self.suggest_threshold:
+            raise ValueError("automatic threshold must not be below suggestion threshold")
+        if not 0 <= self.minimum_margin <= 1:
+            raise ValueError("person identity margin is invalid")
+        if not 0 <= self.minimum_quality <= 1:
+            raise ValueError("person identity quality threshold is invalid")
+        if self.auto_match_enabled and self.maturity_status is not PersonIdentityMaturity.CALIBRATED:
+            raise ValueError("only calibrated people may enable automatic matching")
+
+
+@dataclass(frozen=True)
 class MatchDecision:
     target_id: str | None
     score: float | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class LayeredMatchDecision:
+    tier: SpeakerMatchTier
+    candidate_person_id: str | None
+    best_score: float | None
+    second_best_score: float | None
+    score_margin: float | None
+    policy_revision: int | None
     reason: str
 
 
@@ -161,17 +216,114 @@ def conservative_match(
     return MatchDecision(best_id, best_score, "matched")
 
 
+def layered_person_match(
+    vector: Sequence[float],
+    candidates: Sequence[tuple[str, Sequence[float]]],
+    policies: dict[str, PersonIdentityPolicy],
+    *,
+    quality_score: float,
+) -> LayeredMatchDecision:
+    """Classify a known-person match without treating weak audio as another person."""
+
+    if not 0 <= quality_score <= 1:
+        raise ValueError("speaker match quality is invalid")
+    best_by_person: dict[str, float] = {}
+    for person_id, candidate in candidates:
+        score = cosine_similarity(vector, candidate)
+        best_by_person[person_id] = max(score, best_by_person.get(person_id, -1.0))
+    scored = sorted(best_by_person.items(), key=lambda item: (-item[1], item[0]))
+    if not scored:
+        return LayeredMatchDecision(
+            SpeakerMatchTier.NO_KNOWN_MATCH,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "no_registered_people",
+        )
+    person_id, best_score = scored[0]
+    second_score = scored[1][1] if len(scored) > 1 else None
+    margin = best_score - second_score if second_score is not None else None
+    policy = policies.get(person_id)
+    if policy is None:
+        return LayeredMatchDecision(
+            SpeakerMatchTier.NO_KNOWN_MATCH,
+            person_id,
+            best_score,
+            second_score,
+            margin,
+            None,
+            "person_policy_missing",
+        )
+    if quality_score < policy.minimum_quality:
+        return LayeredMatchDecision(
+            SpeakerMatchTier.INSUFFICIENT_EVIDENCE,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "track_quality_below_threshold",
+        )
+    separated = margin is None or margin >= policy.minimum_margin
+    if (
+        best_score >= policy.auto_accept_threshold
+        and separated
+        and policy.auto_match_enabled
+        and policy.maturity_status is PersonIdentityMaturity.CALIBRATED
+    ):
+        return LayeredMatchDecision(
+            SpeakerMatchTier.AUTO_MATCHED,
+            person_id,
+            best_score,
+            second_score,
+            margin,
+            policy.revision,
+            "calibrated_score_above_auto_threshold",
+        )
+    if best_score >= policy.suggest_threshold:
+        reason = (
+            "score_above_suggest_threshold"
+            if separated
+            else "score_above_suggest_threshold_but_ambiguous"
+        )
+        return LayeredMatchDecision(
+            SpeakerMatchTier.SUGGESTED,
+            person_id,
+            best_score,
+            second_score,
+            margin,
+            policy.revision,
+            reason,
+        )
+    return LayeredMatchDecision(
+        SpeakerMatchTier.NO_KNOWN_MATCH,
+        person_id,
+        best_score,
+        second_score,
+        margin,
+        policy.revision,
+        "score_below_suggest_threshold",
+    )
+
+
 __all__ = [
     "ClusterMatchPolicy",
     "ClusterStatus",
+    "LayeredMatchDecision",
     "MatchDecision",
     "Person",
+    "PersonIdentityMaturity",
+    "PersonIdentityPolicy",
     "PersonKind",
     "PersonOperationKind",
     "PrototypeStatus",
     "RepresentativeClip",
     "SpeakerCluster",
     "SpeakerEmbedding",
+    "SpeakerMatchTier",
     "conservative_match",
     "cosine_similarity",
+    "layered_person_match",
 ]

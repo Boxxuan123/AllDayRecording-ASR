@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import http.cookiejar
 import shutil
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 from uuid import uuid4
 
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork
@@ -63,6 +65,76 @@ class V3DesktopApiTests(unittest.TestCase):
         self.assertIn("AllDay Recording V3", html)
         self.assertNotIn("workspace/controller", html)
 
+    def test_short_workspace_link_recovers_missing_or_rotated_session(self) -> None:
+        cookie_jar = http.cookiejar.CookieJar()
+        opener = build_opener(HTTPCookieProcessor(cookie_jar))
+        navigation_headers = {
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Site": "none",
+        }
+        workspace = f"{self.server.application.base_url}/recordings/session-1?tab=evidence"
+
+        with opener.open(
+            Request(workspace, headers=navigation_headers), timeout=5
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("AllDay Recording V3", response.read().decode("utf-8"))
+        with opener.open(
+            f"{self.server.application.base_url}/api/v3/status", timeout=5
+        ) as response:
+            self.assertEqual(json.load(response)["state"], "ready")
+
+        self.server.application.token = "rotated-desktop-test-token"
+        navigation_headers["Sec-Fetch-Site"] = "same-origin"
+        with opener.open(
+            Request(workspace, headers=navigation_headers), timeout=5
+        ) as response:
+            self.assertEqual(response.status, 200)
+        with opener.open(
+            f"{self.server.application.base_url}/api/v3/status", timeout=5
+        ) as response:
+            self.assertEqual(json.load(response)["state"], "ready")
+
+    def test_frontend_can_recover_api_session_but_cross_site_cannot(self) -> None:
+        cookie_jar = http.cookiejar.CookieJar()
+        opener = build_opener(HTTPCookieProcessor(cookie_jar))
+        recovery = Request(
+            f"{self.server.application.base_url}/api/v3/desktop-session",
+            method="POST",
+            headers={
+                "Origin": self.server.application.base_url,
+                "Sec-Fetch-Site": "same-origin",
+                "X-AllDay-Desktop-Recovery": "1",
+            },
+        )
+        with opener.open(recovery, timeout=5) as response:
+            self.assertEqual(response.status, 204)
+        with opener.open(
+            f"{self.server.application.base_url}/api/v3/status", timeout=5
+        ) as response:
+            self.assertEqual(json.load(response)["state"], "ready")
+
+        status, payload, _ = self._request(
+            "/api/v3/desktop-session",
+            authenticated=False,
+            method="POST",
+            headers={
+                "Origin": "https://example.invalid",
+                "Sec-Fetch-Site": "cross-site",
+                "X-AllDay-Desktop-Recovery": "1",
+            },
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "desktop_session_recovery_denied")
+
+    def test_untrusted_host_cannot_reach_loopback_application(self) -> None:
+        status, payload, _ = self._request(
+            "/", authenticated=False, headers={"Host": "attacker.invalid"}
+        )
+        self.assertEqual(status, 421)
+        self.assertEqual(payload["code"], "invalid_desktop_host")
+
     def test_queries_keyset_pagination_and_byte_range_media(self) -> None:
         status, value, _ = self._request("/api/v3/status")
         self.assertEqual(status, 200)
@@ -93,6 +165,110 @@ class V3DesktopApiTests(unittest.TestCase):
         self.assertEqual(status, 206)
         self.assertEqual(media, b"2345")
         self.assertEqual(headers["Content-Range"], "bytes 2-5/10")
+
+    def test_review_inbox_aggregates_unresolved_domain_sources(self) -> None:
+        person = self.server.application.core.people.create_person("审核人物")
+        created_at = "2026-08-31T02:00:00Z"
+        with self.server.application.core.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO processing_runs (
+                  run_id, session_id, pipeline_version, input_revision, status,
+                  config_digest, current_stage, progress, created_at, updated_at,
+                  revision
+                ) VALUES (
+                  'review-run', 'session-1', 'review-test', 1, 'waiting_review',
+                  'review-digest', 'publish', 0.8, ?, ?, 1
+                )
+                """,
+                (created_at, created_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO stage_runs (
+                  stage_run_id, run_id, stage, ordinal, optional, status,
+                  progress, created_at, updated_at
+                ) VALUES (
+                  'review-stage', 'review-run', 'publish', 0, 0,
+                  'waiting_review', 0.8, ?, ?
+                )
+                """,
+                (created_at, created_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO person_memory_entries (
+                  memory_id, revision, person_id, kind, summary, details_json,
+                  source, confidence, confirmation_status, valid_from,
+                  valid_until, status, event_id, reminder_event_id,
+                  content_sha256, created_by, created_at
+                ) VALUES (
+                  'review-memory', 1, ?, 'stable_fact', '喜欢喝红茶', '{}',
+                  'model', 0.82, 'unconfirmed', ?, NULL, 'active', NULL, NULL,
+                  ?, 'model:test', ?
+                )
+                """,
+                (person["person_id"], created_at, "b" * 64, created_at),
+            )
+
+        reminder = {
+            "candidate_id": "review-reminder",
+            "operation": "CREATE_TASK",
+            "session_id": "session-1",
+            "title": "带上门禁卡",
+            "actor_person_id": person["person_id"],
+            "scheduled_at": "2026-09-01T01:00:00Z",
+            "location": "办公室",
+            "confidence": 0.76,
+            "expected_revision": None,
+            "evidence_utterance_ids": ["utterance-a"],
+            "created_at": created_at,
+        }
+        voice = {
+            "prototype_id": "review-prototype",
+            "speaker_track_id": "review-track",
+            "cluster_id": "review-cluster",
+            "session_id": "session-1",
+            "quality_score": 0.91,
+            "created_at": created_at,
+            "person_id": person["person_id"],
+            "person_name": person["display_name"],
+            "review_status": "pending",
+            "review": None,
+            "representative_clips": [{"media_id": "media", "start_ms": 0}],
+            "decision_tier": "suggested",
+            "best_score": 0.88,
+            "score_margin": 0.12,
+            "match_reason": "known_person_suggested",
+        }
+        repository_module = "allday_asr.v3.adapters.sqlite.desktop_repository"
+        with (
+            patch(
+                f"{repository_module}.SqliteReminderRepository.list_candidates",
+                return_value=(reminder,),
+            ),
+            patch(
+                f"{repository_module}.SqlitePeopleRepository.list_review_candidates",
+                return_value=(voice,),
+            ),
+        ):
+            status, payload, _ = self._request("/api/v3/reviews")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            {item["kind"] for item in payload["items"]},
+            {"processing_gate", "reminder", "person_memory", "voice_identity"},
+        )
+        self.assertEqual(
+            [item["priority"] for item in payload["items"]],
+            ["high", "high", "normal", "normal"],
+        )
+        memory = next(
+            item for item in payload["items"] if item["kind"] == "person_memory"
+        )
+        self.assertEqual(memory["source_id"], "review-memory")
+        self.assertEqual(memory["summary"], "喜欢喝红茶")
+        self.assertEqual(memory["context"]["confirmation_status"], "unconfirmed")
 
     def test_durable_job_command_sse_projection_and_restart_recovery(self) -> None:
         snapshot = self.server.application.core.processing.submit(
@@ -173,6 +349,27 @@ class V3DesktopApiTests(unittest.TestCase):
         )
         self.assertEqual(status, 201)
         self.assertEqual(person["display_name"], "张老师")
+        _, people, _ = self._request("/api/v3/persons")
+        self.assertEqual(people["items"][0]["voice_maturity_status"], "seed")
+        self.assertEqual(people["items"][0]["pending_voice_review_count"], 0)
+        _, candidates, _ = self._request("/api/v3/voice-prototype-candidates")
+        self.assertEqual(candidates["items"], [])
+        status, rematched, _ = self._request(
+            "/api/v3/speaker-clusters/rematch",
+            method="POST",
+            body={},
+            headers={"Origin": self.server.application.base_url},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(rematched["rematched_prototype_count"], 0)
+        status, payload, _ = self._request(
+            f"/api/v3/persons/{person['person_id']}/identity-policy",
+            method="POST",
+            body={"auto_match_enabled": True},
+            headers={"Origin": self.server.application.base_url},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["code"], "invalid_request")
         _, clusters, _ = self._request("/api/v3/speaker-clusters")
         self.assertEqual(clusters["items"], [])
         status, run, _ = self._request(

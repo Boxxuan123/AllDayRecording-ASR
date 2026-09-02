@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watchEffect } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watchEffect } from 'vue'
 
 import PageState from '../components/PageState.vue'
 import { desktopApi } from '../core/api'
@@ -16,6 +16,7 @@ const query = useQuery('reminders', async () => {
   ])
   return { candidates: candidates.items, reminders: reminders.items, sessions: sessions.items }
 })
+const focusedCandidateId = new URLSearchParams(window.location.search).get('candidate') ?? ''
 const filter = ref<'pending' | 'all' | 'resolved'>('pending')
 const filterOptions: { value: 'pending' | 'all' | 'resolved'; label: string }[] = [
   { value: 'pending', label: '待确认' },
@@ -32,10 +33,15 @@ const selectedSessionId = ref('')
 const reasoningEffort = ref<'auto' | 'low' | 'medium' | 'high' | 'xhigh'>('auto')
 const generating = ref(false)
 const generationMessage = ref('')
+let focusedDeepLink = false
 
 watchEffect(() => {
   if (!selectedSessionId.value && query.data.value?.sessions.length) {
     selectedSessionId.value = query.data.value.sessions[0].session_id
+  }
+  if (!focusedDeepLink && query.data.value?.candidates.some((item) => item.candidate_id === focusedCandidateId)) {
+    focusedDeepLink = true
+    void nextTick(() => document.getElementById(`reminder-candidate-${focusedCandidateId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
   }
 })
 
@@ -180,7 +186,7 @@ onBeforeUnmount(release)
     <PageState :loading="query.loading.value" :error="query.error.value" :empty="!candidates.length" empty-text="当前筛选下没有候选提醒。" @retry="query.refresh(true)">
       <div class="reminder-layout">
         <section class="reminder-candidate-list">
-          <article v-for="item in candidates" :key="item.candidate_id" class="panel reminder-card" :data-status="item.status">
+          <article v-for="item in candidates" :id="`reminder-candidate-${item.candidate_id}`" :key="item.candidate_id" :class="['panel', 'reminder-card', item.candidate_id === focusedCandidateId ? 'focused-review' : '']" :data-status="item.status">
             <header>
               <div><span class="reminder-operation">{{ operationNames[item.operation] }}</span><h2>{{ item.title ?? '无标题操作' }}</h2></div>
               <span class="status-pill">{{ statusNames[item.status] }}</span>

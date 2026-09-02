@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from types import TracebackType
 from typing import Any, Protocol, Self
 
@@ -58,7 +59,18 @@ class RecordingCatalogRepository(Protocol):
     def add_replica(self, replica: AudioReplica) -> bool: ...
     def add_segment(self, segment: CaptureSegment) -> bool: ...
     def add_manifest(self, manifest: SessionManifest) -> bool: ...
-    def find_session_by_legacy_ref(self, legacy_ref: str) -> RecordingSession | None: ...
+    def find_session_by_legacy_ref(
+        self, legacy_ref: str
+    ) -> RecordingSession | None: ...
+    def find_session_by_manifest_sha256(
+        self, sha256: str
+    ) -> RecordingSession | None: ...
+    def tombstone_duplicate_session(
+        self,
+        session_id: str,
+        canonical_session_id: str,
+        tombstoned_at: datetime,
+    ) -> int | None: ...
     def find_asset_by_sha256(self, sha256: str) -> AudioAsset | None: ...
     def get_session(self, session_id: str) -> RecordingSession: ...
 
@@ -86,6 +98,13 @@ class ArtifactRepository(Protocol):
 class DurableProcessingRepository(Protocol):
     def find_effective_run(
         self, session_id: str, input_revision: int, pipeline_version: str
+    ) -> ProcessingRun | None: ...
+    def find_succeeded_run(
+        self,
+        session_id: str,
+        input_revision: int,
+        pipeline_version: str,
+        config_digest: str,
     ) -> ProcessingRun | None: ...
     def add_graph(
         self,
@@ -118,7 +137,9 @@ class DurableProcessingRepository(Protocol):
         log_summary: str,
         retryable: bool,
     ) -> ProcessingSnapshot: ...
-    def cancel_claim(self, claim: ProcessingClaim, reason: str) -> ProcessingSnapshot: ...
+    def cancel_claim(
+        self, claim: ProcessingClaim, reason: str
+    ) -> ProcessingSnapshot: ...
     def request_cancel(self, job_id: str, reason: str) -> ProcessingSnapshot: ...
     def retry(self, job_id: str) -> ProcessingSnapshot: ...
     def recover_expired(self) -> tuple[str, ...]: ...
@@ -164,11 +185,11 @@ class ChangeLogRepository(Protocol):
 
     def list_after(self, sequence: int, limit: int) -> tuple[ChangeEvent, ...]: ...
 
+    def latest(self, resource_type: str, resource_id: str) -> ChangeEvent | None: ...
+
 
 class DeviceTrustRepository(Protocol):
-    def enroll(
-        self, credential: DeviceCredential, pairing: PairingRecord
-    ) -> bool: ...
+    def enroll(self, credential: DeviceCredential, pairing: PairingRecord) -> bool: ...
 
     def find_by_key_id(self, key_id: str) -> DeviceCredential | None: ...
 
@@ -227,6 +248,8 @@ class TombstoneRepository(Protocol):
 
 
 class LegacyImportRunRepository(Protocol):
+    def latest_namespace(self, source_path: str) -> str | None: ...
+
     def start(
         self,
         import_id: str,
@@ -382,16 +405,32 @@ class ReminderRepository(Protocol):
         limit: int,
     ) -> tuple[dict[str, Any], ...]: ...
     def mark_delivered(self, event_id: str, delivered_at: str) -> None: ...
-    def mark_stale(self, event_id: str, event_revision: int, updated_at: str) -> bool: ...
+    def mark_stale(
+        self, event_id: str, event_revision: int, updated_at: str
+    ) -> bool: ...
     def add_feedback(self, feedback: ReminderFeedback) -> bool: ...
     def list_feedback(self, candidate_id: str) -> tuple[dict[str, Any], ...]: ...
 
 
 class PeopleRepository(Protocol):
     def analysis_inputs(self, session_id: str) -> tuple[SpeakerTrackInput, ...]: ...
+    def confirmed_enrollment_input(
+        self,
+        session_id: str,
+        speaker_track_id: str,
+        windows: tuple[tuple[int, int], ...],
+    ) -> dict[str, Any]: ...
+    def person_kind(self, person_id: str) -> str: ...
+    def self_person_id(self) -> str | None: ...
     def start_run(
-        self, run_id: str, session_id: str, model: str, model_version: str,
-        policy: dict[str, Any], track_count: int, created_at: str,
+        self,
+        run_id: str,
+        session_id: str,
+        model: str,
+        model_version: str,
+        policy: dict[str, Any],
+        track_count: int,
+        created_at: str,
     ) -> None: ...
     def finish_run(
         self, run_id: str, status: str, completed_at: str, error: str | None
@@ -402,6 +441,31 @@ class PeopleRepository(Protocol):
     def person_vectors(
         self, model: str, model_version: str
     ) -> tuple[tuple[str, tuple[float, ...]], ...]: ...
+    def identity_policies(self) -> dict[str, dict[str, Any]]: ...
+    def identity_policy(self, person_id: str) -> dict[str, Any]: ...
+    def add_identity_policy_revision(
+        self, person_id: str, **values: Any
+    ) -> dict[str, Any]: ...
+    def unlinked_cluster_embeddings(
+        self, session_id: str | None = None
+    ) -> tuple[dict[str, Any], ...]: ...
+    def set_cluster_suggestion(
+        self,
+        cluster_id: str,
+        person_id: str | None,
+        confidence: float | None,
+        updated_at: str,
+    ) -> None: ...
+    def record_match_decision(self, **values: Any) -> None: ...
+    def prototype_candidate(self, prototype_id: str) -> dict[str, Any]: ...
+    def latest_prototype_review(
+        self, prototype_id: str, person_id: str
+    ) -> dict[str, Any] | None: ...
+    def add_prototype_review(self, **values: Any) -> dict[str, Any]: ...
+    def prototype_review_examples(self, person_id: str) -> dict[str, Any]: ...
+    def list_review_candidates(
+        self, person_id: str | None, status: str | None, limit: int
+    ) -> tuple[dict[str, Any], ...]: ...
     def record_embedding(self, **values: Any) -> None: ...
     def list_people(self) -> tuple[dict[str, Any], ...]: ...
     def list_clusters(
@@ -411,28 +475,61 @@ class PeopleRepository(Protocol):
     def create_person(
         self, person_id: str, display_name: str, kind: str, created_at: str
     ) -> None: ...
+    def import_person(
+        self,
+        person_id: str,
+        display_name: str,
+        kind: str,
+        aliases: tuple[str, ...],
+        relationship_labels: tuple[str, ...],
+        actor: str,
+        created_at: str,
+    ) -> bool: ...
     def label_cluster(
-        self, cluster_id: str, person_id: str, actor: str,
-        operation_id: str, created_at: str,
+        self,
+        cluster_id: str,
+        person_id: str,
+        actor: str,
+        operation_id: str,
+        created_at: str,
+        *,
+        source: str = "human",
+        confidence: float = 1.0,
+        promote_candidates: bool = False,
     ) -> tuple[str | None, tuple[str, ...], tuple[str, ...]]: ...
     def merge_clusters(
-        self, source_cluster_ids: tuple[str, ...], target_cluster_id: str,
-        actor: str, operation_id: str, created_at: str,
+        self,
+        source_cluster_ids: tuple[str, ...],
+        target_cluster_id: str,
+        actor: str,
+        operation_id: str,
+        created_at: str,
     ) -> None: ...
     def split_cluster(
-        self, cluster_id: str, speaker_track_ids: tuple[str, ...],
-        new_cluster_id: str, new_label: str, actor: str,
-        operation_id: str, created_at: str,
+        self,
+        cluster_id: str,
+        speaker_track_ids: tuple[str, ...],
+        new_cluster_id: str,
+        new_label: str,
+        actor: str,
+        operation_id: str,
+        created_at: str,
     ) -> None: ...
     def ignore_cluster(
-        self, cluster_id: str, reason: str, actor: str,
-        operation_id: str, created_at: str,
+        self,
+        cluster_id: str,
+        reason: str,
+        actor: str,
+        operation_id: str,
+        created_at: str,
     ) -> None: ...
     def undo(
         self, cluster_id: str, actor: str, undo_operation_id: str, created_at: str
     ) -> dict[str, Any]: ...
     def events_referencing(self, reference_id: str) -> tuple[dict[str, Any], ...]: ...
-    def events_by_ids(self, event_ids: tuple[str, ...]) -> tuple[dict[str, Any], ...]: ...
+    def events_by_ids(
+        self, event_ids: tuple[str, ...]
+    ) -> tuple[dict[str, Any], ...]: ...
     def cluster_evidence_ids(
         self, cluster_id: str, session_id: str | None = None
     ) -> tuple[str, ...]: ...
@@ -441,8 +538,13 @@ class PeopleRepository(Protocol):
 class PersonMemoryRepository(Protocol):
     def profile(self, person_id: str) -> dict[str, Any]: ...
     def update_profile(
-        self, person_id: str, display_name: str, aliases: tuple[str, ...],
-        relationship_labels: tuple[str, ...], notes: str, actor: str,
+        self,
+        person_id: str,
+        display_name: str,
+        aliases: tuple[str, ...],
+        relationship_labels: tuple[str, ...],
+        notes: str,
+        actor: str,
         created_at: str,
     ) -> dict[str, Any]: ...
     def event_sources(self, person_id: str) -> tuple[dict[str, Any], ...]: ...
@@ -454,15 +556,24 @@ class PersonMemoryRepository(Protocol):
     ) -> tuple[dict[str, Any], ...]: ...
     def summary_counts(self) -> dict[str, dict[str, Any]]: ...
     def revise_status(
-        self, memory_id: str, status: str, actor: str, operation_id: str,
-        operation_kind: str, created_at: str,
+        self,
+        memory_id: str,
+        status: str,
+        actor: str,
+        operation_id: str,
+        operation_kind: str,
+        created_at: str,
     ) -> dict[str, Any]: ...
     def undo(
         self, memory_id: str, actor: str, operation_id: str, created_at: str
     ) -> dict[str, Any]: ...
     def reconcile_identity(
-        self, cluster_id: str, old_person_id: str | None,
-        new_person_id: str | None, actor: str, created_at: str,
+        self,
+        cluster_id: str,
+        old_person_id: str | None,
+        new_person_id: str | None,
+        actor: str,
+        created_at: str,
     ) -> int: ...
 
 
@@ -482,7 +593,9 @@ class InsightRepository(Protocol):
     ) -> tuple[dict[str, Any], ...]: ...
     def add_evidence(self, *values: Any) -> bool: ...
     def add_operation(self, *values: Any, **options: Any) -> None: ...
-    def latest_relationship_operation(self, report_id: str) -> dict[str, Any] | None: ...
+    def latest_relationship_operation(
+        self, report_id: str
+    ) -> dict[str, Any] | None: ...
     def evidence_revisions(
         self, event_ids: tuple[str, ...], utterance_ids: tuple[str, ...]
     ) -> tuple[dict[str, int], dict[str, int]]: ...

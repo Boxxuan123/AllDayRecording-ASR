@@ -233,6 +233,7 @@ class V3ContractTests(unittest.TestCase):
             "/api/v3/persons",
             "/api/v3/persons/{person_id}",
             "/api/v3/persons/{person_id}/profile",
+            "/api/v3/persons/{person_id}/identity-policy",
             "/api/v3/persons/{person_id}/memories",
             "/api/v3/persons/{person_id}/memories/refresh",
             "/api/v3/person-memories/{memory_id}/revise",
@@ -241,12 +242,15 @@ class V3ContractTests(unittest.TestCase):
             "/api/v3/person-memories/{memory_id}/undo",
             "/api/v3/speaker-cluster-runs",
             "/api/v3/speaker-clusters",
+            "/api/v3/speaker-clusters/rematch",
             "/api/v3/speaker-clusters/{cluster_id}",
             "/api/v3/speaker-clusters/{cluster_id}/label",
             "/api/v3/speaker-clusters/{cluster_id}/merge",
             "/api/v3/speaker-clusters/{cluster_id}/split",
             "/api/v3/speaker-clusters/{cluster_id}/ignore",
             "/api/v3/speaker-clusters/{cluster_id}/undo",
+            "/api/v3/voice-prototype-candidates",
+            "/api/v3/voice-prototypes/{prototype_id}/reviews",
         }
         self.assertTrue(people_paths.issubset(desktop_paths))
         self.assertTrue(people_paths.isdisjoint(device_paths))

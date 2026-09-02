@@ -4,6 +4,15 @@ import { useQuery } from '../core/query'
 import { navigate } from '../core/router'
 
 const query = useQuery('overview', desktopApi.overview)
+const todayLabel = (() => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    weekday: 'long', day: '2-digit', month: 'short', year: 'numeric',
+  }).formatToParts(new Date())
+  const value = (type: Intl.DateTimeFormatPartTypes): string => (
+    parts.find((part) => part.type === type)?.value ?? ''
+  )
+  return `${value('weekday')} · ${value('day')} ${value('month')} ${value('year')}`.toUpperCase()
+})()
 const statusLabel: Record<string, string> = {
   processing: '处理中',
   available: '可用',
@@ -29,7 +38,7 @@ function bytes(value: number): string {
 <template>
   <section class="page overview-page">
     <header class="page-header">
-      <div><p class="overline">MONDAY · 31 AUG 2026</p><h1>你的记录，<em>正在成为证据。</em></h1></div>
+      <div><p class="overline">{{ todayLabel }}</p><h1>你的记录，<em>正在成为证据。</em></h1></div>
       <button class="quiet-button" :disabled="query.loading.value" @click="query.refresh(true)">
         {{ query.loading.value ? '刷新中' : '刷新状态' }}
       </button>

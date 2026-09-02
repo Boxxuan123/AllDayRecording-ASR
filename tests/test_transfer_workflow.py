@@ -130,6 +130,57 @@ class AutomaticTransferWorkflowTests(unittest.TestCase):
         self.assertEqual(calls, [inbox / completed.relative_path])
         self.assertEqual(runner.get_status(completed.upload_id)["status"], "completed")
 
+    def test_new_v3_postprocessor_reuses_completed_v2_result(self) -> None:
+        inbox = self.workspace / "inbox"
+        manifest = b"{}"
+        store = UploadStore(inbox, max_chunk_bytes=64)
+        upload, _ = store.create_upload(
+            relative_path="pcm_session_1234567890199/session_summary.json",
+            size=len(manifest),
+            sha256=_digest(manifest),
+            kind="manifest",
+        )
+        completed = store.append_chunk(upload.upload_id, offset=0, data=manifest)
+        first_calls: list[Path] = []
+        first = AutomaticWorkflowRunner(
+            inbox,
+            processor=lambda path, progress: first_calls.append(path)
+            or {
+                "session_id": 99,
+                "workflow_run_id": 199,
+                "workflow_state": "semantic_ready",
+            },
+            configuration={"profile": "auto"},
+        )
+        first.submit(completed)
+        first.close()
+
+        v2_replays: list[Path] = []
+        postprocess_calls: list[int] = []
+
+        def postprocess(record, result, progress):
+            postprocess_calls.append(int(result["session_id"]))
+            progress("v3_reminders", "generated")
+            return {"session_id": "v3-session", "pending_review_count": 1}
+
+        upgraded = AutomaticWorkflowRunner(
+            inbox,
+            processor=lambda path, progress: v2_replays.append(path) or {},
+            configuration={"profile": "auto"},
+            postprocessor=postprocess,
+            postprocessor_configuration={"pipeline": "v3-auto.1"},
+        )
+        upgraded.submit(completed)
+        upgraded.close()
+
+        self.assertEqual(first_calls, [inbox / completed.relative_path])
+        self.assertEqual(v2_replays, [])
+        self.assertEqual(postprocess_calls, [99])
+        status = upgraded.get_status(completed.upload_id)
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["result"]["workflow_run_id"], 199)
+        self.assertEqual(status["result"]["v3"]["pending_review_count"], 1)
+
     def test_recording_completion_does_not_start_workflow(self) -> None:
         inbox = self.workspace / "inbox"
         content = b"audio"

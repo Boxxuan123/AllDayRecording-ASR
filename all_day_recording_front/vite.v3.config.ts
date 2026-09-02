@@ -7,11 +7,17 @@ export default defineConfig({
   root: resolve(import.meta.dirname, 'v3'),
   plugins: [vue()],
   server: {
+    host: '127.0.0.1',
     port: 5174,
     proxy: {
       '/api/v3': {
         target: 'http://127.0.0.1:8766',
         changeOrigin: true,
+        configure(proxy) {
+          proxy.on('proxyReq', (request) => {
+            request.setHeader('Origin', 'http://127.0.0.1:8766')
+          })
+        },
       },
     },
   },

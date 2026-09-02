@@ -33,6 +33,7 @@ class CodexReminderSettings:
     model: str | None = None
     reasoning_effort: CodexEffortSetting = CodexEffortSetting.AUTO
     allow_auto_apply: bool = False
+    allow_semantic_event_auto_accept: bool = True
 
     @classmethod
     def from_environment(
@@ -64,6 +65,9 @@ class CodexReminderSettings:
             reasoning_effort=effort,
             allow_auto_apply=_parse_bool(
                 values.get("ALLDAY_V3_CODEX_AUTO_APPLY", "0")
+            ),
+            allow_semantic_event_auto_accept=_parse_bool(
+                values.get("ALLDAY_V3_CODEX_EVENT_AUTO_ACCEPT", "1")
             ),
         )
         settings.validate()

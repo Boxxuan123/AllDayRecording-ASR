@@ -23,7 +23,24 @@ class SqlitePersonMemoryRepository:
                 AS cluster_count,
               (SELECT COUNT(*) FROM voice_prototypes prototype
                 WHERE prototype.person_id = p.person_id
-                  AND prototype.status = 'accepted') AS prototype_count
+                  AND prototype.status = 'accepted'
+                  AND EXISTS (
+                    SELECT 1 FROM person_cluster_links prototype_link
+                    WHERE prototype_link.cluster_id = prototype.cluster_id
+                      AND prototype_link.person_id = prototype.person_id
+                      AND prototype_link.status = 'active'
+                  )
+                  AND COALESCE(
+                    (SELECT review.decision
+                     FROM voice_prototype_reviews review
+                     WHERE review.prototype_id = COALESCE(
+                         prototype.source_prototype_id, prototype.prototype_id
+                       )
+                       AND review.person_id = prototype.person_id
+                     ORDER BY review.created_at DESC, review.review_id DESC
+                     LIMIT 1),
+                    'confirmed'
+                  ) = 'confirmed') AS prototype_count
             FROM persons p WHERE p.person_id = ?
             """,
             (person_id,),
@@ -304,6 +321,8 @@ class SqlitePersonMemoryRepository:
         latest = max((item["occurred_at"] for item in interactions), default=None)
         topics: Counter[str] = Counter()
         for memory in memories:
+            if memory["status"] != "active":
+                continue
             for topic in memory["details"].get("topics", []):
                 if isinstance(topic, str) and topic.strip():
                     topics[topic.strip()] += 1
@@ -354,8 +373,8 @@ class SqlitePersonMemoryRepository:
             SELECT p.person_id,
               COUNT(DISTINCT CASE WHEN m.status = 'active' THEN m.memory_id END)
                 AS memory_count,
-              COUNT(DISTINCT s.session_id) AS interaction_count,
-              MAX(s.captured_start) AS last_interaction_at
+              COUNT(DISTINCT s.session_id) AS encounter_count,
+              MAX(s.captured_start) AS last_encounter_at
             FROM persons p
             LEFT JOIN (
               SELECT value.* FROM person_memory_entries value
@@ -375,7 +394,41 @@ class SqlitePersonMemoryRepository:
             GROUP BY p.person_id
             """
         ).fetchall()
-        return {str(row["person_id"]): _row(row) for row in rows}
+        events = self.connection.execute(
+            """
+            SELECT payload_json, updated_at
+            FROM event_current_states
+            ORDER BY event_id
+            """
+        ).fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            person_id = str(row["person_id"])
+            event_count = 0
+            last_event_at: str | None = None
+            for event in events:
+                if not _contains_reference(
+                    json.loads(event["payload_json"]), person_id
+                ):
+                    continue
+                event_count += 1
+                updated_at = str(event["updated_at"])
+                if last_event_at is None or updated_at > last_event_at:
+                    last_event_at = updated_at
+            last_interaction_at = max(
+                (
+                    value
+                    for value in (row["last_encounter_at"], last_event_at)
+                    if value is not None
+                ),
+                default=None,
+            )
+            result[person_id] = {
+                "memory_count": int(row["memory_count"]),
+                "interaction_count": int(row["encounter_count"]) + event_count,
+                "last_interaction_at": last_interaction_at,
+            }
+        return result
 
     def revise_status(
         self,
@@ -402,7 +455,7 @@ class SqlitePersonMemoryRepository:
             confidence=float(current["confidence"]),
             confirmation_status=str(current["confirmation_status"]),
             valid_from=str(current["valid_from"]),
-            valid_until=current["valid_until"],
+            valid_until=(created_at if status == "expired" else current["valid_until"]),
             status=status,
             event_id=current["event_id"],
             reminder_event_id=current["reminder_event_id"],
@@ -420,7 +473,8 @@ class SqlitePersonMemoryRepository:
         operation = self.connection.execute(
             """
             SELECT value.* FROM person_memory_operations value
-            WHERE value.memory_id = ? AND value.kind != 'restore'
+            WHERE value.memory_id = ?
+              AND value.kind NOT IN ('restore', 'create', 'project')
               AND NOT EXISTS (
                 SELECT 1 FROM person_memory_operations undo
                 WHERE undo.reverts_operation_id = value.operation_id
@@ -548,19 +602,43 @@ class SqlitePersonMemoryRepository:
             """
             SELECT link.event_id, link.event_revision, link.utterance_id,
               utterance.session_id, utterance.start_at, utterance.end_at,
-              utterance.start_ms, utterance.end_ms, utterance.text,
+              COALESCE(span.asset_start_ms, utterance.start_ms) AS start_ms,
+              COALESCE(span.asset_end_ms, utterance.end_ms) AS end_ms,
+              span.session_start_ms, span.session_end_ms,
+              span.evidence_span_id, span.asset_id, utterance.text,
               asset.media_id
             FROM person_memory_evidence link
             LEFT JOIN utterances utterance ON utterance.utterance_id = link.utterance_id
             LEFT JOIN evidence_spans span ON span.utterance_id = utterance.utterance_id
             LEFT JOIN audio_assets asset ON asset.asset_id = span.asset_id
             WHERE link.memory_id = ? AND link.memory_revision = ?
-            GROUP BY link.link_id
-            ORDER BY link.event_id, utterance.start_at, link.link_id
+            ORDER BY link.event_id, utterance.start_at, span.session_start_ms,
+              span.evidence_span_id, link.link_id
             """,
             (row["memory_id"], row["revision"]),
         ).fetchall()
         value["evidence"] = [_row(item) for item in evidence]
+        reversible = self.connection.execute(
+            """
+            SELECT value.kind FROM person_memory_operations value
+            WHERE value.memory_id = ?
+              AND value.kind NOT IN ('restore', 'create', 'project')
+              AND NOT EXISTS (
+                SELECT 1 FROM person_memory_operations undo
+                WHERE undo.reverts_operation_id = value.operation_id
+              )
+            ORDER BY value.memory_revision DESC, value.created_at DESC,
+              value.operation_id DESC LIMIT 1
+            """,
+            (row["memory_id"],),
+        ).fetchone()
+        status = str(row["status"])
+        value["available_actions"] = {
+            "can_revise": status == "active",
+            "can_expire": status == "active",
+            "can_retract": status != "retracted",
+            "can_undo": reversible is not None,
+        }
         reminder_event_id = row["reminder_event_id"]
         if reminder_event_id is not None:
             schedule = self.connection.execute(
@@ -619,7 +697,10 @@ class SqlitePersonMemoryRepository:
                     "evidence_utterance_ids": list(event["evidence_utterance_ids"]),
                 }
             )
-        result.sort(key=lambda item: (str(item["occurred_at"]), str(item.get("event_id"))), reverse=True)
+        result.sort(
+            key=lambda item: (str(item["occurred_at"]), str(item.get("event_id"))),
+            reverse=True,
+        )
         return result[:limit]
 
     def _validate_utterances(self, utterance_ids: Sequence[str]) -> None:
@@ -635,7 +716,7 @@ class SqlitePersonMemoryRepository:
 
 
 def _event_summary(payload: dict[str, Any], fallback: str) -> str:
-    for key in ("title", "summary", "content", "text", "description"):
+    for key in ("summary", "content", "text", "description", "title"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()

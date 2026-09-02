@@ -153,6 +153,48 @@ class V3UploadIngestAdapter:
         }
         with self._uow_factory() as uow:
             existing = uow.catalog.find_session_by_legacy_ref(session_ref)
+            canonical = uow.catalog.find_session_by_manifest_sha256(record.sha256)
+            if canonical is not None and canonical.session_id != session_id:
+                if existing is not None:
+                    reason = f"duplicate_manifest:{canonical.session_id}"
+                    revision = uow.catalog.tombstone_duplicate_session(
+                        existing.session_id,
+                        canonical.session_id,
+                        now,
+                    )
+                    if revision is not None:
+                        uow.tombstones.add(
+                            "recording_session",
+                            existing.session_id,
+                            revision,
+                            reason,
+                        )
+                        uow.changes.append(
+                            "recording_session",
+                            existing.session_id,
+                            revision,
+                            ChangeOperation.TOMBSTONE.value,
+                            {
+                                "session_id": existing.session_id,
+                                "canonical_session_id": canonical.session_id,
+                                "reason": reason,
+                            },
+                        )
+                        uow.audit.append(
+                            "phone.upload.deduplicate",
+                            f"device:{device_id}",
+                            "recording_session",
+                            existing.session_id,
+                            {
+                                "canonical_session_id": canonical.session_id,
+                                "manifest_sha256": record.sha256,
+                            },
+                        )
+                return {
+                    **response,
+                    "status": "already_ingested",
+                    "session_id": canonical.session_id,
+                }
             if existing is not None:
                 saved = uow.idempotency.response(idempotency_key)
                 if saved is None or saved.get("manifest_sha256") != record.sha256:
@@ -187,14 +229,16 @@ class V3UploadIngestAdapter:
                     or existing_asset.media_id != asset.media_id
                 ):
                     raise UploadConflictError("相同音频摘要对应了不同元数据")
-                uow.catalog.add_asset(asset)
+                canonical_asset = existing_asset or asset
+                if existing_asset is None:
+                    uow.catalog.add_asset(asset)
                 replica_id = stable_ulid(
                     "phone-replica", device_id, session_id, chunk["index"]
                 )
                 uow.catalog.add_replica(
                     AudioReplica(
                         replica_id=replica_id,
-                        asset_id=asset.asset_id,
+                        asset_id=canonical_asset.asset_id,
                         device_id=device_id,
                         storage_key=stored.storage_key,
                         state=AudioReplicaState.AVAILABLE,
@@ -203,7 +247,7 @@ class V3UploadIngestAdapter:
                         legacy_ref=f"{session_ref}:chunk:{chunk['index']}",
                     )
                 )
-                start_ms = _samples_to_ms(
+                start_ms = _sample_offset_to_ms(
                     chunk["firstSample"], manifest["audio"]["sampleRate"]
                 )
                 uow.catalog.add_segment(
@@ -212,11 +256,14 @@ class V3UploadIngestAdapter:
                             "capture-segment", session_id, chunk["index"]
                         ),
                         session_id=session_id,
-                        asset_id=asset.asset_id,
+                        asset_id=canonical_asset.asset_id,
                         replica_id=replica_id,
                         sequence=index,
                         session_start_ms=start_ms,
-                        session_end_ms=start_ms + duration_ms,
+                        session_end_ms=_sample_offset_to_ms(
+                            chunk["firstSample"] + chunk["sampleCount"],
+                            manifest["audio"]["sampleRate"],
+                        ),
                         source_start_ms=0,
                         source_end_ms=duration_ms,
                         start_sample=chunk["firstSample"],
@@ -227,10 +274,10 @@ class V3UploadIngestAdapter:
                 )
                 uow.changes.append(
                     "audio_asset",
-                    asset.asset_id,
+                    canonical_asset.asset_id,
                     1,
                     ChangeOperation.UPSERT.value,
-                    _asset_projection(asset, session_id, index),
+                    _asset_projection(canonical_asset, session_id, index),
                 )
             uow.catalog.add_manifest(
                 SessionManifest(
@@ -352,6 +399,10 @@ def _nonnegative_int(value: object, label: str) -> None:
 
 def _samples_to_ms(samples: int, sample_rate: int) -> int:
     return max(1, round(samples * 1000 / sample_rate))
+
+
+def _sample_offset_to_ms(samples: int, sample_rate: int) -> int:
+    return round(samples * 1000 / sample_rate)
 
 
 def _session_projection(

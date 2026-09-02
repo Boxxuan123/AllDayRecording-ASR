@@ -23,6 +23,9 @@ from allday_asr.v3.adapters.sqlite.migrations.v009_cross_day_person_memory impor
 from allday_asr.v3.adapters.sqlite.migrations.v010_daily_insights import (
     SQL as V010_SQL,
 )
+from allday_asr.v3.adapters.sqlite.migrations.v011_layered_speaker_identity import (
+    SQL as V011_SQL,
+)
 
 
 MIGRATIONS = (
@@ -36,6 +39,7 @@ MIGRATIONS = (
     V3Migration(version=8, name="v34_open_speaker_identity", sql=V008_SQL),
     V3Migration(version=9, name="v35_cross_day_person_memory", sql=V009_SQL),
     V3Migration(version=10, name="v36_daily_insights", sql=V010_SQL),
+    V3Migration(version=11, name="v37_layered_speaker_identity", sql=V011_SQL),
 )
 
 __all__ = ["MIGRATIONS"]

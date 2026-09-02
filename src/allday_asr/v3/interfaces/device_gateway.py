@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,10 +30,15 @@ class DeviceGateway:
         trust: TransferDeviceTrustAdapter,
         sync: MobileSyncService,
         ingest: V3UploadIngestAdapter | None = None,
+        session_ingested: Callable[
+            [UploadRecord, Mapping[str, Any]], Mapping[str, Any] | None
+        ]
+        | None = None,
     ) -> None:
         self.trust = trust
         self.sync_service = sync
         self.ingest = ingest
+        self.session_ingested = session_ingested
 
     def reconcile(self) -> int:
         return self.trust.reconcile()
@@ -64,7 +69,15 @@ class DeviceGateway:
     ) -> dict[str, Any] | None:
         if self.ingest is None:
             return None
-        return self.ingest.ingest_completed(key_id, record, store)
+        result = self.ingest.ingest_completed(key_id, record, store)
+        if result is None:
+            return None
+        response = dict(result)
+        if self.session_ingested is not None:
+            automation = self.session_ingested(record, response)
+            if automation is not None:
+                response["automation"] = dict(automation)
+        return response
 
 
 def parse_sync_request(payload: Mapping[str, Any]) -> SyncRequest:

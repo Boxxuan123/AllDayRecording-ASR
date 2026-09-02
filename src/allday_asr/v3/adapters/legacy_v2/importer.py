@@ -16,6 +16,11 @@ from allday_asr.v3.application.legacy_import import (
     LegacyImportCommand,
     LegacyImportResult,
 )
+from allday_asr.v3.adapters.legacy_v2.semantic_projection import (
+    LegacySemanticProjection,
+    prepare_legacy_semantic_projection,
+)
+from allday_asr.v3.contracts import utterance_dto
 from allday_asr.v3.domain.ids import new_ulid, stable_ulid
 from allday_asr.v3.domain.models import (
     Artifact,
@@ -34,6 +39,7 @@ from allday_asr.v3.domain.models import (
     RecordingSessionState,
     SessionManifest,
 )
+from allday_asr.v3.domain.knowledge import EvidenceSpan
 from allday_asr.v3.ports.repositories import UnitOfWork
 from allday_asr.v3.ports.stores import ContentStore
 
@@ -99,6 +105,7 @@ _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 class _PreparedImport:
     device: Device
     sessions: list[RecordingSession] = field(default_factory=list)
+    session_keys: dict[str, str] = field(default_factory=dict)
     assets: list[AudioAsset] = field(default_factory=list)
     replicas: list[AudioReplica] = field(default_factory=list)
     segments: list[CaptureSegment] = field(default_factory=list)
@@ -106,6 +113,9 @@ class _PreparedImport:
     processing_runs: list[ProcessingRun] = field(default_factory=list)
     artifacts: list[Artifact] = field(default_factory=list)
     corrections: list[CorrectionOperation] = field(default_factory=list)
+    semantics: LegacySemanticProjection = field(
+        default_factory=LegacySemanticProjection
+    )
     issues: list[dict[str, Any]] = field(default_factory=list)
     unmapped: dict[str, int] = field(default_factory=dict)
 
@@ -130,6 +140,11 @@ class LegacyV2Importer:
         source = command.source_database.resolve(strict=True)
         source_sha256 = _database_fingerprint(source)
         import_id = new_ulid()
+        namespace = command.source_namespace
+        if namespace is None:
+            with self._uow_factory() as uow:
+                namespace = uow.legacy_imports.latest_namespace(str(source))
+        namespace = namespace or source_sha256[:24]
         connection = _open_read_only(source)
         try:
             tables = _table_names(connection)
@@ -140,7 +155,6 @@ class LegacyV2Importer:
                     + ", ".join(sorted(missing))
                 )
             schema_version = _schema_version(connection)
-            namespace = command.source_namespace or source_sha256[:24]
             prepared = self._prepare(connection, source, namespace, tables)
         finally:
             connection.close()
@@ -197,7 +211,9 @@ class LegacyV2Importer:
             session_id = int(row["session_id"])
             source_object_id = int(row["source_object_id"])
             source_instance_id = int(row["source_instance_id"])
-            instance_ref = _legacy_ref(namespace, "source_instances", source_instance_id)
+            instance_ref = _legacy_ref(
+                namespace, "source_instances", source_instance_id
+            )
             if session_id not in session_rows:
                 _issue(
                     prepared,
@@ -211,9 +227,7 @@ class LegacyV2Importer:
                 sha256 = _sha256(str(row["sha256"]))
                 size_bytes = int(row["byte_size"])
                 duration_ms = int(row["duration_ms"])
-                audio_format = _audio_format(
-                    row["container"], str(row["source_path"])
-                )
+                audio_format = _audio_format(row["container"], str(row["source_path"]))
             except (TypeError, ValueError) as exc:
                 bad_session_ids.add(session_id)
                 _issue(prepared, "invalid_source_metadata", instance_ref, str(exc))
@@ -287,9 +301,7 @@ class LegacyV2Importer:
                         actual_size=actual_size,
                     )
                 else:
-                    stored = self._audio_store.put_file(
-                        path, expected_sha256=sha256
-                    )
+                    stored = self._audio_store.put_file(path, expected_sha256=sha256)
                     storage_key = stored.storage_key
                     replica_state = AudioReplicaState.AVAILABLE
                     verified_at = now
@@ -305,7 +317,9 @@ class LegacyV2Importer:
                 legacy_ref=instance_ref,
             )
             prepared.replicas.append(replica)
-            segment_ref = _legacy_ref(namespace, "session_sources", int(row["mapping_id"]))
+            segment_ref = _legacy_ref(
+                namespace, "session_sources", int(row["mapping_id"])
+            )
             try:
                 segment = CaptureSegment(
                     segment_id=stable_ulid(segment_ref),
@@ -338,12 +352,14 @@ class LegacyV2Importer:
 
         for legacy_id, row in session_rows.items():
             session_ref = _legacy_ref(namespace, "recording_sessions", legacy_id)
+            v3_session_id = stable_ulid(session_ref)
             captured_start = _legacy_datetime(row["recorded_at"], str(row["timezone"]))
             duration_ms = int(row["duration_ms"])
             quarantined = legacy_id in bad_session_ids
+            prepared.session_keys[v3_session_id] = str(row["session_key"])
             prepared.sessions.append(
                 RecordingSession(
-                    session_id=stable_ulid(session_ref),
+                    session_id=v3_session_id,
                     captured_start=captured_start,
                     captured_end=captured_start + timedelta(milliseconds=duration_ms),
                     timezone=str(row["timezone"]),
@@ -412,6 +428,12 @@ class LegacyV2Importer:
         )
         self._prepare_corrections(connection, namespace, tables, prepared)
         self._prepare_snapshots(connection, namespace, tables, prepared)
+        prepared.semantics = prepare_legacy_semantic_projection(
+            connection,
+            namespace,
+            session_rows,
+            now=now,
+        )
         known = _DIRECT_TABLES | _SNAPSHOT_TABLES | {"sqlite_sequence"}
         for table in sorted(tables - known):
             count = _table_count(connection, table)
@@ -477,9 +499,7 @@ class LegacyV2Importer:
                 SessionManifest(
                     manifest_id=stable_ulid(manifest_ref),
                     session_id=stable_ulid(
-                        _legacy_ref(
-                            namespace, "recording_sessions", legacy_session_id
-                        )
+                        _legacy_ref(namespace, "recording_sessions", legacy_session_id)
                     ),
                     schema_version=str(row["manifest_format"]),
                     sha256=sha256,
@@ -682,13 +702,22 @@ class LegacyV2Importer:
             for session in prepared.sessions:
                 added = uow.catalog.add_session(session)
                 _record(created, existing, "recording_sessions", added)
-                if added:
+                projection = _session_projection(
+                    session, prepared.session_keys[session.session_id]
+                )
+                latest = uow.changes.latest("recording_session", session.session_id)
+                if (
+                    latest is None
+                    or latest.revision != session.revision
+                    or latest.operation.value != "upsert"
+                    or latest.payload != projection
+                ):
                     uow.changes.append(
                         "recording_session",
                         session.session_id,
                         session.revision,
                         "upsert",
-                        _session_projection(session),
+                        projection,
                     )
 
             actual_asset_ids: dict[str, str] = {}
@@ -712,9 +741,7 @@ class LegacyV2Importer:
 
             actual_replica_ids: dict[str, str] = {}
             for replica in prepared.replicas:
-                mapped = replace(
-                    replica, asset_id=actual_asset_ids[replica.asset_id]
-                )
+                mapped = replace(replica, asset_id=actual_asset_ids[replica.asset_id])
                 added = uow.catalog.add_replica(mapped)
                 _record(created, existing, "audio_replicas", added)
                 actual_replica_ids[replica.replica_id] = mapped.replica_id
@@ -762,6 +789,135 @@ class LegacyV2Importer:
                     existing,
                     "corrections",
                     uow.corrections.add(correction),
+                )
+            for person in prepared.semantics.persons:
+                _record(
+                    created,
+                    existing,
+                    "persons",
+                    uow.people.import_person(
+                        person.person_id,
+                        person.display_name,
+                        person.kind,
+                        person.aliases,
+                        person.relationship_labels,
+                        "legacy_v2_import",
+                        _projection_datetime(person.created_at),
+                    ),
+                )
+            speaker_labels = {
+                track.speaker_track_id: track.label
+                for track in prepared.semantics.speaker_tracks
+            }
+            for track in prepared.semantics.speaker_tracks:
+                _record(
+                    created,
+                    existing,
+                    "speaker_tracks",
+                    uow.evidence.add_speaker_track(track),
+                )
+            for utterance in prepared.semantics.utterances:
+                added = uow.evidence.add_utterance(utterance)
+                _record(created, existing, "utterances", added)
+                if added:
+                    label = speaker_labels.get(utterance.speaker_track_id or "")
+                    uow.changes.append(
+                        "utterance",
+                        utterance.utterance_id,
+                        utterance.revision,
+                        "upsert",
+                        utterance_dto(
+                            utterance,
+                            speaker_label=label,
+                            original_speaker_label=label,
+                        ),
+                    )
+            evidence_created_at = self._now()
+            semantic_session_ids = sorted(
+                {utterance.session_id for utterance in prepared.semantics.utterances}
+            )
+            for session_id in semantic_session_ids:
+                for value in uow.knowledge.unmaterialized_evidence(session_id):
+                    span = EvidenceSpan(
+                        evidence_span_id=stable_ulid(
+                            "evidence-span",
+                            value["utterance_id"],
+                            value["asset_id"],
+                            value["session_start_ms"],
+                            value["session_end_ms"],
+                        ),
+                        session_id=str(value["session_id"]),
+                        asset_id=str(value["asset_id"]),
+                        artifact_id=str(value["source_artifact_id"]),
+                        utterance_id=str(value["utterance_id"]),
+                        session_start_ms=int(value["session_start_ms"]),
+                        session_end_ms=int(value["session_end_ms"]),
+                        asset_start_ms=int(value["asset_start_ms"]),
+                        asset_end_ms=int(value["asset_end_ms"]),
+                        created_at=evidence_created_at,
+                    )
+                    _record(
+                        created,
+                        existing,
+                        "evidence_spans",
+                        uow.knowledge.add_evidence_span(span),
+                    )
+            for generation in prepared.semantics.generations:
+                _record(
+                    created,
+                    existing,
+                    "generations",
+                    uow.knowledge.add_generation(generation),
+                )
+            for proposal in prepared.semantics.proposals:
+                _record(
+                    created,
+                    existing,
+                    "proposals",
+                    uow.knowledge.add_proposal(proposal),
+                )
+            for operation in prepared.semantics.event_operations:
+                _record(
+                    created,
+                    existing,
+                    "event_operations",
+                    uow.knowledge.add_event_operation(operation),
+                )
+            for state in prepared.semantics.event_states:
+                if uow.knowledge.get_event(state.event_id) is None:
+                    uow.knowledge.put_event_state(state, expected_revision=0)
+                    _record(created, existing, "events", True)
+                else:
+                    _record(created, existing, "events", False)
+            for (
+                link_id,
+                event_id,
+                event_revision,
+                utterance_id,
+                utterance_revision,
+                linked_at,
+            ) in prepared.semantics.event_evidence:
+                _record(
+                    created,
+                    existing,
+                    "event_evidence",
+                    uow.knowledge.add_evidence_link(
+                        link_id,
+                        "event",
+                        event_id,
+                        event_revision,
+                        "utterance",
+                        utterance_id,
+                        utterance_revision,
+                        _projection_datetime(linked_at),
+                    ),
+                )
+            for dependency in prepared.semantics.dependencies:
+                _record(
+                    created,
+                    existing,
+                    "derivation_dependencies",
+                    uow.derivations.add_dependency(dependency),
                 )
             result = LegacyImportResult(
                 import_id=import_id,
@@ -830,7 +986,9 @@ def _processing_run(
     pipeline_version = row["pipeline_version"] or f"legacy:{row['run_kind']}"
     config_digest = str(row["config_sha256"] or "")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", config_digest):
-        config_digest = hashlib.sha256(str(row["config_json"]).encode("utf-8")).hexdigest()
+        config_digest = hashlib.sha256(
+            str(row["config_json"]).encode("utf-8")
+        ).hexdigest()
     return ProcessingRun(
         run_id=stable_ulid(run_ref),
         session_id=stable_ulid(
@@ -928,9 +1086,10 @@ def _audio_format(container: object, source_path: str) -> AudioFormat:
     return AudioFormat(aliases.get(value, value))
 
 
-def _session_projection(session: RecordingSession) -> dict[str, Any]:
+def _session_projection(session: RecordingSession, session_key: str) -> dict[str, Any]:
     return {
         "session_id": session.session_id,
+        "session_key": session_key,
         "captured_start": _projection_datetime(session.captured_start),
         "captured_end": (
             _projection_datetime(session.captured_end)
@@ -990,7 +1149,11 @@ def _sha256(value: str) -> str:
 
 def _resolve_source_path(value: str, source_database: Path) -> Path:
     path = Path(value)
-    return path.resolve() if path.is_absolute() else (source_database.parent / path).resolve()
+    return (
+        path.resolve()
+        if path.is_absolute()
+        else (source_database.parent / path).resolve()
+    )
 
 
 def _file_sha256(path: Path) -> str:

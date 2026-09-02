@@ -44,7 +44,7 @@ class CliCommandModuleTests(unittest.TestCase):
     def test_run_options_remain_visible_after_command_split(self) -> None:
         cases = {
             "device": (
-                "--auto-workflow",
+                "--auto-process",
                 "--workflow-shadow",
                 "--v3",
             ),

@@ -64,23 +64,101 @@ class PersonMemoryService:
                 _datetime(self._now()),
             )
 
-    def refresh(self, person_id: str, actor: str = "system:v35-projection") -> dict[str, Any]:
+    def refresh(
+        self, person_id: str, actor: str = "system:v35-projection"
+    ) -> dict[str, Any]:
         with self._uow_factory() as uow:
             events = uow.person_memories.event_sources(person_id)
         created = 0
         revised = 0
+        retracted = 0
         skipped = 0
         for event in events:
             projection = _event_projection(person_id, event)
-            if projection is None:
-                skipped += 1
-                continue
             memory_id = _event_memory_id(person_id, str(event["event_id"]))
             with self._uow_factory() as uow:
                 try:
                     current = uow.person_memories.current_memory(memory_id)
                 except KeyError:
                     current = None
+                # A human revision owns the memory from this point onward. Event
+                # refreshes must never silently replace the user's correction.
+                if (
+                    current is not None
+                    and current["source"] != PersonMemorySource.EVENT_PROJECTION.value
+                ):
+                    skipped += 1
+                    continue
+                if projection is None:
+                    if current is None:
+                        skipped += 1
+                        continue
+                    payload = dict(event["payload"])
+                    obsolete_details = dict(current["details"])
+                    obsolete_details.update(
+                        {
+                            "event_revision": int(event["revision"]),
+                            "event_status": event["status"],
+                            "actor_person_id": payload.get("actor_person_id"),
+                            "related_person_ids": payload.get("related_person_ids", []),
+                            "topics": _event_topics(payload),
+                            "person_role": "related",
+                        }
+                    )
+                    obsolete = {
+                        "kind": str(current["kind"]),
+                        "summary": _event_summary(payload, str(event["event_kind"])),
+                        "details": obsolete_details,
+                        "confidence": float(
+                            payload.get("confidence", current["confidence"])
+                        ),
+                        "confirmation_status": _event_confirmation(
+                            event.get("actor")
+                        ).value,
+                        "valid_from": str(current["valid_from"]),
+                        "valid_until": current["valid_until"],
+                        "status": PersonMemoryStatus.RETRACTED.value,
+                    }
+                    if _projection_matches(current, obsolete):
+                        skipped += 1
+                        continue
+                    evidence_ids = tuple(
+                        dict.fromkeys(
+                            str(item["utterance_id"])
+                            for item in current["evidence"]
+                            if item.get("utterance_id") is not None
+                        )
+                    )
+                    uow.person_memories.add_revision(
+                        memory_id=memory_id,
+                        person_id=person_id,
+                        kind=obsolete["kind"],
+                        summary=obsolete["summary"],
+                        details=obsolete["details"],
+                        source=PersonMemorySource.EVENT_PROJECTION.value,
+                        confidence=obsolete["confidence"],
+                        confirmation_status=obsolete["confirmation_status"],
+                        valid_from=obsolete["valid_from"],
+                        valid_until=obsolete["valid_until"],
+                        status=obsolete["status"],
+                        event_id=str(event["event_id"]),
+                        reminder_event_id=current["reminder_event_id"],
+                        evidence_utterance_ids=evidence_ids,
+                        operation_id=new_ulid(),
+                        operation_kind=PersonMemoryOperationKind.PROJECT.value,
+                        actor=actor,
+                        created_at=_datetime(self._now()),
+                        operation_payload={
+                            "event_id": event["event_id"],
+                            "event_revision": event["revision"],
+                            "reason": "person_is_related_but_not_the_fact_subject",
+                        },
+                    )
+                    if current["status"] == PersonMemoryStatus.RETRACTED.value:
+                        revised += 1
+                    else:
+                        retracted += 1
+                    continue
                 if current is not None and _projection_matches(current, projection):
                     skipped += 1
                     continue
@@ -121,6 +199,7 @@ class PersonMemoryService:
             "person_id": person_id,
             "created_count": created,
             "revised_count": revised,
+            "retracted_count": retracted,
             "expired_count": expired,
             "skipped_count": skipped,
         }
@@ -288,9 +367,7 @@ class PersonMemoryService:
         return len(due)
 
 
-def _event_projection(
-    person_id: str, event: dict[str, Any]
-) -> dict[str, Any] | None:
+def _event_projection(person_id: str, event: dict[str, Any]) -> dict[str, Any] | None:
     event_kind = str(event["event_kind"])
     kind = {
         "person_fact": PersonMemoryKind.STABLE_FACT,
@@ -303,10 +380,15 @@ def _event_projection(
         return None
     payload = dict(event["payload"])
     if (
-        event_kind in {"task", "request"}
-        and payload.get("commitment_direction")
-        in {"self_to_other", "other_to_self", "mutual"}
+        event_kind == "person_fact"
+        and payload.get("actor_person_id", payload.get("person_id")) != person_id
     ):
+        return None
+    if event_kind in {"task", "request"} and payload.get("commitment_direction") in {
+        "self_to_other",
+        "other_to_self",
+        "mutual",
+    }:
         kind = PersonMemoryKind.COMMITMENT
     summary = _event_summary(payload, event_kind)
     start_value = payload.get("starts_at") or payload.get("scheduled_at")
@@ -327,11 +409,7 @@ def _event_projection(
         valid_until = scheduled
     elif payload.get("due_at"):
         valid_until = _optional_datetime(payload["due_at"])
-    confirmation = (
-        PersonMemoryConfirmation.UNCONFIRMED
-        if str(event.get("actor", "")).startswith("system:")
-        else PersonMemoryConfirmation.CONFIRMED
-    )
+    confirmation = _event_confirmation(event.get("actor"))
     details = {
         "event_kind": event_kind,
         "event_revision": int(event["revision"]),
@@ -339,7 +417,7 @@ def _event_projection(
         "commitment_direction": payload.get("commitment_direction"),
         "actor_person_id": payload.get("actor_person_id"),
         "related_person_ids": payload.get("related_person_ids", []),
-        "topics": payload.get("topics", []),
+        "topics": _event_topics(payload),
         "scheduled_time": payload.get("scheduled_time"),
         "person_role": (
             "actor" if payload.get("actor_person_id") == person_id else "related"
@@ -376,11 +454,33 @@ def _projection_matches(current: dict[str, Any], projection: dict[str, Any]) -> 
 
 
 def _event_summary(payload: dict[str, Any], fallback: str) -> str:
-    for key in ("title", "summary", "content", "text", "description"):
+    for key in ("summary", "content", "text", "description", "title"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
     return fallback
+
+
+def _event_confirmation(value: object) -> PersonMemoryConfirmation:
+    actor = str(value or "").strip()
+    if actor.startswith("system:") or actor == "legacy_v2_import":
+        return PersonMemoryConfirmation.UNCONFIRMED
+    return PersonMemoryConfirmation.CONFIRMED
+
+
+def _event_topics(payload: dict[str, Any]) -> list[str]:
+    values = payload.get("topics", [])
+    if not isinstance(values, list):
+        return []
+    result: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        topic = value.strip()
+        if not topic or topic.startswith(("陈述 ·", "行动候选 ·")):
+            continue
+        result.append(topic)
+    return list(dict.fromkeys(result))
 
 
 def _event_memory_id(person_id: str, event_id: str) -> str:
@@ -433,8 +533,10 @@ def memory_draft_from_dict(person_id: str, value: dict[str, Any]) -> PersonMemor
         raise ValueError("person memory kind and summary are invalid")
     details = value.get("details", {})
     evidence = value.get("evidence_utterance_ids", [])
-    if not isinstance(details, dict) or not isinstance(evidence, list) or not all(
-        isinstance(item, str) for item in evidence
+    if (
+        not isinstance(details, dict)
+        or not isinstance(evidence, list)
+        or not all(isinstance(item, str) for item in evidence)
     ):
         raise ValueError("person memory details or evidence are invalid")
     confidence = value.get("confidence", 1.0)

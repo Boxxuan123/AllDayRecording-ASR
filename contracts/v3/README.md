@@ -6,7 +6,7 @@ generated decoders, but they must not redefine server enums or resource shapes.
 
 ## Versioning
 
-- Contract version: `3.6.0`
+- Contract version: `3.7.0`
 - Mobile projection version: `4`
 - JSON Schema dialect: 2020-12
 - OpenAPI version: 3.1
@@ -45,9 +45,11 @@ new API path and contract major version.
   candidates behind the Desktop review boundary by default.
 - `schemas/person.schema.json` freezes V3.4 open-set speaker clusters, explicit
   person links, representative clips, and reversible human operations. Unknown
-  is a first-class Desktop result. Only explicit confirmation publishes stable,
-  multi-prototype voiceprints; clusters and candidate prototypes never enter the
-  Phone projection, which remains on projection `4`.
+  is a first-class Desktop result. V3.7 adds four-tier decisions, per-prototype
+  human reviews, person maturity, hard negatives, opt-in automatic matching, and
+  historical rematching. A cluster label never bulk-promotes voiceprints; only a
+  confirmed individual prototype enters the stable library. These Desktop-only
+  resources do not enter the Phone projection, which remains on projection `4`.
 - `schemas/person-memory.schema.json` freezes V3.5 Desktop-only person profiles,
   cross-day interactions, typed memories, validity, confirmation state, event /
   utterance evidence, reminder links, and append-only correction responses.

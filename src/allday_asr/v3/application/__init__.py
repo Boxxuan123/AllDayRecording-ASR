@@ -54,6 +54,12 @@ from allday_asr.v3.application.insights import (
     InsightGenerationUnavailable,
     observations_from_dict,
 )
+from allday_asr.v3.application.event_extraction import (
+    AUTO_ACCEPT_SEMANTIC_EVENT_CONFIDENCE,
+    SemanticEventExtractionService,
+    SemanticEventGenerationFailed,
+    SemanticEventGenerationUnavailable,
+)
 
 __all__ = [
     "ClientOperationHandler",
@@ -92,4 +98,8 @@ __all__ = [
     "revision_from_dict",
     "observations_from_dict",
     "AUTO_APPLY_CONFIDENCE",
+    "AUTO_ACCEPT_SEMANTIC_EVENT_CONFIDENCE",
+    "SemanticEventExtractionService",
+    "SemanticEventGenerationFailed",
+    "SemanticEventGenerationUnavailable",
 ]

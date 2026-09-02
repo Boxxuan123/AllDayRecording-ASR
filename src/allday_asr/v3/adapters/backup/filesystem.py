@@ -102,7 +102,7 @@ class FilesystemSessionBackupAdapter:
             ).fetchone()
             rows = connection.execute(
                 """
-                SELECT s.sequence, a.sha256, r.storage_key
+                SELECT s.sequence, a.sha256, a.format, r.storage_key
                 FROM capture_segments s
                 JOIN audio_assets a ON a.asset_id = s.asset_id
                 JOIN audio_replicas r ON r.replica_id = s.replica_id
@@ -122,7 +122,8 @@ class FilesystemSessionBackupAdapter:
         ]
         values.extend(
             (
-                Path("audio") / f"{int(row['sequence']):06d}-{row['sha256']}.wav",
+                Path("audio")
+                / f"{int(row['sequence']):06d}-{row['sha256']}.{row['format']}",
                 self.audio_store.path_for(str(row["storage_key"])),
                 str(row["sha256"]),
             )

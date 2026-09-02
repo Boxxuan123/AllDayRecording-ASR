@@ -46,6 +46,8 @@ from allday_asr.v3.domain import (
 
 TEST_ROOT = Path(__file__).parent
 NOW = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
+TRACK_IDS = {1: f"{701:026d}", 2: f"{702:026d}"}
+UTTERANCE_IDS = {1: f"{801:026d}", 2: f"{802:026d}"}
 
 
 class _UnusedEmbeddingProvider:
@@ -64,9 +66,7 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
         self.session_ids = {1: new_ulid(), 2: new_ulid()}
 
         def factory() -> SqliteUnitOfWork:
-            return SqliteUnitOfWork(
-                self.database, now=lambda: self.now.isoformat()
-            )
+            return SqliteUnitOfWork(self.database, now=lambda: self.now.isoformat())
 
         self.factory = factory
         self.knowledge = KnowledgeArchitectureService(factory, now=lambda: self.now)
@@ -83,8 +83,12 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
         self._seed_session(1, self.now - timedelta(days=1), "昨天确认合同时间")
         self._seed_session(2, self.now, "今天答应发送修改稿")
         with self.factory() as uow:
-            uow.people.create_person("person-a", "张同学", "known", self.now.isoformat())
-            uow.people.create_person("person-b", "李同学", "known", self.now.isoformat())
+            uow.people.create_person(
+                "person-a", "张同学", "known", self.now.isoformat()
+            )
+            uow.people.create_person(
+                "person-b", "李同学", "known", self.now.isoformat()
+            )
         self._link_person("person-a")
         self.knowledge.materialize_evidence(self.session_ids[1])
         self.knowledge.materialize_evidence(self.session_ids[2])
@@ -92,7 +96,9 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def test_projects_cross_day_fact_and_commitment_with_playable_evidence(self) -> None:
+    def test_projects_cross_day_fact_and_commitment_with_playable_evidence(
+        self,
+    ) -> None:
         self._event(
             1,
             "person_fact",
@@ -121,6 +127,16 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
         self.assertEqual(refreshed["created_count"], 2)
         self.assertEqual(detail["memory_count"], 2)
         self.assertEqual(detail["interaction_count"], 4)
+        person_summary = next(
+            item
+            for item in self.people.list_people()
+            if item["person_id"] == "person-a"
+        )
+        self.assertEqual(person_summary["memory_count"], detail["memory_count"])
+        self.assertEqual(
+            person_summary["interaction_count"], detail["interaction_count"]
+        )
+        self.assertEqual(person_summary["last_interaction_at"], detail["last_seen_at"])
         self.assertEqual(
             datetime.fromisoformat(detail["first_seen_at"].replace("Z", "+00:00")),
             self.now - timedelta(days=1),
@@ -144,7 +160,7 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
                 summary="这周在上海",
                 valid_from=self.now,
                 valid_until=self.now + timedelta(days=7),
-                evidence_utterance_ids=("utterance-2",),
+                evidence_utterance_ids=(UTTERANCE_IDS[2],),
             )
         )
         revised = self.memories.revise(
@@ -158,18 +174,77 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
         )
         self.assertEqual(revised["revision"], 2)
         self.assertEqual(revised["summary"], "这周在苏州")
-        self.assertEqual(self.memories.retract(memory["memory_id"])["status"], "retracted")
+        self.assertEqual(
+            self.memories.retract(memory["memory_id"])["status"], "retracted"
+        )
         restored = self.memories.undo(memory["memory_id"])
         self.assertEqual(restored["status"], "active")
         self.assertEqual(restored["summary"], "这周在苏州")
 
-        with self.database.transaction() as connection, self.assertRaisesRegex(
-            sqlite3.IntegrityError, "immutable"
+        with (
+            self.database.transaction() as connection,
+            self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"),
         ):
             connection.execute(
                 "UPDATE person_memory_entries SET summary = 'tampered' WHERE memory_id = ?",
                 (memory["memory_id"],),
             )
+
+    def test_projection_uses_meaningful_summary_and_fact_subject_boundary(self) -> None:
+        self._event(
+            1,
+            "person_fact",
+            {
+                "title": "陈述 · person-a",
+                "summary": "张同学不能吃螃蟹，只能吃虾和鱼。",
+                "actor_person_id": "person-a",
+                "related_person_ids": ["person-a", "person-b"],
+                "topics": ["陈述 · person-a", "饮食"],
+            },
+            actor="system:legacy_v2_import",
+        )
+
+        refreshed = self.memories.refresh("person-a")
+        memory = self.memories.person("person-a")["memories"][0]
+        related = self.memories.refresh("person-b")
+
+        self.assertEqual(refreshed["created_count"], 1)
+        self.assertEqual(memory["summary"], "张同学不能吃螃蟹，只能吃虾和鱼。")
+        self.assertEqual(memory["details"]["topics"], ["饮食"])
+        self.assertEqual(memory["confirmation_status"], "unconfirmed")
+        self.assertFalse(memory["available_actions"]["can_undo"])
+        self.assertEqual(related["created_count"], 0)
+        self.assertEqual(self.memories.person("person-b")["memory_count"], 0)
+
+    def test_refresh_does_not_replace_a_human_revision(self) -> None:
+        self._event(
+            1,
+            "person_fact",
+            {
+                "title": "旧事件标题",
+                "actor_person_id": "person-a",
+                "related_person_ids": ["person-a"],
+            },
+        )
+        self.memories.refresh("person-a")
+        current = self.memories.person("person-a")["memories"][0]
+        revised = self.memories.revise(
+            current["memory_id"],
+            summary="人工核对后的内容",
+            details={"topics": ["人工核对"]},
+            confidence=1,
+            valid_from=self.now,
+            valid_until=None,
+            reminder_event_id=None,
+        )
+
+        refreshed = self.memories.refresh("person-a")
+        after = self.memories.person("person-a")["memories"][0]
+
+        self.assertEqual(refreshed["skipped_count"], 1)
+        self.assertEqual(after["revision"], revised["revision"])
+        self.assertEqual(after["summary"], "人工核对后的内容")
+        self.assertTrue(after["available_actions"]["can_undo"])
 
     def test_short_term_memory_cannot_silently_become_permanent(self) -> None:
         with self.assertRaisesRegex(ValueError, "require valid_until"):
@@ -178,7 +253,7 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
                 kind=PersonMemoryKind.SHORT_TERM_STATE,
                 summary="正在上海",
                 valid_from=self.now,
-                evidence_utterance_ids=("utterance-2",),
+                evidence_utterance_ids=(UTTERANCE_IDS[2],),
             )
 
     def test_commitment_memory_links_to_accepted_reminder_lifecycle(self) -> None:
@@ -201,7 +276,7 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
                         scheduled_at=self.now + timedelta(days=1),
                         location=None,
                         confidence=0.95,
-                        evidence_utterance_ids=("utterance-2",),
+                        evidence_utterance_ids=(UTTERANCE_IDS[2],),
                         needs_confirmation=True,
                     ),
                 ),
@@ -216,17 +291,19 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
         self.assertTrue(detail["commitments"], detail)
         commitment = detail["commitments"][0]
 
-        self.assertEqual(commitment["reminder_event_id"], accepted["reminder"]["event_id"])
+        self.assertEqual(
+            commitment["reminder_event_id"], accepted["reminder"]["event_id"]
+        )
         self.assertEqual(commitment["reminder"]["status"], "scheduled")
         self.assertEqual(
             commitment["details"]["scheduled_time"],
             accepted["reminder"]["scheduled_at"],
         )
-        self.assertEqual(
-            commitment["details"]["commitment_direction"], "self_to_other"
-        )
+        self.assertEqual(commitment["details"]["commitment_direction"], "self_to_other")
 
-    def test_profile_aliases_relationships_and_identity_correction_migrate_memory(self) -> None:
+    def test_profile_aliases_relationships_and_identity_correction_migrate_memory(
+        self,
+    ) -> None:
         profile = self.memories.update_profile(
             "person-a",
             display_name="张老师",
@@ -357,7 +434,7 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
             )
             uow.evidence.add_speaker_track(
                 SpeakerTrack(
-                    speaker_track_id=f"track-{number}",
+                    speaker_track_id=TRACK_IDS[number],
                     session_id=session_id,
                     run_id=f"run-{number}",
                     label="SPEAKER_00",
@@ -367,12 +444,12 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
             )
             uow.evidence.add_utterance(
                 Utterance(
-                    utterance_id=f"utterance-{number}",
+                    utterance_id=UTTERANCE_IDS[number],
                     session_id=session_id,
                     run_id=f"run-{number}",
                     source_artifact_id=f"artifact-{number}",
-                    speaker_track_id=f"track-{number}",
-                    original_speaker_track_id=f"track-{number}",
+                    speaker_track_id=TRACK_IDS[number],
+                    original_speaker_track_id=TRACK_IDS[number],
                     ordinal=0,
                     start_ms=100,
                     end_ms=900,
@@ -412,7 +489,7 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
                     """,
                     (
                         f"membership-{number}",
-                        f"track-{number}",
+                        TRACK_IDS[number],
                         self.now.isoformat(),
                         self.now.isoformat(),
                     ),
@@ -428,7 +505,14 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
                 (person_id, self.now.isoformat(), self.now.isoformat()),
             )
 
-    def _event(self, number: int, kind: str, patch: dict[str, object]) -> str:
+    def _event(
+        self,
+        number: int,
+        kind: str,
+        patch: dict[str, object],
+        *,
+        actor: str = "desktop-user",
+    ) -> str:
         receipt = self.knowledge.submit_generation(
             GenerationSubmission(
                 layer=KnowledgeLayer.EVENT,
@@ -448,13 +532,13 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
                             "expected_revision": 0,
                             "patch": patch,
                         },
-                        (f"utterance-{number}",),
+                        (UTTERANCE_IDS[number],),
                     ),
                 ),
             )
         )
         resolution = self.knowledge.accept_proposal(
-            receipt["proposals"][0]["proposal_id"], "desktop-user"
+            receipt["proposals"][0]["proposal_id"], actor
         )
         assert resolution.resource_id is not None
         return resolution.resource_id

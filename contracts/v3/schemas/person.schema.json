@@ -1,11 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://alldayrecording.local/contracts/v3/person.schema.json",
-  "title": "V3.4+ Open-set speaker identity resources",
+  "title": "V3.7 Layered open-set speaker identity resources",
   "$defs": {
     "ClusterStatus": {
       "type": "string",
       "enum": ["active", "merged", "split", "ignored"]
+    },
+    "SpeakerMatchTier": {
+      "type": "string",
+      "enum": ["insufficient_evidence", "auto_matched", "suggested", "no_known_match"]
+    },
+    "VoicePrototypeReviewStatus": {
+      "type": "string",
+      "enum": ["pending", "confirmed", "rejected", "uncertain", "retracted"]
     },
     "Person": {
       "type": "object",
@@ -18,6 +26,19 @@
         "revision": {"$ref": "primitives.schema.json#/$defs/Revision"},
         "cluster_count": {"type": "integer", "minimum": 0},
         "prototype_count": {"type": "integer", "minimum": 0},
+        "enrollment_reference_count": {"type": "integer", "minimum": 0},
+        "auto_identity_enabled": {"type": "boolean"},
+        "identity_policy_version": {"type": ["string", "null"]},
+        "voice_policy_revision": {"type": ["integer", "null"], "minimum": 1},
+        "voice_maturity_status": {"type": ["string", "null"], "enum": ["seed", "learning", "calibrated", "suspended", null]},
+        "known_auto_match_enabled": {"type": "boolean"},
+        "suggest_threshold": {"type": ["number", "null"], "minimum": -1, "maximum": 1},
+        "auto_accept_threshold": {"type": ["number", "null"], "minimum": -1, "maximum": 1},
+        "minimum_margin": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "minimum_quality": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "voice_calibration": {"type": "object"},
+        "rejected_prototype_count": {"type": "integer", "minimum": 0},
+        "pending_voice_review_count": {"type": "integer", "minimum": 0},
         "memory_count": {"type": "integer", "minimum": 0},
         "interaction_count": {"type": "integer", "minimum": 0},
         "last_interaction_at": {"type": ["string", "null"]},
@@ -45,6 +66,36 @@
         "status": {"type": "string", "enum": ["candidate", "accepted"]},
         "quality_score": {"type": "number", "minimum": 0, "maximum": 1},
         "representative_clips": {"type": "array", "items": {"$ref": "#/$defs/RepresentativeClip"}},
+        "decision_tier": {"oneOf": [{"$ref": "#/$defs/SpeakerMatchTier"}, {"type": "null"}]},
+        "candidate_person_id": {"oneOf": [{"$ref": "primitives.schema.json#/$defs/StableId"}, {"type": "null"}]},
+        "best_score": {"type": ["number", "null"], "minimum": -1, "maximum": 1},
+        "second_best_score": {"type": ["number", "null"], "minimum": -1, "maximum": 1},
+        "score_margin": {"type": ["number", "null"], "minimum": 0},
+        "match_reason": {"type": ["string", "null"]},
+        "reviewed_person_id": {"oneOf": [{"$ref": "primitives.schema.json#/$defs/StableId"}, {"type": "null"}]},
+        "review_status": {"oneOf": [{"$ref": "#/$defs/VoicePrototypeReviewStatus"}, {"type": "null"}]},
+        "review_note": {"type": ["string", "null"]},
+        "created_at": {"type": "string"}
+      }
+    },
+    "VoicePrototypeCandidate": {
+      "type": "object",
+      "required": ["prototype_id", "speaker_track_id", "cluster_id", "session_id", "quality_score", "person_id", "person_name", "review_status", "representative_clips"],
+      "properties": {
+        "prototype_id": {"type": "string", "minLength": 1},
+        "speaker_track_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "cluster_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "quality_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "person_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
+        "person_name": {"type": "string", "minLength": 1},
+        "decision_tier": {"oneOf": [{"$ref": "#/$defs/SpeakerMatchTier"}, {"type": "null"}]},
+        "best_score": {"type": ["number", "null"], "minimum": -1, "maximum": 1},
+        "second_best_score": {"type": ["number", "null"], "minimum": -1, "maximum": 1},
+        "score_margin": {"type": ["number", "null"], "minimum": 0},
+        "match_reason": {"type": ["string", "null"]},
+        "review_status": {"$ref": "#/$defs/VoicePrototypeReviewStatus"},
+        "representative_clips": {"type": "array", "items": {"$ref": "#/$defs/RepresentativeClip"}},
         "created_at": {"type": "string"}
       }
     },
@@ -59,9 +110,14 @@
         "person_id": {"oneOf": [{"$ref": "primitives.schema.json#/$defs/StableId"}, {"type": "null"}]},
         "person_name": {"type": ["string", "null"]},
         "suggested_person_id": {"oneOf": [{"$ref": "primitives.schema.json#/$defs/StableId"}, {"type": "null"}]},
+        "suggested_person_name": {"type": ["string", "null"]},
         "suggestion_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "link_source": {"type": ["string", "null"], "enum": ["human", "automatic", null]},
+        "link_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
         "track_count": {"type": "integer", "minimum": 0},
         "session_count": {"type": "integer", "minimum": 0},
+        "latest_session_id": {"oneOf": [{"$ref": "primitives.schema.json#/$defs/StableId"}, {"type": "null"}]},
+        "session_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "primitives.schema.json#/$defs/StableId"}},
         "members": {"type": "array", "items": {"type": "object"}},
         "prototypes": {"type": "array", "items": {"$ref": "#/$defs/SpeakerPrototype"}},
         "operations": {"type": "array", "items": {"type": "object"}}
@@ -70,7 +126,7 @@
     "ClusterRunResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cluster_run_id", "session_id", "status", "track_count", "embedded_track_count", "new_cluster_count", "matched_track_count", "person_suggestion_count", "unusable_track_ids"],
+      "required": ["cluster_run_id", "session_id", "status", "track_count", "embedded_track_count", "new_cluster_count", "matched_track_count", "person_suggestion_count", "auto_identified_self_cluster_count", "auto_identity_updated_utterance_count", "rematched_prototype_count", "suggested_cluster_count", "auto_identified_known_cluster_count", "auto_known_identity_updated_utterance_count", "unusable_track_ids"],
       "properties": {
         "cluster_run_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
         "session_id": {"$ref": "primitives.schema.json#/$defs/StableId"},
@@ -80,6 +136,12 @@
         "new_cluster_count": {"type": "integer", "minimum": 0},
         "matched_track_count": {"type": "integer", "minimum": 0},
         "person_suggestion_count": {"type": "integer", "minimum": 0},
+        "auto_identified_self_cluster_count": {"type": "integer", "minimum": 0},
+        "auto_identity_updated_utterance_count": {"type": "integer", "minimum": 0},
+        "rematched_prototype_count": {"type": "integer", "minimum": 0},
+        "suggested_cluster_count": {"type": "integer", "minimum": 0},
+        "auto_identified_known_cluster_count": {"type": "integer", "minimum": 0},
+        "auto_known_identity_updated_utterance_count": {"type": "integer", "minimum": 0},
         "unusable_track_ids": {"type": "array", "items": {"$ref": "primitives.schema.json#/$defs/StableId"}}
       }
     }

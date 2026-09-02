@@ -57,6 +57,24 @@ class SqliteDurableProcessingRepository:
         ).fetchone()
         return _run(row) if row is not None else None
 
+    def find_succeeded_run(
+        self,
+        session_id: str,
+        input_revision: int,
+        pipeline_version: str,
+        config_digest: str,
+    ) -> ProcessingRun | None:
+        row = self.connection.execute(
+            """
+            SELECT * FROM processing_runs
+            WHERE session_id = ? AND input_revision = ? AND pipeline_version = ?
+              AND config_digest = ? AND status = 'succeeded'
+            ORDER BY created_at DESC, run_id DESC LIMIT 1
+            """,
+            (session_id, input_revision, pipeline_version, config_digest),
+        ).fetchone()
+        return _run(row) if row is not None else None
+
     def add_graph(
         self,
         run: ProcessingRun,

@@ -52,9 +52,6 @@ allday_asr = [
     "v3/web_assets/*.svg",
     "v3/web_assets/assets/*.css",
     "v3/web_assets/assets/*.js",
-    "v3/web_assets/temp_labeler/*.html",
-    "v3/web_assets/temp_labeler/*.css",
-    "v3/web_assets/temp_labeler/*.js",
 ]
 
 [tool.ruff]

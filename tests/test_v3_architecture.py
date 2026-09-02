@@ -8,6 +8,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 V3_ROOT = PROJECT_ROOT / "src" / "allday_asr" / "v3"
 CORE_ROOTS = tuple(V3_ROOT / name for name in ("domain", "application", "ports"))
+DEFAULT_RUNTIME_FILES = (
+    V3_ROOT / "bootstrap" / "core.py",
+    V3_ROOT / "adapters" / "models" / "native.py",
+    V3_ROOT / "adapters" / "transfer" / "automation.py",
+)
 FORBIDDEN_IMPORT_PREFIXES = (
     "allday_asr.storage",
     "allday_asr.services",
@@ -57,6 +62,31 @@ class V3ArchitectureTests(unittest.TestCase):
                             f"{path.relative_to(PROJECT_ROOT)}:{forbidden}"
                         )
         self.assertEqual(violations, [])
+
+    def test_default_v3_runtime_has_no_v2_database_workflow_or_importer_dependency(
+        self,
+    ) -> None:
+        forbidden = (
+            "allday_asr.storage",
+            "allday_asr.services.quality_workflow",
+            "allday_asr.v3.adapters.models_v2",
+            "allday_asr.v3.adapters.legacy_v2",
+        )
+        violations: list[str] = []
+        for path in DEFAULT_RUNTIME_FILES:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                module = _imported_module(node)
+                if module is not None and module.startswith(forbidden):
+                    violations.append(
+                        f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:{module}"
+                    )
+        self.assertEqual(violations, [])
+
+        composition = (V3_ROOT / "bootstrap" / "core.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("import_legacy_v2", composition)
 
 
 def _imported_module(node: ast.AST) -> str | None:

@@ -172,13 +172,54 @@ class SqliteRecordingCatalogRepository:
             raise KeyError(f"recording session does not exist: {session_id}")
         return _recording_session(row)
 
-    def find_session_by_legacy_ref(
-        self, legacy_ref: str
-    ) -> RecordingSession | None:
+    def find_session_by_legacy_ref(self, legacy_ref: str) -> RecordingSession | None:
         row = self.connection.execute(
             "SELECT * FROM recording_sessions WHERE legacy_ref = ?", (legacy_ref,)
         ).fetchone()
         return _recording_session(row) if row is not None else None
+
+    def find_session_by_manifest_sha256(self, sha256: str) -> RecordingSession | None:
+        row = self.connection.execute(
+            """
+            SELECT s.* FROM session_manifests m
+            JOIN recording_sessions s ON s.session_id = m.session_id
+            WHERE m.sha256 = ?
+            """,
+            (sha256,),
+        ).fetchone()
+        return _recording_session(row) if row is not None else None
+
+    def tombstone_duplicate_session(
+        self,
+        session_id: str,
+        canonical_session_id: str,
+        tombstoned_at: datetime,
+    ) -> int | None:
+        timestamp = _datetime(tombstoned_at)
+        reason = f"duplicate_manifest:{canonical_session_id}"
+        cursor = self.connection.execute(
+            """
+            UPDATE recording_sessions
+            SET state = 'quarantined', revision = revision + 1,
+                status_code = 'stale', current_stage = 'deduplicated',
+                progress = 0.0, blocking_reason = ?, tombstoned_at = ?,
+                updated_at = ?
+            WHERE session_id = ? AND tombstoned_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM session_manifests m
+                WHERE m.session_id = recording_sessions.session_id
+              )
+            """,
+            (reason, timestamp, timestamp, session_id),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return int(
+            self.connection.execute(
+                "SELECT revision FROM recording_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+        )
 
     def find_asset_by_sha256(self, sha256: str) -> AudioAsset | None:
         row = self.connection.execute(
@@ -458,6 +499,18 @@ class SqliteChangeLogRepository:
         )
         return tuple(_change_event(row) for row in rows)
 
+    def latest(self, resource_type: str, resource_id: str) -> ChangeEvent | None:
+        row = self.connection.execute(
+            """
+            SELECT * FROM change_events
+            WHERE resource_type = ? AND resource_id = ?
+            ORDER BY sequence DESC
+            LIMIT 1
+            """,
+            (resource_type, resource_id),
+        ).fetchone()
+        return _change_event(row) if row is not None else None
+
 
 class SqliteDeviceTrustRepository:
     def __init__(self, connection: sqlite3.Connection, *, now: Clock) -> None:
@@ -471,8 +524,7 @@ class SqliteDeviceTrustRepository:
                 current.device_id != credential.device_id
                 or current.algorithm != credential.algorithm
                 or current.public_key != credential.public_key
-                or current.passkey_credential_ref
-                != credential.passkey_credential_ref
+                or current.passkey_credential_ref != credential.passkey_credential_ref
             ):
                 raise ValueError("device key conflicts with an enrolled credential")
             return False
@@ -752,6 +804,18 @@ class SqliteLegacyImportRunRepository:
         self.connection = connection
         self.now = now
 
+    def latest_namespace(self, source_path: str) -> str | None:
+        row = self.connection.execute(
+            """
+            SELECT source_namespace FROM legacy_import_runs
+            WHERE source_path = ? AND status = 'completed'
+            ORDER BY completed_at DESC, started_at DESC, import_id DESC
+            LIMIT 1
+            """,
+            (source_path,),
+        ).fetchone()
+        return str(row["source_namespace"]) if row is not None else None
+
     def start(
         self,
         import_id: str,
@@ -912,9 +976,7 @@ def _client_operation_record(row: sqlite3.Row) -> ClientOperationRecord:
             operation_id=str(row["operation_id"]),
             kind=str(row["kind"]),
             base_revision=(
-                int(row["base_revision"])
-                if row["base_revision"] is not None
-                else None
+                int(row["base_revision"]) if row["base_revision"] is not None else None
             ),
             payload=payload,
         ),

@@ -2,7 +2,16 @@
 
 一个本地优先的全天录音处理原型：将华为 Watch 导出的长录音离线处理为带时间戳、可回听、可人工校正身份的文字时间线。
 
-V3.0-G 已把 V3 Core、版本化 Desktop API 和独立前端设为默认入口。V3.1-A/B/C 已完成可靠统一对话时间线；V3.2 已完成证据、事件、记忆三层数据架构；V3.3 完成智能提醒与 Codex 文本提取闭环；V3.4 接通开放集声纹聚类和稳定人物 ID；V3.5 完成跨天人物记忆；V3.6 进一步接通每日总结和 7/30 天关系观察。客观统计由程序计算，Codex 只归纳事件层与允许的关键原话；事实和模型观察分栏，所有结果绑定证据、保存不可变 revision，并会在底层纠正后过期重算。未知始终是合法结果，只有人工确认才会把多个不可变原型写入稳定声纹库。Codex 不上传音频或本地路径，在专用空目录中以只读沙箱、拒绝审批方式运行，`ReasoningEffort` 可自动或按需指定。V2-A.1 至 V2-E.0.2 的模型、证据和评测能力仍完整保留，但只通过 `allday-asr legacy ...` 作为可执行回退或 V3 adapter 使用；Legacy 网页强制 query-only，拒绝所有写请求。
+V3.0-G 已把 V3 Core、版本化 Desktop API 和独立前端设为默认入口。V3.1-A/B/C 已完成可靠统一对话时间线；V3.2 已完成证据、事件、记忆三层数据架构；V3.3 完成智能提醒与 Codex 文本提取闭环；V3.4 接通开放集声纹聚类和稳定人物 ID；V3.5 完成跨天人物记忆；V3.6 接通每日总结和 7/30 天关系观察；V3.7 增加四档人物声纹决策、逐原型人工审核、困难负例、人物成熟度和历史重匹配。客观统计由程序计算，Codex 只归纳事件层与允许的关键原话；事实和模型观察分栏，所有结果绑定证据、保存不可变 revision，并会在底层纠正后过期重算。未知始终是合法结果；通过独立留出集验收的本人声纹可在高置信时自动关联。其他人物的整簇确认只同步身份，不批量注册声纹；只有逐条人工确认的原型进入稳定库，积累足够跨录音正例和拒绝负例、通过校准且由用户显式开启后，才允许严格自动确认。Codex 不上传音频或本地路径，在专用空目录中以只读沙箱、拒绝审批方式运行，`ReasoningEffort` 可自动或按需指定。新手机数据的接收、备份准入、双 ASR、说话人分析、证据投影、Codex 生成与跨端同步现在全部由 V3 调度并只写 `state/v3`；不会创建 V2 session、V2 processing run，也不会经过 V2→V3 回填。V2-A.1 至 V2-E.0.2 只保留在 `allday-asr legacy ...` 以及显式的一次性 `v3 legacy-import` 历史迁移边界中；Legacy 网页强制 query-only，拒绝所有写请求。
+
+删除 V2 数据前，还必须把旧人工人物标注转成自包含的 V3 声纹种子：
+
+```powershell
+allday-asr legacy-speaker-backfill state\allday_asr.sqlite3 --state-dir state\v3
+```
+
+该命令只读 V2，使用已经进入 V3 内容库的音频重建声纹，并把结果及审核依据写入
+V3；正常桌面运行和后续识别不会再查询 V2。
 
 ## V3.0 默认入口与回退
 
@@ -18,7 +27,7 @@ allday-asr legacy --help
 allday-asr legacy web
 ```
 
-当前完整 V3.6 的契约、Core schema、Phone projection schema 和默认入口冻结在
+当前完整 V3.7 的契约、Core schema、Phone projection schema 和默认入口冻结在
 `contracts/v3/release-lock.json`；V3.0 的切换证据仍保留在独立验收文档与 Git 历史中。本次真实 V2 数据切换使用 `release-prepare` 创建两份
 逐文件 SHA-256 校验、不可覆盖且只读的数据库/音频快照；`release-verify` 可随时复算证据。
 生产 Device listener 还必须通过 `ALLDAY_V3_DEPLOYMENT=production`、真实 Passkey RP ID
@@ -42,6 +51,7 @@ V3.1 统一时间线与校正闭环的边界、迁移和自动化证据见
 [V3.5 跨天人物记忆](docs/V3/V3.5-cross-day-person-memory.md)。
 每日事件总结、7/30 天关系观察、证据约束和重算边界见
 [V3.6 每日总结与关系观察](docs/V3/V3.6-daily-summary-and-relationship-observation.md)。
+[V3.7 四档人物声纹识别与防污染学习](docs/V3/V3.7-layered-speaker-identity.md)。
 
 实施依据见 [V2 质量优先架构与实施设计](docs/v2-quality-first-architecture.md)。当前结果、风险和进度见 [项目现状与路线图](docs/project-status.md)，新分片正式使用前的堵点和准入顺序见 [新音频正式使用前准入审计](docs/new-audio-production-readiness.md)。V2-B 操作见 [连续时间真值与 Benchmark 指南](docs/v2-b-continuous-benchmark.md)，V2-C 操作见 [质量优先双 ASR 与强制对齐](docs/v2-c-quality-asr.md)，公平性修订见 [V2-C.1 公平基准重建](docs/v2-c1-fair-benchmark.md) 和 [V2-C.2 声学富集盲测](docs/v2-c2-acoustic-blind-benchmark.md)，门控实现见 [V2-C.3 双 VAD 证据门控](docs/v2-c3-speech-gating.md)，说话人路线和命令见 [V2-D 重叠感知说话人时间轴](docs/v2-d-speaker-timeline.md)，语义接口边界见 [V2-E.0.2 Episode 证据层](docs/v2-e0-semantic-evidence.md)。
 
@@ -75,18 +85,18 @@ allday-asr device receive
 
 鸿蒙手机上传端已支持扫码配对、自动发现和断点上传。完整接口和安全边界见 [手机到电脑文件传输协议](docs/phone-to-computer-transfer.md)。
 
-需要在整段会话上传完成后自动开始 V2 时，以最后一个
-`session_summary.json` 的完整校验作为提交信号。当前没有电脑可验证的独立备份时，
-需显式接受 shadow 模式：
+需要在整段会话上传完成后自动开始 V3 原生分析时，以最后一个
+`session_summary.json` 的完整校验作为提交信号，并指定与 V3 内容仓库不重叠的独立备份目录：
 
 ```powershell
-allday-asr device receive --auto-workflow --workflow-shadow
+allday-asr device receive --auto-process --workflow-backup-root D:\AllDayRecording-Backup
 ```
 
-正式 production 自动流程改用
-`--workflow-backup-root <独立磁盘或网络目录>`；接收端会先自动导入并完成备份与恢复
-演练，再串行运行 V2，手机无需等待模型完成。接收服务重启后也会恢复尚未处理完的
-manifest 自动任务。
+接收端先把清单和音频直接写入 V3 内容寻址仓库，再完成不可覆盖备份与恢复演练，
+随后由 V3 durable job 串行运行本地模型并生成待人工审核的 Codex 结果；手机无需等待模型
+完成。`--workflow-shadow` 仅用于明确接受“尚无独立备份”的非生产 V3 测试，运行后仍保留
+备份准入阻塞，不会伪造恢复证据。`--workflow-db` 和 V2 数据库只对显式
+`--legacy-only` 诊断保留，不参与默认 V3 链路。
 
 ## V2-A/V2-A.1：不可变原音、分片会话与逻辑窗口
 

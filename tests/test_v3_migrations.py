@@ -76,6 +76,9 @@ class V3MigrationTests(unittest.TestCase):
                 "derivation_dependencies",
                 "invalidation_events",
                 "recompute_requests",
+                "person_identity_policy_revisions",
+                "voice_prototype_reviews",
+                "speaker_match_decisions",
             }.issubset(tables)
         )
         self.assertNotIn("source_objects", tables)

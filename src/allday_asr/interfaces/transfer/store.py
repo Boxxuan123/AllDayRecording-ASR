@@ -5,6 +5,7 @@ import json
 import os
 import re
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -25,6 +26,7 @@ _WINDOWS_RESERVED_NAMES = frozenset(
     | {f"COM{index}" for index in range(1, 10)}
     | {f"LPT{index}" for index in range(1, 10)}
 )
+KnownCompletedUpload = Callable[[str, int, str, str], bool]
 
 
 class UploadStoreError(ValueError):
@@ -80,6 +82,7 @@ class UploadStore:
         *,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         max_chunk_bytes: int = DEFAULT_MAX_CHUNK_BYTES,
+        known_completed: KnownCompletedUpload | None = None,
     ) -> None:
         if max_file_bytes <= 0 or max_chunk_bytes <= 0:
             raise ValueError("文件和分片大小上限必须大于 0")
@@ -87,6 +90,7 @@ class UploadStore:
         self.state_root = self.root / ".uploads"
         self.max_file_bytes = max_file_bytes
         self.max_chunk_bytes = max_chunk_bytes
+        self._known_completed = known_completed
         self.root.mkdir(parents=True, exist_ok=True)
         self.state_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -143,6 +147,28 @@ class UploadStore:
                 self._write_record(record)
                 return record, False
 
+            if self._known_completed is not None and self._known_completed(
+                normalized_path,
+                size,
+                normalized_digest,
+                kind,
+            ):
+                now = _utc_now()
+                return (
+                    UploadRecord(
+                        upload_id=upload_id,
+                        relative_path=normalized_path,
+                        size=size,
+                        sha256=normalized_digest,
+                        kind=kind,
+                        status="completed",
+                        offset=size,
+                        created_at=now,
+                        updated_at=now,
+                    ),
+                    False,
+                )
+
             now = _utc_now()
             record = UploadRecord(
                 upload_id=upload_id,
@@ -157,6 +183,19 @@ class UploadStore:
             )
             self._write_record(record)
             return record, True
+
+    def has_completed_file(self, record: UploadRecord) -> bool:
+        """Return whether this inbox physically contains the completed payload."""
+
+        if record.status != "completed":
+            return False
+        with self._lock:
+            destination = self._destination(record.relative_path)
+            return (
+                destination.is_file()
+                and destination.stat().st_size == record.size
+                and _sha256_file(destination) == record.sha256
+            )
 
     def get_upload(self, upload_id: str) -> UploadRecord:
         with self._lock:

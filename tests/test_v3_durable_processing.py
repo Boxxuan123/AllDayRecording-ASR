@@ -2,17 +2,25 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 import unittest
 import wave
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.backup import FilesystemSessionBackupAdapter
 from allday_asr.v3.adapters.models_v2 import QualityWorkflowV2Adapter
 from allday_asr.v3.adapters.models_v2 import V2SessionMaterializer
+from allday_asr.v3.adapters.models import (
+    NativeAsrSettings,
+    NativeDiarizationSettings,
+    NativeModelPipelineAdapter,
+)
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.application import (
     AdmissionService,
@@ -123,6 +131,32 @@ class _SuccessfulAdapter:
         return StageExecutionResult(checkpoint={"stage": stage})
 
 
+class _RepeatedTimelineAdapter(_SuccessfulAdapter):
+    def __init__(self, count: int) -> None:
+        self.count = count
+
+    def execute(
+        self, context: StageExecutionContext, control: StageExecutionControl
+    ) -> StageExecutionResult:
+        if context.claim.stage.stage != "utterance_projection":
+            return super().execute(context, control)
+        control.heartbeat({"stage": "utterance_projection"})
+        return StageExecutionResult(
+            speakers=(SpeakerProjectionOutput("speaker-current"),),
+            utterances=tuple(
+                UtteranceProjectionOutput(
+                    ordinal=index,
+                    start_ms=index,
+                    end_ms=index + 1,
+                    text="真实重复",
+                    speaker_label="speaker-current",
+                    evidence={"fixture_index": index},
+                )
+                for index in range(self.count)
+            ),
+        )
+
+
 class _FailOnceAdapter(_SuccessfulAdapter):
     def __init__(self) -> None:
         self.failed = False
@@ -154,6 +188,19 @@ class _LeaseExpiringAdapter(_SuccessfulAdapter):
     ) -> StageExecutionResult:
         self.clock.advance(11)
         control.heartbeat({"expired_inside_adapter": True})
+        return super().execute(context, control)
+
+
+class _LongRunningAdapter(_SuccessfulAdapter):
+    def __init__(self, clock: _Clock) -> None:
+        self.clock = clock
+
+    def execute(
+        self, context: StageExecutionContext, control: StageExecutionControl
+    ) -> StageExecutionResult:
+        for _ in range(2):
+            self.clock.advance(8)
+            time.sleep(0.03)
         return super().execute(context, control)
 
 
@@ -222,6 +269,75 @@ class _StaticV2Executor:
         }
 
 
+class _NativeAsrBackend:
+    model_id = "fixture-asr"
+    backend_name = "fixture-native-asr"
+    model_revision = "1"
+
+    def __init__(self, role: str) -> None:
+        self.role = role
+
+    def transcribe(self, audio_path: Path, *, language: str | None):
+        del audio_path, language
+        return SimpleNamespace(
+            text="你好",
+            language="zh",
+            tokens=(
+                SimpleNamespace(
+                    text="你",
+                    start_seconds=0.1,
+                    end_seconds=0.3,
+                    confidence=0.9,
+                    metadata={"speech_gate_committed": True},
+                ),
+                SimpleNamespace(
+                    text="好",
+                    start_seconds=0.32,
+                    end_seconds=0.6,
+                    confidence=0.9,
+                    metadata={"speech_gate_committed": True},
+                ),
+            ),
+            raw_response={"fixture": True},
+        )
+
+    def parameters(self):
+        return {"fixture": True}
+
+    def close(self) -> None:
+        return None
+
+
+class _NativeDiarizationBackend:
+    model_id = "fixture-diarization"
+    backend_name = "fixture-native-diarization"
+    model_revision = "1"
+
+    def ensure_loaded(self) -> None:
+        return None
+
+    def diarize(self, audio_path: Path, **kwargs):
+        del audio_path, kwargs
+        turn = SimpleNamespace(
+            start_ms=0,
+            end_ms=900,
+            speaker_label="SPEAKER_00",
+            confidence=0.95,
+            metadata={"fixture": True},
+        )
+        return SimpleNamespace(
+            regular_turns=(turn,),
+            exclusive_turns=(turn,),
+            raw_response={"fixture": True},
+        )
+
+    def parameters(self):
+        return {"fixture": True}
+
+    def close(self) -> None:
+        return None
+
+
 class V3DurableProcessingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = TEST_ROOT / f"v3d-{uuid4().hex}"
@@ -260,6 +376,199 @@ class V3DurableProcessingTests(unittest.TestCase):
                     config={"profile": "other"},
                 )
             )
+
+    def test_successful_submission_is_still_reused(self) -> None:
+        first = self.service.submit(self._command())
+        worker = DurableProcessingWorker(
+            self.service, _SuccessfulAdapter(), worker_id="worker-idempotent"
+        )
+        for _ in range(9):
+            self.assertTrue(worker.run_once())
+        self.assertEqual(self.service.get(first.job.job_id).job.status, "succeeded")
+
+        replay = self.service.submit(self._command())
+
+        self.assertEqual(replay.job.job_id, first.job.job_id)
+        self.assertEqual(replay.run.run_id, first.run.run_id)
+        with self.database.read() as connection:
+            run_count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) FROM processing_runs
+                    WHERE session_id = ? AND input_revision = ?
+                      AND pipeline_version = ?
+                    """,
+                    (SESSION_ID, 1, "v3-v2-adapter.1"),
+                ).fetchone()[0]
+            )
+        self.assertEqual(run_count, 1)
+
+    def test_changed_config_or_force_can_create_a_new_run_after_success(self) -> None:
+        first = self.service.submit(self._command())
+        first_worker = DurableProcessingWorker(
+            self.service, _SuccessfulAdapter(), worker_id="worker-first-config"
+        )
+        for _ in range(9):
+            self.assertTrue(first_worker.run_once())
+
+        changed = self.service.submit(
+            SubmitProcessingCommand(
+                session_id=SESSION_ID,
+                pipeline_version="v3-v2-adapter.1",
+                input_revision=1,
+                config={"profile": "changed"},
+            )
+        )
+        self.assertNotEqual(changed.run.run_id, first.run.run_id)
+        changed_worker = DurableProcessingWorker(
+            self.service, _SuccessfulAdapter(), worker_id="worker-changed-config"
+        )
+        for _ in range(9):
+            self.assertTrue(changed_worker.run_once())
+
+        forced = self.service.submit(
+            SubmitProcessingCommand(
+                session_id=SESSION_ID,
+                pipeline_version="v3-v2-adapter.1",
+                input_revision=1,
+                config={"profile": "changed"},
+                force_reprocess=True,
+            )
+        )
+        self.assertNotEqual(forced.run.run_id, changed.run.run_id)
+
+    def test_desktop_timeline_uses_latest_successful_production_run(self) -> None:
+        historical = self.service.submit(self._command())
+        historical_worker = DurableProcessingWorker(
+            self.service, _SuccessfulAdapter(), worker_id="worker-historical"
+        )
+        for _ in range(9):
+            self.assertTrue(historical_worker.run_once())
+        self.assertEqual(
+            self.service.get(historical.job.job_id).job.status, "succeeded"
+        )
+
+        self.clock.advance(1)
+        current = self.service.submit(
+            SubmitProcessingCommand(
+                session_id=SESSION_ID,
+                pipeline_version="v3-current-timeline.1",
+                input_revision=1,
+                config={"profile": "current"},
+            )
+        )
+        current_worker = DurableProcessingWorker(
+            self.service,
+            _RepeatedTimelineAdapter(501),
+            worker_id="worker-current",
+        )
+        for _ in range(9):
+            self.assertTrue(current_worker.run_once())
+        self.assertEqual(self.service.get(current.job.job_id).job.status, "succeeded")
+
+        with self.uow_factory() as uow:
+            detail = uow.desktop.session_detail(SESSION_ID)
+
+        self.assertEqual(len(detail["runs"]), 2)
+        self.assertEqual(len(detail["utterances"]), 501)
+        self.assertEqual(
+            {utterance["text"] for utterance in detail["utterances"]},
+            {"真实重复"},
+        )
+        self.assertEqual(
+            [utterance["start_ms"] for utterance in detail["utterances"]],
+            list(range(501)),
+        )
+        self.assertEqual(
+            [track["label"] for track in detail["speaker_tracks"]],
+            ["speaker-current"],
+        )
+
+    def test_shadow_submission_is_explicit_and_keeps_backup_blocker(self) -> None:
+        shadow_id = stable_ulid("durable-processing-test", "shadow-session")
+        now = self.clock.now()
+        manifest_payload = {
+            "format": "AllDayRecording session manifest v1",
+            "sessionKey": "v3-shadow-session",
+            "sessionStartedAt": int(now.timestamp() * 1000),
+            "device": "Harmony Phone",
+            "timezone": "UTC",
+            "audio": {"sampleRate": 16000, "channels": 1, "bitsPerSample": 16},
+            "chunks": [{"index": 0, "fileName": "segment_0.wav", "firstSample": 0, "sampleCount": 16000}],
+            "completedSegments": 1,
+            "totalSamples": 16000,
+            "continuityValid": True,
+        }
+        manifest_bytes = json.dumps(manifest_payload, sort_keys=True).encode()
+        stored_manifest = self.artifact_store.put_bytes(manifest_bytes)
+        with self.uow_factory() as uow:
+            uow.catalog.add_session(
+                RecordingSession(
+                    session_id=shadow_id,
+                    captured_start=now,
+                    captured_end=now + timedelta(seconds=1),
+                    timezone="UTC",
+                    state=RecordingSessionState.ADMISSION_PENDING,
+                    revision=1,
+                    status_code="backup_required",
+                    current_stage="backup_admission",
+                    progress=0.0,
+                    blocking_reason="backup_restore_evidence_required",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            uow.catalog.add_segment(
+                CaptureSegment(
+                    segment_id="segment-shadow",
+                    session_id=shadow_id,
+                    asset_id="asset-1",
+                    replica_id="replica-1",
+                    sequence=0,
+                    session_start_ms=0,
+                    session_end_ms=1000,
+                    source_start_ms=0,
+                    source_end_ms=1000,
+                    start_sample=0,
+                    captured_at=now,
+                )
+            )
+            uow.catalog.add_manifest(
+                SessionManifest(
+                    manifest_id="manifest-shadow",
+                    session_id=shadow_id,
+                    schema_version="1",
+                    sha256=stored_manifest.sha256,
+                    storage_ref=stored_manifest.storage_key,
+                    entries=manifest_payload,
+                    created_at=now,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "backup_restore_evidence_required"):
+            self.service.submit(
+                SubmitProcessingCommand(
+                    session_id=shadow_id,
+                    pipeline_version="v3-native.production",
+                    input_revision=1,
+                    config={},
+                )
+            )
+        shadow = self.service.submit(
+            SubmitProcessingCommand(
+                session_id=shadow_id,
+                pipeline_version="v3-native.shadow",
+                input_revision=1,
+                config={},
+                admission_mode="shadow",
+            )
+        )
+        self.assertEqual(shadow.job.request["admission_mode"], "shadow")
+        with self.database.read() as connection:
+            state = connection.execute(
+                "SELECT state, blocking_reason FROM recording_sessions WHERE session_id = ?",
+                (shadow_id,),
+            ).fetchone()
+        self.assertEqual(tuple(state), ("admission_pending", "backup_restore_evidence_required"))
 
     def test_worker_persists_artifacts_projection_and_selective_staleness(self) -> None:
         submitted = self.service.submit(self._command())
@@ -486,6 +795,21 @@ class V3DurableProcessingTests(unittest.TestCase):
         self.assertEqual(recovered.job.status, "failed_retryable")
         self.assertEqual(recovered.attempts[0].status.value, "lost_lease")
 
+    def test_worker_renews_lease_while_long_stage_is_running(self) -> None:
+        submitted = self.service.submit(self._command())
+        worker = DurableProcessingWorker(
+            self.service,
+            _LongRunningAdapter(self.clock),
+            worker_id="worker-long-stage",
+            heartbeat_interval_seconds=0.01,
+        )
+
+        self.assertTrue(worker.run_once())
+
+        snapshot = self.service.get(submitted.job.job_id)
+        self.assertEqual(snapshot.attempts[0].status.value, "succeeded")
+        self.assertNotEqual(snapshot.job.status, "failed_retryable")
+
     def test_running_job_cancels_at_checkpoint_and_optional_failure_can_advance(
         self,
     ) -> None:
@@ -561,6 +885,105 @@ class V3DurableProcessingTests(unittest.TestCase):
             snapshot["tokens"][0]["source_refs"][0]["source_end_ms"], 600
         )
 
+    def test_native_adapter_writes_only_v3_evidence_and_utterances(self) -> None:
+        submitted = self.service.submit(
+            SubmitProcessingCommand(
+                session_id=SESSION_ID,
+                pipeline_version="v3-native.1",
+                input_revision=1,
+                config={"pipeline": "v3-native.1"},
+            )
+        )
+        adapter = NativeModelPipelineAdapter(
+            self.database,
+            self.audio_store,
+            asr=NativeAsrSettings(window_ms=1_000, context_ms=0),
+            diarization=NativeDiarizationSettings(),
+            primary_factory=lambda: _NativeAsrBackend("primary"),
+            secondary_factory=lambda: _NativeAsrBackend("secondary"),
+            diarization_factory=_NativeDiarizationBackend,
+        )
+        worker = DurableProcessingWorker(
+            self.service, adapter, worker_id="worker-v3-native"
+        )
+        while worker.run_once():
+            if self.service.get(submitted.job.job_id).job.status == "succeeded":
+                break
+
+        completed = self.service.get(submitted.job.job_id)
+        self.assertEqual(completed.job.status, "succeeded")
+        with self.database.read() as connection:
+            kinds = {
+                str(row[0]) for row in connection.execute("SELECT kind FROM artifacts")
+            }
+            utterance = connection.execute(
+                "SELECT text, start_ms, end_ms FROM utterances"
+            ).fetchone()
+        self.assertEqual(
+            kinds,
+            {
+                "v3_asr_evidence",
+                "v3_diarization_evidence",
+                "v3_transcript_evidence",
+                "v3_semantic_input",
+            },
+        )
+        self.assertEqual(tuple(utterance), ("你好", 100, 600))
+        self.assertFalse((self.root / "compat-v2.sqlite3").exists())
+
+    def test_native_adapter_normalizes_one_millisecond_ingest_drift(self) -> None:
+        drifted_session_id = stable_ulid("durable-processing-test", "drifted-session")
+        now = self.clock.now()
+        with self.uow_factory() as uow:
+            uow.catalog.add_session(
+                RecordingSession(
+                    session_id=drifted_session_id,
+                    captured_start=now,
+                    captured_end=now + timedelta(seconds=1),
+                    timezone="UTC",
+                    state=RecordingSessionState.READY_FOR_PROCESSING,
+                    revision=1,
+                    status_code="ready",
+                    current_stage="backup_admitted",
+                    progress=1.0,
+                    blocking_reason=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            uow.catalog.add_segment(
+                CaptureSegment(
+                    segment_id="segment-drifted",
+                    session_id=drifted_session_id,
+                    asset_id="asset-1",
+                    replica_id="replica-1",
+                    sequence=0,
+                    session_start_ms=1,
+                    session_end_ms=1001,
+                    source_start_ms=0,
+                    source_end_ms=1000,
+                    start_sample=0,
+                    captured_at=now,
+                )
+            )
+        adapter = NativeModelPipelineAdapter(
+            self.database,
+            self.audio_store,
+            asr=NativeAsrSettings(),
+            diarization=NativeDiarizationSettings(),
+            primary_factory=lambda: _NativeAsrBackend("primary"),
+            secondary_factory=lambda: _NativeAsrBackend("secondary"),
+            diarization_factory=_NativeDiarizationBackend,
+        )
+
+        sources, duration_ms = adapter._sources(drifted_session_id)
+
+        self.assertEqual(duration_ms, 1000)
+        self.assertEqual(
+            [(source.session_start_ms, source.session_end_ms) for source in sources],
+            [(0, 1000)],
+        )
+
     def test_backup_restore_drill_and_native_v2_materialization_are_idempotent(
         self,
     ) -> None:
@@ -594,6 +1017,41 @@ class V3DurableProcessingTests(unittest.TestCase):
         self.assertEqual(first, second)
         session = v2_database.get_recording_session(first)
         self.assertEqual(int(session["duration_ms"]), 1000)
+
+    def test_backup_preserves_the_catalog_audio_format_in_the_file_name(
+        self,
+    ) -> None:
+        database = MagicMock()
+        connection = database.read.return_value.__enter__.return_value
+        connection.execute.side_effect = [
+            MagicMock(
+                fetchone=MagicMock(
+                    return_value={"sha256": "a" * 64, "storage_ref": "manifest"}
+                )
+            ),
+            MagicMock(
+                fetchall=MagicMock(
+                    return_value=[
+                        {
+                            "sequence": 0,
+                            "sha256": "b" * 64,
+                            "format": "m4a",
+                            "storage_key": "audio",
+                        }
+                    ]
+                )
+            ),
+        ]
+        audio_store = MagicMock()
+        artifact_store = MagicMock()
+        audio_store.path_for.return_value = Path("audio-source")
+        artifact_store.path_for.return_value = Path("manifest-source")
+
+        entries = FilesystemSessionBackupAdapter(
+            database, audio_store, artifact_store
+        )._entries("session-1")
+
+        self.assertEqual(entries[1][0], Path("audio") / f"000000-{'b' * 64}.m4a")
 
     def _command(self) -> SubmitProcessingCommand:
         return SubmitProcessingCommand(

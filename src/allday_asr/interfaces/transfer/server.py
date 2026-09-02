@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 import socket
+import sqlite3
 import ssl
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,6 +56,7 @@ from allday_asr.interfaces.transfer.store import (
     UploadRecord,
     UploadStore,
     UploadStoreError,
+    KnownCompletedUpload,
 )
 from allday_asr.interfaces.transfer.tls import (
     certificate_sha256_fingerprint,
@@ -345,9 +347,13 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
             sha256=body["sha256"],
             kind=body["kind"],
         )
-        automation = self.server.notify_upload_completed(
-            record,
-            device_key_id=device.device_id if device is not None else None,
+        automation = (
+            self.server.notify_upload_completed(
+                record,
+                device_key_id=device.device_id if device is not None else None,
+            )
+            if self.server.store.has_completed_file(record)
+            else None
         )
         self._send_upload_record(
             HTTPStatus.CREATED if created else HTTPStatus.OK,
@@ -626,6 +632,8 @@ def create_transfer_server(
     upload_completed: UploadCompletedCallback | None = None,
     v3_gateway=None,
     v3_core=None,
+    v3_ingest_uploads: bool = True,
+    known_completed_upload: KnownCompletedUpload | None = None,
 ) -> TransferHTTPServer:
     if not 0 <= port <= 65535:
         raise ValueError("端口必须在 0 到 65535 之间")
@@ -653,6 +661,7 @@ def create_transfer_server(
         inbox,
         max_file_bytes=max_file_bytes,
         max_chunk_bytes=max_chunk_bytes,
+        known_completed=known_completed_upload,
     )
     if passkey_manager is None:
         registry_path = passkey_state or (
@@ -695,11 +704,15 @@ def create_transfer_server(
             lambda: SqliteUnitOfWork(v3_core.database),
             receiver_id_from_fingerprint(receiver_id),
         )
-        ingest = V3UploadIngestAdapter(
-            trust,
-            lambda: SqliteUnitOfWork(v3_core.database),
-            v3_core.audio_store,
-            v3_core.artifact_store,
+        ingest = (
+            V3UploadIngestAdapter(
+                trust,
+                lambda: SqliteUnitOfWork(v3_core.database),
+                v3_core.audio_store,
+                v3_core.artifact_store,
+            )
+            if v3_ingest_uploads
+            else None
         )
         v3_gateway = DeviceGateway(trust, v3_core.mobile_sync, ingest)
         v3_gateway.reconcile()
@@ -723,6 +736,83 @@ def create_transfer_server(
             server.server_close()
             raise
     return server
+
+
+def _known_completed_v2_uploads(database_path: Path) -> KnownCompletedUpload:
+    """Snapshot immutable V2 payload identities for receiver-wide deduplication."""
+
+    resolved = database_path.expanduser().resolve(strict=True)
+    connection = sqlite3.connect(
+        resolved.as_uri() + "?mode=ro",
+        uri=True,
+        timeout=30,
+        isolation_level=None,
+    )
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        recordings = {
+            (str(row[0]).lower(), int(row[1]))
+            for row in connection.execute(
+                """
+                SELECT sha256, byte_size
+                FROM source_objects
+                WHERE byte_size IS NOT NULL
+                """
+            )
+        }
+        manifests = {
+            (str(row[0]).lower(), int(row[1]))
+            for row in connection.execute(
+                "SELECT manifest_sha256, byte_size FROM session_manifests"
+            )
+        }
+    finally:
+        connection.close()
+
+    def known_completed(
+        relative_path: str,
+        size: int,
+        sha256: str,
+        kind: str,
+    ) -> bool:
+        del relative_path
+        identity = (sha256, size)
+        return identity in (recordings if kind == "recording" else manifests)
+
+    return known_completed
+
+
+def _known_completed_v3_uploads(core: Any) -> KnownCompletedUpload:
+    """Snapshot V3-owned payload identities for receiver-wide deduplication."""
+
+    core.initialize()
+    with core.database.read() as connection:
+        recordings = {
+            (str(row["sha256"]).lower(), int(row["size_bytes"]))
+            for row in connection.execute("SELECT sha256, size_bytes FROM audio_assets")
+        }
+        manifest_rows = connection.execute(
+            "SELECT sha256, storage_ref FROM session_manifests"
+        ).fetchall()
+    manifests = {
+        (
+            str(row["sha256"]).lower(),
+            core.artifact_store.path_for(str(row["storage_ref"])).stat().st_size,
+        )
+        for row in manifest_rows
+    }
+
+    def known_completed(
+        relative_path: str,
+        size: int,
+        sha256: str,
+        kind: str,
+    ) -> bool:
+        del relative_path
+        identity = (sha256, size)
+        return identity in (recordings if kind == "recording" else manifests)
+
+    return known_completed
 
 
 def serve_transfer(
@@ -749,6 +839,8 @@ def serve_transfer(
     workflow_backup_storage_kind: str = "independent_device",
     enable_v3: bool = False,
     v3_state_dir: Path | None = None,
+    v3_legacy_namespace: str | None = None,
+    v3_reasoning_effort: str = "auto",
 ) -> None:
     if insecure_http and (tls_cert is not None or tls_key is not None):
         raise ValueError("--insecure-http 不能与 TLS 证书参数同时使用")
@@ -756,11 +848,13 @@ def serve_transfer(
         raise ValueError("--workflow-shadow 必须与 --auto-workflow 一起使用")
     if workflow_backup_root is not None and not auto_workflow:
         raise ValueError("--workflow-backup-root 必须与 --auto-workflow 一起使用")
-    if auto_workflow and (workflow_config is None or workflow_database is None):
-        raise ValueError("自动 V2 工作流缺少配置文件或数据库路径")
+    if auto_workflow and workflow_config is None:
+        raise ValueError("自动处理缺少模型配置文件")
+    if auto_workflow and not enable_v3 and workflow_database is None:
+        raise ValueError("旧版自动 V2 工作流缺少数据库路径")
     if auto_workflow and not workflow_shadow and workflow_backup_root is None:
         raise ValueError(
-            "production 自动 V2 必须提供 --workflow-backup-root；"
+            "production 自动处理必须提供 --workflow-backup-root；"
             "若明确接受风险，请同时使用 --workflow-shadow"
         )
     if workflow_backup_root is not None and workflow_backup_storage_kind not in {
@@ -769,6 +863,10 @@ def serve_transfer(
     }:
         raise ValueError(
             "--workflow-backup-storage-kind 必须是 independent_device 或 network"
+        )
+    if v3_reasoning_effort not in {"auto", "low", "medium", "high", "xhigh"}:
+        raise ValueError(
+            "--v3-reasoning-effort 必须是 auto、low、medium、high 或 xhigh"
         )
     pairing_fingerprint: str | None = None
     trust_certificate_path: Path | None = None
@@ -801,6 +899,15 @@ def serve_transfer(
         from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core
 
         v3_core = compose_v3_core(V3CorePaths.from_state_dir(v3_state_dir))
+    known_completed_upload = (
+        _known_completed_v3_uploads(v3_core)
+        if v3_core is not None
+        else (
+            _known_completed_v2_uploads(workflow_database)
+            if workflow_database is not None and workflow_database.is_file()
+            else None
+        )
+    )
     server = create_transfer_server(
         inbox=inbox,
         host=host,
@@ -815,11 +922,46 @@ def serve_transfer(
         passkey_origins=passkey_origins,
         receiver_id=receiver_id,
         v3_core=v3_core,
+        v3_ingest_uploads=True,
+        known_completed_upload=known_completed_upload,
     )
     automatic_runner = None
-    if auto_workflow:
+    if auto_workflow and enable_v3:
+        from allday_asr.config import load_config
+        from allday_asr.v3.adapters.models import build_native_model_pipeline
+        from allday_asr.v3.adapters.transfer import V3AutomaticWorkflowRunner
+
+        if v3_core is None or v3_state_dir is None:
+            server.server_close()
+            raise ValueError("V3 自动处理缺少 Core 或 state-dir")
+        try:
+            model_adapter = build_native_model_pipeline(
+                v3_core.database,
+                v3_core.audio_store,
+                load_config(workflow_config),
+                requested_profile=workflow_profile,
+                diarization_model_path=workflow_diarization_model_path,
+            )
+            automatic_runner = V3AutomaticWorkflowRunner(
+                v3_core,
+                model_adapter,
+                backup_root=workflow_backup_root,
+                backup_storage_kind=workflow_backup_storage_kind,
+                shadow=workflow_shadow,
+                reasoning_effort=v3_reasoning_effort,
+            )
+            if server.v3_gateway is None:
+                raise RuntimeError("V3 Device Gateway was not composed")
+            server.v3_gateway.session_ingested = automatic_runner.submit
+        except Exception:
+            server.server_close()
+            if automatic_runner is not None:
+                automatic_runner.close()
+            raise
+    elif auto_workflow:
         from allday_asr.interfaces.transfer.workflow import (
             AutomaticWorkflowRunner,
+            build_v3_postprocessor,
             build_workflow_processor,
         )
 
@@ -832,6 +974,16 @@ def serve_transfer(
                 diarization_model_path=workflow_diarization_model_path,
                 backup_root=workflow_backup_root,
                 backup_storage_kind=workflow_backup_storage_kind,
+            )
+            postprocessor = (
+                build_v3_postprocessor(
+                    database_path=workflow_database,
+                    v3_state_dir=v3_state_dir,
+                    source_namespace=v3_legacy_namespace,
+                    reasoning_effort=v3_reasoning_effort,
+                )
+                if enable_v3 and v3_state_dir is not None
+                else None
             )
             automatic_runner = AutomaticWorkflowRunner(
                 inbox,
@@ -858,6 +1010,18 @@ def serve_transfer(
                     ),
                     "backup_storage_kind": workflow_backup_storage_kind,
                 },
+                postprocessor=postprocessor,
+                postprocessor_configuration=(
+                    {
+                        "pipeline": "v2-to-v3-auto.1",
+                        "v3_state_dir": str(v3_state_dir.resolve()),
+                        "legacy_namespace": v3_legacy_namespace,
+                        "reasoning_effort": v3_reasoning_effort,
+                        "automatic_approval": False,
+                    }
+                    if postprocessor is not None and v3_state_dir is not None
+                    else None
+                ),
             )
             server.upload_completed = automatic_runner.submit
             for record in server.store.list_uploads(
@@ -930,7 +1094,8 @@ def serve_transfer(
     print(f"设备公钥库：{server.devices.store.path}")
     if automatic_runner is not None:
         mode = "shadow" if workflow_shadow else "production"
-        print(f"自动 V2 工作流：已启用（{mode}，manifest 完成后串行执行）")
+        label = "V3 原生" if enable_v3 else "旧版 V2"
+        print(f"自动 {label} 工作流：已启用（{mode}，manifest 完成后串行执行）")
         if workflow_backup_root is not None:
             print(
                 f"自动会话备份：{workflow_backup_root} "

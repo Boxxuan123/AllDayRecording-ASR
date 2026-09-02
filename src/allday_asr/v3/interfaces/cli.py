@@ -12,27 +12,13 @@ from typing import Annotated, Any, Optional
 
 import typer
 
-from allday_asr.application.semantic.pipeline import (
-    SemanticSettings as SemanticV2E02Settings,
-)
 from allday_asr.config import load_config
-from allday_asr.interfaces.cli.runtime import (
-    build_quality_asr_runtime,
-    build_quality_diarization_runtime,
-)
 from allday_asr.paths import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH
-from allday_asr.services.quality_workflow import run_quality_workflow
-from allday_asr.services.session_backup import create_session_backup
-from allday_asr.storage.database import Database
 from allday_asr.v3.adapters.backup import FilesystemSessionBackupAdapter
+from allday_asr.v3.adapters.models import build_native_model_pipeline
 from allday_asr.v3.adapters.release_snapshot import (
     create_release_backups,
     verify_release_backup,
-)
-from allday_asr.v3.adapters.models_v2 import (
-    ExistingV2QualityWorkflowExecutor,
-    QualityWorkflowV2Adapter,
-    V2SessionMaterializer,
 )
 from allday_asr.v3.adapters.identity_calibration import run_identity_calibration
 from allday_asr.v3.adapters.legacy_v2.label_migration import (
@@ -48,9 +34,6 @@ from allday_asr.v3.application import (
 from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core, start_empty_runtime
 from allday_asr.v3.config import V3ConfigurationError, V3Settings
 from allday_asr.v3.interfaces.desktop_server import serve_v3_desktop
-from allday_asr.v3.interfaces.temporary_label_server import (
-    serve_temporary_labeler,
-)
 from allday_asr.v3 import CONTRACT_VERSION, PROJECTION_VERSION
 
 
@@ -193,54 +176,6 @@ def label_migrate_command(
             sort_keys=True,
         )
     )
-
-
-@app.command(name="label-web")
-def temporary_label_web_command(
-    bundle: Annotated[
-        Path | None,
-        typer.Option(
-            "--bundle",
-            exists=True,
-            dir_okay=False,
-            resolve_path=True,
-            help="Legacy label migration bundle; newest r2 bundle is used by default.",
-        ),
-    ] = None,
-    source_database: Annotated[
-        Path,
-        typer.Option(
-            "--database",
-            exists=True,
-            dir_okay=False,
-            resolve_path=True,
-        ),
-    ] = DEFAULT_DB_PATH,
-    state_dir: Annotated[
-        Path | None,
-        typer.Option("--state-dir", file_okay=False, resolve_path=True),
-    ] = None,
-    port: Annotated[int, typer.Option(min=1, max=65535)] = 8774,
-    open_browser: Annotated[bool, typer.Option("--open/--no-open")] = True,
-) -> None:
-    """Start the disposable, loopback-only V3.1 human-labeling page."""
-
-    _enabled_settings()
-    paths = V3CorePaths.from_environment()
-    label_dir = paths.state_dir / "labels"
-    selected_bundle = bundle or _newest_label_bundle(label_dir)
-    selected_state = state_dir or (paths.state_dir / "labeling" / "v31-temporary")
-    try:
-        serve_temporary_labeler(
-            selected_bundle,
-            source_database,
-            state_dir=selected_state,
-            host="127.0.0.1",
-            port=port,
-            open_browser=open_browser,
-        )
-    except (OSError, sqlite3.Error, ValueError) as exc:
-        raise typer.BadParameter(str(exc)) from exc
 
 
 @app.command(name="identity-evaluate")
@@ -401,13 +336,53 @@ def legacy_import_command(
     )
     core = compose_v3_core(paths)
     core.initialize()
-    result = core.import_legacy_v2.execute(
+    from allday_asr.v3.adapters.legacy_v2 import compose_legacy_v2_import
+
+    result = compose_legacy_v2_import(core).execute(
         LegacyImportCommand(
             source_database=source_database,
             source_namespace=source_namespace,
         )
     )
     typer.echo(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+
+
+@app.command(name="legacy-speaker-backfill")
+def legacy_speaker_backfill_command(
+    source_database: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False, resolve_path=True)
+    ],
+    state_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--state-dir",
+            help="V3-owned state directory; never the V2 state directory.",
+        ),
+    ] = None,
+) -> None:
+    """Convert trusted V2 identity windows into self-contained V3 voice seeds."""
+
+    _enabled_settings()
+    paths = (
+        V3CorePaths.from_state_dir(state_dir)
+        if state_dir is not None
+        else V3CorePaths.from_environment()
+    )
+    core = compose_v3_core(paths)
+    try:
+        core.initialize()
+        from allday_asr.v3.adapters.legacy_v2 import (
+            compose_legacy_speaker_identity_backfill,
+        )
+
+        result = compose_legacy_speaker_identity_backfill(core).execute(
+            source_database
+        )
+        typer.echo(
+            json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True)
+        )
+    finally:
+        core.close()
 
 
 @app.command(name="release-prepare")
@@ -434,7 +409,9 @@ def release_prepare_command(
     paths = V3CorePaths.from_state_dir(state_dir)
     core = compose_v3_core(paths)
     schema_version = core.initialize()
-    result = core.import_legacy_v2.execute(
+    from allday_asr.v3.adapters.legacy_v2 import compose_legacy_v2_import
+
+    result = compose_legacy_v2_import(core).execute(
         LegacyImportCommand(source_database=backups[0].database_path)
     )
     unmapped_count = sum(int(value) for value in result.unmapped.values())
@@ -574,10 +551,17 @@ def process_submit_command(
     session_id: Annotated[str, typer.Argument(help="Admitted V3 session ID.")],
     pipeline_version: Annotated[
         str, typer.Option("--pipeline-version")
-    ] = "v3-v2-adapter.1",
+    ] = "v3-native.1",
     input_revision: Annotated[int, typer.Option("--input-revision", min=1)] = 1,
     priority: Annotated[int, typer.Option("--priority")] = 0,
     config_json: Annotated[str, typer.Option("--config-json")] = "{}",
+    force_reprocess: Annotated[
+        bool,
+        typer.Option(
+            "--force-reprocess/--reuse-succeeded",
+            help="Create a new run even when an identical successful run exists.",
+        ),
+    ] = False,
     state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
 ) -> None:
     core = _initialized_core(state_dir)
@@ -589,6 +573,7 @@ def process_submit_command(
             input_revision=input_revision,
             config=config,
             priority=priority,
+            force_reprocess=force_reprocess,
         )
     )
     typer.echo(json.dumps(_snapshot_dict(snapshot), ensure_ascii=False, sort_keys=True))
@@ -630,12 +615,40 @@ def process_recover_command(
     typer.echo(json.dumps({"recovered_job_ids": recovered}, ensure_ascii=False))
 
 
+@app.command(name="semantic-events-generate")
+def semantic_events_generate_command(
+    session_id: Annotated[
+        str, typer.Argument(help="V3 recording session ID with active utterances.")
+    ],
+    reasoning_effort: Annotated[
+        str,
+        typer.Option(
+            "--reasoning-effort",
+            help="auto, low, medium, high or xhigh.",
+        ),
+    ] = "auto",
+    state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
+) -> None:
+    """Generate evidence-bound native events for one existing V3 session."""
+
+    core = _initialized_core(state_dir)
+    try:
+        result = core.semantic_events.extract(
+            session_id,
+            reasoning_effort=reasoning_effort,
+        )
+    except (KeyError, RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    finally:
+        core.close()
+    typer.echo(json.dumps(result, ensure_ascii=False, sort_keys=True))
+
+
 @app.command(name="worker")
 def worker_command(
     once: Annotated[bool, typer.Option("--once")] = False,
     poll_seconds: Annotated[float, typer.Option("--poll-seconds", min=0.1, max=30.0)] = 2.0,
     worker_id: Annotated[str | None, typer.Option("--worker-id")] = None,
-    shadow: Annotated[bool, typer.Option("--shadow")] = False,
     profile: Annotated[Optional[str], typer.Option()] = None,
     diarization_model_path: Annotated[
         Optional[Path],
@@ -650,67 +663,26 @@ def worker_command(
         Path,
         typer.Option(exists=True, file_okay=True, resolve_path=True),
     ] = DEFAULT_CONFIG_PATH,
-    v2_database_path: Annotated[Path, typer.Option("--v2-db")] = DEFAULT_DB_PATH,
-    v2_backup_root: Annotated[
-        Path | None, typer.Option("--v2-backup-root", file_okay=False)
-    ] = None,
-    v2_backup_storage_kind: Annotated[
-        str, typer.Option("--v2-backup-storage-kind")
-    ] = "independent_device",
     state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
 ) -> None:
     core = _initialized_core(state_dir)
-    if not shadow and v2_backup_root is None:
-        raise typer.BadParameter(
-            "production V2 adapter requires --v2-backup-root; use --shadow only for explicit experiments"
-        )
     resolved = load_config(config)
-    asr_runtime = build_quality_asr_runtime(resolved, requested_profile=profile)
-    diarization_runtime = build_quality_diarization_runtime(
-        resolved, model_path=diarization_model_path
-    )
-    v2_database = Database.open(v2_database_path)
-    materializer = V2SessionMaterializer(
+    adapter = build_native_model_pipeline(
         core.database,
         core.audio_store,
-        core.artifact_store,
-        core.paths.state_dir / "v2-adapter-sessions",
+        resolved,
+        requested_profile=profile,
+        diarization_model_path=diarization_model_path,
     )
-
-    def run_v2(v3_session_id: str, progress) -> object:
-        v2_session_id = materializer.resolve(v3_session_id, v2_database)
-        if v2_backup_root is not None:
-            create_session_backup(
-                v2_database,
-                v2_session_id,
-                v2_backup_root,
-                storage_kind=v2_backup_storage_kind,
-                restore_drill=True,
-            )
-        return run_quality_workflow(
-            v2_database,
-            None,
-            session_id=v2_session_id,
-            asr_settings=asr_runtime.settings,
-            diarization_settings=diarization_runtime.settings,
-            semantic_settings=SemanticV2E02Settings(),
-            primary_factory=asr_runtime.primary_factory,
-            secondary_factory=asr_runtime.secondary_factory,
-            diarization_factory=diarization_runtime.backend_factory,
-            admission_mode="shadow" if shadow else "production",
-            progress=progress,
-        )
 
     selected_worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}"
     worker = DurableProcessingWorker(
         core.processing,
-        QualityWorkflowV2Adapter(
-            ExistingV2QualityWorkflowExecutor(v2_database, run_v2)
-        ),
+        adapter,
         worker_id=selected_worker_id,
         config={
             "profile": profile or "auto",
-            "admission_mode": "shadow" if shadow else "production",
+            "pipeline": "v3-native.1",
         },
     )
     while True:

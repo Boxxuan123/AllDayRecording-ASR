@@ -33,7 +33,7 @@ watchEffect(() => {
 
 const daily = computed(() => query.data.value?.summaries.find(
   (item) => item.summary_date === selectedDate.value && item.timezone === timezone.value,
-) ?? query.data.value?.summaries[0] ?? null)
+) ?? null)
 
 const relationship = computed(() => query.data.value?.relationships.find(
   (item) => item.person_id === selectedPersonId.value && item.window_days === windowDays.value,

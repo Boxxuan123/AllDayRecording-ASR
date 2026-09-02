@@ -103,13 +103,17 @@ def receive_command(
     ),
     auto_workflow: bool = typer.Option(
         False,
+        "--auto-process",
         "--auto-workflow",
-        help="每个会话 manifest 完整上传后，后台自动导入并串行启动 V2。",
+        help="每个会话 manifest 完整上传后，后台启动 V3 原生分析和 Codex 生成。",
     ),
     workflow_shadow: bool = typer.Option(
         False,
         "--workflow-shadow",
-        help="明确允许自动 V2 在没有生产级独立备份时以 shadow 模式运行。",
+        help=(
+            "显式的非生产 V3 测试模式：允许在独立备份尚未配置时运行模型，"
+            "但保留备份准入阻塞；旧版诊断也沿用该开关。"
+        ),
     ),
     workflow_backup_root: Optional[Path] = typer.Option(
         None,
@@ -117,7 +121,7 @@ def receive_command(
         file_okay=False,
         dir_okay=True,
         resolve_path=True,
-        help="production 自动 V2 在启动模型前写入并验证的独立备份根目录。",
+        help="V3 自动处理在启动模型前写入并回读校验的独立备份根目录。",
     ),
     workflow_backup_storage_kind: str = typer.Option(
         "independent_device",
@@ -127,7 +131,7 @@ def receive_command(
     workflow_profile: Optional[str] = typer.Option(
         None,
         "--workflow-profile",
-        help="自动 V2 的显存档位：auto、quality-16gb 或 compatible-8gb。",
+        help="V3 原生模型的显存档位：auto、quality-16gb 或 compatible-8gb。",
     ),
     workflow_diarization_model_path: Optional[Path] = typer.Option(
         None,
@@ -136,7 +140,7 @@ def receive_command(
         file_okay=False,
         dir_okay=True,
         resolve_path=True,
-        help="自动 V2 使用的已下载 Community-1 本地 snapshot。",
+        help="V3 原生分析使用的已下载 Community-1 本地 snapshot。",
     ),
     workflow_config: Path = typer.Option(
         DEFAULT_CONFIG_PATH,
@@ -145,12 +149,12 @@ def receive_command(
         file_okay=True,
         dir_okay=False,
         resolve_path=True,
-        help="自动 V2 使用的 TOML 配置文件。",
+        help="V3 原生模型使用的 TOML 配置文件。",
     ),
     workflow_db: Path = typer.Option(
         DEFAULT_DB_PATH,
         "--workflow-db",
-        help="自动导入和 V2 工作流使用的 SQLite 数据库。",
+        help="仅在 --legacy-only 诊断模式下使用的 V2 SQLite 数据库。",
     ),
     enable_v3: bool = typer.Option(
         True,
@@ -164,6 +168,16 @@ def receive_command(
         dir_okay=True,
         resolve_path=True,
         help="V3 Core 独立数据库、音频和制品存储目录。",
+    ),
+    v3_legacy_namespace: Optional[str] = typer.Option(
+        None,
+        "--v3-legacy-namespace",
+        help="仅供显式历史迁移兼容；V3 原生上传链路不使用此参数。",
+    ),
+    v3_reasoning_effort: str = typer.Option(
+        "auto",
+        "--v3-reasoning-effort",
+        help="自动提醒和洞察的 Codex 推理强度：auto/low/medium/high/xhigh。",
     ),
 ) -> None:
     """启动独立于本机网页工作台的可断点续传接收服务。"""
@@ -204,6 +218,8 @@ def receive_command(
             workflow_backup_storage_kind=workflow_backup_storage_kind,
             enable_v3=enable_v3,
             v3_state_dir=v3_state_dir,
+            v3_legacy_namespace=v3_legacy_namespace,
+            v3_reasoning_effort=v3_reasoning_effort,
         )
     except (OSError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
