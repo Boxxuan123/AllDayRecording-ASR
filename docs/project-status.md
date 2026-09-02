@@ -5,6 +5,7 @@
 > V3.0-G 更新（2026-08-31）：本页保留 V2 质量路线盘点；当前默认入口、真实迁移证据与待签字项以 [V3.0-G 迁移、切换与发布验收](V3/V3.0-G-migration-cutover-release.md) 为准。
 > V3.6 更新（2026-09-01）：Contract `3.6.0`、Core schema `10`、Phone projection `4`；每日总结、7/30 天关系观察、程序化客观统计、Codex 证据约束归纳、不可变修订、撤回/恢复与底层纠正后的过期重算均已完成工程实现。完整边界见 [V3.6 每日总结与关系观察](V3/V3.6-daily-summary-and-relationship-observation.md)。真实全天内容质量仍需独立人工评测。
 > 运行时边界修订（2026-09-02）：当前安装包只注册 V3 命令，Legacy V2 CLI/Web 已退役；旧 V2 文档中的命令片段仅是历史记录，不能在当前版本执行。`ALLDAY_V3_ENABLED=0` 只会禁用 V3，不会切换到 Legacy。
+> Computer 可维护性更新（2026-09-02）：A–E 五个工作包已完成，原 20 个达到或超过 500 行的 Computer 生产源码已清零；Python 后端与 V3 Desktop 前端现由严格的少于 500 行架构门禁保护。拆分记录见 [Computer 端超阈值模块维护完成记录](V3/computer-maintainability-plan.md)。Harmony Phone/Watch 未在本轮修改。
 
 ## 1. 结论
 

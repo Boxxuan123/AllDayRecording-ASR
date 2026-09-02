@@ -3,7 +3,7 @@ import sqlite3
 from .durable_processing_execution import DurableProcessingExecutionMixin
 from .durable_processing_lifecycle import DurableProcessingLifecycleMixin
 from .durable_processing_queries import DurableProcessingQueryMixin
-from .repositories import Clock
+from .repository_clock import Clock
 
 
 class SqliteDurableProcessingRepository(

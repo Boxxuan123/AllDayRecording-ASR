@@ -7,7 +7,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 V3_ROOT = PROJECT_ROOT / "src" / "allday_asr" / "v3"
+V3_DESKTOP_ROOT = PROJECT_ROOT / "all_day_recording_front" / "v3"
 CORE_ROOTS = tuple(V3_ROOT / name for name in ("domain", "application", "ports"))
+MAX_MAINTAINABLE_SOURCE_LINES = 499
 DEFAULT_RUNTIME_FILES = (
     V3_ROOT / "bootstrap" / "core.py",
     V3_ROOT / "adapters" / "models" / "native.py",
@@ -83,6 +85,23 @@ class V3ArchitectureTests(unittest.TestCase):
         self.assertFalse((V3_ROOT / "adapters" / "models_v2").exists())
         self.assertFalse((V3_ROOT / "adapters" / "legacy_v2").exists())
         self.assertFalse((V3_ROOT / "application" / "legacy_import.py").exists())
+
+    def test_computer_production_sources_stay_below_maintenance_threshold(
+        self,
+    ) -> None:
+        sources = list(V3_ROOT.rglob("*.py"))
+        sources.extend(
+            path
+            for path in V3_DESKTOP_ROOT.rglob("*")
+            if path.suffix in {".ts", ".tsx", ".vue"}
+        )
+        violations = []
+        for path in sorted(sources):
+            line_count = len(path.read_text(encoding="utf-8").splitlines())
+            if line_count > MAX_MAINTAINABLE_SOURCE_LINES:
+                violations.append(f"{path.relative_to(PROJECT_ROOT)}:{line_count}")
+
+        self.assertEqual(violations, [])
 
 
 def _imported_module(node: ast.AST) -> str | None:

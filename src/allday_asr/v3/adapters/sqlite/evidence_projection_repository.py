@@ -4,7 +4,7 @@ from allday_asr.v3.domain.processing import (
     SpeakerTrack,
     Utterance,
 )
-from .repositories import Clock
+from .repository_clock import Clock
 
 from .processing_repository_codec import _utterance, _datetime, _json
 

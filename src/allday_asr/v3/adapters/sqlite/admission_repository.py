@@ -4,7 +4,7 @@ from allday_asr.v3.domain.models import RecordingSessionState
 from allday_asr.v3.domain.processing import (
     BackupEvidence,
 )
-from .repositories import Clock
+from .repository_clock import Clock
 
 from .processing_repository_codec import _datetime, _optional_datetime, _json
 
