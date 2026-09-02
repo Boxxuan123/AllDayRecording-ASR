@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import threading
 from typing import Any
 
-from allday_asr.domain.hashing import canonical_json_sha256
+from allday_asr.v3.domain.hashing import canonical_json_sha256
 from allday_asr.v3.contracts import UtteranceDto, utterance_dto
 from allday_asr.v3.domain.ids import new_ulid, stable_ulid
 from allday_asr.v3.domain.identity import SelfIdentity
@@ -350,18 +350,13 @@ class DurableProcessingService:
 
             source = created.get("v3_transcript_evidence")
             if source is None:
-                # Historical processing runs remain readable, but new V3-native
-                # runs always use v3_transcript_evidence.
-                source = created.get("v2_evidence_snapshot")
-            if source is None:
                 source = next(
                     (
                         artifact
                         for artifact in uow.artifacts.list_active_for_run(
                             claim.run.run_id
                         )
-                        if artifact.kind
-                        in {"v3_transcript_evidence", "v2_evidence_snapshot"}
+                        if artifact.kind == "v3_transcript_evidence"
                     ),
                     None,
                 )

@@ -1,4 +1,4 @@
-"""V3 Core schema version 1. This database is independent from every V2 table."""
+"""V3 Core schema version 1."""
 
 SQL = """
 CREATE TABLE schema_migrations (

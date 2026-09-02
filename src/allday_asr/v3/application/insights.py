@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from allday_asr.domain.hashing import canonical_json_sha256
+from allday_asr.v3.domain.hashing import canonical_json_sha256
 from allday_asr.v3.domain.ids import new_ulid, stable_ulid
 from allday_asr.v3.domain.insights import (
     DAILY_NARRATIVE_SECTIONS,

@@ -63,17 +63,15 @@ class V3ArchitectureTests(unittest.TestCase):
                         )
         self.assertEqual(violations, [])
 
-    def test_default_v3_runtime_has_no_v2_database_workflow_or_importer_dependency(
-        self,
-    ) -> None:
+    def test_v3_tree_has_no_retired_runtime_dependency(self) -> None:
         forbidden = (
             "allday_asr.storage",
-            "allday_asr.services.quality_workflow",
+            "allday_asr.services",
             "allday_asr.v3.adapters.models_v2",
             "allday_asr.v3.adapters.legacy_v2",
         )
         violations: list[str] = []
-        for path in DEFAULT_RUNTIME_FILES:
+        for path in V3_ROOT.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 module = _imported_module(node)
@@ -82,11 +80,9 @@ class V3ArchitectureTests(unittest.TestCase):
                         f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:{module}"
                     )
         self.assertEqual(violations, [])
-
-        composition = (V3_ROOT / "bootstrap" / "core.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("import_legacy_v2", composition)
+        self.assertFalse((V3_ROOT / "adapters" / "models_v2").exists())
+        self.assertFalse((V3_ROOT / "adapters" / "legacy_v2").exists())
+        self.assertFalse((V3_ROOT / "application" / "legacy_import.py").exists())
 
 
 def _imported_module(node: ast.AST) -> str | None:

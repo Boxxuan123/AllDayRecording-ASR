@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from allday_asr.domain.hashing import canonical_json_sha256
+from allday_asr.v3.domain.hashing import canonical_json_sha256
 from allday_asr.v3.domain.timeline_quality import (
     TIMELINE_AUDIT_FORMAT,
     TimelineQualityDecision,

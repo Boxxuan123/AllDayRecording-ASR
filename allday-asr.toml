@@ -3,10 +3,6 @@ config_version = 1
 [runtime]
 device = "auto"
 
-[ingest]
-device = "Huawei Watch"
-timezone = "Asia/Singapore"
-
 [asr]
 language = "zh"
 primary_model = "Qwen/Qwen3-ASR-1.7B"
@@ -30,30 +26,7 @@ speech_gate_silero_min_silence_ms = 250
 speech_gate_min_silero_overlap_ms = 500
 
 [diarization]
-enabled = true
-min_segment_seconds = 1.5
-min_cluster_segments = 3
-min_cluster_speech_seconds = 5.0
-
-[quality_diarization]
 backend = "pyannote-community-1"
 model_id = "pyannote/speaker-diarization-community-1"
 token_env = "HF_TOKEN"
 min_primary_overlap_ratio = 0.50
-min_secondary_overlap_ratio = 0.30
-min_primary_margin = 0.15
-
-[identity]
-candidates_enabled = true
-threshold = 0.36
-min_segment_seconds = 0.8
-top = 30
-
-[timeline]
-max_gap_seconds = 120.0
-
-[actions]
-enabled = true
-require_self_confirmation = true
-confirmation_window_seconds = 90.0
-min_confidence = 0.75

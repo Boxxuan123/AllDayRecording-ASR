@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from allday_asr.paths import PROJECT_ROOT
+from allday_asr.v3.paths import PROJECT_ROOT
 from allday_asr.v3 import CONTRACT_VERSION, PROJECTION_VERSION
 from allday_asr.v3.config import V3ConfigurationError, V3Settings
 

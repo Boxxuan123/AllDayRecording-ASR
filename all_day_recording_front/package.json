@@ -4,11 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:v3": "vite --config vite.v3.config.ts --mode mock",
-    "build:v2": "vue-tsc -b && vite build",
-    "build:v3": "vue-tsc -p tsconfig.v3.json --noEmit && vite build --config vite.v3.config.ts",
-    "build": "npm run build:v2 && npm run build:v3",
+    "dev": "vite --config vite.v3.config.ts --mode mock",
+    "build": "vue-tsc -p tsconfig.v3.json --noEmit && vite build --config vite.v3.config.ts",
     "test": "node tests/run-tests.js",
     "preview": "vite preview"
   },

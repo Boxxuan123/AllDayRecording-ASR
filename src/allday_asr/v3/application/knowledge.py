@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from allday_asr.domain.hashing import canonical_json_sha256
+from allday_asr.v3.domain.hashing import canonical_json_sha256
 from allday_asr.v3.domain.ids import new_ulid, stable_ulid
 from allday_asr.v3.domain.knowledge import (
     DerivationDependency,

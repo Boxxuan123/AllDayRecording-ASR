@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from allday_asr.asr.quality_backends import (
+from allday_asr.v3.adapters.models.asr_backends import (
     SpeechGateSettings,
     _build_speech_gate,
     _merge_speech_ranges,

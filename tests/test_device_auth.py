@@ -17,20 +17,20 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
-from allday_asr.interfaces.transfer.devices import (
+from allday_asr.v3.interfaces.transfer.devices import (
     DEVICE_ALGORITHM,
     DeviceAuthManager,
     DeviceCredentialStore,
     DeviceUnauthorizedError,
     build_device_signature_payload,
 )
-from allday_asr.interfaces.transfer.pairing import (
+from allday_asr.v3.interfaces.transfer.pairing import (
     PAIRING_PROTOCOL,
     PAIRING_URI_PREFIX,
     build_pairing_uri,
 )
-from allday_asr.interfaces.transfer.passkeys import RequestBinding
-from allday_asr.interfaces.transfer.server import create_transfer_server
+from allday_asr.v3.interfaces.transfer.passkeys import RequestBinding
+from allday_asr.v3.interfaces.transfer.server import create_transfer_server
 
 
 def _b64(value: bytes) -> str:

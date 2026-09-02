@@ -33,7 +33,6 @@ from allday_asr.v3.adapters.sqlite.repositories import (
     SqliteDeviceRepository,
     SqliteDeviceTrustRepository,
     SqliteIdempotencyRepository,
-    SqliteLegacyImportRunRepository,
     SqliteMobileSyncRepository,
     SqliteProcessingRunRepository,
     SqliteRecordingCatalogRepository,
@@ -69,9 +68,6 @@ class SqliteUnitOfWork:
         self.audit = SqliteAuditRepository(connection, now=self.now)
         self.idempotency = SqliteIdempotencyRepository(connection, now=self.now)
         self.tombstones = SqliteTombstoneRepository(connection, now=self.now)
-        self.legacy_imports = SqliteLegacyImportRunRepository(
-            connection, now=self.now
-        )
         self.desktop = SqliteDesktopReadRepository(connection)
         self.knowledge = SqliteKnowledgeRepository(connection)
         self.derivations = SqliteDerivationRepository(connection)

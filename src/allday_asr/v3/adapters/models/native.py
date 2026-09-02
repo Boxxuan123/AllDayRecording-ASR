@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 
-from allday_asr.audio.tools import extract_clip
-from allday_asr.domain.hashing import canonical_json
+from allday_asr.v3.adapters.audio.tools import extract_clip
+from allday_asr.v3.domain.hashing import canonical_json
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.sqlite import V3Database
 from allday_asr.v3.domain.ids import stable_ulid
@@ -96,7 +96,7 @@ class _Window:
 
 
 class NativeModelPipelineAdapter:
-    """Run ASR and diarization without creating or reading any V2 state.
+    """Run the V3-native ASR and diarization pipeline.
 
     The model implementations are shared infrastructure. Session identity, job
     state, immutable evidence, transcript projection and source coordinates are
@@ -527,12 +527,12 @@ def build_native_model_pipeline(
     """Compose local model backends while keeping all execution state in V3."""
 
     if builders is None:
-        from allday_asr.asr.quality_backends import (
+        from allday_asr.v3.adapters.models.asr_backends import (
             FunAsrNanoBackend,
             Qwen3AsrBackend,
             SpeechGateSettings,
         )
-        from allday_asr.diarization.quality_backends import PyannoteCommunityBackend
+        from allday_asr.v3.adapters.models.diarization import PyannoteCommunityBackend
 
         builders = {
             "speech_gate": SpeechGateSettings,
@@ -577,7 +577,7 @@ def build_native_model_pipeline(
         )
 
     def diarization() -> Any:
-        quality = config.quality_diarization
+        quality = config.diarization
         selected_path = diarization_model_path or (
             Path(quality.model_path).resolve() if quality.model_path else None
         )
@@ -597,10 +597,10 @@ def build_native_model_pipeline(
             context_ms=round(config.asr.context_seconds * 1000),
         ),
         diarization=NativeDiarizationSettings(
-            num_speakers=config.quality_diarization.num_speakers,
-            min_speakers=config.quality_diarization.min_speakers,
-            max_speakers=config.quality_diarization.max_speakers,
-            min_primary_overlap_ratio=config.quality_diarization.min_primary_overlap_ratio,
+            num_speakers=config.diarization.num_speakers,
+            min_speakers=config.diarization.min_speakers,
+            max_speakers=config.diarization.max_speakers,
+            min_primary_overlap_ratio=config.diarization.min_primary_overlap_ratio,
         ),
         primary_factory=primary,
         secondary_factory=secondary,

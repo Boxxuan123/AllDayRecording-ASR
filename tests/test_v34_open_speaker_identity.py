@@ -373,7 +373,7 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
     def test_confirmed_historical_windows_create_one_idempotent_v3_seed(self) -> None:
         self._seed_track(1)
         person = self.core.people.create_person("母亲")
-        source_ref = "v2:fixture:confirmed-speaker-enrollment:mother:1"
+        source_ref = "fixture:confirmed-speaker-enrollment:mother:1"
         enrollment_track_id = stable_ulid("confirmed-enrollment-track", source_ref)
         self.provider.vectors[enrollment_track_id] = (1.0, 0.0, 0.0)
 

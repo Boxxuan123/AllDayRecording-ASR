@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from allday_asr.paths import PROJECT_ROOT
+from allday_asr.v3.paths import PROJECT_ROOT
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.codex import (
     CodexInsightGenerator,

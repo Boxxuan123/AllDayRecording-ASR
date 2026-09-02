@@ -463,7 +463,7 @@ def _event_summary(payload: dict[str, Any], fallback: str) -> str:
 
 def _event_confirmation(value: object) -> PersonMemoryConfirmation:
     actor = str(value or "").strip()
-    if actor.startswith("system:") or actor == "legacy_v2_import":
+    if actor.startswith("system:"):
         return PersonMemoryConfirmation.UNCONFIRMED
     return PersonMemoryConfirmation.CONFIRMED
 

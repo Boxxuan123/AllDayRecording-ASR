@@ -17,7 +17,7 @@ from uuid import uuid4
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from allday_asr.interfaces.transfer.devices import (
+from allday_asr.v3.interfaces.transfer.devices import (
     DEVICE_ALGORITHM,
     DeviceAuthManager,
     DeviceCredentialStore,
@@ -25,9 +25,9 @@ from allday_asr.interfaces.transfer.devices import (
     DeviceUnauthorizedError,
     build_device_signature_payload,
 )
-from allday_asr.interfaces.transfer.passkeys import RequestBinding
-from allday_asr.interfaces.transfer.server import create_transfer_server
-from allday_asr.interfaces.transfer.store import UploadStore
+from allday_asr.v3.interfaces.transfer.passkeys import RequestBinding
+from allday_asr.v3.interfaces.transfer.server import create_transfer_server
+from allday_asr.v3.interfaces.transfer.store import UploadStore
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.adapters.transfer import (
@@ -469,7 +469,7 @@ class V3DeviceSyncTests(unittest.TestCase):
             first = ingest.ingest_completed(record.device_id, manifest_record, store)
             replay = ingest.ingest_completed(record.device_id, manifest_record, store)
             alternate_trust = TransferDeviceTrustAdapter(
-                trust.legacy,
+                trust.authenticator,
                 lambda: SqliteUnitOfWork(database),
                 "b" * 64,
             )

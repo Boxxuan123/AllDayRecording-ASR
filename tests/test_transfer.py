@@ -4,7 +4,6 @@ import base64
 import hashlib
 import json
 import shutil
-import sqlite3
 import ssl
 import threading
 import unittest
@@ -20,7 +19,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from allday_asr.interfaces.transfer.passkeys import (
+from allday_asr.v3.interfaces.transfer.passkeys import (
     PASSKEY_ASSERTION_HEADER,
     PASSKEY_CEREMONY_HEADER,
     PasskeyCredentialStore,
@@ -28,19 +27,18 @@ from allday_asr.interfaces.transfer.passkeys import (
     RequestBinding,
     encode_assertion_header,
 )
-from allday_asr.interfaces.transfer.server import (
-    _known_completed_v2_uploads,
+from allday_asr.v3.interfaces.transfer.server import (
     _prioritize_interface_addresses,
     create_transfer_server,
 )
-from allday_asr.interfaces.transfer.store import (
+from allday_asr.v3.interfaces.transfer.store import (
     UploadConflictError,
     UploadDigestError,
     UploadOffsetError,
     UploadStore,
     UploadStoreError,
 )
-from allday_asr.interfaces.transfer.tls import ensure_tls_identity
+from allday_asr.v3.interfaces.transfer.tls import ensure_tls_identity
 
 
 def _digest(data: bytes) -> str:
@@ -183,61 +181,6 @@ def _workspace_directory():
 
 
 class UploadStoreTests(unittest.TestCase):
-    def test_v2_catalog_deduplicates_across_inbox_changes_without_fake_file(
-        self,
-    ) -> None:
-        with _workspace_directory() as temporary:
-            database_path = temporary / "v2.sqlite3"
-            recording = b"already ingested recording"
-            manifest = b'{"already":"ingested"}'
-            with sqlite3.connect(database_path) as connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE source_objects (
-                        sha256 TEXT NOT NULL,
-                        byte_size INTEGER
-                    );
-                    CREATE TABLE session_manifests (
-                        manifest_sha256 TEXT NOT NULL,
-                        byte_size INTEGER NOT NULL
-                    );
-                    """
-                )
-                connection.execute(
-                    "INSERT INTO source_objects VALUES (?, ?)",
-                    (_digest(recording), len(recording)),
-                )
-                connection.execute(
-                    "INSERT INTO session_manifests VALUES (?, ?)",
-                    (_digest(manifest), len(manifest)),
-                )
-
-            store = UploadStore(
-                temporary / "new-inbox",
-                known_completed=_known_completed_v2_uploads(database_path),
-            )
-            known_recording, recording_created = store.create_upload(
-                relative_path="phone/session/segment.wav",
-                size=len(recording),
-                sha256=_digest(recording),
-                kind="recording",
-            )
-            known_manifest, manifest_created = store.create_upload(
-                relative_path="phone/session/session_summary.json",
-                size=len(manifest),
-                sha256=_digest(manifest),
-                kind="manifest",
-            )
-
-            self.assertFalse(recording_created)
-            self.assertFalse(manifest_created)
-            self.assertEqual(known_recording.status, "completed")
-            self.assertEqual(known_recording.offset, len(recording))
-            self.assertEqual(known_manifest.status, "completed")
-            self.assertFalse(store.has_completed_file(known_recording))
-            self.assertFalse(store.has_completed_file(known_manifest))
-            self.assertEqual(store.list_uploads(), [])
-
     def test_upload_resumes_after_restart_and_finishes_without_overwrite(self) -> None:
         with _workspace_directory() as temporary:
             inbox = temporary / "inbox"

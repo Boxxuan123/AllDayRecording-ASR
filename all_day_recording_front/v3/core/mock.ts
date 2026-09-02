@@ -76,7 +76,7 @@ export const mockOverview: Overview = {
       job_id: '01K4JOB00000000000000000001',
       run_id: '01K4RUN00000000000000000001',
       session_id: '01K4MORNINGTRACE00000000001',
-      pipeline_version: 'v3-v2-adapter.1',
+      pipeline_version: 'v3-native.1',
       revision: 12,
       status: 'running',
       current_stage: 'diarization',
@@ -114,7 +114,7 @@ export const mockSessionDetail: SessionDetail = {
     run_id: mockOverview.active_jobs[0].run_id,
     job_id: mockOverview.active_jobs[0].job_id,
     session_id: current.session_id,
-    pipeline_version: 'v3-v2-adapter.1',
+    pipeline_version: 'v3-native.1',
     input_revision: 1,
     revision: 12,
     status: 'running',
@@ -136,7 +136,7 @@ export const mockSessionDetail: SessionDetail = {
     { utterance_id: '01K4UTTERANCE0000000000003', session_id: current.session_id, speaker_track_id: '01K4SPEAKER000000000000001', speaker_label: 'SPEAKER_00', original_speaker_track_id: '01K4SPEAKER000000000000001', original_speaker_label: 'SPEAKER_00', identity: 'unknown', original_identity: 'unknown', identity_evidence: { source: 'voiceprint', decision: 'unknown', reason: 'score_in_unknown_band' }, start_ms: 31_000, end_ms: 39_800, start_at: '2026-08-31T01:05:31.000Z', end_at: '2026-08-31T01:05:39.800Z', text: '处理失败的话保留旧 attempt，再从 checkpoint 恢复。', original_text: '处理失败的话保留旧 attempt，再从 checkpoint 恢复。', revision: 1, status: 'active', evidence: { token_ids: [6, 7, 8] } },
   ],
   artifacts: [
-    { artifact_id: '01K4ARTIFACT00000000000001', run_id: mockOverview.active_jobs[0].run_id, kind: 'v2_evidence_snapshot', producer: 'existing-v2-quality-workflow', producer_version: 'v2-workflow.0', status: 'active', sha256: 'a'.repeat(64), size_bytes: 8421, metadata: { token_count: 146, turn_count: 12, utterance_count: 38 }, created_at: '2026-08-31T03:02:00Z' },
+    { artifact_id: '01K4ARTIFACT00000000000001', run_id: mockOverview.active_jobs[0].run_id, kind: 'v3_transcript_evidence', producer: 'v3-native-model-pipeline', producer_version: 'v3-native.1', status: 'active', sha256: 'a'.repeat(64), size_bytes: 8421, metadata: { token_count: 146, turn_count: 12, utterance_count: 38 }, created_at: '2026-08-31T03:02:00Z' },
   ],
   backups: [
     { evidence_id: '01K4BACKUP0000000000000001', provider: 'filesystem:archive', storage_kind: 'independent_device', digest: 'c'.repeat(64), status: 'verified', restore_checked_at: '2026-08-31T02:18:00Z', metadata: { restore_drill: true }, created_at: '2026-08-31T02:18:00Z' },

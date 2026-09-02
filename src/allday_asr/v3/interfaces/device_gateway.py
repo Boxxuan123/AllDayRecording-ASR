@@ -5,10 +5,10 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
-from allday_asr.interfaces.transfer.devices import (
+from allday_asr.v3.interfaces.transfer.devices import (
     DeviceCredentialRecord as LegacyDeviceCredentialRecord,
 )
-from allday_asr.interfaces.transfer.store import UploadRecord, UploadStore
+from allday_asr.v3.interfaces.transfer.store import UploadRecord, UploadStore
 from allday_asr.v3 import CONTRACT_VERSION, PROJECTION_VERSION
 from allday_asr.v3.adapters.transfer import (
     TransferDeviceTrustAdapter,

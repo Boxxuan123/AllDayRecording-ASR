@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from allday_asr.paths import PROJECT_ROOT
 from allday_asr.v3 import CONTRACT_VERSION, PROJECTION_VERSION
+from allday_asr.v3.paths import PROJECT_ROOT
 from allday_asr.v3.adapters.sqlite.migrations import MIGRATIONS
 from allday_asr.v3.contracts import (
     UTTERANCE_DTO_SCHEMA,

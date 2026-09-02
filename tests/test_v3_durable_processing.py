@@ -14,8 +14,6 @@ from uuid import uuid4
 
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.backup import FilesystemSessionBackupAdapter
-from allday_asr.v3.adapters.models_v2 import QualityWorkflowV2Adapter
-from allday_asr.v3.adapters.models_v2 import V2SessionMaterializer
 from allday_asr.v3.adapters.models import (
     NativeAsrSettings,
     NativeDiarizationSettings,
@@ -56,7 +54,6 @@ from allday_asr.v3.ports.processing import (
     StageExecutionResult,
     UtteranceProjectionOutput,
 )
-from allday_asr.storage.database import Database
 
 
 SESSION_ID = stable_ulid("durable-processing-test", "session")
@@ -90,9 +87,9 @@ class _SuccessfulAdapter:
                 checkpoint={"tokens": 2},
                 artifacts=(
                     StageArtifactOutput(
-                        kind="v2_evidence_snapshot",
+                        kind="v3_transcript_evidence",
                         payload=b'{"fixture":true}',
-                        producer="test-v2",
+                        producer="test-v3",
                         producer_version="1",
                     ),
                 ),
@@ -116,9 +113,9 @@ class _SuccessfulAdapter:
             return StageExecutionResult(
                 artifacts=(
                     StageArtifactOutput(
-                        kind="v2_semantic_evidence",
+                        kind="v3_semantic_evidence",
                         payload=b'{"summary":true}',
-                        producer="test-v2",
+                        producer="test-v3",
                         producer_version="1",
                         dependencies=(
                             ArtifactDependencyOutput(
@@ -202,71 +199,6 @@ class _LongRunningAdapter(_SuccessfulAdapter):
             self.clock.advance(8)
             time.sleep(0.03)
         return super().execute(context, control)
-
-
-class _StaticV2Executor:
-    def execute(self, session_id: str, progress) -> dict[str, object]:
-        progress("fixture", session_id)
-        source = {
-            "source_object_id": 1,
-            "source_sha256": "a" * 64,
-            "source_start_ms": 100,
-            "source_end_ms": 600,
-        }
-        return {
-            "format": "AllDayRecording V2 evidence snapshot v1",
-            "summary": {"asr_run_id": 11, "diarization_run_id": 12},
-            "tokens": [
-                {
-                    "id": 1,
-                    "text": "你",
-                    "start_ms": 100,
-                    "end_ms": 300,
-                    "speaker": "SPEAKER_00",
-                    "speaker_kind": "primary",
-                    "has_overlap": False,
-                    "source_refs": [source],
-                },
-                {
-                    "id": 2,
-                    "text": "好",
-                    "start_ms": 320,
-                    "end_ms": 600,
-                    "speaker": "SPEAKER_00",
-                    "speaker_kind": "primary",
-                    "has_overlap": False,
-                    "source_refs": [source],
-                },
-            ],
-            "turns": [
-                {
-                    "id": 1,
-                    "label": "SPEAKER_00",
-                    "kind": "regular",
-                    "start_ms": 100,
-                    "end_ms": 600,
-                    "source_refs": [source],
-                }
-            ],
-            "utterances": [
-                {
-                    "key": "conversation-0001:utterance-0001",
-                    "start_ms": 100,
-                    "end_ms": 600,
-                    "speaker": "SPEAKER_00",
-                    "text": "你好",
-                    "identity": "self",
-                    "identity_evidence": {
-                        "source": "voiceprint",
-                        "decision": "self",
-                        "reason": "all_clean_windows_above_self_threshold",
-                        "policy_version": "holdout-accepted-1",
-                        "calibration_accepted": True,
-                    },
-                    "evidence": {"token_ids": [1, 2], "source_refs": [source]},
-                }
-            ],
-        }
 
 
 class _NativeAsrBackend:
@@ -371,7 +303,7 @@ class V3DurableProcessingTests(unittest.TestCase):
             self.service.submit(
                 SubmitProcessingCommand(
                     session_id=SESSION_ID,
-                    pipeline_version="v3-v2-adapter.1",
+                    pipeline_version="v3-native.1",
                     input_revision=1,
                     config={"profile": "other"},
                 )
@@ -398,7 +330,7 @@ class V3DurableProcessingTests(unittest.TestCase):
                     WHERE session_id = ? AND input_revision = ?
                       AND pipeline_version = ?
                     """,
-                    (SESSION_ID, 1, "v3-v2-adapter.1"),
+                    (SESSION_ID, 1, "v3-native.1"),
                 ).fetchone()[0]
             )
         self.assertEqual(run_count, 1)
@@ -414,7 +346,7 @@ class V3DurableProcessingTests(unittest.TestCase):
         changed = self.service.submit(
             SubmitProcessingCommand(
                 session_id=SESSION_ID,
-                pipeline_version="v3-v2-adapter.1",
+                pipeline_version="v3-native.1",
                 input_revision=1,
                 config={"profile": "changed"},
             )
@@ -429,7 +361,7 @@ class V3DurableProcessingTests(unittest.TestCase):
         forced = self.service.submit(
             SubmitProcessingCommand(
                 session_id=SESSION_ID,
-                pipeline_version="v3-v2-adapter.1",
+                pipeline_version="v3-native.1",
                 input_revision=1,
                 config={"profile": "changed"},
                 force_reprocess=True,
@@ -827,7 +759,7 @@ class V3DurableProcessingTests(unittest.TestCase):
         second = self.service.submit(
             SubmitProcessingCommand(
                 session_id=SESSION_ID,
-                pipeline_version="v3-v2-adapter.optional-fixture",
+                pipeline_version="v3-native.optional-fixture",
                 input_revision=1,
                 config={"profile": "optional-failure"},
             )
@@ -846,44 +778,6 @@ class V3DurableProcessingTests(unittest.TestCase):
         )
         self.assertEqual(semantic.status.value, "failed")
         self.assertIn("optional semantic fixture failed", semantic.error or "")
-
-    def test_v2_adapter_preserves_fixture_counts_and_coordinates(self) -> None:
-        submitted = self.service.submit(self._command())
-        worker = DurableProcessingWorker(
-            self.service,
-            QualityWorkflowV2Adapter(_StaticV2Executor()),
-            worker_id="worker-v2-fixture",
-        )
-        for _ in range(9):
-            self.assertTrue(worker.run_once())
-        completed = self.service.get(submitted.job.job_id)
-        self.assertEqual(completed.job.status, "succeeded")
-        with self.database.read() as connection:
-            snapshot_artifact = connection.execute(
-                "SELECT metadata_json, storage_ref FROM artifacts WHERE kind = 'v2_evidence_snapshot'"
-            ).fetchone()
-            utterance = connection.execute("SELECT * FROM utterances").fetchone()
-            turns = json.loads(str(snapshot_artifact["metadata_json"]))["turn_count"]
-        with self.artifact_store.open(str(snapshot_artifact["storage_ref"])) as source:
-            snapshot = json.load(source)
-        metadata = json.loads(str(snapshot_artifact["metadata_json"]))
-        self.assertEqual(metadata["token_count"], 2)
-        self.assertEqual(turns, 1)
-        self.assertEqual(metadata["utterance_count"], 1)
-        self.assertEqual((utterance["start_ms"], utterance["end_ms"]), (100, 600))
-        self.assertEqual(utterance["text"], "你好")
-        self.assertEqual(utterance["identity"], "self")
-        self.assertEqual(utterance["original_identity"], "self")
-        self.assertEqual(
-            json.loads(utterance["identity_evidence_json"])["policy_version"],
-            "holdout-accepted-1",
-        )
-        self.assertEqual(
-            snapshot["tokens"][0]["source_refs"][0]["source_start_ms"], 100
-        )
-        self.assertEqual(
-            snapshot["tokens"][0]["source_refs"][0]["source_end_ms"], 600
-        )
 
     def test_native_adapter_writes_only_v3_evidence_and_utterances(self) -> None:
         submitted = self.service.submit(
@@ -929,7 +823,6 @@ class V3DurableProcessingTests(unittest.TestCase):
             },
         )
         self.assertEqual(tuple(utterance), ("你好", 100, 600))
-        self.assertFalse((self.root / "compat-v2.sqlite3").exists())
 
     def test_native_adapter_normalizes_one_millisecond_ingest_drift(self) -> None:
         drifted_session_id = stable_ulid("durable-processing-test", "drifted-session")
@@ -984,9 +877,7 @@ class V3DurableProcessingTests(unittest.TestCase):
             [(0, 1000)],
         )
 
-    def test_backup_restore_drill_and_native_v2_materialization_are_idempotent(
-        self,
-    ) -> None:
+    def test_backup_restore_drill_rejects_overlapping_destinations(self) -> None:
         backup = FilesystemSessionBackupAdapter(
             self.database, self.audio_store, self.artifact_store
         ).backup(
@@ -1004,19 +895,6 @@ class V3DurableProcessingTests(unittest.TestCase):
                 self.audio_store.root,
                 storage_kind="independent_device",
             )
-
-        v2_database = Database.open(self.root / "compat-v2.sqlite3")
-        materializer = V2SessionMaterializer(
-            self.database,
-            self.audio_store,
-            self.artifact_store,
-            self.root / "compat-sessions",
-        )
-        first = materializer.resolve(SESSION_ID, v2_database)
-        second = materializer.resolve(SESSION_ID, v2_database)
-        self.assertEqual(first, second)
-        session = v2_database.get_recording_session(first)
-        self.assertEqual(int(session["duration_ms"]), 1000)
 
     def test_backup_preserves_the_catalog_audio_format_in_the_file_name(
         self,
@@ -1056,7 +934,7 @@ class V3DurableProcessingTests(unittest.TestCase):
     def _command(self) -> SubmitProcessingCommand:
         return SubmitProcessingCommand(
             session_id=SESSION_ID,
-            pipeline_version="v3-v2-adapter.1",
+            pipeline_version="v3-native.1",
             input_revision=1,
             config={"profile": "fixture"},
         )

@@ -22,16 +22,6 @@ from allday_asr.v3.domain.identity import (
     classify_voiceprint_identity,
     evaluate_voiceprint_calibration,
 )
-from allday_asr.v3.domain.identity_calibration import (
-    CalibrationWindow,
-    ThresholdMetrics,
-    calculate_threshold_metrics,
-    calibration_blockers,
-    merge_calibration_windows,
-    select_not_self_threshold,
-    select_self_threshold,
-    split_adaptation_windows,
-)
 from allday_asr.v3.domain.models import (
     Artifact,
     AudioAsset,
@@ -193,7 +183,6 @@ __all__ = [
     "IdentityAcceptancePolicy",
     "InsightEvidenceReference",
     "InsightStatus",
-    "CalibrationWindow",
     "IdentityDecision",
     "IdentityHoldoutSample",
     "DEFAULT_PROCESSING_STAGES",
@@ -253,7 +242,6 @@ __all__ = [
     "TimelineQualityDecision",
     "TimelineQualityPolicy",
     "TimelineTruthCompleteness",
-    "ThresholdMetrics",
     "Utterance",
     "VoiceprintCalibration",
     "VoiceprintObservation",
@@ -261,8 +249,6 @@ __all__ = [
     "new_ulid",
     "stable_ulid",
     "classify_voiceprint_identity",
-    "calculate_threshold_metrics",
-    "calibration_blockers",
     "conservative_match",
     "cosine_similarity",
     "layered_person_match",
@@ -271,10 +257,6 @@ __all__ = [
     "PersonIdentityPolicy",
     "SpeakerMatchTier",
     "evaluate_voiceprint_calibration",
-    "merge_calibration_windows",
     "evaluate_timeline_quality",
     "parse_timeline_audit_document",
-    "select_not_self_threshold",
-    "select_self_threshold",
-    "split_adaptation_windows",
 ]

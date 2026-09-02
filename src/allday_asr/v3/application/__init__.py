@@ -1,8 +1,3 @@
-from allday_asr.v3.application.legacy_import import (
-    ImportLegacyV2,
-    LegacyImportCommand,
-    LegacyImportResult,
-)
 from allday_asr.v3.application.mobile_sync import (
     ClientOperationHandler,
     MobileSyncService,
@@ -69,7 +64,6 @@ __all__ = [
     "DurableProcessingService",
     "DurableProcessingWorker",
     "DesktopQueryService",
-    "ImportLegacyV2",
     "IntelligentReminderService",
     "ReminderExtractionService",
     "ReminderGenerationFailed",
@@ -79,8 +73,6 @@ __all__ = [
     "DailyInsightService",
     "InsightGenerationFailed",
     "InsightGenerationUnavailable",
-    "LegacyImportCommand",
-    "LegacyImportResult",
     "KnowledgeArchitectureService",
     "MobileSyncService",
     "RecordBackupEvidenceCommand",

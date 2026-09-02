@@ -799,68 +799,6 @@ class SqliteTombstoneRepository:
         return cursor.rowcount == 1
 
 
-class SqliteLegacyImportRunRepository:
-    def __init__(self, connection: sqlite3.Connection, *, now: Clock) -> None:
-        self.connection = connection
-        self.now = now
-
-    def latest_namespace(self, source_path: str) -> str | None:
-        row = self.connection.execute(
-            """
-            SELECT source_namespace FROM legacy_import_runs
-            WHERE source_path = ? AND status = 'completed'
-            ORDER BY completed_at DESC, started_at DESC, import_id DESC
-            LIMIT 1
-            """,
-            (source_path,),
-        ).fetchone()
-        return str(row["source_namespace"]) if row is not None else None
-
-    def start(
-        self,
-        import_id: str,
-        source_namespace: str,
-        source_path: str,
-        source_database_sha256: str,
-        source_schema_version: int,
-    ) -> None:
-        self.connection.execute(
-            """
-            INSERT INTO legacy_import_runs (
-                import_id, source_namespace, source_path,
-                source_database_sha256, source_schema_version,
-                status, started_at
-            ) VALUES (?, ?, ?, ?, ?, 'running', ?)
-            """,
-            (
-                import_id,
-                source_namespace,
-                source_path,
-                source_database_sha256,
-                source_schema_version,
-                self.now(),
-            ),
-        )
-
-    def complete(self, import_id: str, report: dict[str, Any]) -> None:
-        self._finish(import_id, "completed", report)
-
-    def fail(self, import_id: str, report: dict[str, Any]) -> None:
-        self._finish(import_id, "failed", report)
-
-    def _finish(self, import_id: str, status: str, report: dict[str, Any]) -> None:
-        cursor = self.connection.execute(
-            """
-            UPDATE legacy_import_runs
-            SET status = ?, report_json = ?, completed_at = ?
-            WHERE import_id = ? AND status = 'running'
-            """,
-            (status, _json(report), self.now(), import_id),
-        )
-        if cursor.rowcount != 1:
-            raise LookupError(f"legacy import run is not active: {import_id}")
-
-
 def _recording_session(row: sqlite3.Row) -> RecordingSession:
     return RecordingSession(
         session_id=str(row["session_id"]),
@@ -1048,7 +986,6 @@ __all__ = [
     "SqliteDeviceRepository",
     "SqliteDeviceTrustRepository",
     "SqliteIdempotencyRepository",
-    "SqliteLegacyImportRunRepository",
     "SqliteMobileSyncRepository",
     "SqliteProcessingRunRepository",
     "SqliteRecordingCatalogRepository",

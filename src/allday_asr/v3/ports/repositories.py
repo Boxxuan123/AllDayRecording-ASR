@@ -247,23 +247,6 @@ class TombstoneRepository(Protocol):
     ) -> bool: ...
 
 
-class LegacyImportRunRepository(Protocol):
-    def latest_namespace(self, source_path: str) -> str | None: ...
-
-    def start(
-        self,
-        import_id: str,
-        source_namespace: str,
-        source_path: str,
-        source_database_sha256: str,
-        source_schema_version: int,
-    ) -> None: ...
-
-    def complete(self, import_id: str, report: dict[str, Any]) -> None: ...
-
-    def fail(self, import_id: str, report: dict[str, Any]) -> None: ...
-
-
 class DesktopReadRepository(Protocol):
     def overview(self) -> dict[str, Any]: ...
     def list_sessions(
@@ -616,7 +599,6 @@ class UnitOfWork(Protocol):
     audit: AuditRepository
     idempotency: IdempotencyRepository
     tombstones: TombstoneRepository
-    legacy_imports: LegacyImportRunRepository
     desktop: DesktopReadRepository
     knowledge: KnowledgeRepository
     derivations: DerivationRepository
@@ -648,7 +630,6 @@ __all__ = [
     "EvidenceProjectionRepository",
     "IdempotencyRepository",
     "InsightRepository",
-    "LegacyImportRunRepository",
     "KnowledgeRepository",
     "MobileSyncRepository",
     "ProcessingRunRepository",

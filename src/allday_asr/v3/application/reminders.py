@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
-from allday_asr.domain.hashing import canonical_json_sha256
+from allday_asr.v3.domain.hashing import canonical_json_sha256
 from allday_asr.v3.contracts import validate_reminder_dto
 from allday_asr.v3.application.knowledge import (
     KnowledgeArchitectureService,

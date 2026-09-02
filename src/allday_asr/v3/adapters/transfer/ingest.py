@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Any
 
-from allday_asr.interfaces.transfer.store import (
+from allday_asr.v3.interfaces.transfer.store import (
     UploadConflictError,
     UploadRecord,
     UploadStore,

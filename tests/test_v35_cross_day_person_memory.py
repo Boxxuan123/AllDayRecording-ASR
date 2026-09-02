@@ -201,7 +201,7 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
                 "related_person_ids": ["person-a", "person-b"],
                 "topics": ["陈述 · person-a", "饮食"],
             },
-            actor="system:legacy_v2_import",
+            actor="system:fixture_import",
         )
 
         refreshed = self.memories.refresh("person-a")

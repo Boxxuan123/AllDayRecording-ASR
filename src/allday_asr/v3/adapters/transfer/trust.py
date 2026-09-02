@@ -3,13 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timezone
 
-from allday_asr.interfaces.transfer.devices import (
+from allday_asr.v3.interfaces.transfer.devices import (
     DeviceAuthManager,
     DeviceCredentialRecord as LegacyDeviceCredentialRecord,
     DeviceForbiddenError,
     DeviceUnauthorizedError,
 )
-from allday_asr.interfaces.transfer.passkeys import RequestBinding
+from allday_asr.v3.interfaces.transfer.passkeys import RequestBinding
 from allday_asr.v3.domain.device_sync import (
     DEFAULT_PHONE_SCOPES,
     DeviceCredential,
@@ -30,18 +30,18 @@ DateTimeClock = Callable[[], datetime]
 
 
 class TransferDeviceTrustAdapter:
-    """Add V3 scopes/revocation/audit around the proven V2 signature verifier."""
+    """Add V3 scopes, revocation and audit around device signatures."""
 
     def __init__(
         self,
-        legacy: DeviceAuthManager,
+        authenticator: DeviceAuthManager,
         uow_factory: UnitOfWorkFactory,
         receiver_id: str,
         *,
         now: DateTimeClock | None = None,
     ) -> None:
-        self.legacy = legacy
-        self.store = legacy.store
+        self.authenticator = authenticator
+        self.store = authenticator.store
         self._uow_factory = uow_factory
         self.receiver_id = receiver_id
         self._now = now or (lambda: datetime.now(timezone.utc))
@@ -106,7 +106,7 @@ class TransferDeviceTrustAdapter:
         self, *, device_id: str, binding: RequestBinding
     ) -> dict[str, object]:
         self._authorize(device_id, _required_scopes(binding))
-        return self.legacy.start_authentication(
+        return self.authenticator.start_authentication(
             device_id=device_id,
             binding=binding,
         )
@@ -120,7 +120,7 @@ class TransferDeviceTrustAdapter:
         binding: RequestBinding,
     ) -> LegacyDeviceCredentialRecord:
         credential = self._authorize(device_id, _required_scopes(binding))
-        record = self.legacy.verify_request(
+        record = self.authenticator.verify_request(
             device_id=device_id,
             challenge_id=challenge_id,
             encoded_signature=encoded_signature,

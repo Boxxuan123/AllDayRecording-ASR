@@ -26,12 +26,12 @@ class V3BootstrapTests(unittest.TestCase):
         self.assertTrue(settings.enabled)
         self.assertEqual(start_empty_runtime(settings).state, "empty_ready")
 
-    def test_empty_runtime_does_not_open_or_modify_a_v2_database(self) -> None:
+    def test_empty_runtime_does_not_modify_an_unrelated_database(self) -> None:
         directory = Path(__file__).parent / f"v3-empty-{uuid4().hex}"
         directory.mkdir()
-        marker = directory / "v2.sqlite3"
+        marker = directory / "unrelated.sqlite3"
         try:
-            marker.write_bytes(b"immutable-v2-marker")
+            marker.write_bytes(b"immutable-marker")
             before = marker.read_bytes()
 
             runtime = start_empty_runtime(V3Settings(enabled=True))

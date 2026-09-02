@@ -8,8 +8,8 @@ from typing import Protocol
 import numpy as np
 import soundfile as sf
 
-from allday_asr.asr.funasr_backend import FunASRBackend
-from allday_asr.audio.tools import extract_clip
+from allday_asr.v3.adapters.audio.tools import extract_clip
+from allday_asr.v3.adapters.models.funasr import FunASRBackend
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.domain.people import RepresentativeClip, SpeakerEmbedding
 from allday_asr.v3.ports.speaker_embeddings import SpeakerTrackInput
