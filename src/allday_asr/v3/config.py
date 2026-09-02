@@ -32,7 +32,7 @@ class CodexReminderSettings:
     workdir: Path = Path.home() / ".alldayrecording_codex"
     model: str | None = None
     reasoning_effort: CodexEffortSetting = CodexEffortSetting.AUTO
-    allow_auto_apply: bool = False
+    allow_auto_apply: bool = True
     allow_semantic_event_auto_accept: bool = True
 
     @classmethod
@@ -64,7 +64,7 @@ class CodexReminderSettings:
             model=_optional_model(values.get("ALLDAY_V3_CODEX_MODEL")),
             reasoning_effort=effort,
             allow_auto_apply=_parse_bool(
-                values.get("ALLDAY_V3_CODEX_AUTO_APPLY", "0")
+                values.get("ALLDAY_V3_CODEX_AUTO_APPLY", "1")
             ),
             allow_semantic_event_auto_accept=_parse_bool(
                 values.get("ALLDAY_V3_CODEX_EVENT_AUTO_ACCEPT", "1")

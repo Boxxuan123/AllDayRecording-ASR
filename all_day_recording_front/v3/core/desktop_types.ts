@@ -21,7 +21,7 @@ export interface ApiErrorBody {
   request_id: string
 }
 
-export type ReviewKind = 'processing_gate' | 'reminder' | 'person_memory' | 'voice_identity'
+export type ReviewKind = 'workflow_failure' | 'processing_gate' | 'reminder' | 'person_memory' | 'voice_identity' | 'knowledge_proposal'
 
 export type ReviewPriority = 'high' | 'normal'
 
@@ -39,7 +39,7 @@ export interface ReviewItem {
   evidence_count: number
   created_at: string
   updated_at: string
-  context: Record<string, string | number | boolean | null | undefined>
+  context: Record<string, unknown>
 }
 
 export interface DeviceSummary {

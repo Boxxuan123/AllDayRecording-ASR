@@ -184,6 +184,10 @@ def _required_scopes(binding: RequestBinding) -> tuple[DeviceScope, ...]:
         return (DeviceScope.DEVICE_STATUS,)
     if binding.path == "/device/v3/sync":
         return (DeviceScope.DATA_SYNC_READ, DeviceScope.DATA_SYNC_WRITE)
+    if binding.path in {"/device/v3/reviews", "/device/v3/reviews/audio"}:
+        return (DeviceScope.DATA_SYNC_READ,)
+    if binding.path == "/device/v3/reviews/action":
+        return (DeviceScope.DATA_SYNC_WRITE,)
     if binding.path == "/api/v1/uploads" or binding.path.startswith(
         "/api/v1/uploads/"
     ):

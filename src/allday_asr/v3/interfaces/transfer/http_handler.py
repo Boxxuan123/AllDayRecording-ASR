@@ -37,6 +37,7 @@ from .protocol import (
     _V3_STATUS_PATH,
     _V3_SYNC_PATH,
 )
+from .http_review_routes import dispatch_review_get, dispatch_review_post
 from .store import (
     UploadConflictError,
     UploadDigestError,
@@ -44,22 +45,17 @@ from .store import (
     UploadOffsetError,
     UploadStoreError,
 )
-
 class TransferRequestHandler(BaseHTTPRequestHandler):
     server: Any
     server_version = "AllDayRecordingTransfer/2"
     sys_version = ""
-
     def setup(self) -> None:
         super().setup()
         self.connection.settimeout(60)
-
     def do_GET(self) -> None:
         self._handle(self._dispatch_get)
-
     def do_POST(self) -> None:
         self._handle(self._dispatch_post)
-
     def do_PUT(self) -> None:
         self._handle(self._dispatch_put)
 
@@ -137,6 +133,8 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.v3_gateway.status(device.device_id),
             )
+            return
+        if dispatch_review_get(self, path):
             return
         match = _UPLOAD_PATH.fullmatch(path)
         if path != "/api/v1/status" and match is None:
@@ -281,6 +279,8 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 raise UploadStoreError(str(exc)) from exc
             self._send_json(HTTPStatus.OK, response)
+            return
+        if dispatch_review_post(self, path):
             return
         if path != "/api/v1/uploads":
             self._send_error(HTTPStatus.NOT_FOUND, "接口不存在")

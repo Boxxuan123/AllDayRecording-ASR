@@ -16,6 +16,7 @@ from .desktop_http_contract import (
     _REMINDER_CANDIDATE_ROUTE,
     _REMINDER_FEEDBACK_ROUTE,
     _RUN_ROUTE,
+    _SESSION_AUDIO_ROUTE,
     _SESSION_ROUTE,
     _SPEAKER_CLUSTER_ROUTE,
     _integer,
@@ -51,8 +52,16 @@ class DesktopGetRoutesMixin:
         if path == "/api/v3/recording-sessions":
             cursor = query.get("cursor", [None])[0]
             limit = _integer(query.get("limit", ["50"])[0], "limit")
-            page = self.application.core.desktop.list_sessions(cursor, limit)
+            search = query.get("q", [None])[0]
+            page = self.application.core.desktop.list_sessions(cursor, limit, search)
             self._send_json(HTTPStatus.OK, page.as_dict())
+            return
+        if match := _SESSION_AUDIO_ROUTE.fullmatch(path):
+            start_ms = _integer(_required_query(query, "start_ms"), "start_ms")
+            end_ms = _integer(_required_query(query, "end_ms"), "end_ms")
+            self._send_session_audio(
+                unquote(match.group(1)), start_ms=start_ms, end_ms=end_ms
+            )
             return
         if match := _SESSION_ROUTE.fullmatch(path):
             self._send_json(
@@ -94,7 +103,7 @@ class DesktopGetRoutesMixin:
             limit = _integer(query.get("limit", ["100"])[0], "limit")
             self._send_json(
                 HTTPStatus.OK,
-                {"items": self.application.core.desktop.list_reviews(limit)},
+                {"items": self.application.list_reviews(limit)},
             )
             return
         if path == "/api/v3/evidence-spans":
@@ -335,4 +344,3 @@ class DesktopGetRoutesMixin:
             self._send_processing_events(query)
             return
         self._send_frontend(path)
-

@@ -31,6 +31,7 @@ from allday_asr.v3.interfaces.transfer.store import UploadStore
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.adapters.transfer import (
+    AutomaticWorkflowStateStore,
     TransferDeviceTrustAdapter,
     V3AutomaticWorkflowRunner,
     V3UploadIngestAdapter,
@@ -139,6 +140,55 @@ class _ReceiptMatrixOperationHandler:
 
 
 class V3DeviceSyncTests(unittest.TestCase):
+    def test_automatic_workflow_retry_request_is_cross_process_durable(self) -> None:
+        with _workspace_directory() as root:
+            store = AutomaticWorkflowStateStore(root / "automation")
+            store.save(
+                "session-retry",
+                {
+                    "version": 1,
+                    "session_id": "session-retry",
+                    "status": "needs_attention",
+                    "stage": "backup",
+                    "detail": "backup failed",
+                    "created_at": "2026-09-02T00:00:00Z",
+                    "updated_at": "2026-09-02T00:01:00Z",
+                },
+            )
+
+            accepted = store.request_retry("session-retry")
+
+            self.assertEqual(accepted["status"], "retry_requested")
+            self.assertEqual(store.status("session-retry")["status"], "retry_requested")
+            requests = store.consume_retry_requests()
+            self.assertEqual([value["session_id"] for value in requests], ["session-retry"])
+            self.assertEqual(store.consume_retry_requests(), ())
+
+    def test_automatic_workflow_exhaustion_moves_to_attention_inbox(self) -> None:
+        state: dict[str, object] = {
+            "session_id": "session-failure",
+            "status": "running",
+            "stage": "backup",
+            "auto_retry_count": 0,
+        }
+        runner = object.__new__(V3AutomaticWorkflowRunner)
+        runner.max_auto_retries = 1
+        runner.retry_delays = (0.0,)
+        runner.status = lambda selected: dict(state)
+
+        def progress(selected, status, stage, detail, **values):
+            state.update(status=status, stage=stage, detail=detail, **values)
+
+        runner._progress = progress
+
+        runner._handle_failure("session-failure", RuntimeError("temporary"))
+        self.assertEqual(state["status"], "retry_scheduled")
+        self.assertEqual(state["auto_retry_count"], 1)
+
+        runner._handle_failure("session-failure", RuntimeError("still broken"))
+        self.assertEqual(state["status"], "needs_attention")
+        self.assertTrue(state["needs_manual_retry"])
+
     def test_automation_retry_preserves_completed_processing_job(self) -> None:
         session_id = "session-existing"
         written: dict[str, object] = {}

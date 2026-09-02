@@ -16,6 +16,7 @@ from allday_asr.v3.adapters.transfer import (
 )
 from allday_asr.v3.application import MobileSyncService
 from allday_asr.v3.domain.device_sync import ClientOperation, SyncRequest
+from allday_asr.v3.interfaces.device_reviews import DeviceReviewService
 
 
 _STABLE_ID = re.compile(
@@ -34,11 +35,13 @@ class DeviceGateway:
             [UploadRecord, Mapping[str, Any]], Mapping[str, Any] | None
         ]
         | None = None,
+        review_service: DeviceReviewService | None = None,
     ) -> None:
         self.trust = trust
         self.sync_service = sync
         self.ingest = ingest
         self.session_ingested = session_ingested
+        self.review_service = review_service
 
     def reconcile(self) -> int:
         return self.trust.reconcile()
@@ -60,6 +63,28 @@ class DeviceGateway:
         request = parse_sync_request(payload)
         device_id = self.trust.domain_device_id(key_id)
         return self.sync_service.synchronize(device_id, request).as_dict()
+
+    def reviews(self, key_id: str) -> dict[str, Any]:
+        self.trust.domain_device_id(key_id)
+        if self.review_service is None:
+            raise LookupError("mobile review service is unavailable")
+        return self.review_service.snapshot()
+
+    def resolve_review(
+        self, key_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        device_id = self.trust.domain_device_id(key_id)
+        if self.review_service is None:
+            raise LookupError("mobile review service is unavailable")
+        return self.review_service.resolve(device_id, payload)
+
+    def review_audio(
+        self, key_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        self.trust.domain_device_id(key_id)
+        if self.review_service is None:
+            raise LookupError("mobile review service is unavailable")
+        return self.review_service.audio(payload)
 
     def upload_completed(
         self,

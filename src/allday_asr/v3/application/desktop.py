@@ -49,13 +49,26 @@ class DesktopQueryService:
             return uow.desktop.overview()
 
     def list_sessions(
-        self, cursor: str | None = None, limit: int = 50
+        self,
+        cursor: str | None = None,
+        limit: int = 50,
+        search: str | None = None,
     ) -> SessionPage:
         if not 1 <= limit <= 500:
             raise ValueError("session page limit must be between 1 and 500")
+        normalized_search = search.strip() if search is not None else None
+        if normalized_search == "":
+            normalized_search = None
+        if normalized_search is not None and len(normalized_search) > 200:
+            raise ValueError("session search must not exceed 200 characters")
         before_start, before_id = _decode_cursor(cursor)
         with self._uow_factory() as uow:
-            values = uow.desktop.list_sessions(before_start, before_id, limit + 1)
+            values = uow.desktop.list_sessions(
+                before_start,
+                before_id,
+                limit + 1,
+                normalized_search,
+            )
         page = values[:limit]
         next_cursor = None
         if len(values) > limit and page:
@@ -68,6 +81,54 @@ class DesktopQueryService:
     def session_detail(self, session_id: str) -> dict[str, Any]:
         with self._uow_factory() as uow:
             return uow.desktop.session_detail(session_id)
+
+    def session_audio_clips(
+        self, session_id: str, start_ms: int, end_ms: int
+    ) -> tuple[dict[str, Any], ...]:
+        if start_ms < 0 or end_ms <= start_ms:
+            raise ValueError("session audio range must be non-empty")
+        if end_ms - start_ms > 5 * 60 * 1000:
+            raise ValueError("session audio range must not exceed 5 minutes")
+        with self._uow_factory() as uow:
+            segments = uow.desktop.session_audio_segments(
+                session_id, start_ms, end_ms
+            )
+
+        clips: list[dict[str, Any]] = []
+        cursor = start_ms
+        for segment in segments:
+            segment_start = int(segment["session_start_ms"])
+            segment_end = int(segment["session_end_ms"])
+            if segment_end <= cursor:
+                continue
+            if segment_start > cursor:
+                break
+            clip_session_end = min(end_ms, segment_end)
+            clip_source_start = (
+                int(segment["source_start_ms"]) + cursor - segment_start
+            )
+            clip_source_end = clip_source_start + clip_session_end - cursor
+            if clip_source_end > int(segment["source_end_ms"]):
+                break
+            clips.append(
+                {
+                    "segment_id": str(segment["segment_id"]),
+                    "media_id": str(segment["media_id"]),
+                    "storage_key": str(segment["storage_key"]),
+                    "start_ms": clip_source_start,
+                    "end_ms": clip_source_end,
+                }
+            )
+            cursor = clip_session_end
+            if cursor >= end_ms:
+                break
+
+        if cursor < end_ms:
+            raise KeyError(
+                f"session audio is unavailable for range {start_ms}-{end_ms}: "
+                f"{session_id}"
+            )
+        return tuple(clips)
 
     def list_processing_jobs(
         self, status: str | None = None, limit: int = 100
@@ -116,7 +177,8 @@ class DesktopQueryService:
                 "network_boundary": "loopback",
                 "audio_cloud_upload": False,
                 "transcript_cloud_processing": (
-                    self._codex_reminders_enabled or self._codex_insights_enabled
+                    self._codex_reminders_enabled
+                    or self._codex_insights_enabled
                     or self._codex_semantic_events_enabled
                 ),
             },

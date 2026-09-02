@@ -22,8 +22,14 @@ ASSET_ROOT = Path(__file__).parents[1] / "web_assets"
 _JOB_ROUTE = re.compile(r"^/api/v3/processing-jobs/([^/]+)$")
 _RUN_ROUTE = re.compile(r"^/api/v3/processing-runs/([^/]+)$")
 _SESSION_ROUTE = re.compile(r"^/api/v3/recording-sessions/([^/]+)$")
+_SESSION_AUDIO_ROUTE = re.compile(
+    r"^/api/v3/recording-sessions/([^/]+)/audio$"
+)
 _MEDIA_ROUTE = re.compile(r"^/api/v3/media/([^/]+)$")
 _RETRY_ROUTE = re.compile(r"^/api/v3/processing-jobs/([^/]+)/retry$")
+_AUTOMATIC_WORKFLOW_RETRY_ROUTE = re.compile(
+    r"^/api/v3/automatic-workflows/([^/]+)/retry$"
+)
 _CANCEL_ROUTE = re.compile(r"^/api/v3/processing-jobs/([^/]+)/cancel$")
 _CORRECTION_ROUTE = re.compile(r"^/api/v3/utterances/([^/]+)/corrections$")
 _EVENT_OPERATIONS_ROUTE = re.compile(r"^/api/v3/events/([^/]+)/operations$")

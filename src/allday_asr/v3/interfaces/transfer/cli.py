@@ -20,6 +20,7 @@ DEFAULT_TLS_IDENTITY_DIR = PROJECT_ROOT / "state" / "transfer-tls"
 DEFAULT_PASSKEY_STATE = PROJECT_ROOT / "state" / "transfer-passkeys.json"
 DEFAULT_DEVICE_STATE = PROJECT_ROOT / "state" / "transfer-devices.json"
 DEFAULT_V3_STATE_DIR = PROJECT_ROOT / "state" / "v3"
+DEFAULT_WORKFLOW_BACKUP_ROOT = DEFAULT_V3_STATE_DIR / "session-backups"
 
 app = typer.Typer(
     help="在局域网中安全接收手机录音和会话清单。",
@@ -102,12 +103,12 @@ def receive_command(
         help="手机 Passkey API 返回的可信 origin。",
     ),
     auto_workflow: bool = typer.Option(
-        False,
-        "--auto-process",
+        True,
+        "--auto-process/--no-auto-process",
         "--auto-workflow",
         help=(
-            "每个会话 manifest 完整上传并入库后，后台启动 V3 原生模型分析"
-            "和 Codex 生成。"
+            "默认在每个会话完整上传后自动备份、处理并运行 Codex 生成；"
+            "仅显式 --no-auto-process 才关闭。"
         ),
     ),
     workflow_shadow: bool = typer.Option(
@@ -124,7 +125,10 @@ def receive_command(
         file_okay=False,
         dir_okay=True,
         resolve_path=True,
-        help="V3 自动处理在启动模型前写入并回读校验的独立备份根目录。",
+        help=(
+            "V3 自动处理在启动模型前写入并回读校验的备份根目录；"
+            f"未指定时使用 {DEFAULT_WORKFLOW_BACKUP_ROOT}。"
+        ),
     ),
     workflow_backup_storage_kind: str = typer.Option(
         "independent_device",
@@ -182,6 +186,9 @@ def receive_command(
             raise V3ConfigurationError(
                 "production Device listener 的 RP ID/origin 必须与发布环境完全一致"
             )
+        selected_backup_root = workflow_backup_root
+        if auto_workflow and not workflow_shadow and selected_backup_root is None:
+            selected_backup_root = DEFAULT_WORKFLOW_BACKUP_ROOT
         serve_transfer(
             inbox=inbox,
             host=host,
@@ -200,7 +207,7 @@ def receive_command(
             workflow_config=workflow_config,
             workflow_profile=workflow_profile,
             workflow_diarization_model_path=workflow_diarization_model_path,
-            workflow_backup_root=workflow_backup_root,
+            workflow_backup_root=selected_backup_root,
             workflow_backup_storage_kind=workflow_backup_storage_kind,
             v3_state_dir=v3_state_dir,
             v3_reasoning_effort=v3_reasoning_effort,

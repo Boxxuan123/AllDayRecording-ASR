@@ -6,6 +6,7 @@ import { desktopApi } from '../core/api'
 import { formatDate } from '../core/format'
 import { playRange, release } from '../core/media'
 import { useQuery } from '../core/query'
+import { voiceReviewLane } from '../core/reviews'
 import type { PersonDetail, PersonMemory, PersonMemoryKind, SpeakerCluster, VoicePrototypeCandidate } from '../core/types'
 
 const query = useQuery('people', async () => {
@@ -18,6 +19,7 @@ const routeParams = new URLSearchParams(window.location.search)
 const requestedPersonId = routeParams.get('person') ?? ''
 const focusedMemoryId = routeParams.get('memory') ?? ''
 const focusedPrototypeId = routeParams.get('prototype') ?? ''
+const focusedClusterId = routeParams.get('cluster') ?? ''
 const mode = ref<'memory' | 'voice'>(routeParams.get('mode') === 'voice' ? 'voice' : 'memory')
 const selectedSession = ref('')
 const selectedId = ref('')
@@ -48,11 +50,19 @@ const busy = ref(false)
 const errorMessage = ref('')
 const resultMessage = ref('')
 const showVoiceReviewHistory = ref(false)
+const showVoiceTraining = ref(false)
 let focusedDeepLink = false
+let focusedCluster = false
 
 watchEffect(() => {
   if (!selectedSession.value && query.data.value?.sessions.length) {
     selectedSession.value = query.data.value.sessions[0].session_id
+  }
+  const requestedCluster = query.data.value?.clusters.find((cluster) => cluster.cluster_id === focusedClusterId)
+  if (!focusedCluster && requestedCluster) {
+    focusedCluster = true
+    selectedSession.value = requestedCluster.latest_session_id ?? requestedCluster.session_ids[0] ?? selectedSession.value
+    void selectCluster(requestedCluster.cluster_id)
   }
   const visible = query.data.value?.clusters.filter(
     (cluster) => !selectedSession.value || cluster.session_ids.includes(selectedSession.value),
@@ -89,7 +99,12 @@ const needsExpiry = computed(() => memoryKind.value === 'short_term_state' || me
 const inactiveMemoryCount = computed(() => personDetail.value?.memories.filter((item) => item.status !== 'active').length ?? 0)
 const visibleMemories = computed(() => personDetail.value?.memories.filter((item) => showMemoryHistory.value || item.status === 'active') ?? [])
 const selectedPersonSummary = computed(() => query.data.value?.people.find((item) => item.person_id === selectedPersonId.value) ?? null)
-const pendingVoiceCandidates = computed(() => query.data.value?.voiceCandidates.filter((item) => item.review_status === 'pending' || item.review_status === 'uncertain') ?? [])
+const unresolvedVoiceCandidates = computed(() => query.data.value?.voiceCandidates.filter((item) => item.review_status === 'pending' || item.review_status === 'uncertain') ?? [])
+const pendingVoiceCandidates = computed(() => unresolvedVoiceCandidates.value.filter((item) => voiceReviewLane(item) === 'primary'))
+const trainingVoiceCandidates = computed(() => unresolvedVoiceCandidates.value.filter((item) => voiceReviewLane(item) === 'training'))
+const excludedVoiceCandidates = computed(() => unresolvedVoiceCandidates.value.filter((item) => voiceReviewLane(item) === null))
+const pendingVoiceClusterCount = computed(() => new Set(pendingVoiceCandidates.value.map((item) => item.cluster_id)).size)
+const trainingVoiceClusterCount = computed(() => new Set(trainingVoiceCandidates.value.map((item) => item.cluster_id)).size)
 const confirmedVoiceCandidates = computed(() => query.data.value?.voiceCandidates.filter((item) => item.review_status === 'confirmed') ?? [])
 
 async function selectCluster(clusterId: string): Promise<void> {
@@ -337,12 +352,23 @@ onBeforeUnmount(release)
         <button class="primary-action" :disabled="!selectedSession || busy" @click="analyze">{{ busy ? '本机分析中…' : '聚类并重新匹配身份' }}</button>
       </section>
       <section class="panel voice-review-queue">
-        <header><div><p class="section-kicker">HUMAN-GATED LEARNING</p><h2>高质量声纹审核</h2><p>一条确认只注册一条原型；拒绝会成为该人物的困难负例，待定不会进入稳定库。</p></div><div><span class="status-pill">{{ pendingVoiceCandidates.length }} 条待核对</span><button class="text-button" @click="showVoiceReviewHistory = !showVoiceReviewHistory">{{ showVoiceReviewHistory ? '隐藏已确认' : `查看已确认 ${confirmedVoiceCandidates.length}` }}</button></div></header>
+        <header><div><p class="section-kicker">HUMAN-GATED LEARNING</p><h2>高质量声纹审核</h2><p>主审核按声音聚类计数；这里保留逐个原型的试听和确认能力。</p></div><div><span class="status-pill">{{ pendingVoiceClusterCount }} 组待核对 · {{ pendingVoiceCandidates.length }} 个样本</span><button v-if="trainingVoiceClusterCount" class="text-button" @click="showVoiceTraining = !showVoiceTraining">{{ showVoiceTraining ? '隐藏可选训练' : `可选训练 ${trainingVoiceClusterCount} 组` }}</button><button class="text-button" @click="showVoiceReviewHistory = !showVoiceReviewHistory">{{ showVoiceReviewHistory ? '隐藏已确认' : `查看已确认 ${confirmedVoiceCandidates.length}` }}</button></div></header>
+        <div v-if="unresolvedVoiceCandidates.length" class="review-count-ledger" aria-label="声纹候选分流口径">
+          <strong>声纹候选 {{ unresolvedVoiceCandidates.length }} 个</strong>
+          <span>主审核 {{ pendingVoiceCandidates.length }} 个样本 → {{ pendingVoiceClusterCount }} 组</span>
+          <span>可选训练 {{ trainingVoiceCandidates.length }} 个样本 → {{ trainingVoiceClusterCount }} 组</span>
+          <span>暂不进入审核 {{ excludedVoiceCandidates.length }} 个</span>
+        </div>
         <div class="voice-review-list">
           <article v-for="candidate in pendingVoiceCandidates" :id="`voice-review-${candidate.prototype_id}`" :key="candidate.prototype_id" :class="['voice-review-card', candidate.prototype_id === focusedPrototypeId ? 'focused-review' : '']">
             <div><strong>{{ candidate.person_name }}</strong><small>{{ matchTierLabel(candidate.decision_tier) }} · 音频质量 {{ Math.round(candidate.quality_score * 100) }}%<template v-if="candidate.best_score !== null"> · 最相似 {{ Math.round(candidate.best_score * 100) }}%</template></small><small>录音 {{ sessionLabel(candidate.session_id) }}</small></div>
             <button v-for="clip in candidate.representative_clips.slice(0, 1)" :key="`${clip.media_id}-${clip.start_ms}`" class="quiet-button" @click="playRange(clip.media_id, clip.start_ms, clip.end_ms)">▶ 试听</button>
             <footer><button class="quiet-button" :disabled="busy" @click="reviewVoice(candidate, 'uncertain')">待定</button><button class="text-danger" :disabled="busy" @click="reviewVoice(candidate, 'rejected')">不是此人</button><button class="primary-action" :disabled="busy" @click="reviewVoice(candidate, 'confirmed')">确认是此人</button></footer>
+          </article>
+          <article v-for="candidate in showVoiceTraining ? trainingVoiceCandidates : []" :id="`voice-review-${candidate.prototype_id}`" :key="`training-${candidate.prototype_id}`" :class="['voice-review-card', candidate.prototype_id === focusedPrototypeId ? 'focused-review' : '']">
+            <div><strong>{{ candidate.person_name }} · 可选训练</strong><small>{{ matchTierLabel(candidate.decision_tier) }} · 音频质量 {{ Math.round(candidate.quality_score * 100) }}%<template v-if="candidate.best_score !== null"> · 最相似 {{ Math.round(candidate.best_score * 100) }}%</template></small><small>录音 {{ sessionLabel(candidate.session_id) }}</small></div>
+            <button v-for="clip in candidate.representative_clips.slice(0, 1)" :key="`${clip.media_id}-${clip.start_ms}`" class="quiet-button" @click="playRange(clip.media_id, clip.start_ms, clip.end_ms)">▶ 试听</button>
+            <footer><button class="text-danger" :disabled="busy" @click="reviewVoice(candidate, 'rejected')">不是此人</button><button class="primary-action" :disabled="busy" @click="reviewVoice(candidate, 'confirmed')">确认是此人</button></footer>
           </article>
           <article v-for="candidate in showVoiceReviewHistory ? confirmedVoiceCandidates : []" :key="`confirmed-${candidate.prototype_id}`" class="voice-review-card confirmed">
             <div><strong>{{ candidate.person_name }}</strong><small>已人工确认 · 音频质量 {{ Math.round(candidate.quality_score * 100) }}%</small><small>录音 {{ sessionLabel(candidate.session_id) }}</small></div>
@@ -362,7 +388,7 @@ onBeforeUnmount(release)
         <aside class="panel cluster-list person-list">
           <button v-for="person in query.data.value?.people" :key="person.person_id" :class="{ active: selectedPersonId === person.person_id }" @click="selectPerson(person.person_id)">
             <span class="speaker-mark">{{ person.display_name.slice(0, 1) }}</span>
-            <span><strong>{{ person.display_name }}</strong><small>{{ person.interaction_count }} 次跨天互动 · {{ person.memory_count }} 条有效记忆</small><small v-if="person.kind === 'self'">{{ person.enrollment_reference_count }} 条注册声纹 · {{ person.auto_identity_enabled ? '自动识别已开启' : '自动识别未就绪' }}</small><small v-else>声纹{{ maturityLabel(person.voice_maturity_status) }} · {{ person.prototype_count }} 正例 / {{ person.rejected_prototype_count }} 负例 · {{ person.pending_voice_review_count }} 待核对</small><small v-if="person.last_interaction_at">最近 {{ formatDate(person.last_interaction_at) }}</small></span>
+            <span><strong>{{ person.display_name }}</strong><small>{{ person.interaction_count }} 次跨天互动 · {{ person.memory_count }} 条有效记忆</small><small v-if="person.kind === 'self'">{{ person.enrollment_reference_count }} 条注册声纹 · {{ person.auto_identity_enabled ? '自动识别已开启' : '自动识别未就绪' }}</small><small v-else>声纹{{ maturityLabel(person.voice_maturity_status) }} · {{ person.prototype_count }} 正例 / {{ person.rejected_prototype_count }} 负例 · {{ person.pending_voice_review_count }} 组待核对<template v-if="person.training_voice_review_count"> · {{ person.training_voice_review_count }} 组可选训练</template></small><small v-if="person.last_interaction_at">最近 {{ formatDate(person.last_interaction_at) }}</small></span>
             <i>{{ person.kind }}</i>
           </button>
         </aside>

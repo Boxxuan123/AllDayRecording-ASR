@@ -110,11 +110,20 @@ class RequestBinding:
         valid_target = (
             (
                 self.method == "GET"
-                and self.path in {"/api/v1/status", "/device/v3/status"}
+                and self.path in {
+                    "/api/v1/status",
+                    "/device/v3/status",
+                    "/device/v3/reviews",
+                }
             )
             or (
                 self.method == "POST"
-                and self.path in {"/api/v1/uploads", "/device/v3/sync"}
+                and self.path in {
+                    "/api/v1/uploads",
+                    "/device/v3/sync",
+                    "/device/v3/reviews/action",
+                    "/device/v3/reviews/audio",
+                }
             )
             or (self.method == "PUT" and upload_path)
             or (self.method == "GET" and upload_path)

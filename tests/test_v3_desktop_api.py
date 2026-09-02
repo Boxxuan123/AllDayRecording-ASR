@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import http.cookiejar
 import shutil
+import struct
 import threading
 import unittest
+import wave
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -36,6 +39,16 @@ from allday_asr.v3.interfaces.desktop_server import create_v3_desktop_server
 
 
 TEST_STATE = Path(__file__).parents[1] / "state"
+
+
+def _wav_bytes(sample: int) -> bytes:
+    output = io.BytesIO()
+    with wave.open(output, "wb") as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(16_000)
+        target.writeframes(struct.pack("<h", sample) * 16_000)
+    return output.getvalue()
 
 
 class V3DesktopApiTests(unittest.TestCase):
@@ -155,6 +168,21 @@ class V3DesktopApiTests(unittest.TestCase):
             first["items"][0]["session_id"], second["items"][0]["session_id"]
         )
 
+        _, searched, _ = self._request(
+            "/api/v3/recording-sessions?limit=100&q=session-2"
+        )
+        self.assertEqual(
+            [item["session_id"] for item in searched["items"]], ["session-2"]
+        )
+        _, searched_by_date, _ = self._request(
+            "/api/v3/recording-sessions?limit=100&q=2026%2F08%2F31"
+        )
+        self.assertEqual(len(searched_by_date["items"]), 2)
+        _, escaped_search, _ = self._request(
+            "/api/v3/recording-sessions?limit=100&q=%25"
+        )
+        self.assertEqual(escaped_search["items"], [])
+
         _, detail, _ = self._request("/api/v3/recording-sessions/session-1")
         self.assertEqual(detail["session"]["session_id"], "session-1")
         self.assertEqual(detail["segments"][0]["media_id"], self.media_id)
@@ -165,6 +193,33 @@ class V3DesktopApiTests(unittest.TestCase):
         self.assertEqual(status, 206)
         self.assertEqual(media, b"2345")
         self.assertEqual(headers["Content-Range"], "bytes 2-5/10")
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required")
+    def test_session_audio_assembles_a_continuous_cross_segment_clip(self) -> None:
+        status, payload, headers = self._request(
+            "/api/v3/recording-sessions/session-1/audio?"
+            "start_ms=1500&end_ms=2500"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get_content_type(), "audio/wav")
+        self.assertEqual(headers["Accept-Ranges"], "none")
+        assert isinstance(payload, bytes)
+        with wave.open(io.BytesIO(payload), "rb") as source:
+            self.assertEqual(source.getnchannels(), 1)
+            self.assertEqual(source.getframerate(), 16_000)
+            self.assertAlmostEqual(source.getnframes() / 16_000, 1.0, places=2)
+            samples = struct.unpack(
+                f"<{source.getnframes()}h", source.readframes(source.getnframes())
+            )
+        self.assertGreater(sum(samples[:4_000]), 0)
+        self.assertLess(sum(samples[-4_000:]), 0)
+
+        status, error, _ = self._request(
+            "/api/v3/recording-sessions/session-2/audio?"
+            "start_ms=500&end_ms=1500"
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(error["code"], "not_found")
 
     def test_review_inbox_aggregates_unresolved_domain_sources(self) -> None:
         person = self.server.application.core.people.create_person("审核人物")
@@ -210,6 +265,87 @@ class V3DesktopApiTests(unittest.TestCase):
                 """,
                 (person["person_id"], created_at, "b" * 64, created_at),
             )
+            connection.execute(
+                """
+                INSERT INTO generation_records (
+                  generation_id, layer, producer, producer_version, model,
+                  prompt_version, extractor_version, input_scope_json,
+                  input_sha256, generation_number, status, error, created_at,
+                  completed_at
+                ) VALUES (
+                  'review-generation', 'event', 'review-test', '1',
+                  'review-model', '1', '1', '{}', ?, 1, 'succeeded', NULL,
+                  ?, ?
+                )
+                """,
+                ("c" * 64, created_at, created_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO structured_change_proposals (
+                  proposal_id, generation_id, kind, payload_json,
+                  evidence_utterance_ids_json, status, created_at
+                ) VALUES (
+                  'review-proposal', 'review-generation', 'event_operation', ?,
+                  '["utterance-a"]', 'pending', ?
+                )
+                """,
+                (
+                    json.dumps(
+                        {
+                            "operation": "create",
+                            "session_id": "session-1",
+                            "event_kind": "decision",
+                            "expected_revision": 0,
+                            "patch": {
+                                "title": "决定带上门禁卡",
+                                "summary": "出门前带上门禁卡",
+                                "confidence": 0.78,
+                            },
+                        }
+                    ),
+                    created_at,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO generation_records (
+                  generation_id, layer, producer, producer_version, model,
+                  prompt_version, extractor_version, input_scope_json,
+                  input_sha256, generation_number, status, error, created_at,
+                  completed_at
+                ) VALUES (
+                  'review-memory-generation', 'memory', 'review-test', '1',
+                  'review-model', '1', '1', '{}', ?, 1, 'succeeded', NULL,
+                  ?, ?
+                )
+                """,
+                ("d" * 64, created_at, created_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO structured_change_proposals (
+                  proposal_id, generation_id, kind, payload_json,
+                  evidence_utterance_ids_json, status, created_at
+                ) VALUES (
+                  'review-memory-proposal', 'review-memory-generation',
+                  'memory_record', ?, '[]', 'pending', ?
+                )
+                """,
+                (
+                    json.dumps(
+                        {
+                            "session_id": "session-1",
+                            "memory_kind": "stable_fact",
+                            "subject_type": "person",
+                            "subject_id": person["person_id"],
+                            "content": "喜欢喝红茶",
+                            "input_event_ids": [],
+                        }
+                    ),
+                    created_at,
+                ),
+            )
 
         reminder = {
             "candidate_id": "review-reminder",
@@ -241,6 +377,24 @@ class V3DesktopApiTests(unittest.TestCase):
             "score_margin": 0.12,
             "match_reason": "known_person_suggested",
         }
+        training_voice = {
+            **voice,
+            "prototype_id": "training-prototype",
+            "speaker_track_id": "training-track",
+            "cluster_id": "training-cluster",
+            "decision_tier": "no_known_match",
+            "best_score": 0.76,
+            "score_margin": 0.18,
+        }
+        low_value_voice = {
+            **voice,
+            "prototype_id": "low-value-prototype",
+            "speaker_track_id": "low-value-track",
+            "cluster_id": "low-value-cluster",
+            "decision_tier": "no_known_match",
+            "best_score": 0.53,
+            "score_margin": 0.0,
+        }
         repository_module = "allday_asr.v3.adapters.sqlite.desktop_repository"
         with (
             patch(
@@ -249,26 +403,102 @@ class V3DesktopApiTests(unittest.TestCase):
             ),
             patch(
                 f"{repository_module}.SqlitePeopleRepository.list_review_candidates",
-                return_value=(voice,),
+                return_value=(voice, training_voice, low_value_voice),
             ),
         ):
             status, payload, _ = self._request("/api/v3/reviews")
+            _, people_payload, _ = self._request("/api/v3/persons")
 
         self.assertEqual(status, 200)
         self.assertEqual(
             {item["kind"] for item in payload["items"]},
-            {"processing_gate", "reminder", "person_memory", "voice_identity"},
+            {
+                "reminder",
+                "voice_identity",
+                "knowledge_proposal",
+            },
         )
         self.assertEqual(
             [item["priority"] for item in payload["items"]],
-            ["high", "high", "normal", "normal"],
+            ["high", "normal", "normal"],
         )
-        memory = next(
-            item for item in payload["items"] if item["kind"] == "person_memory"
+        self.assertNotIn(
+            "review-memory",
+            {item["source_id"] for item in payload["items"]},
         )
-        self.assertEqual(memory["source_id"], "review-memory")
-        self.assertEqual(memory["summary"], "喜欢喝红茶")
-        self.assertEqual(memory["context"]["confirmation_status"], "unconfirmed")
+        proposal = next(
+            item for item in payload["items"] if item["kind"] == "knowledge_proposal"
+        )
+        self.assertEqual(proposal["title"], "决定带上门禁卡")
+        self.assertNotIn(
+            "review-memory-proposal",
+            {item["source_id"] for item in payload["items"]},
+        )
+        voice_items = [
+            item for item in payload["items"] if item["kind"] == "voice_identity"
+        ]
+        self.assertEqual(len(voice_items), 1)
+        self.assertEqual(
+            {item["context"]["review_lane"] for item in voice_items},
+            {"primary"},
+        )
+        self.assertNotIn(
+            "training-prototype",
+            {
+                prototype_id
+                for item in voice_items
+                for prototype_id in item["context"]["prototype_ids"]
+            },
+        )
+        self.assertNotIn(
+            "low-value-prototype",
+            {
+                prototype_id
+                for item in voice_items
+                for prototype_id in item["context"]["prototype_ids"]
+            },
+        )
+        person_summary = next(
+            item
+            for item in people_payload["items"]
+            if item["person_id"] == person["person_id"]
+        )
+        self.assertEqual(person_summary["pending_voice_review_count"], 1)
+        self.assertEqual(person_summary["training_voice_review_count"], 1)
+
+    def test_workflow_failure_stays_out_of_review_inbox_and_can_be_retried(self) -> None:
+        self.server.application.automatic_workflows.save(
+            "session-1",
+            {
+                "version": 1,
+                "session_id": "session-1",
+                "status": "needs_attention",
+                "stage": "backup",
+                "detail": "自动重试仍未成功",
+                "error": "backup device unavailable",
+                "attempt_count": 4,
+                "auto_retry_count": 3,
+                "max_auto_retries": 3,
+                "created_at": "2026-09-02T00:00:00Z",
+                "updated_at": "2026-09-02T00:03:00Z",
+            },
+        )
+
+        status, payload, _ = self._request("/api/v3/reviews")
+        self.assertEqual(status, 200)
+        self.assertNotIn("workflow_failure", {item["kind"] for item in payload["items"]})
+
+        status, accepted, _ = self._request(
+            "/api/v3/automatic-workflows/session-1/retry",
+            method="POST",
+            body={},
+        )
+        self.assertEqual(status, 202)
+        self.assertEqual(accepted["status"], "retry_requested")
+        self.assertEqual(
+            self.server.application.automatic_workflows.status("session-1")["status"],
+            "retry_requested",
+        )
 
     def test_durable_job_command_sse_projection_and_restart_recovery(self) -> None:
         snapshot = self.server.application.core.processing.submit(
@@ -582,6 +812,10 @@ class V3DesktopApiTests(unittest.TestCase):
         core = self.server.application.core
         now = datetime(2026, 8, 31, 1, 5, tzinfo=timezone.utc)
         audio = core.audio_store.put_bytes(b"0123456789")
+        clip_audio = (
+            core.audio_store.put_bytes(_wav_bytes(1000)),
+            core.audio_store.put_bytes(_wav_bytes(-1000)),
+        )
         self.media_id = audio.media_id
         manifests = [
             core.artifact_store.put_bytes(
@@ -624,6 +858,29 @@ class V3DesktopApiTests(unittest.TestCase):
                     created_at=now,
                 )
             )
+            for index, stored in enumerate(clip_audio, start=2):
+                uow.catalog.add_asset(
+                    AudioAsset(
+                        asset_id=f"asset-{index}",
+                        sha256=stored.sha256,
+                        size_bytes=stored.size_bytes,
+                        duration_ms=1000,
+                        format=AudioFormat.WAV,
+                        media_id=stored.media_id,
+                        created_at=now,
+                    )
+                )
+                uow.catalog.add_replica(
+                    AudioReplica(
+                        replica_id=f"replica-{index}",
+                        asset_id=f"asset-{index}",
+                        device_id="computer-1",
+                        storage_key=stored.storage_key,
+                        state=AudioReplicaState.AVAILABLE,
+                        verified_at=now,
+                        created_at=now,
+                    )
+                )
             for index, session_id in enumerate(("session-1", "session-2")):
                 captured = now - timedelta(hours=index)
                 uow.catalog.add_session(
@@ -667,6 +924,22 @@ class V3DesktopApiTests(unittest.TestCase):
                         storage_ref=manifest.storage_key,
                         entries={"session_id": session_id},
                         created_at=captured,
+                    )
+                )
+            for index in range(2):
+                uow.catalog.add_segment(
+                    CaptureSegment(
+                        segment_id=f"assembled-segment-{index + 1}",
+                        session_id="session-1",
+                        asset_id=f"asset-{index + 2}",
+                        replica_id=f"replica-{index + 2}",
+                        sequence=index + 1,
+                        session_start_ms=(index + 1) * 1000,
+                        session_end_ms=(index + 2) * 1000,
+                        source_start_ms=0,
+                        source_end_ms=1000,
+                        start_sample=(index + 1) * 16_000,
+                        captured_at=now + timedelta(seconds=index + 1),
                     )
                 )
         admitted = core.admission.record_verified_backup(

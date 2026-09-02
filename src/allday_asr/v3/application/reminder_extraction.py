@@ -71,7 +71,7 @@ class ReminderExtractionService:
         generator: ReminderModelGenerator | None,
         *,
         default_effort: str = "auto",
-        allow_auto_apply: bool = False,
+        allow_auto_apply: bool = True,
         now: DateTimeClock | None = None,
     ) -> None:
         if default_effort not in _ALLOWED_EFFORTS:

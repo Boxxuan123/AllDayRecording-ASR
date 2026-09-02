@@ -46,7 +46,7 @@
     },
     "person": {
       "path": "schemas/person.schema.json",
-      "sha256": "a9eba5af61c37d068759fbdd4edbd66ccacab2169f6015636fdae57ae03ca7fd"
+      "sha256": "4bfb744a6f2b0c469eb283972799d424a2b0075eed33154c56ea067464081b74"
     },
     "person_memory": {
       "path": "schemas/person-memory.schema.json",
@@ -60,7 +60,7 @@
   "apis": {
     "desktop": {
       "path": "openapi/desktop-api.openapi.json",
-      "sha256": "8912ecaa43f0f8788f801a8b2119d860b7a3b545d92967ff082062fa12c6f1b2"
+      "sha256": "df2accae944583183ba4449733ecfeacecf800ce03a75c09b72a22068f3df6a0"
     },
     "device": {
       "path": "openapi/device-api.openapi.json",

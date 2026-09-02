@@ -30,6 +30,7 @@ export interface PersonSummary {
   }
   rejected_prototype_count: number
   pending_voice_review_count: number
+  training_voice_review_count: number
 }
 
 export type PersonMemoryKind = 'stable_fact' | 'preference' | 'short_term_state' | 'plan' | 'commitment' | 'model_observation'

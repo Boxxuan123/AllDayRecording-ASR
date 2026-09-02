@@ -19,6 +19,10 @@ from allday_asr.v3.application import (
     UtteranceRevisionConflict,
 )
 from allday_asr.v3.bootstrap import V3Core, V3CorePaths, compose_v3_core
+from allday_asr.v3.adapters.audio.tools import AudioClip, assemble_audio_clips
+from allday_asr.v3.adapters.transfer.automation_state import (
+    AutomaticWorkflowStateStore,
+)
 from allday_asr.v3.domain import new_ulid
 
 from .desktop_http_contract import (
@@ -36,6 +40,10 @@ from .desktop_routes_post import DesktopPostRoutesMixin
 class V3DesktopApplication:
     def __init__(self, core: V3Core, *, token: str | None = None) -> None:
         self.core = core
+        self.automatic_workflows = AutomaticWorkflowStateStore(
+            core.paths.state_dir / "automation"
+        )
+        self.automatic_workflows.initialize()
         self.token = token or secrets.token_urlsafe(32)
         self.host = "127.0.0.1"
         self.port = 0
@@ -46,6 +54,11 @@ class V3DesktopApplication:
 
     def close(self) -> None:
         self.core.close()
+
+    def list_reviews(self, limit: int) -> tuple[dict[str, Any], ...]:
+        # Operational failures stay in the processing/data surfaces. The inbox
+        # is reserved for decisions that change reviewed domain state.
+        return self.core.desktop.list_reviews(limit)
 
 
 class V3DesktopRequestHandler(
@@ -271,6 +284,38 @@ class V3DesktopRequestHandler(
         if status is HTTPStatus.PARTIAL_CONTENT:
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         self._send_bytes(status, payload, content_type, headers=headers)
+
+    def _send_session_audio(
+        self, session_id: str, *, start_ms: int, end_ms: int
+    ) -> None:
+        descriptors = self.application.core.desktop.session_audio_clips(
+            session_id, start_ms, end_ms
+        )
+        clips = tuple(
+            AudioClip(
+                source=self.application.core.audio_store.path_for(
+                    str(descriptor["storage_key"])
+                ),
+                start_ms=int(descriptor["start_ms"]),
+                end_ms=int(descriptor["end_ms"]),
+            )
+            for descriptor in descriptors
+        )
+        output = (
+            self.application.core.paths.state_dir
+            / f".session-audio-{new_ulid()}.wav"
+        )
+        try:
+            assemble_audio_clips(clips, output)
+            payload = output.read_bytes()
+        finally:
+            output.unlink(missing_ok=True)
+        self._send_bytes(
+            HTTPStatus.OK,
+            payload,
+            "audio/wav",
+            headers={"Accept-Ranges": "none"},
+        )
 
     def _send_processing_events(self, query: dict[str, list[str]]) -> None:
         after = self.headers.get("Last-Event-ID") or query.get("after", ["0"])[0]

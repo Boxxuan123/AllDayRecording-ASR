@@ -17,7 +17,7 @@ from allday_asr.v3.ports.reminder_generation import (
 )
 
 
-PROMPT_VERSION = "v3.3-codex-reminder-prompt.1"
+PROMPT_VERSION = "v3.3-codex-reminder-prompt.2"
 EXTRACTOR_VERSION = "v3.3-codex-reminder-extractor.1"
 _ALLOWED_ITEM_TYPES = {
     "agentMessage",
@@ -111,7 +111,11 @@ Do not call tools, commands, web search, MCP, subagents, or inspect any file.
 Use only the JSON payload in the user message and return exactly the supplied
 JSON schema. Do not create an intent unless the cited utterances clearly support
 the operation, actor, direction, and time. Return an empty intents array when
-the evidence is insufficient. Never invent an utterance ID or event ID.
+the evidence is insufficient. Set needs_confirmation=false only for a single
+new reminder explicitly commanded by the self speaker with an exact future
+time. Inferred wishes, indirect commitments, edits, cancellation, completion,
+recurrence, or any ambiguity require confirmation. Never invent an utterance
+ID or event ID.
 """.strip()
 
 
@@ -232,6 +236,8 @@ def _prompt(request: ReminderModelRequest) -> str:
             "mutation_requires": ["matching active_reminder", "exact revision"],
             "evidence_ids": "must come from utterances",
             "person_references": "actor_person_id and related_person_ids must use the cited utterance speaker_reference_id; an opaque reference may still represent an unconfirmed anonymous cluster",
+            "direct_command": "needs_confirmation=false only for one explicit self create with an exact future time",
+            "mutations": "updates, cancellation and completion always set needs_confirmation=true",
             "uncertain": "return no intent instead of guessing",
         },
         "active_reminders": list(request.active_reminders),

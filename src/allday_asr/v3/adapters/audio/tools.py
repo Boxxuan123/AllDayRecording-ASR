@@ -26,6 +26,13 @@ class AudioMetadata:
     encoder: str | None
 
 
+@dataclass(frozen=True)
+class AudioClip:
+    source: Path
+    start_ms: int
+    end_ms: int
+
+
 def executable_version(name: str) -> str:
     executable = shutil.which(name)
     if not executable:
@@ -196,6 +203,67 @@ def extract_clip(
     )
     if completed.returncode != 0:
         raise AudioToolError(completed.stderr.strip() or "截取音频失败")
+    return destination
+
+
+def assemble_audio_clips(
+    clips: tuple[AudioClip, ...], destination: Path
+) -> Path:
+    """Trim and concatenate local audio clips into one browser-friendly WAV."""
+    if not clips:
+        raise ValueError("at least one audio clip is required")
+    destination = destination.resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    executable = shutil.which("ffmpeg")
+    if not executable:
+        raise AudioToolError("找不到 ffmpeg")
+
+    arguments = [executable, "-v", "error", "-y"]
+    filters: list[str] = []
+    labels: list[str] = []
+    for index, clip in enumerate(clips):
+        if clip.start_ms < 0 or clip.end_ms <= clip.start_ms:
+            raise ValueError("audio clip range must be non-empty")
+        arguments.extend(["-i", str(clip.source.resolve(strict=True))])
+        label = f"a{index}"
+        labels.append(f"[{label}]")
+        filters.append(
+            f"[{index}:a]atrim=start={clip.start_ms / 1000:.3f}:"
+            f"end={clip.end_ms / 1000:.3f},asetpts=PTS-STARTPTS,"
+            f"aformat=sample_fmts=s16:sample_rates=16000:channel_layouts=mono"
+            f"[{label}]"
+        )
+    if len(clips) == 1:
+        filters.append(f"{labels[0]}anull[out]")
+    else:
+        filters.append(f"{''.join(labels)}concat=n={len(clips)}:v=0:a=1[out]")
+    arguments.extend(
+        [
+            "-filter_complex",
+            ";".join(filters),
+            "-map",
+            "[out]",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            str(destination),
+        ]
+    )
+    completed = subprocess.run(
+        arguments,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        destination.unlink(missing_ok=True)
+        raise AudioToolError(completed.stderr.strip() or "拼装音频失败")
     return destination
 
 

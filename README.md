@@ -30,16 +30,20 @@ allday-asr web
 allday-asr status
 allday-asr migrate
 
-# 手机文件接收和增量同步
+# 手机文件接收和增量同步；会话到齐后默认自动备份并跑完整流程
 allday-asr device receive
 
-# manifest 完整上传后自动备份并运行 V3 原生分析
+# 可选：把自动备份放到指定的独立磁盘或网络位置
 allday-asr device receive --auto-process `
   --workflow-backup-root D:\AllDayRecording-Backup
 
 # 本地 shadow：允许模型执行，但不会解除独立备份准入阻塞
 allday-asr device receive --auto-process --workflow-shadow
 ```
+
+自动流程失败后会按 5 秒、30 秒、120 秒依次重试；仍失败的会话会进入
+Desktop 工作台的“审核收件箱”，可点击“重试完整流程”。状态和重试请求均持久化，
+接收服务重启后会从未完成阶段继续。仅在诊断时才使用 `--no-auto-process` 关闭自动流程。
 
 手机上传与安全边界见 [手机到电脑文件传输协议](docs/phone-to-computer-transfer.md)。
 

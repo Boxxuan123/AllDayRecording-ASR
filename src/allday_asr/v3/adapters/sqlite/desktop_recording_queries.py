@@ -45,6 +45,7 @@ class DesktopRecordingQueryMixin:
         before_captured_start: str | None,
         before_session_id: str | None,
         limit: int,
+        search: str | None = None,
     ) -> tuple[dict[str, Any], ...]:
         where = "WHERE s.tombstoned_at IS NULL"
         parameters: list[object] = []
@@ -56,6 +57,39 @@ class DesktopRecordingQueryMixin:
             parameters.extend(
                 [before_captured_start, before_captured_start, before_session_id]
             )
+        if search is not None:
+            normalized = search.casefold().replace("/", "-")
+            escaped = (
+                normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            pattern = f"%{escaped}%"
+            where += """
+              AND (
+                LOWER(s.session_id) LIKE ? ESCAPE '\\'
+                OR LOWER(s.captured_start) LIKE ? ESCAPE '\\'
+                OR LOWER(s.timezone) LIKE ? ESCAPE '\\'
+                OR EXISTS (
+                  SELECT 1 FROM utterances search_u
+                  LEFT JOIN speaker_tracks search_t
+                    ON search_t.speaker_track_id = search_u.speaker_track_id
+                  LEFT JOIN speaker_cluster_memberships search_m
+                    ON search_m.speaker_track_id = search_t.speaker_track_id
+                    AND search_m.state = 'active'
+                  LEFT JOIN person_cluster_links search_l
+                    ON search_l.cluster_id = search_m.cluster_id
+                    AND search_l.status = 'active'
+                  LEFT JOIN persons search_p ON search_p.person_id = search_l.person_id
+                  WHERE search_u.session_id = s.session_id
+                    AND search_u.status = 'active'
+                    AND (
+                      LOWER(search_u.text) LIKE ? ESCAPE '\\'
+                      OR LOWER(COALESCE(search_t.label, '')) LIKE ? ESCAPE '\\'
+                      OR LOWER(COALESCE(search_p.display_name, '')) LIKE ? ESCAPE '\\'
+                    )
+                )
+              )
+            """
+            parameters.extend([pattern] * 6)
         parameters.append(limit)
         rows = self.connection.execute(
             f"""
@@ -204,6 +238,44 @@ class DesktopRecordingQueryMixin:
             "artifacts": [_artifact(value) for value in artifacts],
             "backups": [_backup(value) for value in backups],
         }
+
+    def session_audio_segments(
+        self, session_id: str, start_ms: int, end_ms: int
+    ) -> tuple[dict[str, Any], ...]:
+        session = self.connection.execute(
+            "SELECT 1 FROM recording_sessions "
+            "WHERE session_id = ? AND tombstoned_at IS NULL",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            raise KeyError(f"recording session does not exist: {session_id}")
+        rows = self.connection.execute(
+            """
+            SELECT seg.segment_id, seg.sequence, seg.session_start_ms,
+              seg.session_end_ms, seg.source_start_ms, seg.source_end_ms,
+              a.media_id, replica.storage_key
+            FROM capture_segments seg
+            JOIN audio_assets a ON a.asset_id = seg.asset_id
+            JOIN audio_replicas replica ON replica.replica_id = COALESCE(
+              (SELECT captured.replica_id
+               FROM audio_replicas captured
+               WHERE captured.replica_id = seg.replica_id
+                 AND captured.state = 'available'),
+              (SELECT candidate.replica_id
+               FROM audio_replicas candidate
+               WHERE candidate.asset_id = seg.asset_id
+                 AND candidate.state = 'available'
+               ORDER BY candidate.verified_at DESC, candidate.replica_id
+               LIMIT 1)
+            )
+            WHERE seg.session_id = ?
+              AND seg.session_end_ms > ?
+              AND seg.session_start_ms < ?
+            ORDER BY seg.session_start_ms, seg.sequence, seg.segment_id
+            """,
+            (session_id, start_ms, end_ms),
+        ).fetchall()
+        return tuple(_dict(row) for row in rows)
 
     def _canonical_timeline_run_id(self, session_id: str) -> str | None:
         row = self.connection.execute(

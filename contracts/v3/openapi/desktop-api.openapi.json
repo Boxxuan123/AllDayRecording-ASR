@@ -13,7 +13,7 @@
     "/api/v3/recording-sessions": {
       "get": {
         "operationId": "listRecordingSessions",
-        "parameters": [{"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/Limit"}],
+        "parameters": [{"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/RecordingSearch"}, {"$ref": "#/components/parameters/Limit"}],
         "responses": {
           "200": {"description": "Opaque keyset-paginated recording session page", "content": {"application/json": {"schema": {"type": "object", "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "items": {"$ref": "../schemas/recording-session.schema.json"}}, "next_cursor": {"type": ["string", "null"]}}}}}},
           "default": {"$ref": "#/components/responses/ApiError"}
@@ -23,6 +23,21 @@
     "/api/v3/recording-sessions/{session_id}": {
       "parameters": [{"$ref": "#/components/parameters/SessionId"}],
       "get": {"operationId": "getRecordingSessionDetail", "responses": {"200": {"description": "Session, segments, runs, utterances, artifacts, and backup evidence", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SessionDetail"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
+    "/api/v3/recording-sessions/{session_id}/audio": {
+      "parameters": [{"$ref": "#/components/parameters/SessionId"}],
+      "get": {
+        "operationId": "readAssembledSessionAudio",
+        "description": "Trim every local asset intersecting a session-time interval and concatenate the clips into one continuous WAV without changing transcript boundaries.",
+        "parameters": [
+          {"name": "start_ms", "in": "query", "required": true, "schema": {"type": "integer", "minimum": 0}},
+          {"name": "end_ms", "in": "query", "required": true, "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "responses": {
+          "200": {"description": "Continuous 16 kHz mono PCM WAV assembled from local source clips", "content": {"audio/wav": {"schema": {"type": "string", "contentMediaType": "audio/wav", "contentEncoding": "binary"}}}},
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
     },
     "/api/v3/processing-jobs": {
       "get": {"operationId": "listProcessingJobs", "parameters": [{"$ref": "#/components/parameters/Status"}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Durable processing job list", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
@@ -35,6 +50,10 @@
       "parameters": [{"$ref": "#/components/parameters/JobId"}],
       "post": {"operationId": "retryProcessingJob", "responses": {"202": {"description": "Requeued durable snapshot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProcessingSnapshot"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
     },
+    "/api/v3/automatic-workflows/{session_id}/retry": {
+      "parameters": [{"$ref": "#/components/parameters/SessionId"}],
+      "post": {"operationId": "retryAutomaticWorkflow", "description": "Persist a retry request for a receiver-owned workflow that exhausted automatic retries. The receiver resumes it from durable backup or processing state.", "responses": {"202": {"description": "Durable retry request accepted", "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["session_id", "status", "requested_at"], "properties": {"session_id": {"type": "string", "minLength": 1}, "status": {"const": "retry_requested"}, "requested_at": {"type": "string", "format": "date-time"}}}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
+    },
     "/api/v3/processing-jobs/{job_id}/cancel": {
       "parameters": [{"$ref": "#/components/parameters/JobId"}],
       "post": {
@@ -46,7 +65,7 @@
     "/api/v3/processing-runs/{run_id}": {
       "get": {"operationId": "getProcessingRun", "parameters": [{"$ref": "#/components/parameters/RunId"}], "responses": {"200": {"description": "Durable processing run projection", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}
     },
-    "/api/v3/reviews": {"get": {"operationId": "listReviewItems", "description": "Read-only aggregation of unresolved human judgments. Source resources remain authoritative and mutations stay on their domain endpoints.", "parameters": [{"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Unified processing-gate, reminder, person-memory, and voice-identity review inbox", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
+    "/api/v3/reviews": {"get": {"operationId": "listReviewItems", "description": "Read-only aggregation of unresolved human judgments that change durable domain state. Voice identity is grouped by speaker cluster and low-value weak matches are excluded. Only semantic-event proposals enter this inbox; operational failures remain on processing and data surfaces.", "parameters": [{"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Unified processing-gate, reminder, person-memory, voice-identity, recurring-speaker, and semantic-event-proposal review inbox", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReviewItemList"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
     "/api/v3/utterances/{utterance_id}/corrections": {
       "parameters": [{"$ref": "#/components/parameters/UtteranceId"}],
       "post": {
@@ -228,6 +247,7 @@
     "securitySchemes": {"DesktopSession": {"type": "apiKey", "in": "header", "name": "X-AllDay-Desktop-Session"}},
     "parameters": {
       "Cursor": {"name": "cursor", "in": "query", "required": false, "schema": {"type": "string", "minLength": 1}},
+      "RecordingSearch": {"name": "q", "in": "query", "required": false, "description": "Search session IDs, capture dates, timezones, transcript text, speaker tracks, and confirmed person names.", "schema": {"type": "string", "minLength": 1, "maxLength": 200}},
       "Limit": {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
       "Status": {"name": "status", "in": "query", "required": false, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/ProcessingStatus"}},
       "SessionId": {"name": "session_id", "in": "path", "required": true, "schema": {"$ref": "../schemas/primitives.schema.json#/$defs/StableId"}},
@@ -244,7 +264,7 @@
       "ObjectProjection": {"type": "object"},
       "ItemList": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"type": "object"}}}},
       "ReviewItemList": {"type": "object", "additionalProperties": false, "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/ReviewItem"}}}},
-      "ReviewItem": {"type": "object", "additionalProperties": false, "required": ["review_id", "kind", "priority", "source_id", "source_revision", "session_id", "person_id", "title", "summary", "reason", "evidence_count", "created_at", "updated_at", "context"], "properties": {"review_id": {"type": "string", "minLength": 1}, "kind": {"type": "string", "enum": ["processing_gate", "reminder", "person_memory", "voice_identity"]}, "priority": {"type": "string", "enum": ["high", "normal"]}, "source_id": {"type": "string", "minLength": 1}, "source_revision": {"type": ["integer", "null"], "minimum": 1}, "session_id": {"type": ["string", "null"]}, "person_id": {"type": ["string", "null"]}, "title": {"type": "string"}, "summary": {"type": "string"}, "reason": {"type": "string", "enum": ["processing_stage_waiting_review", "reminder_requires_confirmation", "person_memory_unconfirmed", "voice_identity_requires_confirmation"]}, "evidence_count": {"type": "integer", "minimum": 0}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "context": {"type": "object"}}},
+      "ReviewItem": {"type": "object", "additionalProperties": false, "required": ["review_id", "kind", "priority", "source_id", "source_revision", "session_id", "person_id", "title", "summary", "reason", "evidence_count", "created_at", "updated_at", "context"], "properties": {"review_id": {"type": "string", "minLength": 1}, "kind": {"type": "string", "enum": ["processing_gate", "reminder", "person_memory", "voice_identity", "knowledge_proposal"]}, "priority": {"type": "string", "enum": ["high", "normal"]}, "source_id": {"type": "string", "minLength": 1}, "source_revision": {"type": ["integer", "null"], "minimum": 1}, "session_id": {"type": ["string", "null"]}, "person_id": {"type": ["string", "null"]}, "title": {"type": "string"}, "summary": {"type": "string"}, "reason": {"type": "string", "enum": ["processing_stage_waiting_review", "reminder_requires_confirmation", "person_memory_unconfirmed", "voice_identity_requires_confirmation", "recurring_unknown_speaker_requires_confirmation", "knowledge_proposal_requires_confirmation"]}, "evidence_count": {"type": "integer", "minimum": 0}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}, "context": {"type": "object"}}},
       "SessionDetail": {"type": "object", "additionalProperties": false, "required": ["session", "segments", "runs", "speaker_tracks", "utterances", "artifacts", "backups"], "properties": {"session": {"$ref": "../schemas/recording-session.schema.json"}, "segments": {"type": "array", "items": {"type": "object"}}, "runs": {"type": "array", "items": {"type": "object"}}, "speaker_tracks": {"type": "array", "items": {"type": "object"}}, "utterances": {"type": "array", "items": {"$ref": "../schemas/utterance.schema.json"}}, "artifacts": {"type": "array", "items": {"type": "object"}}, "backups": {"type": "array", "items": {"type": "object"}}}},
       "ProcessingSnapshot": {"type": "object", "additionalProperties": false, "required": ["job", "run", "stages", "attempts"], "properties": {"job": {"type": "object"}, "run": {"type": "object"}, "stages": {"type": "array", "items": {"type": "object"}}, "attempts": {"type": "array", "items": {"type": "object"}}}}
     }

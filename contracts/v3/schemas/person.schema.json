@@ -39,6 +39,7 @@
         "voice_calibration": {"type": "object"},
         "rejected_prototype_count": {"type": "integer", "minimum": 0},
         "pending_voice_review_count": {"type": "integer", "minimum": 0},
+        "training_voice_review_count": {"type": "integer", "minimum": 0},
         "memory_count": {"type": "integer", "minimum": 0},
         "interaction_count": {"type": "integer", "minimum": 0},
         "last_interaction_at": {"type": ["string", "null"]},

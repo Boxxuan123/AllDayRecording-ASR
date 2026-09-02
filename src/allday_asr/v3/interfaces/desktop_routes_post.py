@@ -14,6 +14,7 @@ from allday_asr.v3.domain.identity import SelfIdentity
 from allday_asr.v3.domain.people import PersonKind
 
 from .desktop_http_contract import (
+    _AUTOMATIC_WORKFLOW_RETRY_ROUTE,
     _CANCEL_ROUTE,
     _CORRECTION_ROUTE,
     _PERSON_IDENTITY_POLICY_ROUTE,
@@ -67,6 +68,14 @@ class DesktopPostRoutesMixin:
         if not self._authorized_mutation():
             return
         body = self._read_json()
+        if match := _AUTOMATIC_WORKFLOW_RETRY_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError("automatic workflow retry request body must be empty")
+            result = self.application.automatic_workflows.request_retry(
+                unquote(match.group(1))
+            )
+            self._send_json(HTTPStatus.ACCEPTED, result)
+            return
         if match := _RETRY_ROUTE.fullmatch(path):
             if body:
                 raise ValueError("retry request body must be empty")

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import queue
 import socket
@@ -13,6 +11,12 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from allday_asr.v3.adapters.backup import FilesystemSessionBackupAdapter
+from allday_asr.v3.adapters.transfer.automation_state import (
+    AutomaticWorkflowStateStore,
+)
+from allday_asr.v3.adapters.transfer.automation_retry import (
+    AutomaticWorkflowRetryMixin,
+)
 from allday_asr.v3.application import (
     DurableProcessingWorker,
     RecordBackupEvidenceCommand,
@@ -20,7 +24,7 @@ from allday_asr.v3.application import (
 )
 
 
-class V3AutomaticWorkflowRunner:
+class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
     """Durable V3-only processing triggered after a Phone manifest is ingested."""
 
     def __init__(
@@ -34,11 +38,22 @@ class V3AutomaticWorkflowRunner:
         reasoning_effort: str = "auto",
         pipeline_version: str = "v3-native.1",
         worker_id: str | None = None,
+        max_auto_retries: int = 3,
+        retry_delays: tuple[float, ...] = (5.0, 30.0, 120.0),
+        poll_interval: float = 1.0,
     ) -> None:
         if backup_storage_kind not in {"independent_device", "network"}:
             raise ValueError("V3 backup storage kind is invalid")
         if reasoning_effort not in {"auto", "low", "medium", "high", "xhigh"}:
             raise ValueError("V3 reasoning effort is invalid")
+        if max_auto_retries < 0:
+            raise ValueError("automatic workflow retry count cannot be negative")
+        if len(retry_delays) < max_auto_retries or any(
+            delay < 0 for delay in retry_delays
+        ):
+            raise ValueError("automatic workflow retry delays are invalid")
+        if poll_interval <= 0:
+            raise ValueError("automatic workflow poll interval must be positive")
         self.core = core
         self.model_adapter = model_adapter
         if not shadow and backup_root is None:
@@ -50,9 +65,13 @@ class V3AutomaticWorkflowRunner:
         self.shadow = shadow
         self.reasoning_effort = reasoning_effort
         self.pipeline_version = pipeline_version
+        self.max_auto_retries = max_auto_retries
+        self.retry_delays = retry_delays
+        self.poll_interval = poll_interval
         self.worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}:receiver"
         self.state_root = core.paths.state_dir / "automation"
-        self.state_root.mkdir(parents=True, exist_ok=True)
+        self._states = AutomaticWorkflowStateStore(self.state_root)
+        self._states.initialize()
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._active: set[str] = set()
         self._lock = threading.RLock()
@@ -68,6 +87,7 @@ class V3AutomaticWorkflowRunner:
             name="allday-v3-native-workflow",
             daemon=True,
         )
+        self._recover_pending()
         self._thread.start()
 
     def submit(
@@ -82,6 +102,7 @@ class V3AutomaticWorkflowRunner:
                 return previous
             if session_id not in self._active:
                 self._active.add(session_id)
+                now = _utc_now()
                 queued = {
                     "version": 1,
                     "status": "queued",
@@ -89,7 +110,15 @@ class V3AutomaticWorkflowRunner:
                     "detail": "V3 会话已入库，等待独立备份和原生分析",
                     "session_id": session_id,
                     "upload_id": str(record.upload_id),
-                    "updated_at": _utc_now(),
+                    "created_at": (
+                        str(previous.get("created_at"))
+                        if previous is not None and previous.get("created_at")
+                        else now
+                    ),
+                    "updated_at": now,
+                    "attempt_count": int((previous or {}).get("attempt_count") or 0),
+                    "auto_retry_count": 0,
+                    "max_auto_retries": getattr(self, "max_auto_retries", 3),
                 }
                 # A retry may follow successful native processing but failed
                 # post-processing. Keep the completed job identity so _process
@@ -104,14 +133,7 @@ class V3AutomaticWorkflowRunner:
         return self.status(session_id) or {"status": "queued", "session_id": session_id}
 
     def status(self, session_id: str) -> dict[str, Any] | None:
-        path = self._path(session_id)
-        if not path.is_file():
-            return None
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        return value if isinstance(value, dict) else None
+        return self._states.status(session_id)
 
     def close(self) -> None:
         with self._lock:
@@ -123,15 +145,30 @@ class V3AutomaticWorkflowRunner:
 
     def _run(self) -> None:
         while True:
-            session_id = self._queue.get()
+            self._poll_persistent_work()
+            try:
+                session_id = self._queue.get(timeout=self.poll_interval)
+            except queue.Empty:
+                continue
             if session_id is None:
                 self._queue.task_done()
                 return
+            current = self.status(session_id) or {}
+            attempt_count = int(current.get("attempt_count") or 0) + 1
+            self._progress(
+                session_id,
+                "running",
+                str(current.get("stage") or "backup"),
+                "自动流水线正在执行",
+                attempt_count=attempt_count,
+                last_started_at=_utc_now(),
+                next_retry_at=None,
+                error=None,
+            )
             try:
                 self._process(session_id)
             except Exception as exc:  # noqa: BLE001 - persist the complete failure
-                self._progress(session_id, "failed", "failed", str(exc), error=repr(exc))
-                print(f"[transfer:v3] {session_id} | failed | {exc!r}")
+                self._handle_failure(session_id, exc)
             finally:
                 with self._lock:
                     self._active.discard(session_id)
@@ -146,7 +183,7 @@ class V3AutomaticWorkflowRunner:
                 "backup_shadow",
                 "显式 shadow：保留备份阻断状态，仅运行可审计的 V3 开发分析",
             )
-        else:
+        elif not self._session_is_admitted(session_id):
             self._progress(session_id, "running", "backup", "正在创建并回读校验 V3 独立备份")
             assert self.backup_root is not None
             backup = FilesystemSessionBackupAdapter(
@@ -173,32 +210,26 @@ class V3AutomaticWorkflowRunner:
                     },
                 )
             )
-        snapshot = self._completed_processing_snapshot(session_id)
-        if snapshot is None:
-            snapshot = self.core.processing.submit(
-                SubmitProcessingCommand(
-                    session_id=session_id,
-                    pipeline_version=self.pipeline_version,
-                    input_revision=1,
-                    config={"pipeline": self.pipeline_version},
-                    admission_mode="shadow" if self.shadow else "production",
-                )
-            )
-            self._progress(
-                session_id,
-                "running",
-                "processing",
-                f"V3 原生分析任务已提交：{snapshot.job.job_id}",
-                job_id=snapshot.job.job_id,
-            )
         else:
             self._progress(
                 session_id,
                 "running",
-                "processing_reused",
-                f"复用已完成的 V3 原生分析任务：{snapshot.job.job_id}",
-                job_id=snapshot.job.job_id,
+                "backup_verified",
+                "独立备份证据已存在，继续执行后续完整流程",
             )
+
+        snapshot, reused = self._processing_snapshot(session_id)
+        if reused:
+            detail = f"继续 V3 原生分析任务：{snapshot.job.job_id}"
+        else:
+            detail = f"V3 原生分析任务已提交：{snapshot.job.job_id}"
+        self._progress(
+            session_id,
+            "running",
+            "processing_reused" if reused else "processing",
+            detail,
+            job_id=snapshot.job.job_id,
+        )
         terminal = {
             "succeeded",
             "failed",
@@ -298,6 +329,56 @@ class V3AutomaticWorkflowRunner:
                 ),
                 "automatic_approval": False,
             },
+            auto_retry_count=0,
+            next_retry_at=None,
+            needs_manual_retry=False,
+            error=None,
+        )
+
+    def _session_is_admitted(self, session_id: str) -> bool:
+        with self.core.database.read() as connection:
+            row = connection.execute(
+                "SELECT status_code FROM recording_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"recording session does not exist: {session_id}")
+        if str(row["status_code"]) == "ready":
+            return True
+        return self.core.admission.evaluate(session_id)
+
+    def _processing_snapshot(self, session_id: str) -> tuple[Any, bool]:
+        current = self.status(session_id) or {}
+        job_id = str(current.get("job_id") or "")
+        snapshot = None
+        if job_id:
+            try:
+                candidate = self.core.processing.get(job_id)
+            except (KeyError, ValueError):
+                candidate = None
+            if (
+                candidate is not None
+                and candidate.run.session_id == session_id
+                and candidate.run.pipeline_version == self.pipeline_version
+            ):
+                snapshot = candidate
+        if snapshot is not None:
+            if snapshot.job.status in {"failed_retryable", "stale"}:
+                return self.core.processing.retry(snapshot.job.job_id), True
+            if snapshot.job.status in {"queued", "running", "succeeded"}:
+                return snapshot, True
+        return (
+            self.core.processing.submit(
+                SubmitProcessingCommand(
+                    session_id=session_id,
+                    pipeline_version=self.pipeline_version,
+                    input_revision=1,
+                    config={"pipeline": self.pipeline_version},
+                    admission_mode="shadow" if self.shadow else "production",
+                    force_reprocess=snapshot is not None,
+                )
+            ),
+            False,
         )
 
     def _progress(
@@ -338,18 +419,8 @@ class V3AutomaticWorkflowRunner:
             return None
         return snapshot
 
-    def _path(self, session_id: str) -> Path:
-        digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-        return self.state_root / f"{digest}.json"
-
     def _write(self, session_id: str, value: Mapping[str, Any]) -> None:
-        path = self._path(session_id)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2, default=str),
-            encoding="utf-8",
-        )
-        os.replace(temporary, path)
+        self._states.save(session_id, value)
 
 
 def _timezone_name(value: str) -> str:

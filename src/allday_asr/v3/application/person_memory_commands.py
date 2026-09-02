@@ -15,6 +15,8 @@ from allday_asr.v3.domain.person_memory import (
 
 from .person_memory_support import (
     _datetime,
+    _optional_datetime,
+    _parse_datetime,
 )
 
 
@@ -119,6 +121,22 @@ class PersonMemoryCommandMixin:
                 created_at=_datetime(self._now()),
                 operation_payload={"previous_revision": current["revision"]},
             )
+    def confirm(
+        self, memory_id: str, *, actor: str = "desktop-user"
+    ) -> dict[str, Any]:
+        """Confirm the current value without making the user maintain a copy."""
+        with self._uow_factory() as uow:
+            current = uow.person_memories.current_memory(memory_id)
+        return self.revise(
+            memory_id,
+            summary=str(current["summary"]),
+            details=dict(current["details"]),
+            confidence=float(current["confidence"]),
+            valid_from=_parse_datetime(current["valid_from"]),
+            valid_until=_optional_datetime(current.get("valid_until")),
+            reminder_event_id=current.get("reminder_event_id"),
+            actor=actor,
+        )
     def expire(self, memory_id: str, actor: str = "desktop-user") -> dict[str, Any]:
         return self._status(
             memory_id,

@@ -103,13 +103,16 @@ async function request<T>(path: string, init?: RequestInit, recovered = false): 
 
 export const desktopApi = {
   overview: () => request<Overview>('/api/v3/overview'),
-  sessions: () => request<SessionPage>('/api/v3/recording-sessions?limit=100'),
+  sessions: (search = '') => request<SessionPage>(`/api/v3/recording-sessions?limit=100${search ? `&q=${encodeURIComponent(search)}` : ''}`),
   session: (sessionId: string) => request<SessionDetail>(`/api/v3/recording-sessions/${encodeURIComponent(sessionId)}`),
   processingJobs: (status = '') => request<{ items: ProcessingJobSummary[] }>(`/api/v3/processing-jobs?limit=100${status ? `&status=${encodeURIComponent(status)}` : ''}`),
   processingJob: (jobId: string) => request<ProcessingSnapshot>(`/api/v3/processing-jobs/${encodeURIComponent(jobId)}`),
   retryJob: (jobId: string) => request<ProcessingSnapshot>(`/api/v3/processing-jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST', body: '{}' }),
+  retryAutomaticWorkflow: (sessionId: string) => request<{ session_id: string; status: string; requested_at: string }>(`/api/v3/automatic-workflows/${encodeURIComponent(sessionId)}/retry`, { method: 'POST', body: '{}' }),
   cancelJob: (jobId: string, reason: string) => request<ProcessingSnapshot>(`/api/v3/processing-jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
   reviews: () => request<{ items: ReviewItem[] }>('/api/v3/reviews?limit=100'),
+  acceptKnowledgeProposal: (proposalId: string) => request(`/api/v3/knowledge-proposals/${encodeURIComponent(proposalId)}/accept`, { method: 'POST', body: '{}' }),
+  rejectKnowledgeProposal: (proposalId: string, reason: string) => request(`/api/v3/knowledge-proposals/${encodeURIComponent(proposalId)}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
   reminderCandidates: () => request<{ items: ReminderCandidate[] }>('/api/v3/reminder-candidates?limit=100'),
   reminders: () => request<{ items: ReminderSchedule[] }>('/api/v3/reminders?limit=100'),
   people: () => request<{ items: PersonSummary[] }>('/api/v3/persons'),
@@ -182,7 +185,10 @@ async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (path.startsWith('/api/v3/processing-jobs?')) return { items: mockOverview.active_jobs } as T
   if (/\/processing-jobs\/[^/]+\/(retry|cancel)$/.test(path)) return mockProcessingSnapshot as T
   if (/\/processing-jobs\/[^/]+$/.test(path)) return mockProcessingSnapshot as T
+  if (/\/automatic-workflows\/[^/]+\/retry$/.test(path)) return { session_id: 'mock-session', status: 'retry_requested', requested_at: new Date().toISOString() } as T
   if (path.startsWith('/api/v3/reviews')) return { items: [] } as T
+  if (/\/knowledge-proposals\/[^/]+\/accept$/.test(path)) return {} as T
+  if (/\/knowledge-proposals\/[^/]+\/reject$/.test(path)) return {} as T
   if (path === '/api/v3/reminder-generations/codex') return {
     generation_id: '01ARZ3NDEKTSV4RRFFQ69G5FC0',
     status: 'succeeded',

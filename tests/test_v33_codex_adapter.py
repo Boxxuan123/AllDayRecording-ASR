@@ -62,6 +62,7 @@ class V33CodexAdapterTests(unittest.TestCase):
         self.assertEqual(fake.run_kwargs["effort"], ReasoningEffort.medium)
         self.assertEqual(fake.run_kwargs["output_schema"], CODEX_REMINDER_OUTPUT_SCHEMA)
         self.assertNotIn("PycharmProjects", fake.prompt)
+        self.assertIn("direct_command", fake.prompt)
         self.assertEqual(list(self.workdir.iterdir()), [])
         generator.close()
         self.assertTrue(fake.closed)
@@ -118,6 +119,10 @@ class V33CodexAdapterTests(unittest.TestCase):
         )
 
     def test_codex_environment_settings_are_explicit_and_fail_closed(self) -> None:
+        defaults = CodexReminderSettings.from_environment(
+            {"ALLDAY_V3_CODEX_WORKDIR": str(self.workdir)}
+        )
+        self.assertTrue(defaults.allow_auto_apply)
         settings = CodexReminderSettings.from_environment(
             {
                 "ALLDAY_V3_CODEX_ENABLED": "1",

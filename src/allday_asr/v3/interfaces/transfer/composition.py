@@ -199,6 +199,7 @@ def create_transfer_server(
             V3UploadIngestAdapter,
         )
         from allday_asr.v3.interfaces.device_gateway import DeviceGateway
+        from allday_asr.v3.interfaces.device_reviews import DeviceReviewService
 
         v3_core.initialize()
         trust = TransferDeviceTrustAdapter(
@@ -216,7 +217,12 @@ def create_transfer_server(
             if v3_ingest_uploads
             else None
         )
-        v3_gateway = DeviceGateway(trust, v3_core.mobile_sync, ingest)
+        v3_gateway = DeviceGateway(
+            trust,
+            v3_core.mobile_sync,
+            ingest,
+            review_service=DeviceReviewService(v3_core),
+        )
         v3_gateway.reconcile()
         device_manager = trust
     server = TransferHTTPServer(

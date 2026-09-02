@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from allday_asr.v3.domain.people import SpeakerEmbedding
+from allday_asr.v3.domain.reviews import voice_review_lane
 
 from .people_repository_codec import _cluster, _json, _row
 
@@ -115,10 +116,13 @@ class PeopleCatalogRepositoryMixin:
                 operation_id,
                 cluster_id,
                 actor,
-                _json({"run_id": run_id, "speaker_track_id": embedding.speaker_track_id}),
+                _json(
+                    {"run_id": run_id, "speaker_track_id": embedding.speaker_track_id}
+                ),
                 created_at,
             ),
         )
+
     def list_people(self) -> tuple[dict[str, Any], ...]:
         rows = self.connection.execute(
             """
@@ -200,15 +204,38 @@ class PeopleCatalogRepositoryMixin:
             ORDER BY p.kind, lower(p.display_name), p.person_id
             """
         ).fetchall()
+        known_people = {
+            str(row["person_id"]) for row in rows if str(row["kind"]) == "known"
+        }
+        primary_clusters = {person_id: set() for person_id in known_people}
+        training_clusters = {person_id: set() for person_id in known_people}
+        for candidate in self.list_review_candidates(None, "pending", 500):
+            person_id = str(candidate["person_id"])
+            if person_id not in known_people:
+                continue
+            lane = voice_review_lane(candidate)
+            if lane == "primary":
+                primary_clusters[person_id].add(str(candidate["cluster_id"]))
+            elif lane == "training":
+                training_clusters[person_id].add(str(candidate["cluster_id"]))
         return tuple(
             {
                 **_row(row),
                 "known_auto_match_enabled": bool(row["known_auto_match_enabled"] or 0),
                 "voice_calibration": json.loads(row["calibration_json"] or "{}"),
+                "pending_voice_review_count": len(
+                    primary_clusters.get(str(row["person_id"]), set())
+                ),
+                "training_voice_review_count": len(
+                    training_clusters.get(str(row["person_id"]), set())
+                ),
             }
             for row in rows
         )
-    def list_clusters(self, status: str | None, limit: int) -> tuple[dict[str, Any], ...]:
+
+    def list_clusters(
+        self, status: str | None, limit: int
+    ) -> tuple[dict[str, Any], ...]:
         where = "WHERE c.status = ?" if status else ""
         parameters: tuple[object, ...] = (status, limit) if status else (limit,)
         rows = self.connection.execute(
@@ -236,6 +263,7 @@ class PeopleCatalogRepositoryMixin:
             parameters,
         ).fetchall()
         return tuple(_cluster(row) for row in rows)
+
     def cluster_detail(self, cluster_id: str) -> dict[str, Any]:
         rows = self.connection.execute(
             """
@@ -333,6 +361,7 @@ class PeopleCatalogRepositoryMixin:
             for row in operations
         ]
         return detail
+
     def create_person(
         self, person_id: str, display_name: str, kind: str, created_at: str
     ) -> None:
@@ -354,6 +383,7 @@ class PeopleCatalogRepositoryMixin:
             (person_id, display_name, created_at),
         )
         self._create_identity_policy(person_id, created_at, "desktop-user")
+
     def import_person(
         self,
         person_id: str,
