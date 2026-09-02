@@ -8,7 +8,10 @@ from allday_asr.v3.interfaces.transfer.cli import app as device_app
 
 app = typer.Typer(
     name="allday-asr",
-    help="AllDayRecording V3 本地工作台、设备同步与处理工具。",
+    help=(
+        "AllDayRecording V3 本地工作台、设备同步与处理工具。"
+        "当前版本不提供 Legacy V2 可执行入口。"
+    ),
     no_args_is_help=True,
 )
 app.add_typer(core_app)

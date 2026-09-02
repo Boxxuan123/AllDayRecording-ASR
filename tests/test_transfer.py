@@ -28,6 +28,7 @@ from allday_asr.v3.interfaces.transfer.passkeys import (
     encode_assertion_header,
 )
 from allday_asr.v3.interfaces.transfer.server import (
+    _automatic_workflow_startup_message,
     _prioritize_interface_addresses,
     create_transfer_server,
 )
@@ -496,6 +497,18 @@ class TransferTLSIdentityTests(unittest.TestCase):
 class TransferServerTests(unittest.TestCase):
     token = "test-transfer-token-123"
     origin = "https://alldayrecording.local"
+
+    def test_automatic_workflow_startup_message_explains_admission_semantics(
+        self,
+    ) -> None:
+        shadow = _automatic_workflow_startup_message(shadow=True)
+        production = _automatic_workflow_startup_message(shadow=False)
+
+        self.assertIn("shadow 非生产模式", shadow)
+        self.assertIn("允许模型执行", shadow)
+        self.assertIn("不会解除独立备份准入阻塞", shadow)
+        self.assertIn("production", production)
+        self.assertIn("独立备份写入与回读校验通过后执行", production)
 
     def test_passkey_https_protocol_uploads_and_resumes(self) -> None:
         with _workspace_directory() as temporary:

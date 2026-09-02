@@ -35,6 +35,7 @@ from allday_asr.v3.adapters.transfer import (
     V3AutomaticWorkflowRunner,
     V3UploadIngestAdapter,
 )
+from allday_asr.v3.adapters.transfer.ingest import _parse_manifest
 from allday_asr.v3.application import MobileSyncService
 from allday_asr.v3.domain import (
     ChangeOperation,
@@ -380,6 +381,42 @@ class V3DeviceSyncTests(unittest.TestCase):
                         method="POST", path="/device/v3/sync", body=b"{}"
                     ),
                 )
+
+    def test_manifest_continuity_is_recomputed_from_chunk_timeline(self) -> None:
+        manifest = {
+            "format": "AllDayRecording session manifest v1",
+            "sessionKey": "watch-session:1767225600000",
+            "sessionStartedAt": 1767225600000,
+            "device": "HUAWEI WATCH 5",
+            "timezone": "Asia/Singapore",
+            "audio": {
+                "sampleRate": 16000,
+                "channels": 1,
+                "bitsPerSample": 16,
+            },
+            "chunks": [
+                {
+                    "index": 21,
+                    "fileName": "021_segment.wav",
+                    "firstSample": 0,
+                    "sampleCount": 100,
+                },
+                {
+                    "index": 30,
+                    "fileName": "030_segment.wav",
+                    "firstSample": 100,
+                    "sampleCount": 100,
+                },
+            ],
+            "completedSegments": 2,
+            "totalSamples": 200,
+            "continuityValid": True,
+        }
+
+        parsed = _parse_manifest(manifest)
+
+        self.assertFalse(parsed["continuityValid"])
+        self.assertTrue(manifest["continuityValid"])
 
     def test_completed_manifest_admits_audio_and_is_idempotent(self) -> None:
         with _workspace_directory() as root:

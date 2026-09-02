@@ -105,14 +105,17 @@ def receive_command(
         False,
         "--auto-process",
         "--auto-workflow",
-        help="每个会话 manifest 完整上传后，后台启动 V3 原生分析和 Codex 生成。",
+        help=(
+            "每个会话 manifest 完整上传并入库后，后台启动 V3 原生模型分析"
+            "和 Codex 生成。"
+        ),
     ),
     workflow_shadow: bool = typer.Option(
         False,
         "--workflow-shadow",
         help=(
-            "显式的非生产 V3 测试模式：允许在独立备份尚未配置时运行模型，"
-            "但保留备份准入阻塞。"
+            "显式的 V3 非生产模式：允许模型执行，但不会解除独立备份"
+            "准入阻塞。"
         ),
     ),
     workflow_backup_root: Optional[Path] = typer.Option(

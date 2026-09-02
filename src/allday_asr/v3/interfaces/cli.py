@@ -26,7 +26,7 @@ from allday_asr.v3.interfaces.desktop_server import serve_v3_desktop
 
 
 app = typer.Typer(
-    help="V3 durable core and processing orchestration commands.",
+    help="V3 Core、桌面工作台和持久处理命令；不包含 Legacy V2 运行时。",
     no_args_is_help=True,
 )
 
@@ -130,7 +130,7 @@ def desktop_command(
     open_browser: Annotated[bool, typer.Option("--open/--no-open")] = True,
     state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
 ) -> None:
-    """Start the loopback-only V3 Desktop API and independent frontend."""
+    """启动 V3 本地工作台的 8766 兼容端口入口。"""
     _enabled_settings()
     paths = (
         V3CorePaths.from_state_dir(state_dir)
@@ -151,7 +151,7 @@ def web_command(
     open_browser: Annotated[bool, typer.Option("--open/--no-open")] = True,
     state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
 ) -> None:
-    """Start the default V3 Desktop entry on the traditional web port."""
+    """启动默认 V3 本地工作台（默认 127.0.0.1:8765）。"""
 
     _enabled_settings()
     paths = (

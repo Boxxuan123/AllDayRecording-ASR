@@ -797,9 +797,15 @@ def serve_transfer(
     if insecure_http and (tls_cert is not None or tls_key is not None):
         raise ValueError("--insecure-http 不能与 TLS 证书参数同时使用")
     if workflow_shadow and not auto_workflow:
-        raise ValueError("--workflow-shadow 必须与 --auto-workflow 一起使用")
+        raise ValueError(
+            "--workflow-shadow 必须与 --auto-process "
+            "（兼容别名 --auto-workflow）一起使用"
+        )
     if workflow_backup_root is not None and not auto_workflow:
-        raise ValueError("--workflow-backup-root 必须与 --auto-workflow 一起使用")
+        raise ValueError(
+            "--workflow-backup-root 必须与 --auto-process "
+            "（兼容别名 --auto-workflow）一起使用"
+        )
     if auto_workflow and workflow_config is None:
         raise ValueError("自动处理缺少模型配置文件")
     if auto_workflow and not workflow_shadow and workflow_backup_root is None:
@@ -954,8 +960,7 @@ def serve_transfer(
     print(f"Passkey 凭据库：{server.passkeys.store.path}")
     print(f"设备公钥库：{server.devices.store.path}")
     if automatic_runner is not None:
-        mode = "shadow" if workflow_shadow else "production"
-        print(f"自动 V3 原生工作流：已启用（{mode}，manifest 完成后串行执行）")
+        print(_automatic_workflow_startup_message(shadow=workflow_shadow))
         if workflow_backup_root is not None:
             print(
                 f"自动会话备份：{workflow_backup_root} "
@@ -982,6 +987,14 @@ def serve_transfer(
         if automatic_runner is not None:
             print("正在等待已经排队的自动 V3 工作流安全结束……")
             automatic_runner.close()
+
+
+def _automatic_workflow_startup_message(*, shadow: bool) -> str:
+    if shadow:
+        mode = "shadow 非生产模式；允许模型执行，但不会解除独立备份准入阻塞"
+    else:
+        mode = "production；独立备份写入与回读校验通过后执行"
+    return f"自动 V3 原生工作流：已启用（{mode}；manifest 完成后串行执行）"
 
 
 def _display_addresses(host: str) -> list[str]:

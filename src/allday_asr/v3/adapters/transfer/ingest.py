@@ -361,6 +361,9 @@ def _parse_manifest(payload: object) -> dict[str, Any]:
         raise UploadStoreError("V3 completedSegments 与 chunks 不一致")
     seen_indexes: set[int] = set()
     highest_sample = 0
+    previous_end = 0
+    previous_index: int | None = None
+    computed_continuity = True
     for chunk in chunks:
         if not isinstance(chunk, dict) or set(chunk) != {
             "index",
@@ -383,12 +386,21 @@ def _parse_manifest(payload: object) -> dict[str, Any]:
             raise UploadStoreError("V3 chunk fileName 必须是 WAV 基础文件名")
         if chunk["index"] in seen_indexes or chunk["sampleCount"] <= 0:
             raise UploadStoreError("V3 chunk index 重复或 sampleCount 无效")
+        if chunk["firstSample"] != previous_end:
+            computed_continuity = False
+        if previous_index is not None and chunk["index"] != previous_index + 1:
+            computed_continuity = False
         seen_indexes.add(chunk["index"])
+        previous_end = chunk["firstSample"] + chunk["sampleCount"]
+        previous_index = chunk["index"]
         highest_sample = max(
             highest_sample, chunk["firstSample"] + chunk["sampleCount"]
         )
     if highest_sample != payload["totalSamples"]:
         raise UploadStoreError("V3 totalSamples 与 chunks 不一致")
+    if payload["continuityValid"] and not computed_continuity:
+        payload = dict(payload)
+        payload["continuityValid"] = False
     return payload
 
 

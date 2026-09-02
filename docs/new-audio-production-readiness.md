@@ -4,13 +4,15 @@
 > 审计对象：`data/pcm_gap_test_1787972654273/`  
 > 审计边界：只读取目录、清单、文件大小、哈希和媒体元数据；没有入库、转写、重编码、移动、重命名或修改原始文件。
 
+> 当前运行时修订（2026-09-02）：本文保留的是已退役 V2 工作流的实施记录。下文所有 `legacy` 命令片段在当前安装包中均不可执行；当前 Phone→Computer 入库和处理流程以[手机到电脑文件传输协议](phone-to-computer-transfer.md)为准。
+
 > 实施更新：已按通用方案完成 schema v12、清单适配器、文件实例模型、session-native V2-C/D/E、不可覆盖备份与恢复演练、自动显存档位、准入门和 SQLite 持久工作流。最近一轮实现与测试全部使用临时合成 WAV，没有列举、读取、播放或针对 `data` 中的新音频运行模型。本文第 2 节只保留为更早一次实施前审计记录，不作为代码中的固定假设。
 
 ## 1. 结论
 
 项目现在可以把任意符合受支持清单格式的多分片录音导入为真实 `session`，并运行本地 V2 影子工作流；实现不依赖本批文件数、总时长、目录名或固定采样数。
 
-V3.0-G 后的 Legacy V2 入口是 `legacy session import-manifest` → `legacy session backup` → `legacy session readiness` → `legacy workflow run --session <id>`。仍然不应该逐条运行旧 `ingest`，也不应该拿第一条 WAV 冒充整段 `recording`。
+本文实施时曾使用 Legacy V2 的 session-native 入口；该入口现已退役。当前 V3 同样不应逐条处理旧 `ingest`，也不应拿第一条 WAV 冒充整段 `recording`。
 
 原审计提出的四项 P0 当前状态如下：
 

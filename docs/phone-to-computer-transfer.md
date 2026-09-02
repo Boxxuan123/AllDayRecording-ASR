@@ -166,27 +166,28 @@ Upload-Offset: <分片起始偏移>
 
 手机以 `ReceivedRecordingFile.sourcePath` 恢复原 Watch 会话路径，先传所有音频，最后生成并上传兼容 `AllDayRecording session manifest v1` 的 `session_summary.json`。手机原文件始终保留。`manifest` 完成 SHA-256 校验就是整个会话已到齐的提交信号。
 
-接收端可以在该提交点自动执行“原子导入 → V2-C → V2-D → 本地 V2-E”。HTTP 最后一片在任务持久加入后台串行队列后立即返回，手机不等待模型。没有可由电脑复核的独立备份时，必须显式选择 shadow：
+接收端始终在该提交点把清单原子导入 V3 Core；开启自动处理后，再执行“V3 原生模型分析 → 开放集说话人身份 → Codex 语义/提醒/洞察”。HTTP 最后一片在任务持久加入后台串行队列后立即返回，手机不等待模型。没有可由电脑复核的独立备份时，只能显式选择 shadow。shadow 允许模型执行，但不会解除独立备份准入阻塞，结果不能当作 production 准入证据：
 
 ```powershell
-allday-asr device receive --auto-workflow --workflow-shadow
+allday-asr device receive --auto-process --workflow-shadow
 ```
 
 正式 production 自动处理必须同时给出真正的独立磁盘或网络备份位置；接收端会先逐文件备份、复算 SHA-256 并完成恢复演练，通过后才启动模型：
 
 ```powershell
-allday-asr device receive --auto-workflow `
+allday-asr device receive --auto-process `
   --workflow-backup-root E:\AllDayRecordingBackup `
   --workflow-backup-storage-kind independent_device
 ```
 
-自动任务按会话串行执行，避免多个 PyTorch 工作流争用 GPU。接收服务重启时会扫描已经完成但尚未处理的 manifest；清单导入和 V2 阶段本身均按现有指纹规则幂等。进度同时输出到接收服务终端，并持久保存在 `data\phone-inbox\.uploads\<upload_id>.workflow.json`。上传响应在 manifest 完成时还会包含 `automation.status=queued|running|completed|failed` 对应的当前快照。
+自动任务按会话串行执行，避免多个 PyTorch 工作流争用 GPU。接收服务重启时会对已完成上传与 V3 Core 做幂等核对；清单导入和 V3 processing job 均按现有指纹规则复用。进度同时输出到接收服务终端，并持久保存在 V3 state 的 `automation` 目录。上传响应在 manifest 完成时还会包含 `v3.session_id`、导入状态和 `v3.automation` 当前任务快照。
 
-未开启 `--auto-workflow` 时仍可显式导入和运行：
+`--auto-workflow` 仅作为 `--auto-process` 的兼容别名保留。未开启自动处理时，manifest 仍会自动入库；从上传响应的 `v3.session_id` 取得会话 ID 后，可以显式完成备份准入、提交任务并运行 worker：
 
 ```powershell
-allday-asr session import-manifest `
-  data\phone-inbox\pcm_session_1787972654273\session_summary.json `
-  --method watch_auto
-allday-asr legacy workflow run --session <session-id> --shadow
+allday-asr backup-admit <session-id> `
+  --backup-root E:\AllDayRecordingBackup `
+  --storage-kind independent_device
+allday-asr process-submit <session-id>
+allday-asr worker --once
 ```

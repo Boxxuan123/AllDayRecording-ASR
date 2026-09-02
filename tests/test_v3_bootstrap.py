@@ -21,6 +21,16 @@ from allday_asr.v3.config import (
 
 
 class V3BootstrapTests(unittest.TestCase):
+    def test_cli_help_states_that_only_v3_runtime_is_available(self) -> None:
+        root = CliRunner().invoke(app, ["--help"])
+        web = CliRunner().invoke(app, ["web", "--help"])
+
+        self.assertEqual(root.exit_code, 0, root.output)
+        self.assertIn("Legacy V2", root.output)
+        self.assertIn("不提供", root.output)
+        self.assertEqual(web.exit_code, 0, web.output)
+        self.assertIn("默认 V3 本地工作台", web.output)
+
     def test_v3_is_enabled_by_default_after_release_cutover(self) -> None:
         settings = V3Settings.from_environment({})
         self.assertTrue(settings.enabled)

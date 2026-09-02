@@ -37,7 +37,7 @@ allday-asr device receive
 allday-asr device receive --auto-process `
   --workflow-backup-root D:\AllDayRecording-Backup
 
-# 明确接受无独立备份的本地开发模式
+# 本地 shadow：允许模型执行，但不会解除独立备份准入阻塞
 allday-asr device receive --auto-process --workflow-shadow
 ```
 
@@ -74,5 +74,6 @@ npm run build
 - [V3.5 跨天人物记忆](docs/V3/V3.5-cross-day-person-memory.md)
 - [V3.6 每日总结与关系观察](docs/V3/V3.6-daily-summary-and-relationship-observation.md)
 - [V3.7 分层说话人身份与防污染学习](docs/V3/V3.7-layered-speaker-identity.md)
+- [Computer 端超阈值模块维护计划](docs/V3/computer-maintainability-plan.md)
 
 旧版实现不再作为可执行路径保留；需要追溯时使用 Git 历史。
