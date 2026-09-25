@@ -195,6 +195,8 @@ class ReminderQueryMixin:
         ):
             return False
         proposal = uow.knowledge.get_proposal(candidate.proposal_id)
+        if uow.reminders.has_user_task_for_evidence(proposal.evidence_utterance_ids):
+            return False
         facts = uow.knowledge.utterance_facts(proposal.evidence_utterance_ids)
         return (
             len(facts) == len(proposal.evidence_utterance_ids)

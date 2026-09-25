@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import wave
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from uuid import uuid4
 
 from allday_asr.v3.adapters.audio.tools import extract_clip
 from allday_asr.v3.interfaces.transfer.devices import DeviceConflictError
+from .review_audio import audio_plan, concatenate
 
 
 MAX_REVIEW_AUDIO_BYTES = 16 * 1024 * 1024
@@ -46,8 +48,36 @@ class DeviceReviewService:
                         enriched.append(_public_voice_candidate(candidate))
                 enriched.sort(key=_weakest_candidate_first)
                 context["voice_candidates"] = enriched
+            if item.get("kind") == "voice_identity" and context.get("voice_mode") == "speaker_discovery":
+                detail = self.core.people.cluster(str(item["source_id"]))
+                members = {m["speaker_track_id"]: m["session_id"] for m in detail["members"]}
+                context["voice_candidates"] = [_public_voice_candidate({
+                    **p, "session_id": members.get(p["speaker_track_id"], ""),
+                    "person_id": "", "person_name": "未知人物",
+                }) for p in detail["prototypes"] if p["status"] != "revoked"]
+                context["prototype_ids"] = [p["prototype_id"] for p in context["voice_candidates"]]
+                if not context["voice_candidates"]:
+                    continue
             item["context"] = context
             items.append(item)
+        # Reuse the existing per-sample review surface for historical grants.
+        # These rows offer withdrawal only, including noncurrent/inactive sources.
+        for candidate in self.core.people.list_review_candidates(None, 'confirmed', 500):
+            items.append({
+                'review_id': f"voice-grant:{candidate['prototype_id']}:{candidate['person_id']}",
+                'kind': 'voice_identity', 'priority': 'normal',
+                'source_id': candidate['cluster_id'], 'source_revision': None,
+                'session_id': candidate['session_id'], 'person_id': candidate['person_id'],
+                'title': candidate['person_name'], 'summary': '已采纳样本授权，可单独撤回',
+                'reason': 'voice_grant_management', 'evidence_count': len(candidate['representative_clips']),
+                'created_at': candidate['created_at'], 'updated_at': candidate['created_at'],
+                'context': {'voice_mode': 'accepted_grant', 'review_lane': 'history',
+                    'prototype_ids': [candidate['prototype_id']],
+                    'voice_candidates': [_public_voice_candidate(candidate)]},
+            })
+        for item in items:
+            for candidate in item.get("context", {}).get("voice_candidates", []):
+                candidate.update(self.audio_description(candidate))
         return {"items": items}
 
     def resolve(
@@ -74,10 +104,13 @@ class DeviceReviewService:
                 else:
                     raise ValueError("unsupported speaker discovery review action")
             else:
+                if context.get('voice_mode') == 'accepted_grant' and action != 'retract':
+                    raise ValueError('historical sample authorization only supports withdrawal')
                 decision = {
                     "confirm": "confirmed",
                     "reject": "rejected",
                     "uncertain": "uncertain",
+                    "retract": "retracted",
                 }.get(action)
                 if decision is None:
                     raise ValueError("unsupported voice review action")
@@ -126,18 +159,20 @@ class DeviceReviewService:
         return {"result": result, "reviews": self.snapshot()}
 
     def audio(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        if set(payload) - {"review_id", "prototype_id", "audition_key"}:
+            raise ValueError("audio requests cannot override sample windows")
         review_id = _required_text(payload, "review_id")
         prototype_id = _required_text(payload, "prototype_id")
         item = self._current_item(review_id)
         context = dict(item.get("context") or {})
         if (
             item.get("kind") != "voice_identity"
-            or context.get("voice_mode") != "known_person"
+            or context.get("voice_mode") not in {"known_person", "speaker_discovery", "accepted_grant"}
             or prototype_id
             not in {str(value) for value in context.get("prototype_ids", [])}
         ):
             raise DeviceConflictError("voice sample no longer belongs to this review")
-        candidates = self.core.people.list_review_candidates(None, "pending", 500)
+        candidates = context.get("voice_candidates", [])
         candidate = next(
             (
                 value
@@ -148,34 +183,52 @@ class DeviceReviewService:
         )
         if candidate is None:
             raise DeviceConflictError("voice sample is no longer pending")
-        clips = candidate.get("representative_clips") or []
-        if not clips or not isinstance(clips[0], dict):
-            raise KeyError("voice sample has no playable evidence")
-        clip = clips[0]
-        media_id = _clip_text(clip, "media_id")
-        start_ms = _clip_integer(clip.get("start_ms"), 0)
-        end_ms = _clip_integer(clip.get("end_ms"), start_ms + 6_000)
-        if end_ms <= start_ms:
-            end_ms = start_ms + 6_000
-        descriptor = self.core.desktop.media(media_id)
-        clip_end_ms = min(end_ms, start_ms + MAX_REVIEW_AUDIO_DURATION_MS)
-        source_path = self.core.audio_store.path_for(str(descriptor["storage_key"]))
-        temp_root = Path(self.core.audio_store.root).parent / "review-audio-temp"
-        data = _normalized_review_audio(
-            source_path, start_ms, clip_end_ms, temp_root=temp_root
-        )
+        return self.render_audio(review_id, candidate, payload.get("audition_key"))
+
+    def audio_description(self, candidate):
+        try:
+            plan = audio_plan(candidate)
+            for window in plan['windows']:
+                descriptor = self.core.desktop.media(window['media_id'])
+                if not self.core.audio_store.path_for(str(descriptor['storage_key'])).is_file():
+                    raise FileNotFoundError('原音文件已不可用')
+            return {**plan, 'audio_available': True, 'audio_unavailable_reason': ''}
+        except (KeyError, ValueError, OSError) as error:
+            return {'audio_available': False, 'audio_unavailable_reason': str(error)}
+
+    def desktop_audio(self, payload):
+        if set(payload) - {'prototype_id', 'person_id', 'describe', 'audition_key'}:
+            raise ValueError('audio requests cannot override sample windows')
+        prototype_id = _required_text(payload, 'prototype_id')
+        person_id = _required_text(payload, 'person_id')
+        candidate = next((c for c in self.core.people.list_review_candidates(person_id, None, 500)
+                          if c['prototype_id'] == prototype_id and c['person_id'] == person_id), None)
+        if candidate is None:
+            raise DeviceConflictError('voice sample no longer belongs to this person')
+        if payload.get('describe') is True:
+            return self.audio_description(candidate)
+        return self.render_audio(f'person:{person_id}', candidate, payload.get('audition_key'))
+
+    def render_audio(self, review_id, candidate, requested_key=None):
+        plan = audio_plan(candidate)
+        if requested_key is not None and requested_key != plan['audition_key']:
+            raise DeviceConflictError('sample audio changed; reload before listening')
+        parts = []
+        temp_root = Path(self.core.audio_store.root).parent / 'review-audio-temp'
+        for window in plan['windows']:
+            descriptor = self.core.desktop.media(window['media_id'])
+            source = self.core.audio_store.path_for(str(descriptor['storage_key']))
+            for start in range(window['start_ms'], window['end_ms'], MAX_REVIEW_AUDIO_DURATION_MS):
+                parts.append(_normalized_review_audio(source, start,
+                    min(window['end_ms'], start + MAX_REVIEW_AUDIO_DURATION_MS), temp_root=temp_root))
+                if sum(map(len, parts)) > MAX_REVIEW_AUDIO_BYTES:
+                    raise ValueError('normalized voice review audio is too large for mobile playback')
+        data = concatenate(parts)
         if not data or len(data) > MAX_REVIEW_AUDIO_BYTES:
-            raise ValueError("normalized voice review audio is too large for mobile playback")
-        return {
-            "review_id": review_id,
-            "prototype_id": prototype_id,
-            "format": "wav",
-            "data_base64url": base64.urlsafe_b64encode(data)
-            .rstrip(b"=")
-            .decode("ascii"),
-            "start_ms": 0,
-            "end_ms": clip_end_ms - start_ms,
-        }
+            raise ValueError('normalized voice review audio is too large for mobile playback')
+        return {**plan, 'review_id': review_id, 'prototype_id': candidate['prototype_id'],
+                'format': 'wav', 'data_base64url': base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii'),
+                'start_ms': 0, 'end_ms': plan['total_ms'], 'complete_sample': True}
 
     def _current_item(self, review_id: str) -> dict[str, Any]:
         for item in self.snapshot()["items"]:
@@ -197,25 +250,19 @@ def _normalized_review_audio(
             end_ms,
             audio_filter=REVIEW_AUDIO_LOUDNESS_FILTER,
         )
+        with wave.open(str(rendered), 'rb') as audio:
+            duration_ms = audio.getnframes() * 1000 / audio.getframerate()
+            if abs(duration_ms - (end_ms - start_ms)) > 1:
+                raise ValueError('source audio does not cover the complete sample window')
         return rendered.read_bytes()
     finally:
         destination.unlink(missing_ok=True)
 
 
 def _public_voice_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
-    clips = []
-    for raw in candidate.get("representative_clips", []):
-        if not isinstance(raw, dict) or not isinstance(raw.get("media_id"), str):
-            continue
-        start_ms = _clip_integer(raw.get("start_ms"), 0)
-        end_ms = _clip_integer(raw.get("end_ms"), start_ms + 6_000)
-        clips.append(
-            {
-                "media_id": raw["media_id"],
-                "start_ms": start_ms,
-                "end_ms": max(end_ms, start_ms + 800),
-            }
-        )
+    # Never repair, widen or silently drop a stored window for audition.
+    clips = [{key: raw.get(key) for key in ('media_id', 'start_ms', 'end_ms')}
+             if isinstance(raw, dict) else {} for raw in candidate.get('representative_clips', [])]
     return {
         "prototype_id": str(candidate["prototype_id"]),
         "session_id": str(candidate["session_id"]),
@@ -253,19 +300,6 @@ def _optional_reason(payload: Mapping[str, Any]) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 500:
         raise ValueError("review reason must be a non-empty string")
     return value.strip()
-
-
-def _clip_text(clip: Mapping[str, Any], field: str) -> str:
-    value = clip.get(field)
-    if not isinstance(value, str) or not value:
-        raise ValueError("voice review clip is invalid")
-    return value
-
-
-def _clip_integer(value: object, fallback: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return fallback
-    return value
 
 
 def _optional_number(value: object) -> float | None:

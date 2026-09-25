@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import VoiceSampleAudition from "../components/VoiceSampleAudition.vue"
 import { computed, nextTick, onBeforeUnmount, ref, watchEffect } from 'vue'
 
+import { kindLabel, maturityLabel, matchTierLabel, statusLabel, confirmationLabel, sourceLabel, roleLabel } from '../core/peopleLabels'
 import PageState from '../components/PageState.vue'
 import { desktopApi } from '../core/api'
 import { formatDate } from '../core/format'
@@ -70,7 +72,8 @@ watchEffect(() => {
   if (!visible.some((cluster) => cluster.cluster_id === selectedId.value)) {
     selectedId.value = ''
     detail.value = null
-    if (visible.length) void selectCluster(visible[0].cluster_id)
+    const nextCluster = visible.find((cluster) => cluster.status === 'active' && !cluster.person_id) ?? visible[0]
+    if (nextCluster) void selectCluster(nextCluster.cluster_id)
   }
   if (!selectedPersonId.value && query.data.value?.people.length) {
     const requested = query.data.value.people.find((person) => person.person_id === requestedPersonId)
@@ -93,6 +96,8 @@ const activeClusters = computed(() => query.data.value?.clusters.filter((item) =
 const visibleClusters = computed(() => query.data.value?.clusters.filter(
   (cluster) => !selectedSession.value || cluster.session_ids.includes(selectedSession.value),
 ) ?? [])
+const pendingClusters = computed(() => visibleClusters.value.filter((cluster) => cluster.status === 'active' && !cluster.person_id))
+const completedClusters = computed(() => visibleClusters.value.filter((cluster) => cluster.status !== 'active' || !!cluster.person_id))
 const mergeChoices = computed(() => activeClusters.value.filter((item) => item.cluster_id !== selectedId.value))
 const eventChoices = computed(() => personDetail.value?.interactions.filter((item) => item.event_id) ?? [])
 const needsExpiry = computed(() => memoryKind.value === 'short_term_state' || memoryKind.value === 'plan')
@@ -110,8 +115,14 @@ const confirmedVoiceCandidates = computed(() => query.data.value?.voiceCandidate
 async function selectCluster(clusterId: string): Promise<void> {
   selectedId.value = clusterId
   splitTracks.value = []
-  try { detail.value = await desktopApi.speakerCluster(clusterId) }
-  catch (error) { errorMessage.value = error instanceof Error ? error.message : String(error) }
+  detail.value = null
+  errorMessage.value = ''
+  try {
+    const selectedDetail = await desktopApi.speakerCluster(clusterId)
+    if (selectedId.value === clusterId) detail.value = selectedDetail
+  } catch (error) {
+    if (selectedId.value === clusterId) errorMessage.value = error instanceof Error ? error.message : String(error)
+  }
 }
 
 async function selectPerson(personId: string): Promise<void> {
@@ -135,7 +146,11 @@ async function act(action: () => Promise<unknown>, message: string): Promise<voi
     await action()
     if (message) resultMessage.value = message
     await query.refresh(true)
-    if (selectedId.value) detail.value = await desktopApi.speakerCluster(selectedId.value).catch(() => null)
+    if (selectedId.value && query.data.value?.clusters.some((cluster) => cluster.cluster_id === selectedId.value)) {
+      const clusterId = selectedId.value
+      const selectedDetail = await desktopApi.speakerCluster(clusterId).catch(() => null)
+      if (selectedId.value === clusterId) detail.value = selectedDetail
+    }
     if (selectedPersonId.value) await selectPerson(selectedPersonId.value)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
@@ -275,42 +290,6 @@ function splitTags(value: string): string[] {
   return [...new Set(value.split(/[，,、]/).map((item) => item.trim()).filter(Boolean))]
 }
 
-function kindLabel(kind: PersonMemoryKind): string {
-  return { stable_fact: '稳定事实', preference: '偏好', short_term_state: '短期状态', plan: '计划', commitment: '承诺', model_observation: '模型观察' }[kind]
-}
-
-function maturityLabel(value: string | null): string {
-  if (value === 'seed') return '待积累'
-  if (value === 'learning') return '学习中'
-  if (value === 'calibrated') return '已校准'
-  if (value === 'suspended') return '已暂停'
-  return '不适用'
-}
-
-function matchTierLabel(value: VoicePrototypeCandidate['decision_tier']): string {
-  if (value === 'insufficient_evidence') return '证据不足'
-  if (value === 'auto_matched') return '达到自动档'
-  if (value === 'suggested') return '建议核对'
-  if (value === 'no_known_match') return '未达已知人物阈值'
-  return '新人物待指定'
-}
-
-function statusLabel(memory: PersonMemory): string {
-  return { active: '当前有效', expired: '已过期', retracted: '已撤回' }[memory.status]
-}
-
-function confirmationLabel(memory: PersonMemory): string {
-  return { confirmed: '已确认', unconfirmed: '待核对', inferred: '模型推断' }[memory.confirmation_status]
-}
-
-function sourceLabel(memory: PersonMemory): string {
-  return { human: '人工维护', event_projection: '事件自动整理', model: '模型观察' }[memory.source]
-}
-
-function roleLabel(memory: PersonMemory): string {
-  return memory.details.person_role === 'actor' ? '本人陈述/主体' : memory.details.person_role === 'related' ? '关联人物' : '人工记录'
-}
-
 function evidenceLabel(memory: PersonMemory, evidence: PersonMemory['evidence'][number]): string {
   const parts = memory.evidence.filter((item) => item.utterance_id === evidence.utterance_id)
   if (parts.length <= 1) return `原话：${evidence.text}`
@@ -362,18 +341,21 @@ onBeforeUnmount(release)
         <div class="voice-review-list">
           <article v-for="candidate in pendingVoiceCandidates" :id="`voice-review-${candidate.prototype_id}`" :key="candidate.prototype_id" :class="['voice-review-card', candidate.prototype_id === focusedPrototypeId ? 'focused-review' : '']">
             <div><strong>{{ candidate.person_name }}</strong><small>{{ matchTierLabel(candidate.decision_tier) }} · 音频质量 {{ Math.round(candidate.quality_score * 100) }}%<template v-if="candidate.best_score !== null"> · 最相似 {{ Math.round(candidate.best_score * 100) }}%</template></small><small>录音 {{ sessionLabel(candidate.session_id) }}</small></div>
-            <button v-for="clip in candidate.representative_clips.slice(0, 1)" :key="`${clip.media_id}-${clip.start_ms}`" class="quiet-button" @click="playRange(clip.media_id, clip.start_ms, clip.end_ms)">▶ 试听</button>
-            <footer><button class="quiet-button" :disabled="busy" @click="reviewVoice(candidate, 'uncertain')">待定</button><button class="text-danger" :disabled="busy" @click="reviewVoice(candidate, 'rejected')">不是此人</button><button class="primary-action" :disabled="busy" @click="reviewVoice(candidate, 'confirmed')">确认是此人</button></footer>
+            <VoiceSampleAudition :candidate="candidate" v-slot="{ complete }">
+            <footer><button class="quiet-button" :disabled="busy" @click="reviewVoice(candidate, 'uncertain')">待定</button><button class="text-danger" :disabled="busy || !complete" @click="reviewVoice(candidate, 'rejected')">不是此人</button><button class="primary-action" :disabled="busy || !complete" @click="reviewVoice(candidate, 'confirmed')">确认是此人</button></footer>
+            </VoiceSampleAudition>
           </article>
           <article v-for="candidate in showVoiceTraining ? trainingVoiceCandidates : []" :id="`voice-review-${candidate.prototype_id}`" :key="`training-${candidate.prototype_id}`" :class="['voice-review-card', candidate.prototype_id === focusedPrototypeId ? 'focused-review' : '']">
             <div><strong>{{ candidate.person_name }} · 可选训练</strong><small>{{ matchTierLabel(candidate.decision_tier) }} · 音频质量 {{ Math.round(candidate.quality_score * 100) }}%<template v-if="candidate.best_score !== null"> · 最相似 {{ Math.round(candidate.best_score * 100) }}%</template></small><small>录音 {{ sessionLabel(candidate.session_id) }}</small></div>
-            <button v-for="clip in candidate.representative_clips.slice(0, 1)" :key="`${clip.media_id}-${clip.start_ms}`" class="quiet-button" @click="playRange(clip.media_id, clip.start_ms, clip.end_ms)">▶ 试听</button>
-            <footer><button class="text-danger" :disabled="busy" @click="reviewVoice(candidate, 'rejected')">不是此人</button><button class="primary-action" :disabled="busy" @click="reviewVoice(candidate, 'confirmed')">确认是此人</button></footer>
+            <VoiceSampleAudition :candidate="candidate" v-slot="{ complete }">
+            <footer><button class="text-danger" :disabled="busy || !complete" @click="reviewVoice(candidate, 'rejected')">不是此人</button><button class="primary-action" :disabled="busy || !complete" @click="reviewVoice(candidate, 'confirmed')">确认是此人</button></footer>
+            </VoiceSampleAudition>
           </article>
           <article v-for="candidate in showVoiceReviewHistory ? confirmedVoiceCandidates : []" :key="`confirmed-${candidate.prototype_id}`" class="voice-review-card confirmed">
             <div><strong>{{ candidate.person_name }}</strong><small>已人工确认 · 音频质量 {{ Math.round(candidate.quality_score * 100) }}%</small><small>录音 {{ sessionLabel(candidate.session_id) }}</small></div>
-            <button v-for="clip in candidate.representative_clips.slice(0, 1)" :key="`${clip.media_id}-${clip.start_ms}`" class="quiet-button" @click="playRange(clip.media_id, clip.start_ms, clip.end_ms)">▶ 复听</button>
+            <VoiceSampleAudition :candidate="candidate">
             <footer><button class="text-danger" :disabled="busy" @click="reviewVoice(candidate, 'retracted')">撤回此原型</button></footer>
+            </VoiceSampleAudition>
           </article>
           <p v-if="!pendingVoiceCandidates.length && !showVoiceReviewHistory" class="empty-inline">目前没有满足质量门槛的待审核原型。</p>
         </div>
@@ -477,14 +459,27 @@ onBeforeUnmount(release)
     <PageState v-else :loading="query.loading.value" :error="query.error.value" :empty="!visibleClusters.length" empty-text="所选录音还没有说话人簇。点击“聚类并重新匹配身份”开始本机分析。" @retry="query.refresh(true)">
       <div class="people-layout">
         <aside class="panel cluster-list">
-          <button v-for="cluster in visibleClusters" :key="cluster.cluster_id" :class="{ active: selectedId === cluster.cluster_id }" @click="selectCluster(cluster.cluster_id)"><span class="speaker-mark">{{ (cluster.person_name ?? cluster.suggested_person_name)?.slice(0, 1) ?? '?' }}</span><span><strong>{{ cluster.person_name ?? cluster.display_label }}</strong><small>当前录音相关 · 共 {{ cluster.session_count }} 段录音 / {{ cluster.track_count }} 条说话轨</small><small v-if="cluster.link_source === 'automatic'">已通过严格校准自动识别</small><small v-else-if="cluster.suggested_person_id">建议核对 {{ cluster.suggested_person_name ?? '候选人物' }} · {{ Math.round((cluster.suggestion_confidence ?? 0) * 100) }}%</small><small v-else>未匹配已知人物或证据不足</small></span><i>{{ cluster.status }}</i></button>
+          <div class="cluster-list-section">
+            <h3>需要处理 <span>{{ pendingClusters.length }}</span></h3>
+            <p v-if="!pendingClusters.length" class="cluster-list-empty">当前录音没有待处理的声纹簇。</p>
+            <button v-for="cluster in pendingClusters" :key="cluster.cluster_id" :class="{ active: selectedId === cluster.cluster_id }" @click="selectCluster(cluster.cluster_id)"><span class="speaker-mark">{{ (cluster.person_name ?? cluster.suggested_person_name)?.slice(0, 1) ?? '?' }}</span><span><strong>{{ cluster.person_name ?? cluster.display_label }}</strong><small>共 {{ cluster.session_count }} 段录音 / {{ cluster.track_count }} 条说话轨</small><small v-if="cluster.person_name">已关联 {{ cluster.person_name }}</small><small v-else-if="cluster.status === 'ignored'">已忽略 · 可撤销</small><small v-else-if="cluster.status !== 'active'">已归档</small><small v-else-if="cluster.suggested_person_id">建议核对 {{ cluster.suggested_person_name ?? '候选人物' }}</small><small v-else>等待确认或排除</small></span></button>
+          </div>
+          <div v-if="completedClusters.length" class="cluster-list-section completed-clusters">
+            <h3>已处理与已排除 <span>{{ completedClusters.length }}</span></h3>
+            <button v-for="cluster in completedClusters" :key="cluster.cluster_id" :class="{ active: selectedId === cluster.cluster_id }" @click="selectCluster(cluster.cluster_id)"><span class="speaker-mark">{{ (cluster.person_name ?? cluster.suggested_person_name)?.slice(0, 1) ?? '?' }}</span><span><strong>{{ cluster.person_name ?? cluster.display_label }}</strong><small>共 {{ cluster.session_count }} 段录音 / {{ cluster.track_count }} 条说话轨</small><small v-if="cluster.person_name">已关联 {{ cluster.person_name }}</small><small v-else-if="cluster.status === 'ignored'">已忽略 · 可撤销</small><small v-else-if="cluster.status !== 'active'">已归档</small><small v-else-if="cluster.suggested_person_id">建议核对 {{ cluster.suggested_person_name ?? '候选人物' }}</small><small v-else>等待确认或排除</small></span></button>
+          </div>
         </aside>
         <section v-if="detail" class="cluster-workspace">
           <article class="panel cluster-hero"><header><div><p class="section-kicker">CLUSTER {{ detail.cluster_id.slice(0, 8) }}</p><h2>{{ detail.person_name ?? detail.display_label }}</h2></div><span class="status-pill">{{ detail.link_source === 'automatic' ? '本人声纹自动识别' : detail.person_name ? '人工已确认' : detail.suggested_person_id ? '可能匹配' : '暂无法判断' }}</span></header><div class="cluster-metrics"><span><small>跨录音</small><strong>{{ detail.session_count }}</strong></span><span><small>说话轨</small><strong>{{ detail.track_count }}</strong></span><span><small>候选原型</small><strong>{{ detail.prototypes?.filter((item) => item.status === 'candidate').length ?? 0 }}</strong></span><span><small>版本</small><strong>r{{ detail.revision }}</strong></span></div><div class="topic-strip"><span v-for="sessionId in detail.session_ids" :key="sessionId">来源 · {{ sessionLabel(sessionId) }}</span></div><div class="representative-clips"><small>代表片段</small><button v-for="clip in detail.prototypes?.flatMap((item) => item.representative_clips).slice(0, 5)" :key="`${clip.media_id}-${clip.start_ms}`" class="quiet-button" @click="playRange(clip.media_id, clip.start_ms, clip.end_ms)">▶ {{ Math.round((clip.end_ms - clip.start_ms) / 1000) }} 秒</button><span v-if="!detail.prototypes?.length">暂无可播放片段</span></div></article>
-          <div class="cluster-actions-grid">
-            <article class="panel identity-action"><h3>确认人物身份</h3><p>这里确认的是人物关联和时间线身份，不会批量注册簇内声纹。稳定声纹必须在上方逐条试听确认。</p><label><span>已有联系人</span><select v-model="selectedPerson"><option value="">选择人物</option><option v-for="person in query.data.value?.people" :key="person.person_id" :value="person.person_id">{{ person.display_name }} · {{ person.kind === 'self' ? `${person.enrollment_reference_count} 注册声纹` : `${person.prototype_count} 条已确认原型` }}</option></select></label><button class="primary-action" :disabled="!selectedPerson || busy" @click="labelExisting">关联已有</button><label><span>或新建人物</span><input v-model="newPersonName" placeholder="姓名或称呼" /></label><button class="quiet-button" :disabled="!newPersonName.trim() || busy" @click="createAndLabel">新建并关联</button></article>
-            <article class="panel identity-action"><h3>纠正聚类</h3><p>合并和拆分只移动匿名说话轨，原始识别产物保持不变。</p><label><span>合并另一个未知簇</span><select v-model="mergeSource"><option value="">选择来源簇</option><option v-for="cluster in mergeChoices" :key="cluster.cluster_id" :value="cluster.cluster_id">{{ cluster.person_name ?? cluster.display_label }}</option></select></label><button class="quiet-button" :disabled="!mergeSource || busy" @click="merge">合并到当前簇</button><fieldset><legend>拆出说话轨</legend><label v-for="member in detail.members" :key="member.speaker_track_id" class="track-check"><input v-model="splitTracks" type="checkbox" :value="member.speaker_track_id" />{{ member.label }} · {{ member.session_id.slice(0, 8) }}</label></fieldset><button class="quiet-button" :disabled="!splitTracks.length || splitTracks.length === detail.members?.length || busy" @click="split">拆成新簇</button></article>
-            <article class="panel identity-action safety-action"><h3>保留未知或排除</h3><p>没有足够证据时无需操作，系统会继续保留匿名簇。电视、广播和环境声可以明确排除。</p><button class="quiet-button" disabled>暂无法判断（保持未知）</button><button class="quiet-button" :disabled="busy" @click="ignore">忽略媒体 / 环境声</button><button class="text-danger" :disabled="busy" @click="undo">撤销最近操作</button></article>
+          <div v-if="detail.status === 'ignored'" class="state-panel">
+            此簇已忽略，需先恢复才能确认身份或修改聚类。
+            <button class="primary-action" :disabled="busy" @click="undo">{{ busy ? '恢复中…' : '撤销最近操作并恢复' }}</button>
+          </div>
+          <p v-else-if="detail.status !== 'active'" class="state-panel">此簇已归档，请选择活跃簇继续操作。</p>
+          <div v-else class="cluster-actions-grid">
+            <article class="panel identity-action"><h3>确认人物身份</h3><p>这里确认的是人物关联和时间线身份，不会批量注册簇内声纹。稳定声纹必须在上方逐条试听确认。</p><label><span>已有联系人</span><select v-model="selectedPerson"><option value="">选择人物</option><option v-for="person in query.data.value?.people" :key="person.person_id" :value="person.person_id">{{ person.display_name }} · {{ person.kind === 'self' ? `${person.enrollment_reference_count} 注册声纹` : `${person.prototype_count} 条已确认原型` }}</option></select></label><button class="primary-action" :disabled="detail.status !== 'active' || !selectedPerson || busy" @click="labelExisting">关联已有</button><label><span>或新建人物</span><input v-model="newPersonName" placeholder="姓名或称呼" /></label><button class="quiet-button" :disabled="detail.status !== 'active' || !newPersonName.trim() || busy" @click="createAndLabel">新建并关联</button></article>
+            <article class="panel identity-action"><h3>纠正聚类</h3><p>合并和拆分只移动匿名说话轨，原始识别产物保持不变。</p><label><span>合并另一个未知簇</span><select v-model="mergeSource"><option value="">选择来源簇</option><option v-for="cluster in mergeChoices" :key="cluster.cluster_id" :value="cluster.cluster_id">{{ cluster.person_name ?? cluster.display_label }}</option></select></label><button class="quiet-button" :disabled="detail.status !== 'active' || !mergeSource || busy" @click="merge">合并到当前簇</button><fieldset><legend>拆出说话轨</legend><label v-for="member in detail.members" :key="member.speaker_track_id" class="track-check"><input v-model="splitTracks" type="checkbox" :value="member.speaker_track_id" />{{ member.label }} · {{ member.session_id.slice(0, 8) }}</label></fieldset><button class="quiet-button" :disabled="detail.status !== 'active' || !splitTracks.length || splitTracks.length === detail.members?.length || busy" @click="split">拆成新簇</button></article>
+            <article class="panel identity-action safety-action"><h3>保留未知或排除</h3><p>没有足够证据时无需操作，系统会继续保留匿名簇。电视、广播和环境声可以明确排除。</p><button class="quiet-button" disabled>暂无法判断（保持未知）</button><button class="quiet-button" :disabled="detail.status !== 'active' || busy" @click="ignore">忽略媒体 / 环境声</button><button class="text-danger" :disabled="busy" @click="undo">撤销最近操作</button></article>
           </div>
         </section>
       </div>

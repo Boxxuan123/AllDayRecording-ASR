@@ -143,6 +143,44 @@ class SqliteMobileSyncRepository:
         ).fetchone()
         return _client_operation_record(row) if row is not None else None
 
+    def recover_annotation_receipt(self, record):
+        """Replay a legacy accepted request without reapplying its payload.
+
+        Publish current authoritative rows as a recovery barrier per resource.
+        These targets may be newer than the original operation, never guessed
+        from its base or group maximum. Receipt enrichment is persisted atomically.
+        """
+        from dataclasses import replace
+        from .evidence_projection_repository import SqliteEvidenceProjectionRepository
+        from .operational_repositories import SqliteChangeLogRepository
+        from allday_asr.v3.contracts import utterance_dto
+        import json
+        cached = self.connection.execute('SELECT resource_results_json FROM annotation_receipt_recovery WHERE operation_id=?', (record.operation.operation_id,)).fetchone()
+        if cached:
+            return replace(record.receipt, resource_results=tuple(json.loads(cached[0])))
+        evidence = SqliteEvidenceProjectionRepository(self.connection, now=self.now)
+        changes = SqliteChangeLogRepository(self.connection, now=self.now)
+        results = []
+        for selection in record.operation.payload.get('selections', []):
+            uid = selection['utterance_id']
+            try:
+                row = evidence.get_utterance(uid)
+            except KeyError:
+                revision = self.connection.execute(
+                    "SELECT COALESCE(MAX(revision),0)+1 FROM change_events WHERE resource_type='utterance' AND resource_id=?", (uid,)
+                ).fetchone()[0]
+                changes.append('utterance', uid, revision, 'tombstone', None)
+            else:
+                revision = row.revision
+                changes.append('utterance', uid, revision, 'upsert', utterance_dto(row,
+                    speaker_label=evidence.speaker_label(row.speaker_track_id),
+                    original_speaker_label=evidence.speaker_label(row.original_speaker_track_id)))
+            results.append({'resource_id': uid, 'revision': revision})
+        receipt = replace(record.receipt, resource_results=tuple(results))
+        self.connection.execute('INSERT INTO annotation_receipt_recovery VALUES(?,?)',
+                                (record.operation.operation_id, _json(results)))
+        return receipt
+
     def record_operation(
         self,
         device_id: str,

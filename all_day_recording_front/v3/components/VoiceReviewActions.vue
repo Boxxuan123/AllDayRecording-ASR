@@ -3,9 +3,9 @@ const expandedVoiceReviewIds = new Set<string>()
 </script>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 
-import { mediaState, playRange } from '../core/media'
+import VoiceSampleAudition from './VoiceSampleAudition.vue'
 import type { VoicePrototypeCandidate, VoicePrototypeReviewStatus } from '../core/types'
 
 const props = defineProps<{
@@ -19,8 +19,6 @@ const emit = defineEmits<{
 }>()
 
 const expanded = ref(expandedVoiceReviewIds.has(props.reviewId))
-const heardIds = ref(new Set<string>())
-const pendingListen = ref<{ prototypeId: string; mediaId: string } | null>(null)
 const sortedCandidates = computed(() => [...props.candidates].sort((left, right) => (
   comparableScore(left) - comparableScore(right)
   || left.quality_score - right.quality_score
@@ -34,31 +32,6 @@ function comparableScore(candidate: VoicePrototypeCandidate): number {
 
 function percentage(value: number | null): string {
   return value === null ? '未知' : `${Math.round(value * 100)}%`
-}
-
-function play(candidate: VoicePrototypeCandidate): void {
-  const clip = candidate.representative_clips[0]
-  if (!clip) return
-  pendingListen.value = { prototypeId: candidate.prototype_id, mediaId: clip.media_id }
-  playRange(clip.media_id, clip.start_ms, clip.end_ms)
-  if (mediaState.activeMediaId === clip.media_id && mediaState.playing) markHeard(candidate.prototype_id)
-}
-
-watch(
-  () => [mediaState.activeMediaId, mediaState.playing] as const,
-  ([mediaId, playing]) => {
-    const pending = pendingListen.value
-    if (pending && playing && mediaId === pending.mediaId) markHeard(pending.prototypeId)
-  },
-)
-
-function markHeard(prototypeId: string): void {
-  heardIds.value = new Set(heardIds.value).add(prototypeId)
-  pendingListen.value = null
-}
-
-function heard(candidate: VoicePrototypeCandidate): boolean {
-  return heardIds.value.has(candidate.prototype_id)
 }
 
 function setExpanded(value: boolean): void {
@@ -81,8 +54,8 @@ function busy(candidate: VoicePrototypeCandidate): boolean {
           type="button"
           class="review-action play"
           :disabled="!sortedCandidates[0]?.representative_clips.length"
-          @click="sortedCandidates[0] && play(sortedCandidates[0])"
-        >▶ 试听最弱样本</button>
+          @click="setExpanded(true)"
+        >展开试听最弱样本</button>
         <button type="button" class="review-action primary" @click="setExpanded(true)">核对 {{ candidates.length }} 个样本</button>
       </div>
     </div>
@@ -92,14 +65,12 @@ function busy(candidate: VoicePrototypeCandidate): boolean {
         <div>
           <strong>样本 {{ index + 1 }}<template v-if="candidates.length > 1 && index === 0"> · 最弱匹配</template></strong>
           <small>录音 {{ candidate.session_id.slice(-10) }} · 匹配 {{ percentage(candidate.best_score) }} · 音质 {{ percentage(candidate.quality_score) }}</small>
-          <small>{{ heard(candidate) ? '已试听，可以判断' : '确认或排除前请先试听' }}</small>
         </div>
-        <div class="voice-sample-actions">
-          <button type="button" class="review-action play" :disabled="busy(candidate) || !candidate.representative_clips.length" @click="play(candidate)">▶ 试听</button>
+        <VoiceSampleAudition :candidate="candidate" v-slot="{ complete }"><div class="voice-sample-actions">
           <button type="button" class="review-action" :disabled="busy(candidate)" @click="emit('review', candidate, 'uncertain')">暂不判断</button>
-          <button type="button" class="review-action reject" :disabled="busy(candidate) || !heard(candidate)" @click="emit('review', candidate, 'rejected')">不是此人</button>
-          <button type="button" class="review-action primary" :disabled="busy(candidate) || !heard(candidate)" @click="emit('review', candidate, 'confirmed')">{{ busy(candidate) ? '处理中' : '确认此样本' }}</button>
-        </div>
+          <button type="button" class="review-action reject" :disabled="busy(candidate) || !complete" @click="emit('review', candidate, 'rejected')">不是此人</button>
+          <button type="button" class="review-action primary" :disabled="busy(candidate) || !complete" @click="emit('review', candidate, 'confirmed')">{{ busy(candidate) ? '处理中' : '确认此样本' }}</button>
+        </div></VoiceSampleAudition>
       </article>
       <button v-if="candidates.length > 1" type="button" class="text-button voice-sample-collapse" @click="setExpanded(false)">收起样本</button>
     </div>

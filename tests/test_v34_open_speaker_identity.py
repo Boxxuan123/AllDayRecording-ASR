@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import unittest
 import wave
+from dataclasses import replace
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -74,14 +75,8 @@ class FakeEmbeddingProvider:
                 model=self.model,
                 model_version=self.model_version,
                 vector=self.vectors[track.speaker_track_id],
-                representatives=(
-                    RepresentativeClip(
-                        track.clips[0].media_id,
-                        track.clips[0].source_start_ms,
-                        track.clips[0].source_end_ms,
-                        track.clips[0].utterance_id,
-                    ),
-                ),
+                representatives=tuple(RepresentativeClip(c.media_id, c.source_start_ms,
+                    c.source_end_ms, c.utterance_id) for c in track.clips),
                 quality_score=0.95,
             )
             for track in tracks
@@ -147,6 +142,260 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.core.close()
         shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_unintelligible_identity_is_independent_and_not_a_sample(self):
+        self._seed_track(1)
+        self.core.corrections.classify_segments(
+            [{"utterance_id": _utterance_id(1), "revision": 1}], "unintelligible")
+        result = self.core.people.assign_utterances(
+            [{"utterance_id": _utterance_id(1), "revision": 2}],
+            person_id=None, display_name="听不清但认识", actor="human")
+        with SqliteUnitOfWork(self.core.database) as uow:
+            row = uow.evidence.get_utterance(_utterance_id(1))
+            self.assertEqual(row.evidence["sound_kind"], "unintelligible")
+            self.assertEqual(row.evidence["person_annotation"]["person_id"], result["person_id"])
+            self.assertEqual(uow.people.person_vectors(self.provider.model, self.provider.model_version), ())
+
+    def test_original_audio_restores_exact_scope_and_flags_split_for_review(self):
+        self._seed_track(1)
+        assigned = self.core.people.assign_utterances(
+            [{"utterance_id": _utterance_id(1), "revision": 1}],
+            person_id=None, display_name="Persistent", actor="human")
+        self._seed_reprocessed_track(1)
+        with SqliteUnitOfWork(self.core.database) as uow:
+            template = uow.evidence.get_utterance(_utterance_id(1, reprocessed=True))
+            exact_id = stable_ulid("exact-reprocessing")
+            split_id = stable_ulid("split-reprocessing")
+            uow.evidence.add_utterance(replace(template, utterance_id=exact_id, ordinal=11))
+            exact = uow.evidence.get_utterance(exact_id)
+            self.assertEqual(exact.evidence["person_annotation"]["person_id"], assigned["person_id"])
+            self.assertTrue(exact.evidence["person_annotation"]["audio"])
+            self.assertEqual(exact.original_speaker_track_id, template.speaker_track_id)
+            uow.evidence.add_utterance(replace(template, utterance_id=split_id, ordinal=12, end_ms=3000))
+            split = uow.evidence.get_utterance(split_id)
+            self.assertIn("annotation_review", split.evidence)
+            self.assertNotIn("person_annotation", split.evidence)
+        self.assertTrue(any(r["source_id"] == split_id for r in self.core.desktop.list_reviews(500)))
+
+    def test_batch_undo_restores_exact_previous_labels_and_checks_revisions(self):
+        self._seed_track(1)
+        self._seed_track(2)
+        self.core.corrections.classify_segments([
+            {"utterance_id": _utterance_id(1), "revision": 1}], "unintelligible")
+        self.core.corrections.classify_segments([
+            {"utterance_id": _utterance_id(1), "revision": 2},
+            {"utterance_id": _utterance_id(2), "revision": 1}], "non_speech")
+        with self.assertRaises(ValueError):
+            self.core.corrections.undo_annotations([
+                {"utterance_id": _utterance_id(1), "revision": 3},
+                {"utterance_id": _utterance_id(2), "revision": 1}])
+        self.core.corrections.undo_annotations([
+            {"utterance_id": _utterance_id(1), "revision": 3},
+            {"utterance_id": _utterance_id(2), "revision": 2}])
+        with SqliteUnitOfWork(self.core.database) as uow:
+            self.assertEqual(uow.evidence.get_utterance(_utterance_id(1)).evidence["sound_kind"], "unintelligible")
+            self.assertEqual(uow.evidence.get_utterance(_utterance_id(2)).evidence["sound_kind"], "speech")
+
+    def test_offline_disjoint_fields_merge_and_original_retry_is_idempotent(self):
+        from allday_asr.v3.domain.device_sync import ClientOperation, SyncRequest, PROJECTION_VERSION
+        self._seed_track(1)
+        selection = [{"utterance_id": _utterance_id(1), "revision": 1}]
+        classify = ClientOperation("classify-first", "segment.classify", None,
+                                   {"selections": selection, "sound_kind": "unintelligible"})
+        assign = ClientOperation("assign-next", "speaker.assign", None,
+                                 {"selections": selection, "display_name": "Known"})
+        request = SyncRequest(PROJECTION_VERSION, None, (classify, assign), 500)
+        first = self.core.mobile_sync.synchronize("device-1", request)
+        self.assertEqual([r.status.value for r in first.receipts], ["applied", "applied"])
+        self.assertEqual(self.core.mobile_sync.synchronize("device-1", request).receipts, first.receipts)
+        with SqliteUnitOfWork(self.core.database) as uow:
+            self.assertEqual(uow.evidence.get_utterance(_utterance_id(1)).revision, 3)
+            self.assertEqual(uow.mobile_sync.find_operation("assign-next").operation.payload, assign.payload)
+
+    def test_same_field_requires_explicit_same_device_predecessor(self):
+        from allday_asr.v3.domain.device_sync import ClientOperation, SyncRequest, PROJECTION_VERSION
+        self._seed_track(1)
+        selection = [{"utterance_id": _utterance_id(1), "revision": 1}]
+        def send(identifier, kind, dependencies=()):
+            operation = ClientOperation(identifier, "segment.classify", None,
+                {"selections": selection, "sound_kind": kind, "depends_on": list(dependencies)})
+            return self.core.mobile_sync.synchronize("device-1",
+                SyncRequest(PROJECTION_VERSION, None, (operation,), 500)).receipts[0].status.value
+        self.assertEqual(send("first", "non_speech"), "applied")
+        self.assertEqual(send("unrelated", "speech"), "conflict")
+        self.assertEqual(send("dependent", "speech", ("first",)), "applied")
+
+    def test_annotation_candidate_is_read_after_review_and_replaced_on_reassignment(self):
+        self._seed_track(1)
+        original_embed = self.provider.embed
+        def embed_manual(tracks):
+            for track in tracks:
+                self.provider.vectors[track.speaker_track_id] = (1.0, 0.0, 0.0)
+            return original_embed(tracks)
+        with patch.object(self.provider, "embed", side_effect=embed_manual):
+            first = self.core.people.assign_utterances(
+                [{"utterance_id": _utterance_id(1), "revision": 1}],
+                person_id=None, display_name="First", actor="human")
+            self.core.people.sample_worker.run_pending()
+            candidates = self.core.people.list_review_candidates(first["person_id"])
+            self.assertEqual(len(candidates), 1)
+            candidate = candidates[0]
+            self.core.people.review_prototype(candidate["prototype_id"], first["person_id"], "confirmed")
+            feedback = self.core.people.annotation_status([_utterance_id(1)])["items"][0]
+            self.assertTrue(any(s["matching_eligible"] for s in feedback["samples"]))
+            with SqliteUnitOfWork(self.core.database) as uow:
+                self.assertEqual(uow.people.person_vectors(self.provider.model, self.provider.model_version)[0][0], first["person_id"])
+            second = self.core.people.assign_utterances(
+                [{"utterance_id": _utterance_id(1), "revision": 2}],
+                person_id=None, display_name="Corrected", actor="human")
+            with SqliteUnitOfWork(self.core.database) as uow:
+                self.assertEqual(uow.people.person_vectors(self.provider.model, self.provider.model_version), ())
+            self.core.people.sample_worker.run_pending()
+            self.assertEqual(len(self.core.people.list_review_candidates(second["person_id"])), 1)
+            feedback = self.core.people.annotation_status([_utterance_id(1)])["items"][0]
+            self.assertFalse(any(s["matching_eligible"] for s in feedback["samples"]))
+
+    def test_mobile_selection_preserves_excluded_sentences_and_original_evidence(self) -> None:
+        self._seed_track(1)
+        self._seed_track(2)
+        self.core.people.analyze(_session_id(1))
+        self.core.people.analyze(_session_id(2))
+        person = self.core.people.create_person("小王")
+        result = self.core.people.assign_utterances(
+            [{"utterance_id": _utterance_id(1), "revision": 1}],
+            person_id=person["person_id"], display_name=None, actor="phone-device:test")
+        self.assertEqual(len(result["utterances"]), 1)
+        with self.core.database.transaction() as connection:
+            chosen = connection.execute("SELECT * FROM utterances WHERE utterance_id = ?", (_utterance_id(1),)).fetchone()
+            excluded = connection.execute("SELECT * FROM utterances WHERE utterance_id = ?", (_utterance_id(2),)).fetchone()
+            self.assertNotEqual(chosen["speaker_track_id"], _track_id(1))
+            self.assertEqual(chosen["original_speaker_track_id"], _track_id(1))
+            self.assertEqual(chosen["identity"], "not_self")
+            self.assertEqual(chosen["revision"], 2)
+            self.assertEqual(excluded["speaker_track_id"], _track_id(2))
+            self.assertEqual(excluded["revision"], 1)
+            sample = connection.execute("SELECT status FROM voice_prototypes WHERE speaker_track_id = ?", (_track_id(1),)).fetchone()
+            self.assertEqual(sample["status"], "candidate")
+        with self.core.database.transaction() as connection:
+            from allday_asr.v3.adapters.sqlite.people_repository import SqlitePeopleRepository
+            repo = SqlitePeopleRepository(connection)
+            vectors = repo.cluster_vectors("fixture-speaker", "1")
+            self.assertEqual(len(vectors), 1)
+        self.assertEqual(self.core.people.cluster(result["cluster_id"])["person_id"], person["person_id"])
+
+    def test_mobile_single_sentence_leaves_other_sentence_in_same_track(self) -> None:
+        self._seed_track(1)
+        extra_id = stable_ulid("test", "excluded-sentence")
+        with SqliteUnitOfWork(self.core.database) as uow:
+            original = uow.evidence.get_utterance(_utterance_id(1))
+            uow.evidence.add_utterance(replace(original, utterance_id=extra_id, ordinal=1,
+                                             start_ms=6000, end_ms=9000))
+        self.core.people.assign_utterances(
+            [{"utterance_id": _utterance_id(1), "revision": 1}],
+            person_id=None, display_name="Selected person", actor="phone-device:test")
+        with SqliteUnitOfWork(self.core.database) as uow:
+            self.assertEqual(uow.evidence.get_utterance(extra_id).speaker_track_id, _track_id(1))
+            self.assertEqual(uow.evidence.get_utterance(extra_id).revision, 1)
+            history = uow.corrections.list_for_target("utterance", _utterance_id(1))
+            self.assertEqual(len(history), 1)
+
+    def test_mobile_group_selection_is_atomic_on_stale_revision(self) -> None:
+        self._seed_track(1)
+        self._seed_track(2)
+        before = len(self.core.people.list_people())
+        with self.assertRaisesRegex(ValueError, "刷新"):
+            self.core.people.assign_utterances([
+                {"utterance_id": _utterance_id(1), "revision": 1},
+                {"utterance_id": _utterance_id(2), "revision": 2},
+            ], person_id=None, display_name="不应创建", actor="phone-device:test")
+        self.assertEqual(len(self.core.people.list_people()), before)
+        result = self.core.people.assign_utterances([
+            {"utterance_id": _utterance_id(1), "revision": 1},
+            {"utterance_id": _utterance_id(2), "revision": 1},
+        ], person_id=None, display_name="整组人物", actor="phone-device:test")
+        self.assertEqual(len(result["utterances"]), 2)
+        self.assertEqual(len(self.core.people.cluster(result["cluster_id"])["members"]), 2)
+
+    def test_repeated_annotations_for_same_name_do_not_violate_track_uniqueness(self):
+        self._seed_track(1)
+        person = self.core.people.create_person("Repeated")
+        for revision in (1, 2):
+            result = self.core.people.assign_utterances(
+                [{"utterance_id": _utterance_id(1), "revision": revision}],
+                person_id=person["person_id"], display_name=None, actor="phone-user")
+            self.assertEqual(result["utterances"][0]["speaker_label"], "Repeated")
+            self.assertEqual(result["utterances"][0]["revision"], revision + 1)
+
+    def test_offline_annotation_sync_is_idempotent_and_conflicts_are_atomic(self):
+        from allday_asr.v3.domain.device_sync import ClientOperation, SyncRequest, PROJECTION_VERSION
+        self._seed_track(1)
+        self._seed_track(2)
+        operation = ClientOperation(stable_ulid("annotation-op"), "speaker.assign", None, {
+            "new_person_id": stable_ulid("offline-person"), "display_name": "Offline",
+            "person_name": "Offline", "selections": [
+                {"utterance_id": _utterance_id(1), "revision": 1, "text": "old"}]})
+        request = SyncRequest(PROJECTION_VERSION, None, (operation,), 500)
+        first = self.core.mobile_sync.synchronize("device-1", request)
+        second = self.core.mobile_sync.synchronize("device-1", request)
+        self.assertEqual(first.receipts[0].status.value, "applied")
+        self.assertEqual(first.receipts, second.receipts)
+        stale = ClientOperation(stable_ulid("stale-annotation"), "speaker.assign", None, {
+            "person_id": stable_ulid("offline-person"), "person_name": "Offline",
+            "selections": [{"utterance_id": _utterance_id(2), "revision": 1},
+                           {"utterance_id": _utterance_id(1), "revision": 1}]})
+        response = self.core.mobile_sync.synchronize("device-1",
+            SyncRequest(PROJECTION_VERSION, None, (stale,), 500))
+        self.assertEqual(response.receipts[0].status.value, "conflict")
+        with SqliteUnitOfWork(self.core.database) as uow:
+            self.assertEqual(uow.evidence.get_utterance(_utterance_id(1)).revision, 2)
+            self.assertEqual(uow.evidence.get_utterance(_utterance_id(2)).revision, 1)
+
+    def test_sound_classification_preserves_evidence_and_excludes_model_inputs(self):
+        self._seed_track(1)
+        self._seed_track(2)
+        self.core.people.analyze(_session_id(1))
+        for kind in ("non_speech", "unintelligible", "background_speech"):
+            with SqliteUnitOfWork(self.core.database) as uow:
+                before = uow.evidence.get_utterance(_utterance_id(1))
+            result = self.core.corrections.classify_segments(
+                [{"utterance_id": before.utterance_id, "revision": before.revision}], kind)
+            row = result["utterances"][0]
+            self.assertEqual(row["evidence"]["sound_kind"], kind)
+            self.assertEqual(row["original_text"], before.original_text)
+            self.assertEqual(row["speaker_track_id"], before.speaker_track_id)
+            with SqliteUnitOfWork(self.core.database) as uow:
+                self.assertEqual(uow.people.cluster_vectors("fixture-speaker", "1"), ())
+                self.assertEqual(uow.evidence.get_utterance(_utterance_id(2)).revision, 1)
+            with self.assertRaisesRegex(ValueError, "no active utterances"):
+                self.core.semantic_events._request(_session_id(1))
+            with self.assertRaisesRegex(ValueError, "no active utterances"):
+                self.core.reminder_extraction._request(_session_id(1))
+        self.core.corrections.classify_segments(
+            [{"utterance_id": _utterance_id(1), "revision": row["revision"]}], "speech")
+        with SqliteUnitOfWork(self.core.database) as uow:
+            self.assertEqual(len(uow.people.cluster_vectors("fixture-speaker", "1")), 1)
+        self.assertEqual(len(self.core.semantic_events._request(_session_id(1)).utterances), 1)
+
+    def test_sound_classification_sync_conflict_and_replay(self):
+        from allday_asr.v3.domain.device_sync import ClientOperation, SyncRequest, PROJECTION_VERSION
+        self._seed_track(1)
+        self._seed_track(2)
+        operation = ClientOperation(stable_ulid("classify"), "segment.classify", None, {
+            "sound_kind": "non_speech", "selections": [{"utterance_id": _utterance_id(1), "revision": 1}]})
+        request = SyncRequest(PROJECTION_VERSION, None, (operation,), 500)
+        first = self.core.mobile_sync.synchronize("device-1", request)
+        self.assertEqual(first.receipts[0].status.value, "applied")
+        self.assertEqual(first.receipts, self.core.mobile_sync.synchronize("device-1", request).receipts)
+        stale = ClientOperation(stable_ulid("stale-classify"), "segment.classify", None, {
+            "sound_kind": "background_speech", "selections": [
+                {"utterance_id": _utterance_id(2), "revision": 1},
+                {"utterance_id": _utterance_id(1), "revision": 1}]})
+        response = self.core.mobile_sync.synchronize("device-1", SyncRequest(PROJECTION_VERSION, None, (stale,), 500))
+        self.assertEqual(response.receipts[0].status.value, "conflict")
+        with SqliteUnitOfWork(self.core.database) as uow:
+            self.assertEqual(uow.evidence.get_utterance(_utterance_id(2)).revision, 1)
+        with self.assertRaises(ValueError):
+            self.core.corrections.classify_segments([{"utterance_id": _utterance_id(2), "revision": 1}], "invalid")
 
     def test_unknown_clusters_cross_session_then_known_match_remains_a_suggestion(self) -> None:
         self._seed_track(1)
@@ -427,6 +676,20 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
                 ).fetchone()[0],
                 0,
             )
+
+    def test_sound_exclusion_also_filters_enrollment_clips_without_utterance_ids(self):
+        self._seed_track(1)
+        person = self.core.people.create_person("Enrollment")
+        source_ref = "fixture:noise-overlap"
+        track_id = stable_ulid("confirmed-enrollment-track", source_ref)
+        self.provider.vectors[track_id] = (1.0, 0.0, 0.0)
+        self.core.people.enroll_confirmed_windows(person["person_id"], _session_id(1),
+            ((1_000, 3_000),), source_ref=source_ref, display_label="Enrollment", actor="test")
+        with SqliteUnitOfWork(self.core.database) as uow:
+            self.assertEqual(len(uow.people.person_vectors("fixture-speaker", "1")), 1)
+        self.core.corrections.classify_segments([{"utterance_id": _utterance_id(1), "revision": 1}], "non_speech")
+        with SqliteUnitOfWork(self.core.database) as uow:
+            self.assertEqual(uow.people.person_vectors("fixture-speaker", "1"), ())
 
     def test_daily_confirmations_and_hard_negatives_unlock_opt_in_auto_matching(self) -> None:
         for number, vector in {

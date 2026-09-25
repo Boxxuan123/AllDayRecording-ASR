@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+tests/v3d-*/
 .mypy_cache/
 .coverage
 htmlcov/
@@ -26,3 +27,6 @@ data/*
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local experiments
+codex_connect_test/

@@ -102,6 +102,7 @@ async function request<T>(path: string, init?: RequestInit, recovered = false): 
 }
 
 export const desktopApi = {
+  voiceAudition: <T>(payload: object) => request<T>('/api/v3/voice-audition', { method: 'POST', body: JSON.stringify(payload) }),
   overview: () => request<Overview>('/api/v3/overview'),
   sessions: (search = '') => request<SessionPage>(`/api/v3/recording-sessions?limit=100${search ? `&q=${encodeURIComponent(search)}` : ''}`),
   session: (sessionId: string) => request<SessionDetail>(`/api/v3/recording-sessions/${encodeURIComponent(sessionId)}`),
@@ -174,11 +175,22 @@ export const desktopApi = {
   dataHealth: () => request<DataHealth>('/api/v3/data-health'),
   settings: () => request<DesktopSettings>('/api/v3/settings'),
   lab: () => request<{ enabled: boolean; label: string; message: string }>('/api/v3/lab'),
+  classifySegments: (selections: Array<{ utterance_id: string; revision: number }>, soundKind: string) =>
+    request<{ utterances: Utterance[] }>('/api/v3/utterance-classifications', { method: 'POST', body: JSON.stringify({ selections, sound_kind: soundKind }) }),
+  undoAnnotations: (selections: Array<{ utterance_id: string; revision: number }>) =>
+    request<{ utterances: Utterance[] }>('/api/v3/annotation-undo', { method: 'POST', body: JSON.stringify({ selections }) }),
   correctUtterance: (utteranceId: string, expectedRevision: number, text: string, speakerTrackId: string | null, identity: Utterance['identity']) => request<Utterance>(`/api/v3/utterances/${encodeURIComponent(utteranceId)}/corrections`, { method: 'POST', body: JSON.stringify({ expected_revision: expectedRevision, text, speaker_track_id: speakerTrackId, identity }) }),
 }
 
 async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   await Promise.resolve()
+  if (path === '/api/v3/utterance-classifications' && init?.body) {
+    const body = JSON.parse(String(init.body))
+    const ids = new Set(body.selections.map((item: { utterance_id: string }) => item.utterance_id))
+    const utterances = mockSessionDetail.utterances.filter((item) => ids.has(item.utterance_id))
+    for (const item of utterances) { item.evidence.sound_kind = body.sound_kind; item.revision += 1 }
+    return { utterances: structuredClone(utterances) } as T
+  }
   if (path === '/api/v3/overview') return mockOverview as T
   if (path.startsWith('/api/v3/recording-sessions?')) return { items: mockOverview.recent_sessions, next_cursor: null } as T
   if (path.startsWith('/api/v3/recording-sessions/')) return structuredClone(mockSessionDetail) as T

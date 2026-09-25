@@ -75,13 +75,23 @@ class V3UploadIngestAdapter:
         session_id = stable_ulid(session_ref)
         idempotency_key = f"phone-manifest:{session_id}"
 
+        # A retried manifest must not copy and hash every audio asset again.
+        with self._uow_factory() as uow:
+            saved = uow.idempotency.response(idempotency_key)
+            if saved is not None and saved.get("manifest_sha256") == record.sha256:
+                return saved
+
+        manifest_directory = PurePosixPath(record.relative_path).parent
+        referenced_paths = {
+            (manifest_directory / chunk["fileName"]).as_posix()
+            for chunk in manifest["chunks"]
+        }
         completed = {
             upload.relative_path: upload
             for upload in upload_store.list_uploads(
-                kind="recording", status="completed"
+                kind="recording", status="completed", relative_paths=referenced_paths
             )
         }
-        manifest_directory = PurePosixPath(record.relative_path).parent
         prepared: list[tuple[Mapping[str, Any], UploadRecord]] = []
         for chunk in manifest["chunks"]:
             relative_path = (manifest_directory / chunk["fileName"]).as_posix()

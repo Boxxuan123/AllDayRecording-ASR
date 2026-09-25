@@ -22,9 +22,14 @@ from .people_support import (
 
 
 class PeopleIdentityMixin:
-    def analyze(self, session_id: str) -> dict[str, Any]:
+    def analyze(self, session_id: str, *, annotation_only: bool = False) -> dict[str, Any]:
+        if annotation_only:
+            with self._uow_factory() as uow:
+                uow.people.enqueue_samples(session_id)
+            return {"session_id": session_id, "status": "queued"}
         with self._uow_factory() as uow:
             tracks = uow.people.analysis_inputs(session_id)
+            uow.people.enqueue_samples(session_id)
             run_id = new_ulid()
             started_at = _datetime(self._now())
             uow.people.start_run(
@@ -48,6 +53,17 @@ class PeopleIdentityMixin:
             with self._uow_factory() as uow:
                 self_person_id = uow.people.self_person_id()
                 for index, embedding in enumerate(embeddings, start=1):
+                    manual_cluster = uow.people.manual_track_cluster(embedding.speaker_track_id)
+                    if manual_cluster is not None:
+                        # Preserve the user's exact selected scope. Candidate generation
+                        # does not accept the audio or relabel any other track.
+                        uow.people.record_embedding(run_id=run_id, cluster_id=manual_cluster,
+                            cluster_label="人工确认片段", create_cluster=False,
+                            membership_id=new_ulid(), prototype_id=new_ulid(), operation_id=new_ulid(),
+                            embedding=embedding, membership_confidence=1.0,
+                            suggested_person_id=None, suggestion_confidence=None,
+                            created_at=_datetime(self._now()), reuse_membership=True)
+                        continue
                     self_match = (
                         self._self_identity_matcher.match(embedding)
                         if self_person_id is not None
@@ -222,6 +238,8 @@ class PeopleIdentityMixin:
             created_at = _datetime(self._now())
             for candidate in candidates:
                 model_key = (str(candidate["model"]), str(candidate["model_version"]))
+                if model_key != (self._provider.model, self._provider.model_version):
+                    continue
                 people = vector_cache.get(model_key)
                 if people is None:
                     people = uow.people.person_vectors(*model_key)

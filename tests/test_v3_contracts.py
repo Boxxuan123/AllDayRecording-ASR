@@ -55,7 +55,7 @@ class V3ContractTests(unittest.TestCase):
         self.assertEqual(
             release["core_schema_version"], max(item.version for item in MIGRATIONS)
         )
-        self.assertEqual(release["phone_projection_schema_version"], 7)
+        self.assertEqual(release["phone_projection_schema_version"], 10)
         self.assertEqual(
             release["default_entries"],
             {"desktop": "v3", "phone": "v3", "legacy": "read_only"},

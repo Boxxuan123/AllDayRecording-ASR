@@ -153,6 +153,7 @@ def _client_operation_record(row: sqlite3.Row) -> ClientOperationRecord:
                 else None
             ),
             error=receipt.get("error"),
+            resource_results=(tuple(receipt['resource_results']) if 'resource_results' in receipt else None),
         ),
         created_at=_parse_datetime(row["created_at"]),
         completed_at=_parse_datetime(row["completed_at"]),

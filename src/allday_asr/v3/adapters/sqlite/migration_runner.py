@@ -25,7 +25,7 @@ def _default_migrations() -> tuple[V3Migration, ...]:
     return MIGRATIONS
 
 
-LATEST_V3_SCHEMA_VERSION = 11
+LATEST_V3_SCHEMA_VERSION = 15
 
 
 class V3MigrationRunner:
@@ -108,6 +108,9 @@ class V3MigrationRunner:
         try:
             for statement in _statements(migration.sql):
                 connection.execute(statement)
+            if migration.name == "versioned_audio_annotations":
+                from .annotation_fact_migration import backfill_annotation_facts
+                backfill_annotation_facts(connection)
             connection.execute(
                 "INSERT INTO schema_migrations "
                 "(version, name, sha256, applied_at) VALUES (?, ?, ?, ?)",

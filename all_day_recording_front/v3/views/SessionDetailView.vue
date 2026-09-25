@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import SegmentClassification from '../components/SegmentClassification.vue'
+import { soundKindLabel } from '../core/soundKinds'
 import PageState from '../components/PageState.vue'
 import { desktopApi } from '../core/api'
 import { copyText } from '../core/clipboard'
@@ -26,6 +28,7 @@ const tabs = [
   ['overview', '概览'], ['timeline', '时间线'], ['audio', '原音'], ['speakers', '说话人'], ['evidence', '证据'], ['runs', '运行历史'],
 ]
 const activeTab = computed(() => tabs.some(([key]) => key === route.value.tab) ? route.value.tab ?? 'overview' : 'overview')
+const classifying = ref<Utterance[] | null>(null)
 const editing = ref<Utterance | null>(null)
 const draft = ref('')
 const draftSpeakerTrackId = ref('')
@@ -245,7 +248,6 @@ function stopPlayback(): void {
   playingKey.value = ''
   activePlayback.value = null
 }
-
 function toggleUtterance(item: Utterance): void {
   const key = `utterance:${item.utterance_id}`
   if (mediaState.playing && playingKey.value === key) {
@@ -265,7 +267,6 @@ function toggleUtterance(item: Utterance): void {
   }
   playSessionRange(sessionId, item.start_ms, sessionEnd)
 }
-
 function toggleTurn(turn: TranscriptTurn): void {
   const key = `turn:${turn.key}`
   if (mediaState.playing && playingKey.value === key) {
@@ -285,7 +286,6 @@ function toggleTurn(turn: TranscriptTurn): void {
   }
   playSessionRange(sessionId, turn.startMs, sessionEnd)
 }
-
 function toggleSegment(item: SegmentSummary): void {
   const key = `segment:${item.segment_id}`
   if (mediaState.playing && playingKey.value === key) {
@@ -296,7 +296,6 @@ function toggleSegment(item: SegmentSummary): void {
   activePlayback.value = { kind: 'media', key, label: `原音分片 #${String(item.sequence).padStart(3, '0')}`, mediaId: item.media_id, startMs: item.source_start_ms, endMs: item.source_end_ms }
   playRange(item.media_id, item.source_start_ms, item.source_end_ms)
 }
-
 function toggleActivePlayback(): void {
   if (!activePlayback.value) return
   if (mediaState.playing) {
@@ -319,11 +318,9 @@ function toggleActivePlayback(): void {
     playRange(activePlayback.value.mediaId, resumeAt, activePlayback.value.endMs)
   }
 }
-
 function seekPlayback(event: Event): void {
   seek(Number((event.target as HTMLInputElement).value))
 }
-
 function showSegmentInTimeline(item: SegmentSummary): void {
   stopPlayback()
   timelineSearch.value = ''
@@ -402,6 +399,7 @@ async function saveCorrection(): Promise<void> {
 
         <section v-else-if="activeTab === 'timeline'" class="panel timeline-panel">
           <header class="timeline-heading"><div><p class="section-kicker">转写时间线</p><h2>对话时间线</h2></div><span>{{ filteredTimeline.length }} 个发言段 · {{ filteredUtteranceCount }} / {{ query.data.value.utterances.length }} 条转写</span></header>
+          <button class="quiet-button" @click="classifying = query.data.value.utterances">批量标注声音类型</button>
           <div class="timeline-controls">
             <label><span>搜索转写</span><input v-model="timelineSearch" type="search" placeholder="输入关键词或时间" /></label>
             <label><span>说话人</span><select v-model="timelineSpeaker"><option value="all">全部说话人</option><option v-for="item in speakerOptions" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>
@@ -420,17 +418,17 @@ async function saveCorrection(): Promise<void> {
                 <span>{{ formatOffset(turn.startMs) }}</span><small>{{ formatTimestamp(turn.startAt) }}</small>
               </button>
               <div class="turn-speaker"><strong>{{ turn.speaker }}</strong><span class="identity-chip" :data-identity="turn.identity">{{ identityLabel(turn.identity) }}</span><small v-if="turn.items.length > 1">{{ turn.items.length }} 个片段</small></div>
-              <div class="turn-copy"><p>{{ turn.text }}</p><small v-if="turn.items.some((item) => item.revision > 1)" class="corrected-note">含人工校正</small></div>
-              <div class="turn-actions">
+              <div class="turn-copy"><p>{{ turn.text }}</p><small>{{ [...new Set(turn.items.map(soundKindLabel))].join('、') }}</small><small v-if="turn.items.some((item) => item.revision > 1)" class="corrected-note">含人工校正</small></div>
+              <div class="turn-actions"><button class="text-button" @click="classifying = turn.items">声音分类</button>
                 <button v-if="turn.items.length === 1" class="text-button" type="button" @click="edit(turn.items[0])">校正</button>
                 <button v-else class="text-button" type="button" :aria-expanded="isTurnExpanded(turn)" @click="toggleTurnDetails(turn)">{{ isTurnExpanded(turn) ? '收起' : '逐句校正' }}</button>
               </div>
               <div v-if="isTurnExpanded(turn)" class="turn-details">
                 <div v-for="item in turn.items" :key="item.utterance_id" class="turn-fragment">
                   <button type="button" :disabled="!sessionRangeAvailable(item.start_ms, playbackSessionEnd(item.start_ms, item.end_ms))" :aria-label="`播放 ${formatOffset(item.start_ms)} 的原音`" @click="toggleUtterance(item)">{{ formatOffset(item.start_ms) }}</button>
-                  <p>{{ item.text }}</p>
+                  <p>{{ item.text }} <small>{{ soundKindLabel(item) }}</small></p>
                   <small>版本 {{ item.revision }} · {{ formatOffset(item.end_ms - item.start_ms) }}</small>
-                  <button class="text-button" type="button" @click="edit(item)">校正</button>
+                  <button class="text-button" type="button" @click="edit(item)">校正</button><button class="text-button" @click="classifying = [item]">声音分类</button>
                 </div>
               </div>
             </article>
@@ -484,6 +482,7 @@ async function saveCorrection(): Promise<void> {
       </template>
     </PageState>
 
+    <SegmentClassification v-if="classifying" :items="classifying" @close="classifying = null" @saved="classifying = null; query.refresh(true)" />
     <div v-if="editing" class="dialog-backdrop" @click.self="editing = null">
       <form class="dialog" @submit.prevent="saveCorrection">
         <p class="section-kicker">人工校正</p><h2>校正转写片段</h2><p>原始证据不会被覆盖；保存后创建版本 {{ editing.revision + 1 }}。</p>

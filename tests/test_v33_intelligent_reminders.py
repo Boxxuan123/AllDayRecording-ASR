@@ -333,7 +333,7 @@ class V33IntelligentReminderTests(unittest.TestCase):
                 (candidate_id,),
             )
 
-    def test_phone_projection_and_evidence_correction_fail_closed(self) -> None:
+    def test_phone_projection_preserves_confirmed_task_and_reviews_source_change(self) -> None:
         result = self._confirmed(_intent())
         event_id = result["reminder"]["event_id"]
         with self.factory() as uow:
@@ -357,8 +357,9 @@ class V33IntelligentReminderTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(self.reminders.schedule(event_id)["status"], "stale")
-        self.assertEqual(self.reminders.due(self.current_time + timedelta(days=2)), ())
+        self.assertEqual(self.reminders.schedule(event_id)["status"], "scheduled")
+        self.assertTrue(self.reminders.schedule(event_id)["source_review_required"])
+        self.assertEqual(len(self.reminders.due(self.current_time + timedelta(days=2))), 1)
         with self.factory() as uow:
             reminder_changes = [
                 item
@@ -367,8 +368,9 @@ class V33IntelligentReminderTests(unittest.TestCase):
             ]
         self.assertEqual(
             [item.operation.value for item in reminder_changes],
-            ["upsert", "tombstone"],
+            ["upsert"],
         )
+        self.assertEqual(reminder_changes[-1].payload["status"], "scheduled")
 
     def _confirmed(self, intent: ReminderIntent) -> dict[str, object]:
         candidate = self.reminders.submit_generation(_submission(intent))["candidates"][0]

@@ -16,7 +16,10 @@ from allday_asr.v3.domain.reminders import (
 )
 
 
-class SqliteReminderRepository:
+from .reminder_source_repository import ReminderSourceMixin
+
+
+class SqliteReminderRepository(ReminderSourceMixin):
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
 
@@ -240,6 +243,9 @@ class SqliteReminderRepository:
         rows = self.connection.execute(
             f"""
             SELECT schedule.*, state.status AS event_status,
+              EXISTS(SELECT 1 FROM recompute_requests request WHERE request.target_type='event'
+                AND request.target_id=schedule.event_id AND request.target_revision=schedule.event_revision
+                AND request.status IN ('queued','running')) AS source_review_required,
               state.payload_json AS event_payload_json
             FROM reminder_schedules schedule
             JOIN event_current_states state ON state.event_id = schedule.event_id
@@ -268,9 +274,16 @@ class SqliteReminderRepository:
         cursor = self.connection.execute(
             """
             UPDATE reminder_schedules
-            SET status = 'stale', delivered_at = NULL, updated_at = ?
+            SET status = 'stale', updated_at = ?
             WHERE event_id = ? AND event_revision = ?
-              AND status IN ('scheduled', 'delivered')
+              AND status = 'scheduled'
+              AND NOT EXISTS (SELECT 1 FROM reminder_candidates c
+                WHERE c.candidate_id = reminder_schedules.source_candidate_id
+                  AND c.status = 'confirmed')
+              AND NOT EXISTS (SELECT 1 FROM reminder_feedback f
+                JOIN reminder_candidates c ON c.candidate_id = f.candidate_id
+                WHERE c.matched_event_id = reminder_schedules.event_id
+                  AND f.action IN ('confirm', 'modify'))
             """,
             (updated_at, event_id, event_revision),
         )
@@ -376,6 +389,7 @@ def _schedule_dict(row: sqlite3.Row) -> dict[str, Any]:
         value.pop("related_person_ids_json")
     )
     value["event_payload"] = json.loads(str(value.pop("event_payload_json")))
+    value["source_review_required"] = bool(value["source_review_required"])
     return value
 
 

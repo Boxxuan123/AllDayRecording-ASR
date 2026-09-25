@@ -45,6 +45,8 @@ class DeviceTrustRepository(Protocol):
 class MobileSyncRepository(Protocol):
     def find_operation(self, operation_id: str) -> ClientOperationRecord | None: ...
 
+    def recover_annotation_receipt(self, record: ClientOperationRecord) -> OperationReceipt: ...
+
     def record_operation(
         self,
         device_id: str,

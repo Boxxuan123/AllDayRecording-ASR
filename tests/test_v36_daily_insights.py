@@ -380,7 +380,7 @@ class V36DailyInsightTests(unittest.TestCase):
                     identity=SelfIdentity.UNKNOWN,
                     original_identity=SelfIdentity.UNKNOWN,
                     identity_evidence={"source": "none", "decision": "unknown"},
-                    evidence={"asset_id": f"asset-{number}"},
+                    evidence={"asset_id": f"asset-{number}", "actual_interaction": True},
                     revision=1,
                     status="active",
                     created_at=captured,

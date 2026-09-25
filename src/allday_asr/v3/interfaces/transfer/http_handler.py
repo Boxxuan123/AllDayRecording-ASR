@@ -311,7 +311,7 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
                 record,
                 device_key_id=device.device_id if device is not None else None,
             )
-            if self.server.store.has_completed_file(record)
+            if record.kind == "manifest" and self.server.store.has_completed_file(record)
             else None
         )
         self._send_upload_record(

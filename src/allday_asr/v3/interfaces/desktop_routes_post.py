@@ -13,6 +13,7 @@ from allday_asr.v3.application import (
 from allday_asr.v3.domain.identity import SelfIdentity
 from allday_asr.v3.domain.people import PersonKind
 
+from .desktop_annotation_routes import DesktopAnnotationRoutesMixin
 from .desktop_http_contract import (
     _AUTOMATIC_WORKFLOW_RETRY_ROUTE,
     _CANCEL_ROUTE,
@@ -47,7 +48,7 @@ from .desktop_http_contract import (
 )
 
 
-class DesktopPostRoutesMixin:
+class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
     def _dispatch_post(self) -> None:
         path = urlparse(self.path).path.rstrip("/")
         if path == _SESSION_RECOVERY_ROUTE:
@@ -68,6 +69,8 @@ class DesktopPostRoutesMixin:
         if not self._authorized_mutation():
             return
         body = self._read_json()
+        if self._dispatch_annotation_post(path, body):
+            return
         if match := _AUTOMATIC_WORKFLOW_RETRY_ROUTE.fullmatch(path):
             if body:
                 raise ValueError("automatic workflow retry request body must be empty")

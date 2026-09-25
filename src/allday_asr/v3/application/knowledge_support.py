@@ -58,12 +58,15 @@ def cascade_derivations(
     source_revision: int,
     reason: str,
     now: datetime,
+    preserve_events: bool = False,
 ) -> tuple[InvalidationEvent, ...]:
     root_id = new_ulid()
     created: list[InvalidationEvent] = []
     for target_type, target_id, target_revision in uow.derivations.dependent_closure(
         source_type, source_id
     ):
+        if preserve_events and target_type == "event":
+            continue
         event = InvalidationEvent(
             invalidation_id=new_ulid(),
             target_type=target_type,
@@ -83,12 +86,14 @@ def cascade_derivations(
         if target_type == "event" and uow.reminders.mark_stale(
             target_id, target_revision, _datetime(now)
         ):
+            from .reminder_support import _schedule_projection
+            schedule = uow.reminders.get_schedule(target_id)
             uow.changes.append(
                 "reminder",
                 target_id,
                 target_revision,
-                "tombstone",
-                None,
+                "upsert",
+                _schedule_projection(schedule),
             )
         if target_type in {"event", "memory"}:
             uow.derivations.add_recompute_request(

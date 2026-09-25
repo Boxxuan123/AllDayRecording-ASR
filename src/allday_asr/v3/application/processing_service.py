@@ -307,6 +307,7 @@ class DurableProcessingService:
                         updated_at=now,
                     )
                     if uow.evidence.add_utterance(utterance):
+                        utterance = uow.evidence.get_utterance(utterance.utterance_id)
                         uow.changes.append(
                             "utterance",
                             utterance.utterance_id,
@@ -314,7 +315,7 @@ class DurableProcessingService:
                             ChangeOperation.UPSERT.value,
                             utterance_dto(
                                 utterance,
-                                speaker_label=value.speaker_label,
+                                speaker_label=uow.evidence.speaker_label(utterance.speaker_track_id),
                                 original_speaker_label=value.speaker_label,
                             ),
                         )

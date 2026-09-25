@@ -6,6 +6,7 @@ import json
 import shutil
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -554,7 +555,8 @@ class V3DeviceSyncTests(unittest.TestCase):
             )
 
             first = ingest.ingest_completed(record.device_id, manifest_record, store)
-            replay = ingest.ingest_completed(record.device_id, manifest_record, store)
+            with patch.object(store, "list_uploads", side_effect=AssertionError("replay scanned inbox")):
+                replay = ingest.ingest_completed(record.device_id, manifest_record, store)
             alternate_trust = TransferDeviceTrustAdapter(
                 trust.authenticator,
                 lambda: SqliteUnitOfWork(database),
@@ -660,6 +662,23 @@ class V3DeviceSyncTests(unittest.TestCase):
                 session_projection["session_key"],
                 manifest["sessionKey"],
             )
+
+            with SqliteUnitOfWork(database) as uow:
+                uow.changes.append("recording_session", first["session_id"], 2, "upsert",
+                                   {"session_id": first["session_id"], "state": "ready_for_processing"})
+                latest = uow.changes.latest("recording_session", first["session_id"])
+                self.assertEqual(latest.payload["session_key"], manifest["sessionKey"])
+            # Reproduce a historical event without its identity, then run the repair.
+            from allday_asr.v3.adapters.sqlite.migrations.v012_session_sync_identity import SQL
+            with database.transaction() as connection:
+                connection.execute("INSERT INTO change_events (resource_type, resource_id, revision, operation, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("recording_session", first["session_id"], 2, "upsert",
+                     json.dumps({"session_id": first["session_id"], "state": "ready_for_processing"}), "2026-01-01T00:00:00Z"))
+                connection.execute(SQL)
+                connection.execute(SQL)
+                repaired = connection.execute("SELECT payload_json FROM change_events WHERE resource_id = ? ORDER BY sequence DESC LIMIT 1", (first["session_id"],)).fetchone()
+                self.assertEqual(json.loads(repaired[0])["session_key"], manifest["sessionKey"])
+
 
     def test_http_sync_requires_one_time_device_signature(self) -> None:
         with _workspace_directory() as root:

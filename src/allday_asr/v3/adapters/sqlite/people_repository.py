@@ -8,9 +8,11 @@ from .people_repository_clusters import PeopleClusterRepositoryMixin
 from .people_repository_identity import PeopleIdentityRepositoryMixin
 from .people_repository_prototypes import PeoplePrototypeRepositoryMixin
 from .people_repository_support import PeopleRepositorySupportMixin
+from .annotation_sample_repository import AnnotationSampleRepositoryMixin
 
 
 class SqlitePeopleRepository(
+    AnnotationSampleRepositoryMixin,
     PeopleAnalysisRepositoryMixin,
     PeopleCatalogRepositoryMixin,
     PeopleClusterRepositoryMixin,

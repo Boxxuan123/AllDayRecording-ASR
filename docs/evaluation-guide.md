@@ -89,3 +89,42 @@ allday-asr evaluation run `
 4. 除总指标外，检查逐片段报告，确认关键时间地点没有退化。
 
 当前最重要的改进目标是降低不同人物和电视被混为同一 speaker 的情况，同时保持本人误接受率足够低。
+
+
+## V3 人工确认收益评估（2026-09-24）
+
+这是固定真实人物身份的前后对照，不是匿名聚类指标。先复制本地 V3 数据库和声纹状态，保留原版本用于 baseline；在另一副本只对建库集人工确认并采纳样本。固定模型、模型版本、阈值、ASR 产物、处理条件和同一测试证据，使用现有匹配入口运行前后两次，导出真实预测。不在正式数据库中撤销全部真实标注来构造 baseline。
+
+由用户确认人物真值。建库集和测试集按日期隔离；同一真实对话的手机、手表及其他设备录音使用同一 conversation_id，绝不能跨集合。陌生人也使用稳定真值 ID，但不放进 known_person_ids。未知预测写 null，不能删掉难例。评估测试集不得标人物、采纳样本或用于调阈值。
+
+新增纯本地统计入口（它不替你运行声音模型，也不生成真值）：
+
+```powershell
+.\.venv\Scripts\python.exe tools/evaluate_annotation_benefit.py state/evaluations/benefit-manifest.json state/evaluations/benefit-predictions.jsonl
+```
+
+manifest 模板：
+
+```json
+{
+  "model": "实际模型",
+  "model_version": "实际固定版本",
+  "conditions": {"policy_snapshot": "本地策略快照路径/摘要", "asr_run": "固定处理运行"},
+  "self_person_id": "self-person-id",
+  "known_person_ids": ["self-person-id", "familiar-person-id"],
+  "review_minutes": 0,
+  "enrollment": [{"evidence_id": "建库原音范围 ID", "conversation_id": "对话 A", "date": "2026-09-01"}]
+}
+```
+
+predictions 每行模板（仅格式示例，不能作为实测结果）：
+
+```json
+{"evidence_id":"测试原音范围 ID","conversation_id":"独立对话 B","date":"2026-09-02","truth_person_id":"familiar-person-id","before":null,"after":null,"before_review_requests":0,"after_review_requests":0}
+```
+
+下游若已逐条核对，可补充 before_reminder_correct / after_reminder_correct、before_event_correct / after_event_correct、before_memory_correct / after_memory_correct 布尔字段。没有核对就省略，输出 evaluated=0，不能按正确计数。review_requests 统计同一固定测试范围实际要求人工介入的次数，不能用候选条数冒充。
+
+结果至少保留：本人及每位熟人的样本数/正确数、已知人物留未知率、陌生人误认熟人率、提醒/事件/记忆的实测正确数及分母、审核次数、人工分钟数、净改善与退步。分母为零输出 null；只做到“谁都不认”会显示已知留未知率升高，而非被包装为成功。
+
+当前结果：未运行真实前后对照。旧评测 JSONL 没有对话隔离标识与稳定人物真值，需先补齐。主机 fixture 验证只证明统计公式、数据隔离检查和软件匹配调用链，不证明声音效果。真机另外记录设备型号、系统版本、样本量、离线重启同步结果和审核页响应时间。

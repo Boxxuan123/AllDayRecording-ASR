@@ -1,4 +1,5 @@
 from __future__ import annotations
+from allday_asr.v3.domain.sound_kind import is_usable_speech
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -226,6 +227,7 @@ class SemanticEventExtractionService:
             )
             for value in detail["utterances"]
             if value.get("status") == "active" and str(value.get("text", "")).strip()
+            and is_usable_speech(value.get("evidence", {}))
         )
         if not utterances:
             raise ValueError("recording session has no active utterances")
@@ -348,7 +350,15 @@ def _utterance(
     value: dict[str, Any],
     speaker_reference: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    if "person" in value.get("evidence", {}).get("annotation_review", {}).get("dimensions", {}):
+        speaker_reference = None
+        value = {**value, "identity": "unknown", "speaker_label": None, "speaker_track_id": None}
     speaker_reference = speaker_reference or {}
+    annotation = value.get("evidence", {}).get("person_annotation", {})
+    if annotation.get("person_id") and "person" not in value.get("evidence", {}).get("annotation_review", {}).get("dimensions", {}):
+        person_id = annotation["person_id"]
+        speaker_reference = {**speaker_reference, "person_id": person_id,
+            "person_name": speaker_reference.get("person_name") if speaker_reference.get("person_id") == person_id else None}
     return {
         "utterance_id": str(value["utterance_id"]),
         "start_at": str(value["start_at"]),

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .people_sample_eligibility import usable_voice_sample
 
 import json
 from typing import Any
@@ -27,9 +28,14 @@ class PeopleCatalogRepositoryMixin:
         created_at: str,
         membership_source: str = "automatic",
         actor: str = "system:local-clustering",
+        reuse_membership: bool = False,
     ) -> None:
         if membership_source not in {"automatic", "human"}:
             raise ValueError("speaker membership source is invalid")
+        if reuse_membership and self.connection.execute(
+            "SELECT 1 FROM voice_prototypes WHERE speaker_track_id = ? AND model = ? AND model_version = ? LIMIT 1",
+            (embedding.speaker_track_id, embedding.model, embedding.model_version)).fetchone():
+            return
         if create_cluster:
             self.connection.execute(
                 """
@@ -57,6 +63,19 @@ class PeopleCatalogRepositoryMixin:
                 """,
                 (suggested_person_id, suggestion_confidence, created_at, cluster_id),
             )
+        if not reuse_membership:
+            self._record_embedding_membership(embedding, membership_id, cluster_id,
+                membership_source, membership_confidence, operation_id, created_at)
+        self._record_embedding_candidate(embedding, prototype_id, cluster_id, operation_id, created_at)
+        self.connection.execute(
+            """INSERT INTO person_cluster_operations
+            (operation_id, kind, cluster_id, actor, payload_json, created_at)
+            VALUES (?, 'analyze', ?, ?, ?, ?)""",
+            (operation_id, cluster_id, actor,
+             _json({"run_id": run_id, "speaker_track_id": embedding.speaker_track_id}), created_at))
+
+    def _record_embedding_membership(self, embedding, membership_id, cluster_id,
+                                     membership_source, membership_confidence, operation_id, created_at):
         self.connection.execute(
             """
             INSERT INTO speaker_cluster_memberships (
@@ -75,6 +94,7 @@ class PeopleCatalogRepositoryMixin:
                 created_at,
             ),
         )
+    def _record_embedding_candidate(self, embedding, prototype_id, cluster_id, operation_id, created_at):
         representatives = [
             {
                 "media_id": clip.media_id,
@@ -103,22 +123,6 @@ class PeopleCatalogRepositoryMixin:
                 _json(representatives),
                 embedding.quality_score,
                 operation_id,
-                created_at,
-            ),
-        )
-        self.connection.execute(
-            """
-            INSERT INTO person_cluster_operations (
-              operation_id, kind, cluster_id, actor, payload_json, created_at
-            ) VALUES (?, 'analyze', ?, ?, ?, ?)
-            """,
-            (
-                operation_id,
-                cluster_id,
-                actor,
-                _json(
-                    {"run_id": run_id, "speaker_track_id": embedding.speaker_track_id}
-                ),
                 created_at,
             ),
         )
@@ -301,7 +305,7 @@ class PeopleCatalogRepositoryMixin:
             (cluster_id,),
         ).fetchall()
         prototypes = self.connection.execute(
-            """
+            f"""
             SELECT DISTINCT v.prototype_id, v.speaker_track_id, v.status,
               v.quality_score, v.representative_clips_json, v.created_at,
               decision.decision_tier, decision.candidate_person_id,
@@ -334,7 +338,7 @@ class PeopleCatalogRepositoryMixin:
                     AND newer_review.review_id > review.review_id)
                  )
              )
-            WHERE m.cluster_id = ?
+            WHERE m.cluster_id = ? AND {usable_voice_sample("v")}
             ORDER BY v.quality_score DESC, v.created_at, v.prototype_id
             """,
             (cluster_id,),

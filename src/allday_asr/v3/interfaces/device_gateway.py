@@ -86,6 +86,13 @@ class DeviceGateway:
             raise LookupError("mobile review service is unavailable")
         return self.review_service.audio(payload)
 
+    def annotations(self, key_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        device_id = self.trust.domain_device_id(key_id)
+        if self.review_service is None:
+            raise LookupError("mobile annotation service is unavailable")
+        from .device_annotations import DeviceAnnotationService
+        return DeviceAnnotationService(self.review_service.core).execute(device_id, payload)
+
     def upload_completed(
         self,
         key_id: str,

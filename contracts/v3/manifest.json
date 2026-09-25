@@ -5,7 +5,7 @@
   "openapi_version": "3.1.0",
   "release_lock": {
     "path": "release-lock.json",
-    "sha256": "73ba6bcc73f5bf46600cf303dc1337b649302f91d5f043e77afc02edaa2da006"
+    "sha256": "58ba095b8bde9d73be4cbf60a4ae9beb55ae6da099b6409ea11dadd748c979d8"
   },
   "schemas": {
     "primitives": {
@@ -30,7 +30,7 @@
     },
     "device_sync": {
       "path": "schemas/device-sync.schema.json",
-      "sha256": "cc140aba9329619d62b4f4db9ae4d9208440156f45542cd6be56a7966edb5742"
+      "sha256": "80578f4b95185305f9d819681aab3e6840b01fc124bf3dc2a06e1d39ab994dd9"
     },
     "timeline_quality": {
       "path": "schemas/timeline-quality.schema.json",

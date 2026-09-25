@@ -78,6 +78,19 @@ class V3DesktopApiTests(unittest.TestCase):
         self.assertIn("AllDay Recording V3", html)
         self.assertNotIn("workspace/controller", html)
 
+    def test_segment_classification_route_requires_authentication_and_dispatches_batch(self):
+        body = {"selections": [{"utterance_id": "fixture", "revision": 1}], "sound_kind": "non_speech"}
+        with patch.object(self.server.application.core.corrections, "classify_segments",
+                          return_value={"utterances": []}) as classify:
+            status, _, _ = self._request("/api/v3/utterance-classifications",
+                method="POST", authenticated=False, body=body)
+            self.assertEqual(status, 403)
+            classify.assert_not_called()
+            status, payload, _ = self._request("/api/v3/utterance-classifications", method="POST", body=body)
+            self.assertEqual(status, 200)
+            self.assertEqual(payload, {"utterances": []})
+            classify.assert_called_once_with(body["selections"], "non_speech")
+
     def test_short_workspace_link_recovers_missing_or_rotated_session(self) -> None:
         cookie_jar = http.cookiejar.CookieJar()
         opener = build_opener(HTTPCookieProcessor(cookie_jar))

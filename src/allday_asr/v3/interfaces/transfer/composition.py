@@ -69,7 +69,13 @@ class TransferHTTPServer(ThreadingHTTPServer):
         self.tls_context = tls_context
         self.upload_completed = upload_completed
         self.v3_gateway = v3_gateway
+        self.annotation_sample_worker = None
         super().__init__(server_address, TransferRequestHandler)
+
+    def server_close(self):
+        if self.annotation_sample_worker is not None:
+            self.annotation_sample_worker.close()
+        super().server_close()
 
     @property
     def port(self) -> int:
@@ -237,6 +243,9 @@ def create_transfer_server(
         upload_completed=upload_completed,
         v3_gateway=v3_gateway,
     )
+    if v3_core is not None:
+        server.annotation_sample_worker = v3_core.people.sample_worker
+        server.annotation_sample_worker.start()
     if tls_context is not None:
         try:
             server.socket = tls_context.wrap_socket(server.socket, server_side=True)

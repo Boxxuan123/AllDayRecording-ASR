@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .sound_eligibility import confirmed_interaction
 
 import json
 import sqlite3
@@ -69,7 +70,7 @@ class PersonMemoryRepositorySupportMixin:
         return value
     def _interactions(self, person_id: str, limit: int) -> list[dict[str, Any]]:
         sessions = self.connection.execute(
-            """
+            f"""
             SELECT session.session_id, session.captured_start AS occurred_at,
               COUNT(DISTINCT utterance.utterance_id) AS utterance_count,
               MIN(utterance.start_at) AS first_utterance_at,
@@ -84,8 +85,9 @@ class PersonMemoryRepositorySupportMixin:
             LEFT JOIN utterances utterance
               ON utterance.speaker_track_id = track.speaker_track_id
               AND utterance.status = 'active'
+              AND {confirmed_interaction("utterance")}
             WHERE link.person_id = ? AND link.status = 'active'
-            GROUP BY session.session_id
+            GROUP BY session.session_id HAVING COUNT(utterance.utterance_id) > 0
             ORDER BY session.captured_start DESC LIMIT ?
             """,
             (person_id, limit),

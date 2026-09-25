@@ -9,6 +9,7 @@ from allday_asr.v3.domain.knowledge import GenerationSubmission, KnowledgeLayer,
 from allday_asr.v3.domain.people import PersonKind
 from allday_asr.v3.ports.repositories import UnitOfWork
 
+from .speaker_annotation import assign_annotation
 from .durable_processing import CorrectUtteranceCommand, apply_utterance_correction
 from .people_support import (
     _CLUSTER_IDENTITY_ACTOR_PREFIX,
@@ -19,6 +20,25 @@ from .people_support import (
 
 
 class PeopleClusterMixin:
+    def annotation_status(self, utterance_ids):
+        from .annotation_sample_status import annotation_status
+        return annotation_status(self, utterance_ids)
+
+    def assign_utterances(self, selections: list[dict[str, Any]], *, person_id: str | None,
+                          display_name: str | None, actor: str) -> dict[str, Any]:
+        with self._uow_factory() as uow:
+            result = assign_annotation(uow, selections, person_id=person_id,
+                                     display_name=display_name, actor=actor, now=self._now())
+        result["sample_processing"] = [{"status": "queued"}]
+        return result
+
+    def process_annotation_samples(self, selections):
+        with self._uow_factory() as uow:
+            sessions = {uow.evidence.get_utterance(s["utterance_id"]).session_id for s in selections}
+            for session_id in sessions:
+                uow.people.enqueue_samples(session_id)
+        return [{"session_id": sid, "status": "queued"} for sid in sorted(sessions)]
+
     def cluster(self, cluster_id: str) -> dict[str, Any]:
         with self._uow_factory() as uow:
             return uow.people.cluster_detail(cluster_id)
@@ -75,6 +95,8 @@ class PeopleClusterMixin:
                 _identity_for_person_kind(person_kind),
                 actor,
                 now,
+                human_fact=source == "human",
+                person_id=person_id,
             )
             events = uow.people.events_by_ids(event_ids)
         rebound: list[str] = []
@@ -192,6 +214,8 @@ class PeopleClusterMixin:
                     restored_identity,
                     actor,
                     now,
+                    human_fact=True,
+                    person_id=previous_person_id,
                 )
             else:
                 identity_changes = {
@@ -253,12 +277,14 @@ class PeopleClusterMixin:
         identity: SelfIdentity,
         actor: str,
         now: datetime,
+        human_fact: bool = False,
+        person_id: str | None = None,
     ) -> dict[str, int]:
         updated = 0
         preserved = 0
         for utterance_id in uow.people.cluster_evidence_ids(cluster_id):
             utterance = uow.evidence.get_utterance(utterance_id)
-            if utterance.identity is identity:
+            if utterance.identity is identity and not human_fact:
                 continue
             identity_corrections = tuple(
                 correction
@@ -267,15 +293,24 @@ class PeopleClusterMixin:
                 )
                 if "identity" in correction.patch
             )
-            if identity_corrections:
+            if identity_corrections and utterance.identity is not identity:
                 if not identity_corrections[-1].actor.startswith(
                     _CLUSTER_IDENTITY_ACTOR_PREFIX
                 ):
                     preserved += 1
                     continue
-            elif utterance.identity is not SelfIdentity.UNKNOWN:
+            elif utterance.identity not in (SelfIdentity.UNKNOWN, identity):
                 preserved += 1
                 continue
+            if human_fact and not uow.evidence.annotation_is_current(utterance, "person"):
+                preserved += 1
+                continue
+            annotation = None
+            if human_fact:
+                annotation = ({"person_id": person_id, "source": "human_cluster",
+                    "actor": actor, "confirmed_at": now.isoformat(),
+                    "source_utterance_id": utterance_id, "source_revision": utterance.revision,
+                    "audio": uow.evidence.audio_evidence(utterance)} if person_id else {})
             apply_utterance_correction(
                 uow,
                 CorrectUtteranceCommand(
@@ -285,6 +320,7 @@ class PeopleClusterMixin:
                     actor=f"{_CLUSTER_IDENTITY_ACTOR_PREFIX}{actor}",
                     identity=identity,
                     change_identity=True,
+                    person_annotation=annotation,
                 ),
                 now,
             )
@@ -304,6 +340,10 @@ class PeopleClusterMixin:
         next_payload = _replace_reference(event["payload"], old_reference, person_id)
         if next_payload == event["payload"]:
             return
+        with self._uow_factory() as uow:
+            schedule = uow.reminders.get_schedule(str(event["event_id"]))
+            if schedule and uow.reminders.get_candidate(schedule.source_candidate_id).status.value == "confirmed":
+                raise ValueError("confirmed task retained; source change requires user review")
         submission = GenerationSubmission(
             layer=KnowledgeLayer.EVENT,
             producer="human-identity-correction",

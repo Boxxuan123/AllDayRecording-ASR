@@ -9,6 +9,19 @@ from .people_repository_codec import _json
 
 
 class PeopleClusterRepositoryMixin:
+    def add_manual_group(self, cluster_id, track_ids, label, actor, operation_id, created_at):
+        self.connection.execute(
+            "INSERT INTO speaker_clusters (cluster_id, display_label, status, revision, created_at, updated_at) VALUES (?, ?, 'active', 1, ?, ?)",
+            (cluster_id, label, created_at, created_at),
+        )
+        for index, track_id in enumerate(track_ids):
+            self.connection.execute(
+                "INSERT INTO speaker_cluster_memberships (membership_id, cluster_id, speaker_track_id, state, source, confidence, revision, operation_id, created_at, updated_at) VALUES (?, ?, ?, 'active', 'human', 1, 1, ?, ?, ?)",
+                (f"{operation_id}-{index}", cluster_id, track_id, operation_id, created_at, created_at),
+            )
+        self._add_operation(operation_id, "label", cluster_id, actor,
+                            {"manual_selection": True, "track_ids": list(track_ids)}, created_at)
+
     def label_cluster(
         self,
         cluster_id: str,

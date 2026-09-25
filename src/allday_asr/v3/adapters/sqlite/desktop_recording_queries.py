@@ -181,7 +181,12 @@ class DesktopRecordingQueryMixin:
         else:
             utterances = self.connection.execute(
                 """
-                SELECT u.*, t.label AS speaker_label,
+                SELECT u.*, CASE WHEN t.label LIKE 'manual:%' THEN COALESCE((
+                  SELECT p.display_name FROM speaker_cluster_memberships m
+                  JOIN person_cluster_links l ON l.cluster_id = m.cluster_id AND l.status = 'active'
+                  JOIN persons p ON p.person_id = l.person_id
+                  WHERE m.speaker_track_id = t.speaker_track_id AND m.state = 'active' LIMIT 1
+                ), t.label) ELSE t.label END AS speaker_label,
                   original.label AS original_speaker_label FROM utterances u
                 LEFT JOIN speaker_tracks t ON t.speaker_track_id = u.speaker_track_id
                 LEFT JOIN speaker_tracks original

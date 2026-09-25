@@ -145,6 +145,7 @@ export type SpeakerMatchTier = 'insufficient_evidence' | 'auto_matched' | 'sugge
 export type VoicePrototypeReviewStatus = 'pending' | 'confirmed' | 'rejected' | 'uncertain' | 'retracted'
 
 export interface VoicePrototypeCandidate {
+  human_selection?: boolean | number
   prototype_id: string
   speaker_track_id: string
   cluster_id: string

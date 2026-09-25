@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .people_sample_eligibility import usable_voice_sample
 
 import json
 import sqlite3
@@ -10,9 +11,45 @@ from .people_repository_codec import _json, _row
 
 
 class PeoplePrototypeRepositoryMixin:
+    def prototype_retraction_target(self, prototype_id: str, person_id: str) -> dict:
+        # Historical authorization is manageable even after its source or review
+        # carrier becomes inactive. This lookup must never authorize acceptance.
+        row = self.connection.execute("""SELECT p.*, p.cluster_id AS active_cluster_id,
+            ? AS linked_person_id FROM voice_prototypes p
+            WHERE p.prototype_id=? AND p.status='candidate' AND EXISTS (
+              SELECT 1 FROM voice_prototypes a WHERE a.source_prototype_id=p.prototype_id
+              AND a.person_id=? AND a.status='accepted' AND a.human_confirmed=1)""",
+            (person_id, prototype_id, person_id)).fetchone()
+        review = self.latest_prototype_review(prototype_id, person_id)
+        if row is None or review is None or review['decision'] != 'confirmed':
+            raise ValueError('only a confirmed prototype can be retracted')
+        return dict(row)
+
+    def annotation_samples(self, utterance_id: str) -> tuple[dict, ...]:
+        rows = self.connection.execute(f"""SELECT p.prototype_id, p.person_id, p.status, p.human_confirmed,
+            p.model, p.model_version, p.quality_score, p.representative_clips_json,
+            {usable_voice_sample('p')} AS source_usable,
+            EXISTS (SELECT 1 FROM person_cluster_links l WHERE l.cluster_id = p.cluster_id
+                    AND l.person_id = p.person_id AND l.status = 'active') AS current_link,
+            (SELECT decision FROM voice_prototype_reviews r
+             WHERE r.prototype_id = COALESCE(p.source_prototype_id, p.prototype_id)
+             AND (p.person_id IS NULL OR r.person_id = p.person_id)
+             ORDER BY r.created_at DESC, r.review_id DESC LIMIT 1) AS review_decision
+            FROM voice_prototypes p WHERE EXISTS (
+              SELECT 1 FROM json_each(p.representative_clips_json) c
+              WHERE json_extract(c.value, '$.utterance_id') = ? OR EXISTS (
+                SELECT 1 FROM utterances u JOIN capture_segments seg ON seg.session_id=u.session_id
+                JOIN audio_assets asset ON asset.asset_id=seg.asset_id
+                WHERE u.utterance_id=? AND asset.media_id=json_extract(c.value,'$.media_id')
+                AND u.start_ms<seg.session_end_ms AND u.end_ms>seg.session_start_ms
+                AND json_extract(c.value,'$.start_ms') < seg.source_start_ms+MIN(u.end_ms,seg.session_end_ms)-seg.session_start_ms
+                AND json_extract(c.value,'$.end_ms') > seg.source_start_ms+MAX(u.start_ms,seg.session_start_ms)-seg.session_start_ms))
+            ORDER BY p.created_at, p.prototype_id""", (utterance_id, utterance_id)).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def prototype_candidate(self, prototype_id: str) -> dict[str, Any]:
         row = self.connection.execute(
-            """
+            f"""
             SELECT candidate.*, membership.cluster_id AS active_cluster_id,
               track.session_id, link.person_id AS linked_person_id,
               cluster.suggested_person_id
@@ -27,7 +64,7 @@ class PeoplePrototypeRepositoryMixin:
              AND cluster.status = 'active'
             LEFT JOIN person_cluster_links link
               ON link.cluster_id = membership.cluster_id AND link.status = 'active'
-            WHERE candidate.prototype_id = ? AND candidate.status = 'candidate'
+            WHERE candidate.prototype_id = ? AND candidate.status = 'candidate' AND {usable_voice_sample("candidate")}
             """,
             (prototype_id,),
         ).fetchone()
@@ -54,7 +91,8 @@ class PeoplePrototypeRepositoryMixin:
     ) -> dict[str, Any]:
         if decision not in {"confirmed", "rejected", "uncertain", "retracted"}:
             raise ValueError("voice prototype review decision is invalid")
-        candidate = self.prototype_candidate(prototype_id)
+        candidate = (self.prototype_retraction_target(prototype_id, person_id)
+                     if decision == 'retracted' else self.prototype_candidate(prototype_id))
         person = self.connection.execute(
             "SELECT kind FROM persons WHERE person_id = ?",
             (person_id,),
@@ -63,6 +101,11 @@ class PeoplePrototypeRepositoryMixin:
             raise KeyError(f"person does not exist: {person_id}")
         if str(person["kind"]) != "known":
             raise ValueError("known-person prototype review cannot target self")
+        if decision == 'confirmed':
+            if candidate.get('linked_person_id') != person_id:
+                raise ValueError('prototype cluster is not linked to this person')
+            if float(candidate['quality_score']) < float(self.identity_policy(person_id)['minimum_quality']):
+                raise ValueError('sample does not meet current quality policy')
         current = self.connection.execute(
             """
             SELECT decision FROM voice_prototype_reviews
@@ -149,7 +192,7 @@ class PeoplePrototypeRepositoryMixin:
         return _row(row) if row is not None else None
     def prototype_review_examples(self, person_id: str) -> dict[str, tuple[dict[str, Any], ...]]:
         positives = self.connection.execute(
-            """
+            f"""
             SELECT accepted.prototype_id,
               COALESCE(accepted.source_prototype_id, accepted.prototype_id)
                 AS source_prototype_id,
@@ -158,7 +201,7 @@ class PeoplePrototypeRepositoryMixin:
             FROM voice_prototypes accepted
             JOIN speaker_tracks track
               ON track.speaker_track_id = accepted.speaker_track_id
-            WHERE accepted.person_id = ? AND accepted.status = 'accepted'
+            WHERE accepted.person_id = ? AND accepted.status = 'accepted' AND {usable_voice_sample("accepted")}
               AND accepted.human_confirmed = 1
               AND EXISTS (
                 SELECT 1 FROM person_cluster_links link
@@ -181,7 +224,7 @@ class PeoplePrototypeRepositoryMixin:
             (person_id,),
         ).fetchall()
         negatives = self.connection.execute(
-            """
+            f"""
             SELECT candidate.prototype_id AS source_prototype_id,
               candidate.model, candidate.model_version, candidate.vector_json,
               candidate.quality_score, track.session_id
@@ -191,6 +234,7 @@ class PeoplePrototypeRepositoryMixin:
             JOIN speaker_tracks track
               ON track.speaker_track_id = candidate.speaker_track_id
             WHERE review.person_id = ? AND review.decision = 'rejected'
+              AND {usable_voice_sample("candidate")}
               AND NOT EXISTS (
                 SELECT 1 FROM voice_prototype_reviews newer
                 WHERE newer.prototype_id = review.prototype_id
@@ -226,20 +270,21 @@ class PeoplePrototypeRepositoryMixin:
         limit: int,
     ) -> tuple[dict[str, Any], ...]:
         rows = self.connection.execute(
-            """
+            f"""
             SELECT candidate.prototype_id, candidate.speaker_track_id,
-              membership.cluster_id, track.session_id, candidate.quality_score,
+              COALESCE(membership.cluster_id,candidate.cluster_id) AS cluster_id, track.session_id, candidate.quality_score,
+              (track.label LIKE 'manual:%') AS human_selection,
               candidate.representative_clips_json, candidate.created_at,
-              link.person_id AS linked_person_id,
+              COALESCE((SELECT r.person_id FROM voice_prototype_reviews r WHERE r.prototype_id=candidate.prototype_id ORDER BY r.created_at DESC,r.review_id DESC LIMIT 1),link.person_id) AS linked_person_id,
               cluster.suggested_person_id,
               decision.decision_tier, decision.candidate_person_id,
               decision.best_score, decision.second_best_score,
               decision.score_margin, decision.reason AS match_reason
             FROM voice_prototypes candidate
-            JOIN speaker_cluster_memberships membership
+            LEFT JOIN speaker_cluster_memberships membership
               ON membership.speaker_track_id = candidate.speaker_track_id
              AND membership.state = 'active'
-            JOIN speaker_clusters cluster
+            LEFT JOIN speaker_clusters cluster
               ON cluster.cluster_id = membership.cluster_id
              AND cluster.status = 'active'
             JOIN speaker_tracks track
@@ -257,7 +302,11 @@ class PeoplePrototypeRepositoryMixin:
                     AND newer.decision_id > decision.decision_id)
                  )
              )
-            WHERE candidate.status = 'candidate'
+            WHERE candidate.status = 'candidate' AND ({usable_voice_sample("candidate")} OR EXISTS (
+                SELECT 1 FROM voice_prototype_reviews r WHERE r.prototype_id=candidate.prototype_id
+                AND r.decision='confirmed' AND NOT EXISTS (SELECT 1 FROM voice_prototype_reviews newer
+                WHERE newer.prototype_id=r.prototype_id AND newer.person_id=r.person_id
+                AND (newer.created_at>r.created_at OR (newer.created_at=r.created_at AND newer.review_id>r.review_id)))))
             ORDER BY candidate.quality_score DESC,
               candidate.created_at DESC, candidate.prototype_id DESC
             """
@@ -276,10 +325,6 @@ class PeoplePrototypeRepositoryMixin:
             if person_id is not None and target != person_id:
                 continue
             policy = policies.get(target)
-            if policy is None or float(row["quality_score"]) < float(
-                policy["minimum_quality"]
-            ):
-                continue
             review = self.connection.execute(
                 """
                 SELECT review_id, decision, actor, note, created_at
@@ -290,6 +335,8 @@ class PeoplePrototypeRepositoryMixin:
                 (row["prototype_id"], target),
             ).fetchone()
             review_status = str(review["decision"]) if review is not None else "pending"
+            if review_status != 'confirmed' and (policy is None or float(row['quality_score']) < float(policy['minimum_quality'])):
+                continue
             if status == "pending" and review_status not in {"pending", "uncertain"}:
                 continue
             if status not in {None, "pending"} and review_status != status:

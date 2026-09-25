@@ -215,6 +215,7 @@ onBeforeUnmount(release)
           <article v-for="item in query.data.value?.reminders" :key="item.event_id">
             <span class="status-pill">{{ item.status }}</span>
             <strong>{{ item.title }}</strong>
+            <small v-if="item.source_review_required">来源内容已变化，原提醒继续保留。请重新提取并核对修改候选。</small>
             <small>{{ formatDate(item.scheduled_at) }} · revision {{ item.event_revision }}</small>
           </article>
           <p v-if="!query.data.value?.reminders.length" class="empty-inline">还没有已确认提醒。</p>

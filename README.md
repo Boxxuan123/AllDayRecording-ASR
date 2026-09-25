@@ -81,3 +81,9 @@ npm run build
 - [Computer 端超阈值模块维护计划](docs/V3/computer-maintainability-plan.md)
 
 旧版实现不再作为可执行路径保留；需要追溯时使用 Git 历史。
+
+## 许可
+
+本仓库公开源码仅供查看，并非开源软件。除 GitHub 服务条款和适用法律明确要求的
+权利外，不授予使用、复制、修改、再分发、商业化或创建衍生作品的许可。完整条款见
+[LICENSE](LICENSE)。

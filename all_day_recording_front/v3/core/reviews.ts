@@ -25,6 +25,8 @@ export const VOICE_TRAINING_MIN_SCORE = 0.70
 export const VOICE_TRAINING_MIN_MARGIN = 0.10
 
 export function voiceReviewLane(candidate: VoicePrototypeCandidate): VoiceReviewLane | null {
+  // Mirror the existing server review lane for authoritative manual selections.
+  if (candidate.human_selection === true || candidate.human_selection === 1) return 'primary'
   if (candidate.decision_tier === 'suggested') return 'primary'
   if (candidate.decision_tier !== 'no_known_match') return null
   if (candidate.best_score === null || candidate.best_score < VOICE_TRAINING_MIN_SCORE) return null

@@ -52,3 +52,5 @@ class CorrectUtteranceCommand:
     change_speaker: bool = False
     identity: SelfIdentity | None = None
     change_identity: bool = False
+    sound_kind: str | None = None
+    person_annotation: dict[str, Any] | None = None

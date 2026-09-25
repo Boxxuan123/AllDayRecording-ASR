@@ -87,6 +87,14 @@ class SqliteChangeLogRepository:
         operation: str,
         payload: dict[str, Any] | None,
     ) -> int:
+        if resource_type == "recording_session" and operation == "upsert" and payload is not None:
+            manifest = self.connection.execute(
+                "SELECT json_extract(entries_json, '$.sessionKey') AS session_key "
+                "FROM session_manifests WHERE session_id = ?",
+                (resource_id,),
+            ).fetchone()
+            if manifest is not None and isinstance(manifest["session_key"], str):
+                payload = {**payload, "session_key": manifest["session_key"]}
         cursor = self.connection.execute(
             """
             INSERT INTO change_events (

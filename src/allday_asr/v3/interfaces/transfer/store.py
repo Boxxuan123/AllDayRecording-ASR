@@ -206,6 +206,7 @@ class UploadStore:
         *,
         kind: str | None = None,
         status: str | None = None,
+        relative_paths: set[str] | None = None,
     ) -> list[UploadRecord]:
         if kind is not None and kind not in SUPPORTED_SUFFIXES:
             raise UploadStoreError("kind 只能是 recording 或 manifest")
@@ -216,9 +217,12 @@ class UploadStore:
             for path in sorted(self.state_root.glob("*.json")):
                 if not _UPLOAD_ID_PATTERN.fullmatch(path.stem):
                     continue
-                record = self._refresh_offset(self._load(path.stem))
+                record = self._load(path.stem)
                 if kind is not None and record.kind != kind:
                     continue
+                if relative_paths is not None and record.relative_path not in relative_paths:
+                    continue
+                record = self._refresh_offset(record)
                 if status is not None and record.status != status:
                     continue
                 records.append(record)

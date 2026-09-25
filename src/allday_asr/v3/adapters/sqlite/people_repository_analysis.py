@@ -1,9 +1,12 @@
 from __future__ import annotations
+from .people_sample_eligibility import usable_voice_sample
+from .sound_eligibility import usable_sample
 
 import json
 from typing import Any
 
 from allday_asr.v3.ports.speaker_embeddings import SpeakerClipInput, SpeakerTrackInput
+from allday_asr.v3.domain.sound_kind import sound_uses
 
 from .people_repository_codec import _json, _row, _vectors
 
@@ -34,11 +37,11 @@ class PeopleAnalysisRepositoryMixin:
             )
             SELECT t.speaker_track_id FROM speaker_tracks t
             JOIN canonical_run c ON c.run_id = t.run_id
-            WHERE t.session_id = ? AND NOT EXISTS (
-              SELECT 1 FROM speaker_cluster_memberships m
-              WHERE m.speaker_track_id = t.speaker_track_id
-                AND m.state = 'active'
-            ) ORDER BY t.speaker_track_id
+            WHERE t.session_id = ? AND t.label NOT LIKE 'manual:%' AND t.label NOT LIKE 'sample:%'
+              AND NOT EXISTS (
+                SELECT 1 FROM speaker_cluster_memberships m
+                WHERE m.speaker_track_id = t.speaker_track_id AND m.state = 'active'
+              ) ORDER BY t.speaker_track_id
             """,
             (session_id, session_id),
         ).fetchall()
@@ -57,10 +60,11 @@ class PeopleAnalysisRepositoryMixin:
         result: list[SpeakerTrackInput] = []
         for track in tracks:
             utterances = self.connection.execute(
-                """
-                SELECT utterance_id, start_ms, end_ms
-                FROM utterances
+                f"""
+                SELECT utterance_id, start_ms, end_ms, evidence_json
+                FROM utterances u
                 WHERE session_id = ? AND speaker_track_id = ? AND status = 'active'
+                  AND {usable_sample("u")}
                 ORDER BY (end_ms - start_ms) DESC, start_ms, utterance_id
                 LIMIT 12
                 """,
@@ -68,6 +72,8 @@ class PeopleAnalysisRepositoryMixin:
             ).fetchall()
             clips: list[SpeakerClipInput] = []
             for utterance in utterances:
+                if not sound_uses(json.loads(utterance["evidence_json"]))["sample_candidate_allowed"]:
+                    continue
                 start_ms = int(utterance["start_ms"])
                 end_ms = int(utterance["end_ms"])
                 for segment in segments:
@@ -79,6 +85,10 @@ class PeopleAnalysisRepositoryMixin:
                     source_start = int(segment["source_start_ms"]) + overlap_start - int(
                         segment["session_start_ms"]
                     )
+                    if any(c.media_id == str(segment["media_id"]) and
+                           c.source_start_ms < source_start + clip_end - overlap_start and
+                           c.source_end_ms > source_start for c in clips):
+                        continue
                     clips.append(
                         SpeakerClipInput(
                             media_id=str(segment["media_id"]),
@@ -100,6 +110,13 @@ class PeopleAnalysisRepositoryMixin:
                     )
                 )
         return tuple(result)
+
+    def manual_track_cluster(self, track_id: str) -> str | None:
+        row = self.connection.execute("""SELECT m.cluster_id FROM speaker_tracks t
+            JOIN speaker_cluster_memberships m ON m.speaker_track_id = t.speaker_track_id
+              AND m.state = 'active'
+            WHERE t.speaker_track_id = ? AND t.label LIKE 'manual:%'""", (track_id,)).fetchone()
+        return str(row[0]) if row else None
     def confirmed_enrollment_input(
         self,
         session_id: str,
@@ -135,6 +152,14 @@ class PeopleAnalysisRepositoryMixin:
         ).fetchall()
         clips: list[SpeakerClipInput] = []
         for start_ms, end_ms in windows:
+            excluded = self.connection.execute(
+                f"""SELECT 1 FROM utterances u WHERE session_id = ? AND status = 'active'
+                AND start_ms < ? AND end_ms > ?
+                AND NOT {usable_sample("u")} LIMIT 1""",
+                (session_id, end_ms, start_ms),
+            ).fetchone()
+            if excluded is not None:
+                raise ValueError("声纹样本范围包含已排除的声音片段")
             if start_ms < 0 or end_ms <= start_ms:
                 raise ValueError("confirmed enrollment window is invalid")
             for segment in segments:
@@ -218,14 +243,14 @@ class PeopleAnalysisRepositoryMixin:
         self, model: str, model_version: str
     ) -> tuple[tuple[str, tuple[float, ...]], ...]:
         rows = self.connection.execute(
-            """
+            f"""
             SELECT m.cluster_id, p.vector_json FROM voice_prototypes p
             JOIN speaker_cluster_memberships m
               ON m.speaker_track_id = p.speaker_track_id AND m.state = 'active'
             JOIN speaker_clusters c ON c.cluster_id = m.cluster_id
             LEFT JOIN person_cluster_links l
               ON l.cluster_id = m.cluster_id AND l.status = 'active'
-            WHERE p.status = 'candidate' AND c.status = 'active'
+            WHERE p.status = 'candidate' AND {usable_voice_sample("p")} AND c.status = 'active'
               AND l.link_id IS NULL AND p.model = ? AND p.model_version = ?
             ORDER BY p.created_at, p.prototype_id
             """,
@@ -236,11 +261,14 @@ class PeopleAnalysisRepositoryMixin:
         self, model: str, model_version: str
     ) -> tuple[tuple[str, tuple[float, ...]], ...]:
         rows = self.connection.execute(
-            """
+            f"""
             SELECT p.person_id, p.vector_json FROM voice_prototypes p
             JOIN persons person ON person.person_id = p.person_id
-            WHERE p.status = 'accepted' AND p.human_confirmed = 1
+            WHERE p.status = 'accepted' AND {usable_voice_sample("p")} AND p.human_confirmed = 1
               AND person.kind = 'known'
+              AND p.quality_score >= COALESCE((SELECT minimum_quality
+                FROM person_identity_policy_revisions policy WHERE policy.person_id=p.person_id
+                ORDER BY policy.revision DESC LIMIT 1), 0.5)
               AND p.model = ? AND p.model_version = ?
               AND EXISTS (
                 SELECT 1 FROM person_cluster_links l
@@ -367,7 +395,7 @@ class PeopleAnalysisRepositoryMixin:
               ON v.speaker_track_id = m.speaker_track_id AND v.status = 'candidate'
             LEFT JOIN person_cluster_links l
               ON l.cluster_id = c.cluster_id AND l.status = 'active'
-            WHERE c.status = 'active' AND l.link_id IS NULL
+            WHERE c.status = 'active' AND l.link_id IS NULL AND {usable_voice_sample("v")}
               {session_filter}
             ORDER BY c.cluster_id, v.created_at, v.prototype_id
             """,

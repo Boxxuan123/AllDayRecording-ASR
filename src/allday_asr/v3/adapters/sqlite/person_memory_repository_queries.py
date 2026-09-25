@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .sound_eligibility import confirmed_interaction
 
 import json
 from collections import Counter
@@ -66,7 +67,7 @@ class PersonMemoryQueryRepositoryMixin:
         return tuple(self._memory(row) for row in rows)
     def summary_counts(self) -> dict[str, dict[str, Any]]:
         rows = self.connection.execute(
-            """
+            f"""
             SELECT p.person_id,
               COUNT(DISTINCT CASE WHEN m.status = 'active' THEN m.memory_id END)
                 AS memory_count,
@@ -88,6 +89,8 @@ class PersonMemoryQueryRepositoryMixin:
             LEFT JOIN speaker_tracks track
               ON track.speaker_track_id = membership.speaker_track_id
             LEFT JOIN recording_sessions s ON s.session_id = track.session_id
+              AND EXISTS (SELECT 1 FROM utterances u WHERE u.speaker_track_id = track.speaker_track_id
+                          AND u.status = 'active' AND {confirmed_interaction("u")})
             GROUP BY p.person_id
             """
         ).fetchall()

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .sound_eligibility import usable_content, confirmed_interaction
 
 import json
 import sqlite3
@@ -45,7 +46,7 @@ class SqliteInsightRepository:
         if person is None:
             raise KeyError(f"person does not exist: {person_id}")
         rows = self.connection.execute(
-            """
+            f"""
             SELECT DISTINCT u.utterance_id AS evidence_id
             FROM utterances u
             JOIN speaker_cluster_memberships membership
@@ -55,6 +56,7 @@ class SqliteInsightRepository:
               ON link.cluster_id = membership.cluster_id
              AND link.status = 'active'
             WHERE link.person_id = ? AND u.status = 'active'
+              AND {confirmed_interaction("u")}
             ORDER BY u.start_at, u.utterance_id
             """,
             (person_id,),
@@ -458,6 +460,7 @@ class SqliteInsightRepository:
              AND segment.session_end_ms > u.start_ms
             LEFT JOIN audio_assets asset ON asset.asset_id = segment.asset_id
             WHERE u.utterance_id IN ({placeholders}) AND u.status = 'active'
+              AND {usable_content("u")}
             GROUP BY u.utterance_id
             ORDER BY u.start_at, u.utterance_id
             """,

@@ -85,7 +85,7 @@ class _FakePeople:
         self.reviews = []
 
     def list_review_candidates(self, _person_id, _status, _limit):
-        return tuple(self.candidates)
+        return tuple(value for value in self.candidates if _status is None or value["review_status"] == _status)
 
     def review_prototype(self, prototype_id, person_id, decision, **values):
         self.reviews.append((prototype_id, person_id, decision, values["actor"]))
@@ -197,7 +197,27 @@ def test_review_audio_is_bound_to_a_current_sample_and_loudness_normalized(
         ("GET", "/device/v3/reviews"),
         ("POST", "/device/v3/reviews/action"),
         ("POST", "/device/v3/reviews/audio"),
+        ("POST", "/device/v3/annotations"),
     ],
 )
 def test_device_auth_binding_allows_only_the_review_contract(method: str, path: str) -> None:
     RequestBinding.for_request(method=method, path=path, body=b"{}" if method == "POST" else b"")
+
+
+def test_discovery_exposes_and_plays_cluster_samples(monkeypatch):
+    service, people = _service()
+    original = service.core.desktop.list_reviews(500)[0]
+    discovery = {**original, "source_id": "cluster", "context": {"voice_mode": "speaker_discovery"}}
+    monkeypatch.setattr(service.core.desktop, "list_reviews", lambda limit: [discovery])
+    people.cluster = lambda cluster_id: {
+        "members": [{"speaker_track_id": "track-1", "session_id": "session-1"}],
+        "prototypes": [{**people.candidates[1], "status": "candidate"}],
+    }
+    monkeypatch.setattr("allday_asr.v3.interfaces.device_reviews._normalized_review_audio",
+                        lambda *args, **kwargs: b"RIFFsample")
+    item = service.snapshot()["items"][0]
+    assert item["context"]["voice_candidates"][0]["session_id"] == "session-1"
+    response = service.audio({"review_id": item["review_id"], "prototype_id": "weak"})
+    assert response["end_ms"] == 2000
+    with pytest.raises(DeviceConflictError):
+        service.audio({"review_id": item["review_id"], "prototype_id": "strong"})

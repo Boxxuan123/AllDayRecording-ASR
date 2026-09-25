@@ -27,7 +27,7 @@ def dispatch_review_get(handler, path: str) -> bool:
 
 
 def dispatch_review_post(handler, path: str) -> bool:
-    if path not in {_V3_REVIEW_ACTION_PATH, _V3_REVIEW_AUDIO_PATH}:
+    if path not in {_V3_REVIEW_ACTION_PATH, _V3_REVIEW_AUDIO_PATH, "/device/v3/annotations"}:
         return False
     if handler.server.v3_gateway is None:
         handler._send_error(HTTPStatus.NOT_FOUND, "接口不存在")
@@ -37,7 +37,7 @@ def dispatch_review_post(handler, path: str) -> bool:
     device = handler._authenticate_device_request(binding)
     try:
         payload = handler._decode_json(raw)
-        response = (
+        response = handler.server.v3_gateway.annotations(device.device_id, payload) if path == "/device/v3/annotations" else (
             handler.server.v3_gateway.resolve_review(device.device_id, payload)
             if path == _V3_REVIEW_ACTION_PATH
             else handler.server.v3_gateway.review_audio(device.device_id, payload)

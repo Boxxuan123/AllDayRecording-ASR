@@ -60,6 +60,7 @@ export interface ReminderSchedule {
   status: 'scheduled' | 'delivered' | 'completed' | 'cancelled' | 'stale'
   delivered_at: string | null
   event_status: string
+  source_review_required?: boolean
 }
 
 export interface CodexReminderGeneration {

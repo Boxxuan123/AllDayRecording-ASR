@@ -218,11 +218,19 @@ class PeoplePrototypeMixin:
         with self._uow_factory() as uow:
             if uow.people.person_kind(person_id) != PersonKind.KNOWN.value:
                 raise ValueError("known-person prototype review cannot target self")
-            candidate = uow.people.prototype_candidate(prototype_id)
+            candidate = (uow.people.prototype_retraction_target(prototype_id, person_id)
+                         if decision == 'retracted' else uow.people.prototype_candidate(prototype_id))
+            if decision == "confirmed":
+                if (candidate['model'], candidate['model_version']) != (self._provider.model, self._provider.model_version):
+                    raise ValueError('样本模型版本已变化，不能采纳旧版本')
+                policy = uow.people.identity_policy(person_id)
+                if float(candidate["quality_score"]) < float(policy["minimum_quality"]):
+                    raise ValueError("样本未达到此人物当前的质量策略，不能采纳")
             current_review = uow.people.latest_prototype_review(
                 prototype_id, person_id
             )
-            cluster = uow.people.cluster_detail(str(candidate["active_cluster_id"]))
+            cluster = (uow.people.cluster_detail(str(candidate["active_cluster_id"]))
+                       if decision == 'confirmed' else None)
         current_decision = (
             str(current_review["decision"]) if current_review is not None else None
         )
@@ -253,6 +261,10 @@ class PeoplePrototypeMixin:
                 )
         review_id = new_ulid()
         with self._uow_factory() as uow:
+            if decision == 'confirmed':
+                latest = uow.people.prototype_candidate(prototype_id)
+                if (latest['model'], latest['model_version']) != (self._provider.model, self._provider.model_version):
+                    raise ValueError('样本模型版本已变化，不能采纳旧版本')
             review = uow.people.add_prototype_review(
                 review_id=review_id,
                 accepted_prototype_id=f"accepted-{review_id}",

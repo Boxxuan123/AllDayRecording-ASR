@@ -182,6 +182,23 @@ def _workspace_directory():
 
 
 class UploadStoreTests(unittest.TestCase):
+    def test_scoped_verification_ignores_unrelated_audio_but_detects_target_corruption(self) -> None:
+        with _workspace_directory() as temporary:
+            store = UploadStore(temporary / "inbox")
+            for name in ("current/a.wav", "unrelated/b.wav"):
+                record, _ = store.create_upload(relative_path=name, size=4,
+                                                sha256=_digest(b"safe"), kind="recording")
+                store.append_chunk(record.upload_id, offset=0, data=b"safe")
+            (store.root / "unrelated/b.wav").write_bytes(b"evil")
+            selected = store.list_uploads(kind="recording", status="completed",
+                                          relative_paths={"current/a.wav"})
+            self.assertEqual([item.relative_path for item in selected], ["current/a.wav"])
+            (store.root / "current/a.wav").write_bytes(b"evil")
+            with self.assertRaises(UploadConflictError):
+                store.list_uploads(kind="recording", status="completed",
+                                   relative_paths={"current/a.wav"})
+
+
     def test_upload_resumes_after_restart_and_finishes_without_overwrite(self) -> None:
         with _workspace_directory() as temporary:
             inbox = temporary / "inbox"

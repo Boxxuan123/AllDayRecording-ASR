@@ -38,6 +38,8 @@ class SpeakerIdentityService(
         self._policy = policy or ClusterMatchPolicy()
         self._self_identity_matcher = self_identity_matcher
         self._now = now or (lambda: datetime.now(timezone.utc))
+        from .annotation_samples import AnnotationSampleWorker
+        self.sample_worker = AnnotationSampleWorker(self)
 
 
 __all__ = ["SpeakerIdentityService"]

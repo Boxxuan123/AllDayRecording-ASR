@@ -75,6 +75,7 @@ class OperationReceipt:
     status: ClientOperationStatus
     resource_revision: int | None
     error: dict[str, Any] | None
+    resource_results: tuple[dict[str, Any], ...] | None = None
 
     def __post_init__(self) -> None:
         if not self.operation_id:
@@ -97,6 +98,7 @@ class OperationReceipt:
             "status": self.status.value,
             "resource_revision": self.resource_revision,
             "error": self.error,
+            **({"resource_results": list(self.resource_results)} if self.resource_results is not None else {}),
         }
 
 

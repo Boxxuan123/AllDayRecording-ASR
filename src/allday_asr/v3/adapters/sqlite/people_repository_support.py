@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .sound_eligibility import usable_content
 
 import sqlite3
 from typing import Any
@@ -10,10 +11,11 @@ from .people_repository_codec import _json
 class PeopleRepositorySupportMixin:
     def _cluster_utterance_ids(self, cluster_id: str) -> tuple[str, ...]:
         rows = self.connection.execute(
-            """
+            f"""
             SELECT u.utterance_id FROM speaker_cluster_memberships m
             JOIN utterances u ON u.speaker_track_id = m.speaker_track_id
             WHERE m.cluster_id = ? AND m.state = 'active' AND u.status = 'active'
+              AND {usable_content("u")}
               AND u.run_id = (
                 SELECT p.run_id FROM processing_runs p
                 LEFT JOIN processing_jobs j ON j.run_id = p.run_id

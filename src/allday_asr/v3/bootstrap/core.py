@@ -96,6 +96,7 @@ class V3Core:
         return version
 
     def close(self) -> None:
+        self.people.sample_worker.close()
         self.semantic_events.close()
         self.reminder_extraction.close()
         self.insights.close()
@@ -117,10 +118,6 @@ def compose_v3_core(
     database = V3Database(selected.database_path)
     audio_store = ContentAddressedStore(selected.audio_store_path)
     artifact_store = ContentAddressedStore(selected.artifact_store_path)
-    mobile_sync = MobileSyncService(
-        lambda: SqliteUnitOfWork(database),
-        operation_handler=UtteranceCorrectionOperationHandler(),
-    )
     admission = AdmissionService(lambda: SqliteUnitOfWork(database))
     processing = DurableProcessingService(
         lambda: SqliteUnitOfWork(database), artifact_store
@@ -143,6 +140,10 @@ def compose_v3_core(
             if self_identity_matcher is not None
             else CalibratedSelfIdentityMatcher(selected.state_dir)
         ),
+    )
+    mobile_sync = MobileSyncService(
+        lambda: SqliteUnitOfWork(database),
+        operation_handler=UtteranceCorrectionOperationHandler(),
     )
     person_memory = PersonMemoryService(lambda: SqliteUnitOfWork(database))
     reminders = IntelligentReminderService(

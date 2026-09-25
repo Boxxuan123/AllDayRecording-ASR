@@ -40,6 +40,7 @@ from .desktop_routes_post import DesktopPostRoutesMixin
 class V3DesktopApplication:
     def __init__(self, core: V3Core, *, token: str | None = None) -> None:
         self.core = core
+        self.core.people.sample_worker.start()
         self.automatic_workflows = AutomaticWorkflowStateStore(
             core.paths.state_dir / "automation"
         )
@@ -137,7 +138,7 @@ class V3DesktopRequestHandler(
                 str(exc),
                 request_id=request_id,
             )
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
         except Exception:
             self._send_error(
@@ -394,7 +395,7 @@ class V3DesktopRequestHandler(
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "connect-src 'self'; media-src 'self'; img-src 'self'; "
+            "connect-src 'self'; media-src 'self' blob:; img-src 'self'; "
             "frame-ancestors 'none'",
         )
 

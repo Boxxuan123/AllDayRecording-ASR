@@ -38,6 +38,19 @@ class DesktopReviewQueryMixin:
         from . import desktop_repository as compatibility
 
         items: list[dict[str, Any]] = []
+        mapping_rows = self.connection.execute("""SELECT * FROM utterances
+            WHERE status = 'active' AND json_type(evidence_json, '$.annotation_review') = 'object'
+            ORDER BY updated_at DESC LIMIT ?""", (limit,)).fetchall()
+        for row in mapping_rows:
+            review = json.loads(row["evidence_json"])["annotation_review"]
+            items.append({"review_id": f"annotation_mapping:{row['utterance_id']}",
+                "kind": "voice_identity", "priority": "high", "source_id": row["utterance_id"],
+                "source_revision": row["revision"], "session_id": row["session_id"], "person_id": None,
+                "title": "重跑后的人工归属需核对", "summary": row["text"],
+                "reason": "ambiguous_audio_mapping", "evidence_count": 1,
+                "created_at": row["created_at"], "updated_at": row["updated_at"],
+                "context": {"voice_mode": "annotation_mapping", "evidence_utterance_ids": [row["utterance_id"]],
+                            "annotation_candidates": review.get("candidates", [])}})
         # A processing state is not a human decision. Failures and retryable
         # waiting stages remain visible in the processing center. A future
         # irreversible data-risk gate must be explicitly typed before it can
@@ -65,6 +78,7 @@ class DesktopReviewQueryMixin:
                     "created_at": str(candidate["created_at"]),
                     "updated_at": str(candidate["created_at"]),
                     "context": {
+                        "evidence_utterance_ids": list(evidence),
                         "operation": str(candidate["operation"]),
                         "scheduled_at": candidate.get("scheduled_at"),
                         "location": candidate.get("location"),
@@ -121,6 +135,7 @@ class DesktopReviewQueryMixin:
                     "created_at": str(row["created_at"]),
                     "updated_at": str(row["created_at"]),
                     "context": {
+                        "evidence_utterance_ids": list(evidence),
                         "proposal_kind": str(row["kind"]),
                         "layer": str(row["layer"]),
                         "producer": str(row["producer"]),
@@ -201,6 +216,9 @@ class DesktopReviewQueryMixin:
                     "created_at": str(row["created_at"]),
                     "updated_at": str(row["created_at"]),
                     "context": {
+                        "evidence_utterance_ids": [str(e[0]) for e in self.connection.execute(
+                            "SELECT utterance_id FROM person_memory_evidence WHERE memory_id = ? AND memory_revision = ? ORDER BY created_at, link_id",
+                            (row["memory_id"], row["revision"])).fetchall()],
                         "memory_kind": str(row["kind"]),
                         "confirmation_status": str(row["confirmation_status"]),
                         "confidence": float(row["confidence"]),
@@ -214,13 +232,21 @@ class DesktopReviewQueryMixin:
             self.connection
         ).list_review_candidates(None, "pending", limit)
         voice_groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        manual_counts: dict[str, int] = {}
         for candidate in voice_candidates:
+            manual = bool(candidate.get("human_selection"))
             if (
                 voice_review_disposition(candidate)
                 is not ReviewDisposition.REVIEW_REQUIRED
+                and not manual
             ):
                 continue
-            lane = "primary"
+            lane = "training" if manual else "primary"
+            if manual:
+                person_id = str(candidate["person_id"])
+                if manual_counts.get(person_id, 0) >= 3:
+                    continue
+                manual_counts[person_id] = manual_counts.get(person_id, 0) + 1
             key = (
                 str(candidate["cluster_id"]),
                 str(candidate["person_id"]),
@@ -259,7 +285,7 @@ class DesktopReviewQueryMixin:
                     "summary": (
                         f"{len(candidates)} 条声音共同指向 {person_name}"
                         if lane == "primary"
-                        else f"{len(candidates)} 条接近阈值的声音可用于改进 {person_name} 的识别"
+                        else f"已确认人物的 {len(candidates)} 条样本待检查音质与混声；可选，不必全部审核"
                     ),
                     "reason": "voice_identity_requires_confirmation",
                     "evidence_count": len(clips),

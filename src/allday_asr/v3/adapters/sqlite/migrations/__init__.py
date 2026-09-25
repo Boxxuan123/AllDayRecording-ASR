@@ -1,4 +1,8 @@
+from .v015_annotation_receipts import SQL as V015_SQL
+from .v013_annotation_facts import SQL as V013_SQL
+from .v014_annotation_samples import SQL as V014_SQL
 from allday_asr.v3.adapters.sqlite.migration_runner import V3Migration
+from allday_asr.v3.adapters.sqlite.migrations.v012_session_sync_identity import SQL as V012_SQL
 from allday_asr.v3.adapters.sqlite.migrations.v001_core import SQL as V001_SQL
 from allday_asr.v3.adapters.sqlite.migrations.v002_device_sync import (
     SQL as V002_SQL,
@@ -40,6 +44,10 @@ MIGRATIONS = (
     V3Migration(version=9, name="v35_cross_day_person_memory", sql=V009_SQL),
     V3Migration(version=10, name="v36_daily_insights", sql=V010_SQL),
     V3Migration(version=11, name="v37_layered_speaker_identity", sql=V011_SQL),
+    V3Migration(version=12, name="phone_session_sync_identity", sql=V012_SQL),
+    V3Migration(version=13, name="versioned_audio_annotations", sql=V013_SQL),
+    V3Migration(version=14, name="durable_annotation_samples", sql=V014_SQL),
+    V3Migration(version=15, name="annotation_receipt_recovery", sql=V015_SQL),
 )
 
 __all__ = ["MIGRATIONS"]
