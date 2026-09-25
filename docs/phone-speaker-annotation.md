@@ -272,3 +272,14 @@ C-AUDIO-2 原因是 accepted_grant 被音频模式白名单拒绝。现在允许
 桌面另以真实 Edge 执行生产 Vue 组件的开始/完成/停止、错误、换候选、重建与隐藏事件；还运行构建后的 PeopleView + 实际认证 HTTP + SQLite + FFmpeg，完成 9 秒串播、实际采纳、历史复听和不依赖试听的撤回。手机执行真实 ViewModel、审核播放器与公共播放器，只有原生媒体/文件接口被替身模拟。未做手机真机听音、通知或系统后台交互验收；独立全页面 CompileArkTS 任务在当前 SDK 未注册，保留尝试日志，不把 Host 编译说成全页面构建成功。未声称真实识别率提升。
 
 所有失败、中间装配修正、环境失败、最终通过日志及精确命令见本轮审核包 README 和 validation；独立审核原附件也原样保存。原跨端样本闭环仍用合成零 WAV 替换裁剪；本轮新增音频测试和实际桌面闭环才使用真实 extract_clip + 合成波形，数值声纹模型是固定向量。
+
+## 手机声音审核候选证据（2026-09-25）
+
+设备审核快照的 `context.voice_candidates[]` 增加向后兼容字段：
+
+- `evidence_utterances[]`：每条映射包括 `utterance_id`、`revision`、`session_id`、`utterance_start_ms/end_ms`、`window_index`、`media_id`、`clip_start_ms/end_ms`、`session_start_ms/end_ms`。clip 时间是不可变媒体时间；session 时间由唯一 capture segment 的 source/session 偏移得出；utterance 时间表示用户要确认的完整原句。仅包含与窗口实际重叠的当前 active 原句，不扩展同轨道发言。
+- `review_key`：当前候选公开内容（含证据版本、来源/试听信息、审核状态）的 SHA-256 指纹。`resolve` 可携带 `expected_review_key`；与当前权威快照不一致时在调用人物审核用例前返回冲突。旧客户端不携带该字段时仍兼容原行为；这不是一个新的完成状态或幂等操作账本。
+
+歧义媒体复用、跨 capture 的窗口、缺失映射返回空证据，不猜测。缺少原句映射不影响已有完整音频审核；音频不可用不影响单样本撤回。未知声音的手机快捷认人使用明确原句选择的既有人工事实事务，不调用整聚类 create-and-label，不自动采纳或关闭发现任务。
+
+测试：`pytest tests/test_phone_voice_review_flow.py tests/test_v3_device_reviews.py tests/test_review_audio_guards.py tests/test_review_audio_boundaries.py tests/test_v3_review_policy.py tests/test_v3_contracts.py -q`，39 passed。新增测试覆盖 5 窗口/81 句、真实 source/session 偏移、歧义映射、不同候选不串证据、旧指纹阻断和单候选决定。

@@ -10,6 +10,7 @@ from uuid import uuid4
 from allday_asr.v3.adapters.audio.tools import extract_clip
 from allday_asr.v3.interfaces.transfer.devices import DeviceConflictError
 from .review_audio import audio_plan, concatenate
+from .review_evidence import candidate_evidence, candidate_key
 
 
 MAX_REVIEW_AUDIO_BYTES = 16 * 1024 * 1024
@@ -75,9 +76,18 @@ class DeviceReviewService:
                     'prototype_ids': [candidate['prototype_id']],
                     'voice_candidates': [_public_voice_candidate(candidate)]},
             })
+        details = {}
         for item in items:
             for candidate in item.get("context", {}).get("voice_candidates", []):
                 candidate.update(self.audio_description(candidate))
+                session_id = candidate['session_id']
+                if session_id not in details:
+                    try:
+                        details[session_id] = self.core.desktop.session_detail(session_id)
+                    except (KeyError, ValueError, AttributeError):
+                        details[session_id] = {}
+                candidate['evidence_utterances'] = candidate_evidence(candidate, details[session_id])
+                candidate['review_key'] = candidate_key(candidate)
         return {"items": items}
 
     def resolve(
@@ -120,6 +130,11 @@ class DeviceReviewService:
                     raise DeviceConflictError(
                         "voice sample no longer belongs to this review"
                     )
+                expected = payload.get('expected_review_key')
+                current = next((c for c in context.get('voice_candidates', [])
+                                if c['prototype_id'] == prototype_id), None)
+                if expected is not None and (current is None or expected != current.get('review_key')):
+                    raise DeviceConflictError('voice sample or authorization changed; reload before deciding')
                 result = self.core.people.review_prototype(
                     prototype_id,
                     str(item["person_id"]),
