@@ -4,10 +4,12 @@
 
 ## 版本与差异
 
-两个仓库均保持 master，无 checkout/提交/推送：
+两个仓库均保持 master。以下是原实施记录写于提交前的基底：
 - 本仓库起止 HEAD：04e2e7f994025c1df0e2f653dd83404c9e11582a；初始干净。
 - 手机起止 HEAD：fe872618fe8ecd7d205dfe236767c91640985768；初始有用户未跟踪 tests/，其原样例保留。
-- 检查两仓库及祖先路径未发现适用 AGENTS.md；当前 HEAD 不包含本轮未提交差异，以 git diff/status 为准。
+- 检查两仓库及祖先路径未发现适用 AGENTS.md。
+
+后来第一阶段已经正常提交并推送：电脑 `895c294f32480b7b34817e9dbab86b1a86ddf443`，手机 `763f95a01bac7b0ff5e8ba5bc45bd0b8340e8a99`。上述旧 HEAD 是实施基底，不是交付版本。第二阶段结果见 [sync-phase2a-acceptance.md](sync-phase2a-acceptance.md)。
 
 本仓库修改：
 - src/allday_asr/v3/interfaces/transfer/composition.py：从监听线程分离 TLS 握手，最多 32 个连接工作线程、5 秒握手超时、超限关闭、服务关闭释放。等待网络时不持共享锁，保留原认证、CA、证书重载能力。

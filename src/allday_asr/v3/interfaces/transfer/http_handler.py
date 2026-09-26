@@ -96,7 +96,7 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
                  '/device/v3/annotations', '/api/v1/status', '/api/v1/uploads'}
         self.diagnostic_path = path if path in known else (
             '/api/v1/uploads/:id' if _UPLOAD_PATH.fullmatch(path) else '/other')
-        logger.info('transfer id=%s client_id=%s phase=request start method=%s path=%s',
+        logger.debug('transfer id=%s client_id=%s phase=request start method=%s path=%s',
                     self.request_id, self.client_request_id, self.command, self.diagnostic_path)
         try:
             callback()
@@ -159,8 +159,10 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
                 "接收服务内部错误",
             )
         finally:
-            logger.info('transfer id=%s phase=response end status=%s ms=%.1f',
-                        self.request_id, self.response_status, (time.monotonic() - started) * 1000)
+            log = logger.warning if self.response_status >= 400 or self.response_status == 0 else logger.debug
+            log('transfer id=%s client_id=%s method=%s path=%s phase=response end status=%s ms=%.1f',
+                self.request_id, self.client_request_id, self.command, self.diagnostic_path,
+                self.response_status, (time.monotonic() - started) * 1000)
 
     def _dispatch_get(self) -> None:
         path = urlparse(self.path).path

@@ -114,3 +114,19 @@ def test_internal_error_has_safe_correlated_stack(monkeypatch, caplog):
             assert 'sensitive' not in caplog.text + json.dumps(body)
         finally:
             client.close()
+
+
+def test_successful_polling_is_quiet_at_info(monkeypatch, caplog):
+    monkeypatch.setattr(TransferRequestHandler, '_dispatch_get', lambda handler: handler._send_json(200, {'ok': True}))
+    with caplog.at_level(logging.INFO), running_server() as (server, context):
+        for _ in range(12):
+            client = http.client.HTTPSConnection('127.0.0.1', server.port, context=context, timeout=2)
+            try:
+                client.request('GET', '/healthz')
+                response = client.getresponse()
+                response.read()
+                assert response.status == 200
+            finally:
+                client.close()
+        assert not [r for r in caplog.records if r.levelno == logging.INFO and 'transfer id=' in r.message]
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
