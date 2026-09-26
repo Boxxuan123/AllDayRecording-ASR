@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import secrets
 import ssl
+import socket
+import threading
 from http.server import ThreadingHTTPServer
 from collections.abc import Mapping
 from pathlib import Path
@@ -45,6 +47,8 @@ from .protocol import (
 class TransferHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    max_connections = 32
+    handshake_timeout = 5.0
 
     def __init__(
         self,
@@ -70,12 +74,69 @@ class TransferHTTPServer(ThreadingHTTPServer):
         self.upload_completed = upload_completed
         self.v3_gateway = v3_gateway
         self.annotation_sample_worker = None
+        self._connections: dict[socket.socket, threading.Thread] = {}
+        self._connection_lock = threading.Lock()
+        self._closing = False
         super().__init__(server_address, TransferRequestHandler)
 
+    @property
+    def active_connection_count(self) -> int:
+        with self._connection_lock:
+            return len(self._connections)
+
+    def process_request(self, request, client_address):
+        # The listener is always plain TCP. No handshake or blocking capacity wait
+        # is allowed in the accept loop. Bound *all* connection workers.
+        with self._connection_lock:
+            if self._closing or len(self._connections) >= self.max_connections:
+                self.shutdown_request(request)
+                return
+            if self.tls_context is not None:
+                request.settimeout(self.handshake_timeout)
+                request = self.tls_context.wrap_socket(
+                    request, server_side=True, do_handshake_on_connect=False)
+            worker = threading.Thread(target=self._serve_connection,
+                                      args=(request, client_address), daemon=True,
+                                      name='transfer-connection')
+            self._connections[request] = worker
+            try:
+                worker.start()
+            except Exception:
+                del self._connections[request]
+                self.shutdown_request(request)
+                raise
+
+    def _serve_connection(self, request, client_address):
+        try:
+            if isinstance(request, ssl.SSLSocket):
+                request.do_handshake()
+            self.finish_request(request, client_address)
+        except (OSError, TimeoutError):
+            # An incomplete handshake is not an HTTP request or a business receipt.
+            pass
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
+            with self._connection_lock:
+                self._connections.pop(request, None)
+
     def server_close(self):
+        with self._connection_lock:
+            self._closing = True
+            connections = list(self._connections.items())
+        super().server_close()
+        for connection, _ in connections:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
+        for _, worker in connections:
+            if worker is not threading.current_thread():
+                worker.join(self.handshake_timeout + 1)
         if self.annotation_sample_worker is not None:
             self.annotation_sample_worker.close()
-        super().server_close()
 
     @property
     def port(self) -> int:
@@ -246,10 +307,4 @@ def create_transfer_server(
     if v3_core is not None:
         server.annotation_sample_worker = v3_core.people.sample_worker
         server.annotation_sample_worker.start()
-    if tls_context is not None:
-        try:
-            server.socket = tls_context.wrap_socket(server.socket, server_side=True)
-        except Exception:
-            server.server_close()
-            raise
     return server

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 import secrets
+import logging
+import re
+import time
+import traceback
+from pathlib import Path
 from collections.abc import Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import urlparse
+from allday_asr.v3.domain.ids import new_ulid
 
 from .devices import (
     DEVICE_CHALLENGE_HEADER,
@@ -45,6 +51,23 @@ from .store import (
     UploadOffsetError,
     UploadStoreError,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def safe_exception_stack(exc: BaseException) -> str:
+    """Keep frame/function/line and cause types, never payloads, locals or paths."""
+    parts = []
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        parts.append(type(exc).__name__)
+        for frame in traceback.extract_tb(exc.__traceback__):
+            parts.append(f'{Path(frame.filename).name}:{frame.name}:{frame.lineno}')
+        exc = exc.__cause__ or exc.__context__
+    return ' <- '.join(parts)
+
+
 class TransferRequestHandler(BaseHTTPRequestHandler):
     server: Any
     server_version = "AllDayRecordingTransfer/2"
@@ -60,6 +83,21 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         self._handle(self._dispatch_put)
 
     def _handle(self, callback) -> None:
+        candidate = self.headers.get('XAllDayRequestId', self.headers.get('X-AllDay-Request-ID', ''))
+        self.request_id = new_ulid()
+        self.client_request_id = candidate if re.fullmatch(r'[A-Za-z0-9-]{1,80}', candidate) else ''
+        started = time.monotonic()
+        self.response_status = 0
+        # Paths can contain resource IDs; redact dynamic suffixes and query strings.
+        path = urlparse(self.path).path
+        known = {_V3_STATUS_PATH, _V3_SYNC_PATH, _DEVICE_CHALLENGE_PATH,
+                 _REGISTER_OPTIONS_PATH, _REGISTER_VERIFY_PATH, _AUTHENTICATE_OPTIONS_PATH,
+                 '/device/v3/reviews', '/device/v3/reviews/action', '/device/v3/reviews/audio',
+                 '/device/v3/annotations', '/api/v1/status', '/api/v1/uploads'}
+        self.diagnostic_path = path if path in known else (
+            '/api/v1/uploads/:id' if _UPLOAD_PATH.fullmatch(path) else '/other')
+        logger.info('transfer id=%s client_id=%s phase=request start method=%s path=%s',
+                    self.request_id, self.client_request_id, self.command, self.diagnostic_path)
         try:
             callback()
         except UploadNotFoundError as exc:
@@ -115,11 +153,14 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             return
         except Exception as exc:
-            self.log_error("unhandled transfer error: %r", exc)
+            logger.error('transfer id=%s category=internal stack=%s', self.request_id, safe_exception_stack(exc))
             self._send_error(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "接收服务内部错误",
             )
+        finally:
+            logger.info('transfer id=%s phase=response end status=%s ms=%.1f',
+                        self.request_id, self.response_status, (time.monotonic() - started) * 1000)
 
     def _dispatch_get(self) -> None:
         path = urlparse(self.path).path
@@ -460,20 +501,19 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         headers: dict[str, str] | None = None,
     ) -> None:
         if urlparse(self.path).path.startswith("/device/v3/"):
-            from allday_asr.v3.domain.ids import new_ulid
-
             self._send_json(
                 status,
                 {
                     "code": status.name,
                     "message": message,
                     "details": {},
-                    "request_id": new_ulid(),
+                    "request_id": self.request_id,
                 },
                 headers=headers,
             )
             return
-        self._send_json(status, {"error": message}, headers=headers)
+        self._send_json(status, {"error": message, "code": status.name,
+                                 "request_id": self.request_id}, headers=headers)
 
     def _send_json(
         self,
@@ -483,7 +523,9 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         headers: dict[str, str] | None = None,
     ) -> None:
         data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        self.response_status = int(status)
         self.send_response(status)
+        self.send_header('X-AllDay-Request-ID', self.request_id)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
@@ -496,4 +538,5 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def log_message(self, format: str, *args) -> None:
-        print(f"[transfer] {self.address_string()} {format % args}")
+        # BaseHTTPRequestHandler's default access line includes raw user paths.
+        return
