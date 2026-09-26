@@ -7,6 +7,7 @@ import json
 import sys
 import time
 import threading
+import socket
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -57,6 +58,27 @@ server = create_transfer_server(inbox=root / 'inbox', host='127.0.0.1', port=191
 original_append = server.store.append_chunk
 original_sync = gateway.synchronize
 evidence = {'upload_bytes': 0, 'upload_complete': False, 'receipts': []}
+control = root / 'fault.json'
+
+
+def fault_mode():
+    try:
+        return json.loads(control.read_text()).get('mode', '')
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ''
+
+
+# Local file only; the isolated server never exposes a fault-control API.
+class IsolatedFaultHandler(server.RequestHandlerClass):
+    def _handle(self, callback):
+        if fault_mode() == 'offline':
+            self.connection.shutdown(socket.SHUT_RDWR)
+            self.close_connection = True
+            return
+        super()._handle(callback)
+
+
+server.RequestHandlerClass = IsolatedFaultHandler
 publish_lock = threading.Lock()
 
 def publish():
@@ -87,12 +109,23 @@ def observed_complete(*pos, **kw):
     return result
 
 def observed_sync(key, payload):
+    mode = fault_mode()
+    if mode == '500-once':
+        control.write_text('{}')
+        evidence['injected_500_at'] = time.time()
+        publish()
+        raise RuntimeError('synthetic recoverable failure')
     result = original_sync(key, payload)
     for receipt in result['receipts']:
         evidence['receipts'].append({'operation_id': receipt['operation_id'], 'status': receipt['status'],
             'at': time.time(), 'upload_bytes': evidence['upload_bytes'],
             'upload_complete': evidence['upload_complete']})
     publish()
+    if mode == 'drop-once' and result['receipts']:
+        control.write_text('{}')
+        evidence['dropped_response_at'] = time.time()
+        publish()
+        raise ConnectionResetError('synthetic response loss after commit')
     return result
 
 server.store.append_chunk = slow_append
