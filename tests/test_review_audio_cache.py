@@ -38,7 +38,14 @@ def test_restart_corruption_missing_partial_and_bounds(tmp_path):
     assert not list(tmp_path.glob('*.part'))
 
 
-def test_coalescing_priority_and_failure_retry(tmp_path):
+def test_coalescing_priority_and_failure_retry(tmp_path, monkeypatch):
+    from allday_asr.v3.adapters.audio import review_cache
+    selected = []
+    def observe_selection(items, **kwargs):
+        chosen = min(items, **kwargs)
+        selected.append(chosen[2])
+        return chosen
+    monkeypatch.setattr(review_cache, 'min', observe_selection, raising=False)
     cache = ReviewAudioCache(tmp_path)
     gate = threading.Event()
     started = threading.Barrier(3)
@@ -65,6 +72,7 @@ def test_coalescing_priority_and_failure_retry(tmp_path):
             future.result(timeout=5)
         assert high.result() == joined.result()
         assert cache.stats['renders'] == 4
+        assert selected[-2:] == [key('high'), key('low')]
     with pytest.raises(ValueError, match='synthetic'):
         cache.get(key('failed'), lambda: (_ for _ in ()).throw(ValueError('synthetic')))
     assert cache.get(key('failed'), lambda: b'retry') == (b'retry', False)

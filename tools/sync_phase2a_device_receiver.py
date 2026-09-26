@@ -84,7 +84,7 @@ class IsolatedFaultHandler(server.RequestHandlerClass):
             return
         super()._handle(callback)
 
-    def _send_json(self, status, payload):
+    def _send_json(self, status, payload, *, headers=None):
         if self.path == '/device/v3/reviews/audio' and fault_mode() == 'audio-interrupt-once':
             control.write_text('{}')
             data = json.dumps(payload).encode()
@@ -97,7 +97,7 @@ class IsolatedFaultHandler(server.RequestHandlerClass):
             self.connection.shutdown(socket.SHUT_RDWR)
             self.close_connection = True
             return
-        super()._send_json(status, payload)
+        super()._send_json(status, payload, headers=headers)
 
 
 server.RequestHandlerClass = IsolatedFaultHandler
