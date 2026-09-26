@@ -34,7 +34,7 @@ def selected(label, path):
         return (path.endswith('.ets') and path.startswith((
             'phone/src/main/ets/', 'phone/src/test/', 'common/src/main/ets/'))
             or path.startswith('tools/quality/') and path.endswith(('.cjs', '.mjs', '.ps1', '.ets', '.md', '.py'))
-            or path in ('tests/ui/run_bcd.py', 'tests/ui/testcases/PhoneSyncBCD.py', 'tests/ui/testcases/PhoneSyncBCD.json', 'doc/SYNC_OPTIMIZATION_FINAL_ACCEPTANCE.md', 'contracts/v3/source.json', 'tests/ui/main.py', 'tests/ui/run_phase2a.py', 'tests/ui/run_phase1.py',
+            or path in ('tests/ui/testcases/PhoneSyncBCDCleanup.py', 'tests/ui/testcases/PhoneSyncBCDCleanup.json', 'tests/ui/run_bcd.py', 'tests/ui/testcases/PhoneSyncBCD.py', 'tests/ui/testcases/PhoneSyncBCD.json', 'doc/SYNC_OPTIMIZATION_FINAL_ACCEPTANCE.md', 'contracts/v3/source.json', 'tests/ui/main.py', 'tests/ui/run_phase2a.py', 'tests/ui/run_phase1.py',
                         'tests/ui/testcases/PhonePhase2Production.py', 'tests/ui/testcases/PhoneOfflineAnnotation.py',
                         'tests/ui/testcases/PhoneSyncInteraction.py', 'doc/SYNC_PHASE2A_ACCEPTANCE.md',
                         'doc/SYNC_PHASE2A_CLOSEOUT.md', 'doc/CURRENT_ARCHITECTURE.md',
