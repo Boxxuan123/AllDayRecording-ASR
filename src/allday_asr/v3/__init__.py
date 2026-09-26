@@ -1,6 +1,6 @@
 """AllDayRecording V3 product runtime."""
 
-CONTRACT_VERSION = "3.7.0"
+CONTRACT_VERSION = "3.7.1"
 PROJECTION_VERSION = 4
 
 __all__ = ["CONTRACT_VERSION", "PROJECTION_VERSION"]

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Review audio cache extension v1",
+  "description": "Optional on legacy peers. Content identity binds immutable source versions, ordered windows and renderer settings; it never grants review authority.",
+  "type": "object",
+  "required": [
+    "audio_content_key",
+    "sha256",
+    "byte_length"
+  ],
+  "properties": {
+    "audio_content_key": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "byte_length": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16777216
+    },
+    "cache_hit": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": true
+}

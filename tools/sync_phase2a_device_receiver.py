@@ -22,6 +22,7 @@ from allday_asr.v3.interfaces.transfer.tls import ensure_tls_identity
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--public-key', required=True)
+parser.add_argument('--bcd', action='store_true')
 parser.add_argument('--output', default='outputs/sync-phase2a-device-receiver')
 args = parser.parse_args()
 root = Path(args.output).resolve()
@@ -35,6 +36,10 @@ fixture = seed.V34OpenSpeakerIdentityTests()
 fixture.setUp()
 fixture._seed_track(1)
 fixture.core.corrections.classify_segments([{'utterance_id': seed._utterance_id(1), 'revision': 1}], 'live_speech')
+if args.bcd:
+    from tools.sync_bcd_fixtures import add_review, change_evidence
+    for number in (2, 3, 4):
+        add_review(fixture, number)
 def factory():
     return SqliteUnitOfWork(fixture.core.database)
 with factory() as uow:
@@ -57,7 +62,7 @@ server = create_transfer_server(inbox=root / 'inbox', host='127.0.0.1', port=191
     receiver_id=receiver_id, v3_gateway=gateway, max_chunk_bytes=65536)
 original_append = server.store.append_chunk
 original_sync = gateway.synchronize
-evidence = {'upload_bytes': 0, 'upload_complete': False, 'receipts': []}
+evidence = {'upload_bytes': 0, 'upload_complete': False, 'receipts': [], 'audio': [], 'requests': {}}
 control = root / 'fault.json'
 
 
@@ -71,11 +76,28 @@ def fault_mode():
 # Local file only; the isolated server never exposes a fault-control API.
 class IsolatedFaultHandler(server.RequestHandlerClass):
     def _handle(self, callback):
+        route = self.path.split('?')[0]
+        evidence['requests'][route] = evidence['requests'].get(route, 0) + 1
         if fault_mode() == 'offline':
             self.connection.shutdown(socket.SHUT_RDWR)
             self.close_connection = True
             return
         super()._handle(callback)
+
+    def _send_json(self, status, payload):
+        if self.path == '/device/v3/reviews/audio' and fault_mode() == 'audio-interrupt-once':
+            control.write_text('{}')
+            data = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data[:len(data)//2])
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_RDWR)
+            self.close_connection = True
+            return
+        super()._send_json(status, payload)
 
 
 server.RequestHandlerClass = IsolatedFaultHandler
@@ -110,6 +132,13 @@ def observed_complete(*pos, **kw):
 
 def observed_sync(key, payload):
     mode = fault_mode()
+    if args.bcd and mode in {'change-evidence', 'new-result'}:
+        control.write_text('{}')
+        if mode == 'change-evidence':
+            change_evidence(fixture)
+        else:
+            add_review(fixture, 5)
+        evidence[mode] = time.time()
     if mode == '500-once':
         control.write_text('{}')
         evidence['injected_500_at'] = time.time()
@@ -131,6 +160,21 @@ def observed_sync(key, payload):
 server.store.append_chunk = slow_append
 server.notify_upload_completed = observed_complete
 gateway.synchronize = observed_sync
+original_audio = gateway.review_audio
+
+
+def observed_audio(key, payload):
+    started = time.time()
+    if fault_mode() == 'slow-audio':
+        time.sleep(3)
+    response = original_audio(key, payload)
+    evidence['audio'].append({'at': started, 'completed': time.time(), 'key': response['audio_content_key'],
+        'cache_hit': response['cache_hit'], 'bytes': response['byte_length'], 'prefetch': payload.get('prefetch', False)})
+    publish()
+    return response
+
+
+gateway.review_audio = observed_audio
 (root / 'phone-config.json').write_text(json.dumps({
     'baseUrl': 'https://127.0.0.1:19100', 'receiverId': receiver_id, 'deviceId': record.device_id,
     'fingerprint': identity.ca_sha256_fingerprint, 'utteranceId': seed._utterance_id(1)}))

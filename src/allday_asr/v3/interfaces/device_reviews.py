@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import wave
 from collections.abc import Mapping
 from pathlib import Path
@@ -29,13 +31,15 @@ class DeviceReviewService:
     def __init__(self, core: Any) -> None:
         self.core = core
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, only_review_id: str | None = None) -> dict[str, Any]:
         candidates = self.core.people.list_review_candidates(None, "pending", 500)
         by_prototype = {
             str(candidate["prototype_id"]): candidate for candidate in candidates
         }
         items: list[dict[str, Any]] = []
         for raw in self.core.desktop.list_reviews(500):
+            if only_review_id is not None and raw.get('review_id') != only_review_id:
+                continue
             item = dict(raw)
             context = dict(item.get("context") or {})
             if (
@@ -64,6 +68,8 @@ class DeviceReviewService:
         # Reuse the existing per-sample review surface for historical grants.
         # These rows offer withdrawal only, including noncurrent/inactive sources.
         for candidate in self.core.people.list_review_candidates(None, 'confirmed', 500):
+            if only_review_id is not None and only_review_id != f"voice-grant:{candidate['prototype_id']}:{candidate['person_id']}":
+                continue
             items.append({
                 'review_id': f"voice-grant:{candidate['prototype_id']}:{candidate['person_id']}",
                 'kind': 'voice_identity', 'priority': 'normal',
@@ -174,7 +180,7 @@ class DeviceReviewService:
         return {"result": result, "reviews": self.snapshot()}
 
     def audio(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        if set(payload) - {"review_id", "prototype_id", "audition_key"}:
+        if set(payload) - {"review_id", "prototype_id", "audition_key", "audio_content_key", "prefetch"}:
             raise ValueError("audio requests cannot override sample windows")
         review_id = _required_text(payload, "review_id")
         prototype_id = _required_text(payload, "prototype_id")
@@ -198,15 +204,22 @@ class DeviceReviewService:
         )
         if candidate is None:
             raise DeviceConflictError("voice sample is no longer pending")
-        return self.render_audio(review_id, candidate, payload.get("audition_key"))
+        if payload.get('prefetch', False) not in (True, False):
+            raise ValueError('prefetch must be boolean')
+        result = self.render_audio(review_id, candidate, payload.get("audition_key"),
+                                   payload.get('audio_content_key'), prefetch=payload.get('prefetch') is True)
+        # Queued/running rendering must not turn an obsolete grant into permission.
+        current = self._current_item(review_id)
+        current_candidate = next((c for c in current.get('context', {}).get('voice_candidates', [])
+                                  if c['prototype_id'] == prototype_id), None)
+        if current_candidate is None or current_candidate.get('review_key') != candidate.get('review_key'):
+            raise DeviceConflictError('voice evidence changed while preparing audio')
+        return result
 
     def audio_description(self, candidate):
         try:
             plan = audio_plan(candidate)
-            for window in plan['windows']:
-                descriptor = self.core.desktop.media(window['media_id'])
-                if not self.core.audio_store.path_for(str(descriptor['storage_key'])).is_file():
-                    raise FileNotFoundError('原音文件已不可用')
+            plan['audio_content_key'] = self._content_key(plan)
             return {**plan, 'audio_available': True, 'audio_unavailable_reason': ''}
         except (KeyError, ValueError, OSError) as error:
             return {'audio_available': False, 'audio_unavailable_reason': str(error)}
@@ -224,10 +237,45 @@ class DeviceReviewService:
             return self.audio_description(candidate)
         return self.render_audio(f'person:{person_id}', candidate, payload.get('audition_key'))
 
-    def render_audio(self, review_id, candidate, requested_key=None):
+    def _content_key(self, plan):
+        sources = []
+        for window in plan['windows']:
+            descriptor = self.core.desktop.media(window['media_id'])
+            source = self.core.audio_store.path_for(str(descriptor['storage_key']))
+            stat = source.stat()
+            if not source.is_file():
+                raise FileNotFoundError('原音文件已不可用')
+            # storage_key is an immutable SHA-256 address. Stat guards also
+            # invalidate manually damaged/replaced replicas without hashing GBs
+            # on the HTTP path. No path, receiver address or grant enters the key.
+            sources.append([str(descriptor['storage_key']), stat.st_size, stat.st_mtime_ns])
+        identity = [sources, plan['windows'], 'review-wav-pcm16-mono-v1', REVIEW_AUDIO_LOUDNESS_FILTER]
+        return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+    def render_audio(self, review_id, candidate, requested_key=None, requested_content_key=None, *, prefetch=False):
         plan = audio_plan(candidate)
         if requested_key is not None and requested_key != plan['audition_key']:
             raise DeviceConflictError('sample audio changed; reload before listening')
+        content_key = self._content_key(plan)
+        if requested_content_key is not None and requested_content_key != content_key:
+            raise DeviceConflictError('audio source or processing changed; reload before listening')
+        owner = getattr(self.core, 'review_audio_cache', None)
+        def render():
+            return self._render_bytes(plan)
+        if owner is None:
+            data, hit = render(), False
+        else:
+            cache = owner.get(Path(self.core.audio_store.root).parent / 'review-audio-cache')
+            data, hit = cache.get(content_key, render, prefetch=prefetch)
+        if self._content_key(plan) != content_key:
+            raise DeviceConflictError('audio source changed while preparing audio')
+        return {**plan, 'review_id': review_id, 'prototype_id': candidate['prototype_id'],
+                'audio_content_key': content_key, 'sha256': hashlib.sha256(data).hexdigest(),
+                'byte_length': len(data), 'cache_hit': hit,
+                'format': 'wav', 'data_base64url': base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii'),
+                'start_ms': 0, 'end_ms': plan['total_ms'], 'complete_sample': True}
+
+    def _render_bytes(self, plan):
         parts = []
         temp_root = Path(self.core.audio_store.root).parent / 'review-audio-temp'
         for window in plan['windows']:
@@ -241,12 +289,10 @@ class DeviceReviewService:
         data = concatenate(parts)
         if not data or len(data) > MAX_REVIEW_AUDIO_BYTES:
             raise ValueError('normalized voice review audio is too large for mobile playback')
-        return {**plan, 'review_id': review_id, 'prototype_id': candidate['prototype_id'],
-                'format': 'wav', 'data_base64url': base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii'),
-                'start_ms': 0, 'end_ms': plan['total_ms'], 'complete_sample': True}
+        return data
 
     def _current_item(self, review_id: str) -> dict[str, Any]:
-        for item in self.snapshot()["items"]:
+        for item in self.snapshot(only_review_id=review_id)["items"]:
             if item.get("review_id") == review_id:
                 return item
         raise DeviceConflictError("review item is no longer pending")
@@ -264,6 +310,7 @@ def _normalized_review_audio(
             start_ms,
             end_ms,
             audio_filter=REVIEW_AUDIO_LOUDNESS_FILTER,
+            timeout=30,
         )
         with wave.open(str(rendered), 'rb') as audio:
             duration_ms = audio.getnframes() * 1000 / audio.getframerate()

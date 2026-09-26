@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AllDayRecording Desktop API",
-    "version": "3.7.0",
+    "version": "3.7.1",
     "description": "Loopback-only query, media, correction, durable-processing, knowledge, reminder, people, daily-summary, and relationship-observation API for the independent Desktop frontend."
   },
   "servers": [{"url": "http://127.0.0.1:8766"}],
@@ -260,7 +260,7 @@
     },
     "responses": {"ApiError": {"description": "Stable API error", "content": {"application/json": {"schema": {"$ref": "../schemas/primitives.schema.json#/$defs/ApiError"}}}}},
     "schemas": {
-      "RuntimeStatus": {"type": "object", "additionalProperties": false, "required": ["contract_version", "enabled", "state"], "properties": {"contract_version": {"const": "3.7.0"}, "enabled": {"type": "boolean"}, "state": {"enum": ["empty_ready", "ready"]}}},
+      "RuntimeStatus": {"type": "object", "additionalProperties": false, "required": ["contract_version", "enabled", "state"], "properties": {"contract_version": {"const": "3.7.1"}, "enabled": {"type": "boolean"}, "state": {"enum": ["empty_ready", "ready"]}}},
       "ObjectProjection": {"type": "object"},
       "ItemList": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"type": "object"}}}},
       "ReviewItemList": {"type": "object", "additionalProperties": false, "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/ReviewItem"}}}},

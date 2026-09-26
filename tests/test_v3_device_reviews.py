@@ -152,7 +152,10 @@ def test_voice_review_resolves_only_one_current_sample_and_returns_fresh_snapsho
 
 def test_review_audio_is_bound_to_a_current_sample_and_loudness_normalized(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
+    Path('source.wav').write_bytes(b'synthetic source; renderer substituted')
     rendered = {}
 
     def fake_normalized_audio(source, start_ms, end_ms, *, temp_root):
@@ -204,7 +207,9 @@ def test_device_auth_binding_allows_only_the_review_contract(method: str, path: 
     RequestBinding.for_request(method=method, path=path, body=b"{}" if method == "POST" else b"")
 
 
-def test_discovery_exposes_and_plays_cluster_samples(monkeypatch):
+def test_discovery_exposes_and_plays_cluster_samples(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    Path('source.wav').write_bytes(b'synthetic source; renderer substituted')
     service, people = _service()
     original = service.core.desktop.list_reviews(500)[0]
     discovery = {**original, "source_id": "cluster", "context": {"voice_mode": "speaker_discovery"}}

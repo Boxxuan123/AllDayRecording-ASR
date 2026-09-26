@@ -92,7 +92,7 @@ class V3BootstrapTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         payload = json.loads(result.output)
         self.assertEqual(payload["state"], "empty_ready")
-        self.assertEqual(payload["contract_version"], "3.7.0")
+        self.assertEqual(payload["contract_version"], "3.7.1")
 
     def test_cli_migration_requires_feature_flag_and_uses_v3_only_state(self) -> None:
         directory = Path(__file__).parent / f"v3-migrate-{uuid4().hex}"

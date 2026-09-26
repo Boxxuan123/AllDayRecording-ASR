@@ -1,11 +1,11 @@
 {
-  "contract_version": "3.7.0",
+  "contract_version": "3.7.1",
   "projection_version": 4,
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi_version": "3.1.0",
   "release_lock": {
     "path": "release-lock.json",
-    "sha256": "58ba095b8bde9d73be4cbf60a4ae9beb55ae6da099b6409ea11dadd748c979d8"
+    "sha256": "10068a766b044f027c4ab2834abb30df5e7ee6a3e7e92ec11b5fa9e693ae1bfa"
   },
   "schemas": {
     "primitives": {
@@ -55,26 +55,30 @@
     "insight": {
       "path": "schemas/insight.schema.json",
       "sha256": "cae93c04718dffcea245656ad7c5e6c18f75049a84d91f77016ba70bf08bf8cd"
+    },
+    "review_audio_cache": {
+      "path": "schemas/review-audio-cache.schema.json",
+      "sha256": "10637a6bfd50cd869378236be36bdd96bb0eeb27ff7b653bd57fa1504de3334b"
     }
   },
   "apis": {
     "desktop": {
       "path": "openapi/desktop-api.openapi.json",
-      "sha256": "df2accae944583183ba4449733ecfeacecf800ce03a75c09b72a22068f3df6a0"
+      "sha256": "3f655b36c4e9f1b5e6ac4ec59d074101d038585b1d878fc979e039dddfb5c2e3"
     },
     "device": {
       "path": "openapi/device-api.openapi.json",
-      "sha256": "1b20867084a901bb66da6a3ee597d2220d1abe09e83882f2b559bf1debe0bd57"
+      "sha256": "a99264241780145dd6f5314b16e4a2a1efd00fe639dd143d10fc9093284d6487"
     }
   },
   "fixtures": {
     "core_resources": {
       "path": "fixtures/core-resources.json",
-      "sha256": "8961166c0ed6eda9f080838a19965a95dbd2cda5976b8780f2c89ed78d5f68ec"
+      "sha256": "357cf2bfb56163448ecff09c274ab5cbbf42fd2914a35785a2f1570a8db98e3b"
     },
     "forward_enums": {
       "path": "fixtures/forward-enums.json",
-      "sha256": "6ab1af886c296c54ae09167482ce99bda0e0e8f5b59186dca68089e764576296"
+      "sha256": "5d876c9856d179b43d55dc089270512010695464897bb8b2b660fd3af4ab5c36"
     }
   }
 }

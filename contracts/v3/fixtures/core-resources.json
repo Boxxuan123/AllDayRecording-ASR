@@ -1,5 +1,5 @@
 {
-  "contract_version": "3.7.0",
+  "contract_version": "3.7.1",
   "recording_session": {
     "session_id": "01990d5a-7c00-7000-8000-000000000001",
     "captured_start": "2026-09-01T02:23:15Z",
@@ -149,7 +149,7 @@
     "server_time": "2026-09-01T02:29:00Z"
   },
   "expected_decode": {
-    "contract_version": "3.7.0",
+    "contract_version": "3.7.1",
     "session_state": "ready_for_processing",
     "aggregate_status": "ready",
     "processing_status": "running",

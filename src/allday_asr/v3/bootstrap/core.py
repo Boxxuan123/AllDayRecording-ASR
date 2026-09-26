@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from allday_asr.v3.paths import PROJECT_ROOT
 from allday_asr.v3.adapters.files import ContentAddressedStore
+from allday_asr.v3.adapters.audio.review_cache import ReviewAudioCacheOwner
 from allday_asr.v3.adapters.codex import (
     CodexInsightGenerator,
     CodexReminderGenerator,
@@ -87,6 +88,7 @@ class V3Core:
     people: SpeakerIdentityService
     person_memory: PersonMemoryService
     insights: DailyInsightService
+    review_audio_cache: ReviewAudioCacheOwner = field(default_factory=ReviewAudioCacheOwner)
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -96,6 +98,7 @@ class V3Core:
         return version
 
     def close(self) -> None:
+        self.review_audio_cache.close()
         self.people.sample_worker.close()
         self.semantic_events.close()
         self.reminder_extraction.close()

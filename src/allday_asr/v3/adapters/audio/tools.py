@@ -165,6 +165,7 @@ def extract_clip(
     end_ms: int,
     *,
     audio_filter: str | None = None,
+    timeout: float | None = None,
 ) -> Path:
     if end_ms <= start_ms:
         raise ValueError("end_ms 必须大于 start_ms")
@@ -195,6 +196,7 @@ def extract_clip(
     arguments.extend(["-c:a", "pcm_s16le", str(destination)])
     completed = subprocess.run(
         arguments,
+        timeout=timeout,
         check=False,
         capture_output=True,
         text=True,
