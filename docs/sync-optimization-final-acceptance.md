@@ -196,3 +196,8 @@ PC pytest 文件：`test_review_audio_cache.py`、`test_transfer.py`、`test_dev
 未执行/边界：真实 mDNS 发现、热点切换矩阵、Passkey 初次注册、实体 Watch 传输、真实模型推理、长时压力、帧率/声学延迟、Linux 实机全套测试；本轮没有这些通过结论。最初测试权限/配置/编译/观察预算和选择器失败均已分别列出，不能混作业务通过。
 
 新审核包目标为 PC `outputs/sync-bcd-targeted-fixes-review.zip`，从最终已提交 HEAD 导出，基线为本节起始两个审核提交；包含源码、直接依赖、正确性测试、合成夹具生成代码、两端本文、diff、版本及逐文件 SHA。外层文件清单及内层契约摘要都校验，不改写导出的 Git 字节。包只留本机，不含数据库、真实录音/转写、凭证、HAP、原始私有报告或 .git。
+
+
+## 2026-09-27 标注同步锁与确认延迟联合修复
+
+见 [本轮验收说明](annotation-sync-latency-fix.md)。源码和本机回归已交付；真机 LAN、T0→T6预算及本轮HAP安装未验收，不能用历史结论替代。
