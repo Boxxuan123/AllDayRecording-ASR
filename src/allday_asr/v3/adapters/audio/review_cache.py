@@ -6,6 +6,7 @@ requests share a Future; no cache lock is held while rendering or reading audio.
 from concurrent.futures import Future
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import threading
@@ -27,6 +28,12 @@ class ReviewAudioCache:
         self.inflight = {}
         self.queue = []
         self.pins = {}
+        self.reservations = {}
+        self.garbage = {}
+        self.cleanup_lock = threading.Lock()
+        self.cleanup_after = 0.0
+        self.last_cleanup_log = float("-inf")
+        self.live_workers = 2
         self.sequence = 0
         self.closed = False
         self.stats = dict(hits=0, renders=0, joins=0, failures=0)
@@ -36,7 +43,7 @@ class ReviewAudioCache:
             if index >= 256:
                 break
             if path.suffix == '.part':
-                path.unlink(missing_ok=True)
+                self.garbage[path] = path.stat().st_size
             elif path.suffix == '.entry' and len(path.stem) == 64:
                 stat = path.stat()
                 self.entries[path.stem] = (stat.st_size, stat.st_mtime)
@@ -52,6 +59,8 @@ class ReviewAudioCache:
         with self.condition:
             if self.closed:
                 raise RuntimeError('audio preparation stopped')
+            if self.live_workers == 0:
+                raise RuntimeError('audio preparation workers unavailable')
             existing = self.inflight.get(key)
             if existing is not None:
                 future, job = existing
@@ -71,6 +80,19 @@ class ReviewAudioCache:
         return future.result(timeout=120)
 
     def _worker(self):
+        try:
+            self._work_loop()
+        finally:
+            with self.condition:
+                self.live_workers -= 1
+                if not self.live_workers:
+                    pending, self.queue = self.queue, []
+                    for _, _, key, _, future in pending:
+                        self.inflight.pop(key, None)
+                        future.set_exception(RuntimeError('audio preparation workers unavailable'))
+                    self.condition.notify_all()
+
+    def _work_loop(self):
         while True:
             with self.condition:
                 self.condition.wait_for(lambda: self.queue or self.closed)
@@ -83,6 +105,7 @@ class ReviewAudioCache:
                 data = self._read(key)
                 hit = data is not None
                 if data is None:
+                    self._reserve(key)
                     data = render()
                     if not 0 < len(data) <= self.MAX_AUDIO:
                         raise ValueError('review audio exceeds cache item budget')
@@ -90,13 +113,16 @@ class ReviewAudioCache:
                 with self.condition:
                     self.stats['hits' if hit else 'renders'] += 1
                 future.set_result((data, hit))
-            except Exception as error:
+            except BaseException as error:
                 with self.condition:
                     self.stats['failures'] += 1
-                future.set_exception(error)
+                future.set_exception(error if isinstance(error, Exception) else RuntimeError('audio worker exited'))
+                if not isinstance(error, Exception):
+                    raise
             finally:
                 with self.condition:
                     self.inflight.pop(key, None)
+                    self.reservations.pop(key, None)
                 self._evict()
 
     def _read(self, key):
@@ -135,29 +161,85 @@ class ReviewAudioCache:
             os.replace(temp, destination)
             with self.condition:
                 self.entries[key] = (len(header) + len(data), time.time())
+                self.reservations.pop(key, None)
         finally:
-            temp.unlink(missing_ok=True)
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError as error:
+                # Conservatively retain the entire reserved size if stat is denied.
+                with self.condition:
+                    self.garbage[temp] = len(header) + len(data)
+                self._cleanup_error(error)
 
-    def _evict(self):
-        victims = []
+
+    def _cleanup_error(self, error):
         with self.condition:
-            for key, (_size, _) in sorted(self.entries.items(), key=lambda item: item[1][1]):
-                if len(self.entries) <= self.MAX_ITEMS and sum(v[0] for v in self.entries.values()) <= self.MAX_BYTES:
-                    break
-                if key in self.inflight or self.pins.get(key, 0):
-                    continue
-                # Rename while admission is locked: a new caller cannot mistake
-                # an evicted entry for a newly published entry with the same key.
-                original = self.root / f'{key}.entry'
-                trash = self.root / f'{uuid4().hex}.part'
+            now = time.monotonic()
+            self.cleanup_after = now + 1.0
+            if now - self.last_cleanup_log >= 60:
+                self.last_cleanup_log = now
+                # Never log paths, content or raw exception messages.
+                logging.getLogger(__name__).warning(
+                    'review audio cleanup deferred: category=%s errno=%s',
+                    type(error).__name__, error.errno)
+
+    def _fits(self, size=0, items=0):
+        return (sum(v[0] for v in self.entries.values()) + sum(self.garbage.values())
+                + sum(self.reservations.values()) + size <= self.MAX_BYTES
+                and len(self.entries) + len(self.garbage) + len(self.reservations) + items <= self.MAX_ITEMS)
+
+    def _reserve(self, key):
+        # Reserve before rendering/writing: cleanup failure cannot grow disk use.
+        size = self.MAX_AUDIO + 2048
+        self._evict(size, 1)
+        with self.condition:
+            if not self._fits(size, 1):
+                raise RuntimeError('audio cache capacity unavailable; cleanup pending or entries in use')
+            self.reservations[key] = size
+
+    def _evict(self, size=0, items=0):
+        # One bounded cleanup pass; do not wait under the admission lock.
+        with self.cleanup_lock:
+            with self.condition:
+                if time.monotonic() < self.cleanup_after:
+                    return
+                victims = list(self.garbage)
+            for path in victims:
                 try:
-                    os.replace(original, trash)
-                except FileNotFoundError:
-                    pass
-                self.entries.pop(key)
-                victims.append(trash)
-        for path in victims:
-            path.unlink(missing_ok=True)
+                    path.unlink(missing_ok=True)
+                except OSError as error:
+                    self._cleanup_error(error)
+                else:
+                    with self.condition:
+                        self.garbage.pop(path, None)
+            with self.condition:
+                candidates = sorted(self.entries, key=lambda key: self.entries[key][1])
+            for key in candidates:
+                with self.condition:
+                    if self._fits(size, items):
+                        break
+                    if key not in self.entries or key in self.inflight or self.pins.get(key, 0):
+                        continue
+                    original = self.root / f'{key}.entry'
+                    trash = self.root / f'{uuid4().hex}.part'
+                    try:
+                        os.replace(original, trash)
+                    except FileNotFoundError:
+                        self.entries.pop(key)
+                        continue
+                    except OSError as error:
+                        self._cleanup_error(error)
+                        break
+                    entry_size, _ = self.entries.pop(key)
+                    self.garbage[trash] = entry_size
+                try:
+                    trash.unlink(missing_ok=True)
+                except OSError as error:
+                    self._cleanup_error(error)
+                    break
+                else:
+                    with self.condition:
+                        self.garbage.pop(trash, None)
 
     def close(self):
         with self.condition:

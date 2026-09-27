@@ -8,6 +8,7 @@ import sys
 import time
 import threading
 import socket
+import ipaddress
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -23,8 +24,11 @@ from allday_asr.v3.interfaces.transfer.tls import ensure_tls_identity
 parser = argparse.ArgumentParser()
 parser.add_argument('--public-key', required=True)
 parser.add_argument('--bcd', action='store_true')
+parser.add_argument('--host', default='127.0.0.1', help='Bind an existing private LAN address for real Wi-Fi acceptance')
 parser.add_argument('--output', default='outputs/sync-phase2a-device-receiver')
 args = parser.parse_args()
+if not ipaddress.ip_address(args.host).is_private:
+    parser.error('--host must be a local private address')
 root = Path(args.output).resolve()
 if not root.is_relative_to(Path('outputs').resolve()):
     parser.error('--output must be an isolated directory inside this repository outputs/')
@@ -46,7 +50,7 @@ with factory() as uow:
     uow.changes.append('recording_session', seed._session_id(1), 1, 'upsert',
                       {'session_id': seed._session_id(1), 'state': 'ready_for_processing',
                        'captured_start': seed.NOW_TEXT})
-identity = ensure_tls_identity(root / 'tls', addresses=['127.0.0.1'])
+identity = ensure_tls_identity(root / 'tls', addresses=[args.host])
 receiver_id = identity.ca_sha256_fingerprint.replace(':', '').lower()
 auth = DeviceAuthManager(DeviceCredentialStore(root / 'devices.json'))
 record = auth.store.register(device_name='phase2a synthetic phone', algorithm=DEVICE_ALGORITHM,
@@ -57,7 +61,7 @@ trust.enroll(record)
 gateway = DeviceGateway(trust, fixture.core.mobile_sync,
     ingest=V3UploadIngestAdapter(trust, factory, fixture.core.audio_store, fixture.core.artifact_store),
     review_service=DeviceReviewService(fixture.core))
-server = create_transfer_server(inbox=root / 'inbox', host='127.0.0.1', port=19100,
+server = create_transfer_server(inbox=root / 'inbox', host=args.host, port=19100,
     tls_cert=identity.certificate_path, tls_key=identity.private_key_path, device_manager=trust,
     receiver_id=receiver_id, v3_gateway=gateway, max_chunk_bytes=65536)
 original_append = server.store.append_chunk
@@ -77,7 +81,13 @@ def fault_mode():
 class IsolatedFaultHandler(server.RequestHandlerClass):
     def _handle(self, callback):
         route = self.path.split('?')[0]
+        evidence['peer_loopback'] = ipaddress.ip_address(self.client_address[0]).is_loopback
         evidence['requests'][route] = evidence['requests'].get(route, 0) + 1
+        if fault_mode() == 'audio-offline' and route == '/device/v3/reviews/audio':
+            evidence['audio_failures'] = evidence.get('audio_failures', 0) + 1
+            publish()
+            self._send_json(503, {'error': 'synthetic temporary audio unavailable'})
+            return
         if fault_mode() == 'offline':
             self.connection.shutdown(socket.SHUT_RDWR)
             self.close_connection = True
@@ -176,10 +186,10 @@ def observed_audio(key, payload):
 
 gateway.review_audio = observed_audio
 (root / 'phone-config.json').write_text(json.dumps({
-    'baseUrl': 'https://127.0.0.1:19100', 'receiverId': receiver_id, 'deviceId': record.device_id,
+    'baseUrl': f'https://{args.host}:19100', 'receiverId': receiver_id, 'deviceId': record.device_id,
     'fingerprint': identity.ca_sha256_fingerprint, 'utteranceId': seed._utterance_id(1)}))
 publish()
-print('Isolated production TLS receiver ready on loopback:19100', flush=True)
+print('Isolated production TLS receiver ready (' + ('loopback' if ipaddress.ip_address(args.host).is_loopback else 'LAN direct') + ':19100)', flush=True)
 try:
     server.serve_forever()
 finally:

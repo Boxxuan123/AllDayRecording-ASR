@@ -1,5 +1,6 @@
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import hashlib
 import threading
 import time
@@ -106,3 +107,73 @@ def test_real_render_descriptor_hit_and_authority(actual_audio, monkeypatch):
     source.unlink()
     with pytest.raises((FileNotFoundError, DeviceConflictError)):
         service.audio(request)
+
+
+def test_cleanup_failure_preserves_workers_budget_and_recovers(tmp_path, monkeypatch, caplog):
+    from allday_asr.v3.adapters.audio import review_cache
+    cache = ReviewAudioCache(tmp_path)
+    cache.MAX_ITEMS = 2
+    clock = [time.monotonic()]
+    monkeypatch.setattr(review_cache.time, 'monotonic', lambda: clock[0])
+    original = review_cache.os.replace
+    def denied(source, target):
+        if str(source).endswith('.entry'):
+            raise PermissionError(13, 'synthetic')
+        return original(source, target)
+    try:
+        cache.get(key('a'), lambda: b'a')
+        cache.get(key('b'), lambda: b'b')
+        monkeypatch.setattr(review_cache.os, 'replace', denied)
+        for number in range(12):
+            clock[0] += 2
+            with pytest.raises(RuntimeError, match='capacity'):
+                cache.get(key(str(number)), lambda: pytest.fail('must reject before render'))
+            assert all(w.is_alive() for w in cache.workers)
+            assert len(list(tmp_path.glob('*.entry'))) == 2
+            assert len(cache.entries) == 2
+            assert len(cache.inflight) <= 1
+            assert not cache.reservations
+        assert cache.get(key('a'), lambda: pytest.fail('unrelated cleanup invalidated hit')) == (b'a', True)
+        assert len([r for r in caplog.records if 'cleanup deferred' in r.message]) == 1
+        monkeypatch.setattr(review_cache.os, 'replace', original)
+        clock[0] += 2
+        with ThreadPoolExecutor(1) as pool:
+            assert pool.submit(cache.get, key('recovered'), lambda: b'ok').result(3) == (b'ok', False)
+    finally:
+        cache.close()
+    assert not cache.inflight and not cache.queue and not cache.reservations
+
+
+def test_failed_trash_unlink_still_counts_disk_and_close(tmp_path, monkeypatch):
+    cache = ReviewAudioCache(tmp_path)
+    cache.MAX_ITEMS = 1
+    cache.get(key('old'), lambda: b'old')
+    original = Path.unlink
+    def denied(path, *args, **kwargs):
+        if path.suffix == '.part' and path.exists():
+            raise PermissionError(13, 'synthetic')
+        return original(path, *args, **kwargs)
+    try:
+        monkeypatch.setattr(Path, 'unlink', denied)
+        with pytest.raises(RuntimeError, match='capacity'):
+            cache.get(key('new'), lambda: pytest.fail('unreclaimed bytes'))
+        assert len(cache.garbage) == 1
+        assert sum(cache.garbage.values()) == sum(p.stat().st_size for p in tmp_path.iterdir())
+        assert all(w.is_alive() for w in cache.workers)
+        monkeypatch.setattr(Path, 'unlink', original)
+        cache.cleanup_after = 0
+        assert cache.get(key('new'), lambda: b'new') == (b'new', False)
+    finally:
+        cache.close()
+    with pytest.raises(RuntimeError, match='stopped'):
+        cache.get(key('closed'), lambda: b'no')
+
+
+def test_unavailable_pool_rejects_without_queued_future(tmp_path):
+    cache = ReviewAudioCache(tmp_path)
+    cache.close()
+    cache.closed = False  # Model an unexpectedly exhausted pool, without 120s waiting.
+    assert cache.live_workers == 0
+    with pytest.raises(RuntimeError, match='workers unavailable'):
+        cache.get(key('unavailable'), lambda: pytest.fail('no worker'))
+    assert not cache.queue and not cache.inflight

@@ -1,0 +1,2 @@
+/contracts/v3/**/*.json text eol=lf
+/contracts/v3/*.json text eol=lf
