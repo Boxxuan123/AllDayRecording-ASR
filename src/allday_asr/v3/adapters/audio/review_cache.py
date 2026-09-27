@@ -147,6 +147,8 @@ class ReviewAudioCache:
         finally:
             with self.condition:
                 self.pins[key] -= 1
+                if not self.pins[key]:
+                    self.pins.pop(key)
 
     def _publish(self, key, data):
         header = json.dumps(dict(key=key, length=len(data), sha256=hashlib.sha256(data).hexdigest())).encode() + b'\n'

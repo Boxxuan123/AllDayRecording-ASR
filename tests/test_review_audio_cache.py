@@ -133,6 +133,7 @@ def test_cleanup_failure_preserves_workers_budget_and_recovers(tmp_path, monkeyp
             assert len(cache.entries) == 2
             assert len(cache.inflight) <= 1
             assert not cache.reservations
+            assert not cache.pins
         assert cache.get(key('a'), lambda: pytest.fail('unrelated cleanup invalidated hit')) == (b'a', True)
         assert len([r for r in caplog.records if 'cleanup deferred' in r.message]) == 1
         monkeypatch.setattr(review_cache.os, 'replace', original)
