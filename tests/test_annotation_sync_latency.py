@@ -278,3 +278,11 @@ def test_legacy_equivalence_and_cross_session_new_conflict(people):
         )
     assert fresh.revision != snap.revision
     assert compute_plans(fresh, "fixed", "1") == expected == ((), ["source_excluded"])
+
+    # Human facts outlive their source projection. Missing source rows cannot hide conflicts.
+    with f.core.database.transaction() as db:
+        db.execute("DELETE FROM utterances WHERE utterance_id=?", (other.utterance_id,))
+    with f.core.database.read() as db:
+        detached = load_snapshot(db, sid)
+        expected = baseline(db, SqliteEvidenceProjectionRepository(db, now=lambda: ""), sid, "fixed", "1")
+    assert compute_plans(detached, "fixed", "1") == expected == ((), ["source_excluded"])

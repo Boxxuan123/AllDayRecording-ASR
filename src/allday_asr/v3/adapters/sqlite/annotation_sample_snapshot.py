@@ -44,7 +44,7 @@ def load_snapshot(connection, session_id):
         JOIN utterances u ON u.utterance_id=f.source_utterance_id WHERE u.session_id=?"""
     facts = read(
         f"""SELECT f.fact_id,f.dimension,f.state,f.value_json,f.payload_json,u.session_id
-        FROM annotation_facts f JOIN utterances u ON u.utterance_id=f.source_utterance_id
+        FROM annotation_facts f LEFT JOIN utterances u ON u.utterance_id=f.source_utterance_id
         WHERE f.fact_id IN (SELECT fact_id FROM annotation_fact_audio WHERE media_id IN ({scope}))
         ORDER BY f.fact_id""",
         (session_id,),
