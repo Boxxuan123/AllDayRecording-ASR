@@ -40,7 +40,7 @@ def assign_annotation(uow: UnitOfWork, selections: list[dict[str, Any]], *,
             raise UtteranceRevisionConflict("human fact superseded; refresh before correcting")
         utterances.append(utterance)
     if person_id:
-        person = next((p for p in uow.people.list_people() if p["person_id"] == person_id), None)
+        person = uow.people.person_basic(person_id)
         if person is None or person["kind"] == "unknown":
             raise AnnotationValidationError("人物已不存在或不可标注")
         name, kind = str(person["display_name"]), str(person["kind"])
@@ -49,7 +49,7 @@ def assign_annotation(uow: UnitOfWork, selections: list[dict[str, Any]], *,
         if not name or len(name) > 100:
             raise AnnotationValidationError("人物姓名应为 1 至 100 字")
         person_id, kind = new_person_id or new_ulid(), "known"
-        existing = next((p for p in uow.people.list_people() if p["person_id"] == person_id), None)
+        existing = uow.people.person_basic(person_id)
         if existing is None:
             uow.people.create_person(person_id, name, kind, _datetime(now))
         elif existing["display_name"] != name or existing["kind"] != kind:

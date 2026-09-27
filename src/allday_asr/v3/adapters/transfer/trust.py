@@ -127,6 +127,7 @@ class TransferDeviceTrustAdapter:
             binding=binding,
         )
         with self._uow_factory() as uow:
+            uow.device_trust.authorize(device_id, _required_scopes(binding))
             uow.device_trust.mark_used(device_id)
             uow.audit.append(
                 "device.authenticate",
@@ -169,7 +170,7 @@ class TransferDeviceTrustAdapter:
         self, key_id: str, required: tuple[DeviceScope, ...]
     ) -> DeviceCredential:
         try:
-            with self._uow_factory() as uow:
+            with self._uow_factory().reading() as uow:
                 return uow.device_trust.authorize(key_id, required)
         except LookupError as exc:
             raise DeviceUnauthorizedError(

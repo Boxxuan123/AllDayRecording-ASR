@@ -58,6 +58,8 @@ class UnitOfWork(Protocol):
     person_memories: PersonMemoryRepository
     insights: InsightRepository
 
+    def reading(self) -> Self: ...
+
     def __enter__(self) -> Self: ...
 
     def __exit__(

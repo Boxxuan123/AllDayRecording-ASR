@@ -127,6 +127,13 @@ class PeopleCatalogRepositoryMixin:
             ),
         )
 
+    def person_basic(self, person_id):
+        row = self.connection.execute("SELECT person_id,display_name,kind FROM persons WHERE person_id=?", (person_id,)).fetchone()
+        return dict(row) if row else None
+
+    def people_choices(self):
+        return tuple(dict(r) for r in self.connection.execute("SELECT person_id,display_name,kind FROM persons ORDER BY display_name,person_id"))
+
     def list_people(self) -> tuple[dict[str, Any], ...]:
         rows = self.connection.execute(
             """

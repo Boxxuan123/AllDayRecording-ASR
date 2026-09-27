@@ -1,3 +1,4 @@
+from .v016_sample_input_revision import SQL as V016_SQL
 from .v015_annotation_receipts import SQL as V015_SQL
 from .v013_annotation_facts import SQL as V013_SQL
 from .v014_annotation_samples import SQL as V014_SQL
@@ -47,6 +48,7 @@ MIGRATIONS = (
     V3Migration(version=12, name="phone_session_sync_identity", sql=V012_SQL),
     V3Migration(version=13, name="versioned_audio_annotations", sql=V013_SQL),
     V3Migration(version=14, name="durable_annotation_samples", sql=V014_SQL),
+    V3Migration(version=16, name="sample_input_revision", sql=V016_SQL),
     V3Migration(version=15, name="annotation_receipt_recovery", sql=V015_SQL),
 )
 

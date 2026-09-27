@@ -43,15 +43,20 @@ from allday_asr.v3.adapters.sqlite.repositories import (
 
 class SqliteUnitOfWork:
     def __init__(self, database: V3Database, *, now: Clock = utc_now) -> None:
+        self.read_only = False
         self.database = database
         self.now = now
         self._context = None
         self._connection: sqlite3.Connection | None = None
 
+    def reading(self):
+        self.read_only = True
+        return self
+
     def __enter__(self) -> SqliteUnitOfWork:
         if self._connection is not None:
             raise RuntimeError("unit of work is already active")
-        self._context = self.database.transaction()
+        self._context = self.database.read() if self.read_only else self.database.transaction()
         self._connection = self._context.__enter__()
         connection = self._connection
         self.catalog = SqliteRecordingCatalogRepository(connection)

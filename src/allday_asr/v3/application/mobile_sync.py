@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 import hashlib
 import json
 import re
@@ -177,6 +179,7 @@ class MobileSyncService:
         self._annotation_samples = annotation_samples
 
     def synchronize(self, device_id: str, request: SyncRequest) -> SyncResponse:
+        started = time.perf_counter()
         cursor_sequence = _decode_cursor(request.cursor)
         receipts: list[OperationReceipt] = []
         with self._uow_factory() as uow:
@@ -226,6 +229,10 @@ class MobileSyncService:
                     "next_cursor": _encode_cursor(next_sequence),
                 },
             )
+        if request.client_operations:
+            logging.getLogger(__name__).debug("annotation phase=T4-commit ops=%s count=%d service_ms=%.1f",
+                ",".join(op.operation_id for op in request.client_operations[:32]), len(request.client_operations),
+                (time.perf_counter()-started)*1000)
         if self._annotation_samples is not None:
             applied = {r.operation_id for r in receipts if r.status is ClientOperationStatus.APPLIED}
             selections = [s for op in request.client_operations

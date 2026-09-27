@@ -10,6 +10,10 @@ from .people_support import _KNOWN_PERSON_POLICY_VERSION, _datetime
 
 
 class PeoplePrototypeMixin:
+    def people_choices(self):
+        with self._uow_factory().reading() as uow:
+            return uow.people.people_choices()
+
     def list_people(self) -> tuple[dict[str, Any], ...]:
         with self._uow_factory() as uow:
             people = uow.people.list_people()

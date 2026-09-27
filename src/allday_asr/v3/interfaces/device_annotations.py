@@ -25,7 +25,7 @@ class DeviceAnnotationService:
             return {
                 "people": [
                     {"person_id": p["person_id"], "display_name": p["display_name"]}
-                    for p in self.core.people.list_people()
+                    for p in self.core.people.people_choices()
                 ]
             }
         if action == "assign":

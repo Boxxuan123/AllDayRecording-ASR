@@ -956,7 +956,7 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
         self.assertEqual(result.representatives[0].media_id, stored.media_id)
         self.assertNotIn(str(self.root), repr(result))
 
-    def _seed_track(self, number: int) -> None:
+    def _seed_track(self, number: int, duration_ms: int = 10000) -> None:
         session_id = _session_id(number)
         run_id = f"run-{number}"
         artifact_id = f"artifact-{number}"
@@ -978,9 +978,9 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
                 """
                 INSERT INTO audio_assets (
                   asset_id, sha256, size_bytes, duration_ms, format, media_id, created_at
-                ) VALUES (?, ?, 320000, 10000, 'wav', ?, ?)
+                ) VALUES (?, ?, 320000, ?, 'wav', ?, ?)
                 """,
-                (asset_id, f"{number:064x}", f"media-{number}", NOW_TEXT),
+                (asset_id, f"{number:064x}", duration_ms, f"media-{number}", NOW_TEXT),
             )
             connection.execute(
                 """
@@ -996,9 +996,9 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
                   segment_id, session_id, asset_id, replica_id, sequence,
                   session_start_ms, session_end_ms, source_start_ms, source_end_ms,
                   captured_at, created_at
-                ) VALUES (?, ?, ?, ?, 0, 0, 10000, 0, 10000, ?, ?)
+                ) VALUES (?, ?, ?, ?, 0, 0, ?, 0, ?, ?, ?)
                 """,
-                (f"segment-{number}", session_id, asset_id, replica_id, NOW_TEXT, NOW_TEXT),
+                (f"segment-{number}", session_id, asset_id, replica_id, duration_ms, duration_ms, NOW_TEXT, NOW_TEXT),
             )
             connection.execute(
                 """

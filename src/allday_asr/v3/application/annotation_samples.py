@@ -5,6 +5,8 @@ import threading
 import time
 
 from allday_asr.v3.domain.ids import new_ulid
+from allday_asr.v3.adapters.sqlite.annotation_sample_plan import compute_plans
+from allday_asr.v3.adapters.sqlite.annotation_sample_snapshot import load_snapshot
 
 LOG = logging.getLogger(__name__)
 
@@ -55,13 +57,47 @@ class AnnotationSampleWorker:
         results = []
         for _ in range(limit):
             token = new_ulid()
+            claim_started = time.perf_counter()
             with service._uow_factory() as uow:
                 job = uow.people.claim_sample_job(time.time(), token)
                 if not job:
                     break
                 session_id = job["session_id"]
-                plans, reasons = uow.people.sample_plans(session_id, model, version)
-                missing = [p for p in plans if not uow.people.sample_set_exists(p.key)]
+            LOG.debug(
+                "sample job=%s claim_ms=%.1f",
+                token,
+                (time.perf_counter() - claim_started) * 1000,
+            )
+            started = time.perf_counter()
+            try:
+                with service._uow_factory().reading() as uow:
+                    snapshot = load_snapshot(uow.people.connection, session_id)
+                loaded = time.perf_counter()
+                plans, reasons = compute_plans(snapshot, model, version)
+                planned = time.perf_counter()
+                with service._uow_factory().reading() as uow:
+                    missing = [
+                        p for p in plans if not uow.people.sample_set_exists(p.key)
+                    ]
+                LOG.debug(
+                    "sample job=%s read_ms=%.1f plan_ms=%.1f projections=%d facts=%d",
+                    token,
+                    (loaded - started) * 1000,
+                    (planned - loaded) * 1000,
+                    len(snapshot.projections),
+                    len(snapshot.facts),
+                )
+            except Exception:
+                with service._uow_factory() as uow:
+                    uow.people.finish_sample_job(
+                        session_id,
+                        job["generation"],
+                        token,
+                        "retryable",
+                        "snapshot_or_plan_failed",
+                        time.time(),
+                    )
+                raise
             status, reason = "processed", ",".join(reasons)
             computed = {}
             try:
@@ -96,18 +132,22 @@ class AnnotationSampleWorker:
                 status, reason = "missing_audio", str(exc)
             except Exception as exc:
                 status, reason = "retryable", str(exc)
+            publish_started = time.perf_counter()
             with service._uow_factory() as uow:
-                fresh, _ = uow.people.sample_plans(session_id, model, version)
+                revision = uow.people.connection.execute(
+                    "SELECT revision FROM annotation_input_revision WHERE singleton=1"
+                ).fetchone()[0]
                 lease = uow.people.sample_job(session_id)
                 valid = (
                     lease.get("token") == token
                     and lease.get("generation") == job["generation"]
-                    and {p.key for p in fresh} == {p.key for p in plans}
+                    and revision == snapshot.revision
+                    and lease.get("lease_until", 0) >= time.time()
                     and (service._provider.model, service._provider.model_version)
                     == (model, version)
                 )
                 if not valid:
-                    status, reason = "queued", "source_or_model_changed"
+                    status, reason = "retryable", "source_or_model_changed"
                 else:
                     for plan in plans:
                         if (
@@ -132,6 +172,12 @@ class AnnotationSampleWorker:
                 uow.people.finish_sample_job(
                     session_id, job["generation"], token, status, reason, time.time()
                 )
+            LOG.debug(
+                "sample job=%s publish_ms=%.1f status=%s",
+                token,
+                (time.perf_counter() - publish_started) * 1000,
+                status,
+            )
             results.append(
                 {"session_id": session_id, "status": status, "reason": reason}
             )

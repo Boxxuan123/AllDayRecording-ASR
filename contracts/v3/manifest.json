@@ -5,7 +5,7 @@
   "openapi_version": "3.1.0",
   "release_lock": {
     "path": "release-lock.json",
-    "sha256": "c51bd3475934323d8cd444f9b7b8a434875c915236de401d4c1bc8b0862a293d"
+    "sha256": "e6350eb562f8837154151ff7b7087643875a56515fc30b01f4b10aaaa6f30ce6"
   },
   "schemas": {
     "primitives": {

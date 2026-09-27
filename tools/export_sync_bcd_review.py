@@ -39,15 +39,15 @@ def selected(label, path):
             or path.startswith('tools/quality/') and path.endswith(('.cjs', '.mjs', '.ps1', '.ets', '.md', '.py'))
             or path in ('tests/ui/testcases/PhoneSyncTargetedResume.py', 'tests/ui/testcases/PhoneSyncTargetedResume.json', 'tests/ui/testcases/PhoneSyncTargeted.py', 'tests/ui/testcases/PhoneSyncTargeted.json', 'tests/ui/run_targeted.py', 'tests/ui/testcases/PhoneSyncBCDCleanup.py', 'tests/ui/testcases/PhoneSyncBCDCleanup.json', 'tests/ui/run_bcd.py', 'tests/ui/testcases/PhoneSyncBCD.py', 'tests/ui/testcases/PhoneSyncBCD.json', 'doc/SYNC_OPTIMIZATION_FINAL_ACCEPTANCE.md', 'contracts/v3/source.json', 'tests/ui/main.py', 'tests/ui/run_phase2a.py', 'tests/ui/run_phase1.py',
                         'tests/ui/testcases/PhonePhase2Production.py', 'tests/ui/testcases/PhoneOfflineAnnotation.py',
-                        'tests/ui/testcases/PhoneSyncInteraction.py', 'doc/SYNC_PHASE2A_ACCEPTANCE.md',
+                        'tests/ui/testcases/PhoneSyncInteraction.py', 'doc/annotation-sync-latency-fix.md', 'doc/SYNC_PHASE2A_ACCEPTANCE.md',
                         'doc/SYNC_PHASE2A_CLOSEOUT.md', 'doc/CURRENT_ARCHITECTURE.md',
                         'phone/src/main/module.json5', 'code-linter.json5'))
     return (path.startswith('src/allday_asr/v3/') and path.endswith('.py')
             or path.startswith('tests/') and path.endswith('.py') and any(key in path for key in (
-                'transfer', 'device', 'review_audio', 'phone_voice', 'sync_phase2a', 'v34_open_speaker', 'v33_intelligent', 'phase1_human_facts', 'phase2_samples', 'v3_contracts', 'v3_contract_generation', 'v3_bootstrap', '__init__'))
+                'annotation', 'transfer', 'device', 'review_audio', 'phone_voice', 'sync_phase2a', 'v34_open_speaker', 'v33_intelligent', 'phase1_human_facts', 'phase2_samples', 'v3_contracts', 'v3_contract_generation', 'v3_bootstrap', '__init__'))
             or path.startswith('contracts/v3/') and path.endswith('.json')
             or path in ('pyproject.toml', 'src/allday_asr/__init__.py', 'tools/sync_v3_contracts.py', 'tools/sync_bcd_fixtures.py', 'docs/sync-optimization-final-acceptance.md', 'tools/sync_phase1_test_receiver.py', 'tools/sync_phase2a_device_receiver.py',
-                        'tools/export_sync_bcd_review.py', 'docs/sync-phase2a-acceptance.md',
+                        'tools/benchmark_annotation_sync.py', 'docs/annotation-sync-latency-fix.md', 'tools/export_sync_bcd_review.py', 'docs/sync-phase2a-acceptance.md',
                         'docs/sync-phase2a-closeout.md'))
 
 
@@ -65,8 +65,8 @@ def main():
     versions = {}
     entries = {}
     for label, root, baseline in (
-        ('phone', args.phone, 'dd9bec56c2d8478bb576452abe110ec6b01ec9e7'),
-        ('desktop', desktop, '5e00912f2424532edb88405925c57ad455ce80d4'),
+        ('phone', args.phone, 'a25b6cab9a1e7629d9ca9525cb8c7d4ba0942d68'),
+        ('desktop', desktop, '20723f0ecd45b6cd6a6178cf720069f566d5135e'),
     ):
         head = git(root, 'rev-parse', 'HEAD').decode().strip()
         git(root, 'merge-base', '--is-ancestor', baseline, head)
@@ -87,7 +87,7 @@ def main():
                            'files': len(files)}
     verify(lambda name: entries['desktop/' + name], lambda name: entries['phone/' + name])
     manifest = {'internal_contract_digests_verified': True, 'repositories': versions, 'files': {name: digest(data) for name, data in sorted(entries.items())},
-                'scope': 'Committed selected source/tests/docs and round B/C/D text diffs. No runtime data or HAP.',
+                'scope': 'Committed selected source/tests/docs and annotation latency text diffs. No runtime data or HAP.',
                 'reproduce': 'python tools/export_sync_bcd_review.py --phone <phone-repo> --output outputs/sync-bcd-targeted-fixes-review.zip'}
     entries['manifest.json'] = (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode()
     output.parent.mkdir(parents=True, exist_ok=True)

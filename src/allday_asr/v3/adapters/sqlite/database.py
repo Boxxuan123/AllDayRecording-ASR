@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import logging
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,22 +32,37 @@ class V3Database:
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         connection = self._connect()
-        connection.execute("BEGIN IMMEDIATE")
+        started = time.perf_counter()
+        acquired = None
         try:
+            connection.execute("BEGIN IMMEDIATE")
+            acquired = time.perf_counter()
             yield connection
             connection.execute("COMMIT")
         except Exception:
-            connection.execute("ROLLBACK")
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
             raise
         finally:
+            ended = time.perf_counter()
+            logging.getLogger(__name__).debug(
+                "sqlite transaction wait_ms=%.1f hold_ms=%.1f acquired=%s",
+                ((acquired or ended) - started) * 1000,
+                (ended - (acquired or ended)) * 1000,
+                acquired is not None,
+            )
             connection.close()
 
     @contextmanager
     def read(self) -> Iterator[sqlite3.Connection]:
         connection = self._connect()
         try:
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute("BEGIN")
             yield connection
         finally:
+            if connection.in_transaction:
+                connection.rollback()
             connection.close()
 
     def _connect(self) -> sqlite3.Connection:
