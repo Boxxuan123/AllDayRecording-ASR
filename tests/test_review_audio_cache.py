@@ -177,3 +177,53 @@ def test_unavailable_pool_rejects_without_queued_future(tmp_path):
     with pytest.raises(RuntimeError, match='workers unavailable'):
         cache.get(key('unavailable'), lambda: pytest.fail('no worker'))
     assert not cache.queue and not cache.inflight
+
+
+def test_publish_failure_releases_reservation_and_retry(tmp_path, monkeypatch):
+    from allday_asr.v3.adapters.audio import review_cache
+    cache = ReviewAudioCache(tmp_path)
+    original = review_cache.os.replace
+    def denied(source, target):
+        if str(target).endswith('.entry'):
+            raise PermissionError(13, 'synthetic publish failure')
+        return original(source, target)
+    try:
+        monkeypatch.setattr(review_cache.os, 'replace', denied)
+        with pytest.raises(PermissionError):
+            cache.get(key('publish'), lambda: b'bytes')
+        monkeypatch.setattr(review_cache.os, 'replace', original)
+        assert cache.get(key('publish'), lambda: b'bytes') == (b'bytes', False)
+        assert all(w.is_alive() for w in cache.workers)
+    finally:
+        cache.close()
+    assert not cache.reservations and not cache.inflight
+    assert not list(tmp_path.glob('*.part'))
+
+
+def test_close_fails_queued_waiter_and_drains_running_jobs(tmp_path):
+    cache = ReviewAudioCache(tmp_path)
+    gate = threading.Event()
+    started = threading.Barrier(3)
+    def render():
+        started.wait(3)
+        assert gate.wait(3)
+        return b'running'
+    with ThreadPoolExecutor(4) as pool:
+        running = [pool.submit(cache.get, key('active' + str(n)), render) for n in range(2)]
+        started.wait(3)
+        queued = pool.submit(cache.get, key('queued'), lambda: pytest.fail('closed queue rendered'))
+        deadline = time.monotonic() + 3
+        while not cache.queue:
+            assert time.monotonic() < deadline
+            time.sleep(.001)
+        closing = pool.submit(cache.close)
+        try:
+            with pytest.raises(RuntimeError, match='stopped'):
+                queued.result(3)
+        finally:
+            gate.set()
+        for future in running:
+            assert future.result(3) == (b'running', False)
+        closing.result(3)
+    assert not cache.inflight and not cache.queue and not cache.reservations
+    assert cache.live_workers == 0
