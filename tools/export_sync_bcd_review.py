@@ -37,7 +37,7 @@ def selected(label, path):
         return (path.endswith('.ets') and path.startswith((
             'phone/src/main/ets/', 'phone/src/test/', 'common/src/main/ets/'))
             or path.startswith('tools/quality/') and path.endswith(('.cjs', '.mjs', '.ps1', '.ets', '.md', '.py'))
-            or path in ('tests/ui/testcases/PhoneSyncTargeted.py', 'tests/ui/testcases/PhoneSyncTargeted.json', 'tests/ui/run_targeted.py', 'tests/ui/testcases/PhoneSyncBCDCleanup.py', 'tests/ui/testcases/PhoneSyncBCDCleanup.json', 'tests/ui/run_bcd.py', 'tests/ui/testcases/PhoneSyncBCD.py', 'tests/ui/testcases/PhoneSyncBCD.json', 'doc/SYNC_OPTIMIZATION_FINAL_ACCEPTANCE.md', 'contracts/v3/source.json', 'tests/ui/main.py', 'tests/ui/run_phase2a.py', 'tests/ui/run_phase1.py',
+            or path in ('tests/ui/testcases/PhoneSyncTargetedResume.py', 'tests/ui/testcases/PhoneSyncTargetedResume.json', 'tests/ui/testcases/PhoneSyncTargeted.py', 'tests/ui/testcases/PhoneSyncTargeted.json', 'tests/ui/run_targeted.py', 'tests/ui/testcases/PhoneSyncBCDCleanup.py', 'tests/ui/testcases/PhoneSyncBCDCleanup.json', 'tests/ui/run_bcd.py', 'tests/ui/testcases/PhoneSyncBCD.py', 'tests/ui/testcases/PhoneSyncBCD.json', 'doc/SYNC_OPTIMIZATION_FINAL_ACCEPTANCE.md', 'contracts/v3/source.json', 'tests/ui/main.py', 'tests/ui/run_phase2a.py', 'tests/ui/run_phase1.py',
                         'tests/ui/testcases/PhonePhase2Production.py', 'tests/ui/testcases/PhoneOfflineAnnotation.py',
                         'tests/ui/testcases/PhoneSyncInteraction.py', 'doc/SYNC_PHASE2A_ACCEPTANCE.md',
                         'doc/SYNC_PHASE2A_CLOSEOUT.md', 'doc/CURRENT_ARCHITECTURE.md',
@@ -46,7 +46,7 @@ def selected(label, path):
             or path.startswith('tests/') and path.endswith('.py') and any(key in path for key in (
                 'transfer', 'device', 'review_audio', 'phone_voice', 'sync_phase2a', 'v34_open_speaker', 'v33_intelligent', 'phase1_human_facts', 'phase2_samples', 'v3_contracts', 'v3_contract_generation', 'v3_bootstrap', '__init__'))
             or path.startswith('contracts/v3/') and path.endswith('.json')
-            or path in ('tools/sync_v3_contracts.py', 'tools/sync_bcd_fixtures.py', 'docs/sync-optimization-final-acceptance.md', 'tools/sync_phase1_test_receiver.py', 'tools/sync_phase2a_device_receiver.py',
+            or path in ('pyproject.toml', 'src/allday_asr/__init__.py', 'tools/sync_v3_contracts.py', 'tools/sync_bcd_fixtures.py', 'docs/sync-optimization-final-acceptance.md', 'tools/sync_phase1_test_receiver.py', 'tools/sync_phase2a_device_receiver.py',
                         'tools/export_sync_bcd_review.py', 'docs/sync-phase2a-acceptance.md',
                         'docs/sync-phase2a-closeout.md'))
 

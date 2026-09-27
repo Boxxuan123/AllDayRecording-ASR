@@ -130,3 +130,69 @@ PC pytest 文件：`test_review_audio_cache.py`、`test_transfer.py`、`test_dev
 交付使用正常 commit 与 `git push origin HEAD:master`，不 force。最终回复分别给出 `git rev-parse HEAD` 与 `git ls-remote origin refs/heads/master` 相同的完整值、固定版本 commit/本文在线链接。若有任何推送失败必须单独报告，不以本地完成替代。
 
 审核包由 PC `tools/export_sync_bcd_review.py` 从两端最终已提交 HEAD 读取所选源码、测试、合成夹具生成脚本、合同、本文、架构与历史参考文档，包含本轮基线→HEAD diff、repo/版本/文件 SHA-256 清单，并回读核验全部文件。目标为 PC `outputs/sync-bcd-final-review.zip`，仅本机保留，不提交。排除运行时 outputs、真实数据、数据库、音频、转写、密钥/完整证书、HAP 和原始报告；包含删除行的 diff 也检查。最终 ZIP SHA-256 与完整提交见最终交付回复及包内 manifest。
+
+
+## 2026-09-27：F1–F4 定向修补与本轮验收
+
+本节是新一轮证据；上文 2026-09-26 的通过数、HAP 与数据核对均只属于历史，不充当本轮结果。本轮从手机 `dd9bec56c2d8478bb576452abe110ec6b01ec9e7`、电脑 `5e00912f2424532edb88405925c57ad455ce80d4` 开始，两端起始 clean master、fetch 后与 origin/master 相同。附件 `bcd-audit-evidence.zip` SHA-256 实测为 `abd360b55afd05b578c131501cb429570d95ddde0a4cf7e42b1157a7db620c71`，与说明一致。阅读其复现条件和摘录后，把“缺陷出现”的断言改为仓库中的正确性断言，没有用原复现脚本退出成功当修复通过。
+
+| 项目 | 原行为 / 根因 | 修补与正确性断言 |
+| --- | --- | --- |
+| F3 电脑 worker | finally 中淘汰改名的 PermissionError 逃出工作循环，池可耗尽 | `review_cache.py` 将清理 OSError 与制作/发布失败分离；保留未删除 entry/trash 字节，制作前保守预留最大单项空间及条目，无法回收则及时拒绝；单清理通道、1 秒冷却、60 秒限频诊断且不打印敏感路径；不可用工作池及时失败。故障持续时两个线程存活、落盘与队列有界，解除后成功，旧命中可用；发布失败重试、关闭排队 future 和活动任务资源归属分别断言 |
+| F2 手机陈旧索引 | 满 48 项时另一个旧文件已消失，unlink 中断索引修复，连续新 key 均被阻塞 | Worker 通过导入的 `PhoneV3ReviewAudioFiles.ets` 使用 SDK 数值 13900002 区分 ENOENT；每次成功删除/确认缺失后立即原子写索引，再执行后续淘汰/写入。48 项与可控时钟测试连续两个新 key、重建对象、修复后新写失败仍持久；权限错误不虚增空间，既有租约回归保留 |
+| F4 同窗口预取 | identity 一致即返回，失败没有可到期调度的需求 | ViewModel 最多 3 个 ready/running/waiting/blocked 需求及一个合并截止定时任务；复用已有前台/网络恢复回调；临时错误 60/120/240/300 秒退避，早恢复也保留到期检查。缓存退避先允许有效命中/共享在途。用虚拟时钟证明早恢复后无事件仍成功、晚恢复、ready/inflight 去重、离页/后台/stop 取消、授权错误不盲重试；预取不播放、不授予已听资格 |
+| F1 契约字节 | 附件发现 7 项摘要对应 CRLF 而非已提交 LF；本机实际 Git 系统配置为 core.autocrlf=true，无局部契约 LF 规则 | 两端局部 `.gitattributes` 固定相关 JSON/生成引用 UTF-8 LF；`sync_v3_contracts.py` 先明确将 CRLF 输入改写为 LF，再计算文件摘要→manifest→手机 source/fixture 摘要，无循环或时间戳；bare CR/BOM 报错。校验器对分发原字节严格断言、不偷偷 normalize；重复生成稳定，CRLF 改动后 check 拒绝。协议仍 3.7.1，projection 4，无新增业务语义 |
+
+没有已有持久生成脚本可修订，因此新增上述窄范围契约同步入口；电脑 JSON 是单一来源，不手填某几个摘要、不改全局 Git 配置、不整库 renormalize。SDK 自带 `@ohos.file.fs.d.ts` 明确 13900002 为 No such file or directory；测试适配器用这个数值模拟，而不是依赖英文错误文本。导出脚本复用原实现，基线更新为本轮审核版本，增加导出字节的内层契约核验。
+
+### 本轮候选与实际检查
+
+手机业务候选 `88ce8308f6e9225dd9fcea949a655e9e5253258f`；电脑业务实现 `2dacaeb7dd052b42479eb88fa4e958c4b2295485`，随后 `32937bc21dad53ef963b4102d25a79626b21971e` 仅补发布/关闭测试并执行。收尾资源审查又发现原有零计数 pin 键会残留，电脑 `a47fdd805aa2eace9d8b789cc7c5bb3a334cbadc` 在 read finally 中移除零计数键，加入断言并重跑受影响缓存/真实制作 8 项，exit 0 / 2.03 秒（`outputs/sync-targeted-cache-delivery.xml`、`.log`）。这不是文档-only 修改；LAN 接收端实测仍对应前述 `32937bc`，最后的 pin 状态清理由电脑针对性回归覆盖，没有冒充在新版本重跑过 LAN。最终验收文档及导出清单变更另在交付回复说明。
+
+| 实际执行 | 结果 / 本轮报告 |
+| --- | --- |
+| PC `python -m pytest tests/test_review_audio_cache.py tests/test_review_audio_guards.py tests/test_review_audio_boundaries.py tests/test_phone_voice_review_flow.py tests/test_v3_contracts.py tests/test_v3_contract_generation.py tests/test_transfer_tls_admission.py tests/test_sync_phase2a_recovery.py -q` | 正常本机权限 exit 0，41 passed / 10.13 s；PC `outputs/sync-targeted-pytest-final.xml`、`.log` |
+| 补发布/关闭测试后 `python -m pytest tests/test_review_audio_cache.py -q` | exit 0，8 passed / 1.98 s；`outputs/sync-targeted-cache-final.xml`、`.log`；与前 41 项有重复，不相加冒充唯一测试数 |
+| 两端 `git archive HEAD` 完整导出，以导出 src 为 PYTHONPATH、导出 phone 为 ALLDAY_HARMONY_REPO，运行 `tests/test_v3_contracts.py tests/test_v3_contract_generation.py` | exit 0，9 passed / 0.55 s；PC `outputs/sync-targeted-committed/contracts-archive.xml`、`.log`；额外 exact-byte verify 通过，不仅检查外层 ZIP |
+| `python tools/sync_v3_contracts.py --phone <phone checkout>` | 生成后原字节校验通过；本轮生成稳定性/CRLF 拒绝断言在 pytest 中执行 |
+| 手机 `node tools/quality/check-<name>.cjs` | 9 组每组 exit 0：review-cache、review-prefetch-recovery、review-audio、voice-review-flow、sync-coordinator、sync-phase2a、sync-phase2a-lifecycle、sync-connection、receiver-connection；Phone `outputs/sync-targeted-<name>.log` |
+| taskpool helper 模块调整后重跑 check-review-cache | exit 0；Phone `outputs/sync-targeted-cache-final.log` |
+| 正式 ArkTS 编译器 `build-sync-device.ps1 -Mode bcd` | exit 0，10.316 s；Phone `outputs/sync-targeted-build-candidate.log` |
+| 实际 `run-code-linter.mjs` | exit 0，0 defects；Phone `outputs/sync-targeted-lint.log` |
+| PC ruff（修改的生产缓存、契约生成、测试、receiver、导出脚本） | exit 0，All checks passed |
+
+环境沿用 Windows 10.0.26200、Python 3.12.10、pytest 8.4.2、ruff 0.16.5、DevEco SDK 26.0.0.32/API 26、Studio Node 24.14.1、快速层 Node 24.19。没有在 Linux 实机执行测试，不声称 Linux 全套通过，也没有复用旧 88/142 数字。本轮首次 pytest 沙箱运行是 25 passed / 8 failed / 8 errors，失败涉及临时目录/合成夹具文件的 WinError 5 权限阻断，随后同批正常权限 41 passed。首次构建因 ArkTS 任意类型 throw、第二次因 @Concurrent 不允许引用同模块非导入辅助函数失败；保留错误对象显式类型并拆为导入模块后构建通过，没有关闭规则。
+
+### 本轮真机、数据保护与交付
+
+本轮实际安装并执行 LAN 流程的 HAP：SHA-256 `9e91a4ec7bee446cf883e7bca6640e62dc9a822f0a9a6b2d7f6d3979c74e551e`，来源为手机 `b24ea6f16298a5019a79282c4509262c3555550f` 加本机生成的隔离 CA/配置；该提交相对 `88ce830` 仅恢复既有测试资源打包方式，业务代码相同。接收端运行电脑 `32937bc21dad53ef963b4102d25a79626b21971e`。原生续验脚本版本为手机 `9bbf26ce34bcb52cd4c49f90bf52b13f3c18a085`，与 HAP 源码仅差 UI 测试/严格报告入口，无需重装业务包。
+
+实际业务链路为手机 Wi-Fi → 电脑现有 WLAN 私网地址的 19100 端口，启动命令为 `python tools/sync_phase2a_device_receiver.py --bcd --host <本机 WLAN 地址> --public-key <本轮公钥文件> --output outputs/sync-targeted-lan`。接收端记录 peer_loopback=false，TLS、固定 CA、HUKS challenge 签名与生产 gateway/upload 实际执行。HDC 仅设备控制/安装/读取状态，前后 `fport ls` 均 Empty，没有 rport、localhost 或业务隧道。此轮为保存地址直连通过，**未覆盖实际 mDNS 发现**；未修改网络、系统锁屏或防火墙设置，也未改正式配对。
+
+| 真机检查 | 实际结果 |
+| --- | --- |
+| 同窗口失败→早恢复→自动准备 | 通过。测试接收端仅音频路由返回一次 503；恢复后保持同一窗口、不点击同步或播放，三个需求在真实 60 秒退避后自动 ready；ready 时均未被标记完整听过 |
+| 播放、重听、切页返回 | 通过。使用真实 AVPlayer 完整播放，重听不增加该音频请求；切页返回和后续下一项命中断言通过 |
+| 真实备份中标注与回执 | 通过前置并行断言。生产路径上传 8,388,652 字节合成 WAV，标注回执时上传仅 262,144 字节、complete=false，手机持久队列已确认；下一项缓存复用和滚动断言通过 |
+| 上传完成及完整性 | 首轮 180 秒观察预算超时（失败保留）；相同上传继续，未重建/重传。录音从 03:05:28.885 UTC 至 03:12:23.427 UTC 完成，约 414.542 秒；manifest 于 03:12:26.438 UTC 确认。续验通过，独立只读核对大小、offset、SHA 与 completed 状态一致 |
+| 实际断线错误→自动恢复 | 续验通过。使同一受信接收端关闭连接，三次本地提交后必须先观察到真实电脑连接错误，断言不是“12 秒”发现超时；恢复后无手动同步收敛为 0。电脑 client_operations 仅 4 个 applied 唯一操作（并行标注 1 + 恢复 3），无重复业务生效 |
+
+录音 SHA-256 `b72600c472f945084bded9ae2bc35112c900b461b9ceca19403320846869026f`；manifest SHA-256 `582c8bcd9a0cfb8f8f23310dba46cdd7090c6f5062470dfd52f4a0c2bb1cf797`。这里只公开合成内容摘要与聚合事实，不公开原始状态、身份/地址/路径或审核文本。
+
+真实命令（cwd Phone `tests/ui`，环境变量 SYNC_BCD_ROOT 指向本机隔离输出）：DevEco Testing Python `run_targeted.py`，以及只续验受影响部分的 `run_targeted.py --resume`。报告与失败情况如下：
+
+- `2026-09-27-11-01-51/summary_report.xml`：1 failed，配置未进入应用。HDC 普通写入与 Debug 挂载写入被设备权限拒绝；放弃该方式，恢复既有打包隔离资源，未改设备权限。首次启动还曾因锁屏被系统拒绝，用户手动解锁后继续。
+- `2026-09-27-11-03-44/summary_report.xml`：1 failed，首轮合并脚本在上传完成的 180 秒观察上限超时；此前预取恢复/播放/并行保存与回执断言已通过，私有 `native-partial-results.json` 保留预取结果。未把此报告记为通过。
+- `2026-09-27-11-09-26/summary_report.xml`：续验准备失败，等待的旧提示文字已改变；改为稳定的 `phase2-scroll` 根组件，不重置业务状态。
+- `2026-09-27-11-10-35/summary_report.xml`：**1 passed，errors/failures/ignored/unavailable=0，132.398 秒，严格 runner exit 0**。同一上传完成、实际断线错误及自动恢复通过，证据在 PC `outputs/sync-targeted-lan/native-continuation.json`、`evidence.json` 和独立合成数据库；原始报告均仅本机保留。
+- `2026-09-27-11-13-23/summary_report.xml`：专用隔离 HUKS 清理 1 passed / 5.678 秒，不计作业务验收。
+
+结论：F1–F4 相关快速/契约门禁通过；LAN 所需行为通过首轮已通过部分加同状态续验完成。**没有声称首轮合并脚本全通过；修改为 600 秒测试观察上限后的整条一体脚本未从头重跑**，只重跑受影响的完成等待与断线恢复。这个上限仅属于测试观察，不更改生产统一超时、鉴权或重试策略。
+
+正式入口 HAP 由 `build-sync-device.ps1 -Mode production` 在移除隔离资源后构建，exit 0 / 12.042 秒；SHA-256 `b072182f5173e5d6ebfd6054fefcf87f95cdeeadcd67034b3e4138748469fa31`，已 `install -r` 覆盖安装成功，未启动正式同步。ZIP 检查无隔离配置/CA/NativeRefresh；本轮测试数据库、合成缓存、HUKS key 均清理，正式偏好仅原有条目；独立 LAN receiver 已停止。
+
+本轮重新执行数据保护，不沿用旧结果：测试前导出耗时 174.556 / 1.699 / 1.566 秒，测试后导出总计 160.329 秒；对 PC `outputs/sync-targeted-private/before` 与 `after` 运行 `verify-phase1-exports.py`，exit 0，前后均 1,892 文件、3,615,080,658 字节，different_files=0。两个新目录的逐文件 SHA-256 清单仅本机保存；即使统计与上一轮相同，也是这次重新导出和计算的结果。没有卸载应用、清正式库、删除真实录音或重置正式配对。
+
+未执行/边界：真实 mDNS 发现、热点切换矩阵、Passkey 初次注册、实体 Watch 传输、真实模型推理、长时压力、帧率/声学延迟、Linux 实机全套测试；本轮没有这些通过结论。最初测试权限/配置/编译/观察预算和选择器失败均已分别列出，不能混作业务通过。
+
+新审核包目标为 PC `outputs/sync-bcd-targeted-fixes-review.zip`，从最终已提交 HEAD 导出，基线为本节起始两个审核提交；包含源码、直接依赖、正确性测试、合成夹具生成代码、两端本文、diff、版本及逐文件 SHA。外层文件清单及内层契约摘要都校验，不改写导出的 Git 字节。包只留本机，不含数据库、真实录音/转写、凭证、HAP、原始私有报告或 .git。
