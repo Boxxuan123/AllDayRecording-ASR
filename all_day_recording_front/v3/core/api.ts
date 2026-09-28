@@ -29,6 +29,8 @@ import type {
   VoicePrototypeCandidate,
   VoicePrototypeReviewStatus,
   SessionDetail,
+  TimelinePage,
+  SpeakerTrackSummary,
   SessionPage,
   Utterance,
 } from './types'
@@ -73,9 +75,14 @@ function recoverDesktopSession(): Promise<boolean> {
 
 async function request<T>(path: string, init?: RequestInit, recovered = false): Promise<T> {
   if (mock) return mockRequest<T>(path, init)
+  // Generated reports and other writes can take longer; bound ordinary reads.
+  const signal = (init?.method ?? 'GET') === 'GET'
+    ? AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(15_000)])
+    : init?.signal
   const response = await fetch(path, {
     credentials: 'same-origin',
     ...init,
+    signal,
     headers: {
       Accept: 'application/json',
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
@@ -104,19 +111,32 @@ async function request<T>(path: string, init?: RequestInit, recovered = false): 
 export const desktopApi = {
   voiceAudition: <T>(payload: object) => request<T>('/api/v3/voice-audition', { method: 'POST', body: JSON.stringify(payload) }),
   overview: () => request<Overview>('/api/v3/overview'),
-  sessions: (search = '') => request<SessionPage>(`/api/v3/recording-sessions?limit=100${search ? `&q=${encodeURIComponent(search)}` : ''}`),
-  session: (sessionId: string) => request<SessionDetail>(`/api/v3/recording-sessions/${encodeURIComponent(sessionId)}`),
+  sessions: (search = '', signal?: AbortSignal) => request<SessionPage>(`/api/v3/recording-sessions?limit=100${search ? `&q=${encodeURIComponent(search)}` : ''}`, { signal }),
+  session: (sessionId: string, view: 'full' | 'overview' | 'brief' | 'timeline' = 'full', signal?: AbortSignal) => request<SessionDetail>(`/api/v3/recording-sessions/${encodeURIComponent(sessionId)}${view === 'full' ? '' : `?view=${view}`}`, { signal }),
+  timeline: (sessionId: string, options: { cursor?: string | null; q?: string; speaker?: string; startMs?: number; endMs?: number }, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ limit: '80' })
+    if (options.cursor) params.set('cursor', options.cursor)
+    if (options.q) params.set('q', options.q)
+    if (options.speaker && options.speaker !== 'all') params.set('speaker', options.speaker)
+    if (options.startMs !== undefined) params.set('start_ms', String(options.startMs))
+    if (options.endMs !== undefined) params.set('end_ms', String(options.endMs))
+    return request<TimelinePage>(`/api/v3/recording-sessions/${encodeURIComponent(sessionId)}/timeline?${params}`, { signal })
+  },
+  timelineSpeakerTracks: (sessionId: string) => request<{ items: Pick<SpeakerTrackSummary, 'speaker_track_id' | 'label' | 'person_name'>[] }>(`/api/v3/recording-sessions/${encodeURIComponent(sessionId)}/speaker-tracks`),
+  timelineSpeakers: (sessionId: string, signal?: AbortSignal) => request<{ items: TimelinePage['speakers'] }>(`/api/v3/recording-sessions/${encodeURIComponent(sessionId)}/speakers`, { signal }),
+  timelineUtterance: (sessionId: string, utteranceId: string) => request<Utterance>(`/api/v3/recording-sessions/${encodeURIComponent(sessionId)}/utterances/${encodeURIComponent(utteranceId)}`),
   processingJobs: (status = '') => request<{ items: ProcessingJobSummary[] }>(`/api/v3/processing-jobs?limit=100${status ? `&status=${encodeURIComponent(status)}` : ''}`),
   processingJob: (jobId: string) => request<ProcessingSnapshot>(`/api/v3/processing-jobs/${encodeURIComponent(jobId)}`),
   retryJob: (jobId: string) => request<ProcessingSnapshot>(`/api/v3/processing-jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST', body: '{}' }),
   retryAutomaticWorkflow: (sessionId: string) => request<{ session_id: string; status: string; requested_at: string }>(`/api/v3/automatic-workflows/${encodeURIComponent(sessionId)}/retry`, { method: 'POST', body: '{}' }),
   cancelJob: (jobId: string, reason: string) => request<ProcessingSnapshot>(`/api/v3/processing-jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
-  reviews: () => request<{ items: ReviewItem[] }>('/api/v3/reviews?limit=100'),
+  reviews: (signal?: AbortSignal, cursor?: string | null) => request<{ items: ReviewItem[]; next_cursor: string | null }>(`/api/v3/reviews?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { signal }),
   acceptKnowledgeProposal: (proposalId: string) => request(`/api/v3/knowledge-proposals/${encodeURIComponent(proposalId)}/accept`, { method: 'POST', body: '{}' }),
   rejectKnowledgeProposal: (proposalId: string, reason: string) => request(`/api/v3/knowledge-proposals/${encodeURIComponent(proposalId)}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
-  reminderCandidates: () => request<{ items: ReminderCandidate[] }>('/api/v3/reminder-candidates?limit=100'),
+  reminderCandidates: (signal?: AbortSignal) => request<{ items: ReminderCandidate[] }>('/api/v3/reminder-candidates?limit=100', { signal }),
   reminders: () => request<{ items: ReminderSchedule[] }>('/api/v3/reminders?limit=100'),
-  people: () => request<{ items: PersonSummary[] }>('/api/v3/persons'),
+  people: (signal?: AbortSignal) => request<{ items: PersonSummary[] }>('/api/v3/persons', { signal }),
+  personChoices: (signal?: AbortSignal) => request<{ items: { person_id: string; display_name: string; kind: string }[] }>('/api/v3/person-choices', { signal }),
   person: (personId: string) => request<PersonDetail>(`/api/v3/persons/${encodeURIComponent(personId)}`),
   updatePersonProfile: (personId: string, value: { display_name: string; aliases: string[]; relationship_labels: string[]; notes: string }) => request<PersonDetail>(`/api/v3/persons/${encodeURIComponent(personId)}/profile`, { method: 'POST', body: JSON.stringify(value) }),
   refreshPersonMemories: (personId: string) => request<{ created_count: number; revised_count: number; retracted_count: number; expired_count: number; skipped_count: number }>(`/api/v3/persons/${encodeURIComponent(personId)}/memories/refresh`, { method: 'POST', body: '{}' }),
@@ -125,9 +145,9 @@ export const desktopApi = {
   expirePersonMemory: (memoryId: string) => request<PersonMemory>(`/api/v3/person-memories/${encodeURIComponent(memoryId)}/expire`, { method: 'POST', body: '{}' }),
   retractPersonMemory: (memoryId: string) => request<PersonMemory>(`/api/v3/person-memories/${encodeURIComponent(memoryId)}/retract`, { method: 'POST', body: '{}' }),
   undoPersonMemory: (memoryId: string) => request<PersonMemory>(`/api/v3/person-memories/${encodeURIComponent(memoryId)}/undo`, { method: 'POST', body: '{}' }),
-  speakerClusters: () => request<{ items: SpeakerCluster[] }>('/api/v3/speaker-clusters?limit=100'),
+  speakerClusters: (signal?: AbortSignal) => request<{ items: SpeakerCluster[] }>('/api/v3/speaker-clusters?limit=100', { signal }),
   speakerCluster: (clusterId: string) => request<SpeakerCluster>(`/api/v3/speaker-clusters/${encodeURIComponent(clusterId)}`),
-  voicePrototypeCandidates: (personId = '', status: VoicePrototypeReviewStatus | 'all' = 'pending') => request<{ items: VoicePrototypeCandidate[] }>(`/api/v3/voice-prototype-candidates?limit=100&status=${encodeURIComponent(status)}${personId ? `&person_id=${encodeURIComponent(personId)}` : ''}`),
+  voicePrototypeCandidates: (personId = '', status: VoicePrototypeReviewStatus | 'all' = 'pending', signal?: AbortSignal) => request<{ items: VoicePrototypeCandidate[] }>(`/api/v3/voice-prototype-candidates?limit=100&status=${encodeURIComponent(status)}${personId ? `&person_id=${encodeURIComponent(personId)}` : ''}`, { signal }),
   analyzeSpeakers: (sessionId: string) => request<SpeakerAnalysisResult>('/api/v3/speaker-cluster-runs', { method: 'POST', body: JSON.stringify({ session_id: sessionId }) }),
   rematchSpeakers: (sessionId?: string) => request('/api/v3/speaker-clusters/rematch', { method: 'POST', body: JSON.stringify(sessionId ? { session_id: sessionId } : {}) }),
   reviewVoicePrototype: (prototypeId: string, personId: string, decision: Exclude<VoicePrototypeReviewStatus, 'pending'>, note = '') => request(`/api/v3/voice-prototypes/${encodeURIComponent(prototypeId)}/reviews`, { method: 'POST', body: JSON.stringify({ person_id: personId, decision, note }) }),
@@ -145,7 +165,7 @@ export const desktopApi = {
     method: 'POST',
     body: JSON.stringify({ session_id: sessionId, reasoning_effort: reasoningEffort }),
   }),
-  dailySummaries: () => request<{ items: DailySummary[] }>('/api/v3/daily-summaries?limit=31'),
+  dailySummaries: (signal?: AbortSignal) => request<{ items: DailySummary[] }>('/api/v3/daily-summaries?limit=31', { signal }),
   generateDailySummary: (
     summaryDate: string,
     timezone: string,
@@ -154,7 +174,7 @@ export const desktopApi = {
     method: 'POST',
     body: JSON.stringify({ summary_date: summaryDate, timezone, reasoning_effort: reasoningEffort }),
   }),
-  relationshipReports: (personId = '') => request<{ items: RelationshipReport[] }>(`/api/v3/relationship-observations?limit=100${personId ? `&person_id=${encodeURIComponent(personId)}` : ''}`),
+  relationshipReports: (personId = '', signal?: AbortSignal) => request<{ items: RelationshipReport[] }>(`/api/v3/relationship-observations?limit=100${personId ? `&person_id=${encodeURIComponent(personId)}` : ''}`, { signal }),
   generateRelationshipReport: (
     personId: string,
     windowDays: 7 | 30,
@@ -193,12 +213,53 @@ async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (path === '/api/v3/overview') return mockOverview as T
   if (path.startsWith('/api/v3/recording-sessions?')) return { items: mockOverview.recent_sessions, next_cursor: null } as T
-  if (path.startsWith('/api/v3/recording-sessions/')) return structuredClone(mockSessionDetail) as T
+  if (/\/api\/v3\/recording-sessions\/[^/]+\/timeline\?/.test(path)) {
+    const params = new URL(path, 'http://localhost').searchParams
+    const q = (params.get('q') ?? '').toLowerCase()
+    const speaker = params.get('speaker')
+    const start = Number(params.get('start_ms') ?? 0)
+    const end = Number(params.get('end_ms') ?? Number.MAX_SAFE_INTEGER)
+    const items = mockSessionDetail.utterances.filter((item) => item.text.toLowerCase().includes(q)
+      && (!speaker || (item.speaker_label ?? 'unassigned') === speaker)
+      && item.end_ms > start && item.start_ms < end)
+    const offset = Number(params.get('cursor') ?? 0)
+    return { items: structuredClone(items.slice(offset, offset + 80)), next_cursor: offset + 80 < items.length ? String(offset + 80) : null,
+      total: items.length, speakers: [], speaker_tracks: [] } as T
+  }
+  if (/\/api\/v3\/recording-sessions\/[^/]+\/speaker-tracks$/.test(path)) return { items: mockSessionDetail.speaker_tracks } as T
+  if (/\/api\/v3\/recording-sessions\/[^/]+\/utterances\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/').at(-1) ?? '')
+    const item = mockSessionDetail.utterances.find((value) => value.utterance_id === id)
+    if (!item) throw new ApiError('utterance 不存在', 'not_found', 'mock')
+    return structuredClone(item) as T
+  }
+  if (/\/api\/v3\/recording-sessions\/[^/]+\/speakers$/.test(path)) {
+    const speakers = [...new Set(mockSessionDetail.utterances.map((item) => item.speaker_label ?? 'unassigned'))]
+      .map((label) => ({ label, count: mockSessionDetail.utterances.filter((item) => (item.speaker_label ?? 'unassigned') === label).length, speaker_track_id: null, person_name: null }))
+    return { items: speakers } as T
+  }
+  if (path.startsWith('/api/v3/recording-sessions/')) {
+    const detail = structuredClone(mockSessionDetail)
+    if (path.includes('view=overview') || path.includes('view=brief') || path.includes('view=timeline')) {
+      detail.utterances = []
+      detail.speaker_tracks = []
+      if (path.includes('view=brief') || path.includes('view=timeline')) {
+        detail.runs = []
+        detail.artifacts = []
+        detail.backups = []
+      }
+      if (path.includes('view=timeline')) {
+        detail.segment_ranges = detail.segments.map((item) => ({ session_start_ms: item.session_start_ms, session_end_ms: item.session_end_ms }))
+        detail.segments = []
+      }
+    }
+    return detail as T
+  }
   if (path.startsWith('/api/v3/processing-jobs?')) return { items: mockOverview.active_jobs } as T
   if (/\/processing-jobs\/[^/]+\/(retry|cancel)$/.test(path)) return mockProcessingSnapshot as T
   if (/\/processing-jobs\/[^/]+$/.test(path)) return mockProcessingSnapshot as T
   if (/\/automatic-workflows\/[^/]+\/retry$/.test(path)) return { session_id: 'mock-session', status: 'retry_requested', requested_at: new Date().toISOString() } as T
-  if (path.startsWith('/api/v3/reviews')) return { items: [] } as T
+  if (path.startsWith('/api/v3/reviews')) return { items: [], next_cursor: null } as T
   if (/\/knowledge-proposals\/[^/]+\/accept$/.test(path)) return {} as T
   if (/\/knowledge-proposals\/[^/]+\/reject$/.test(path)) return {} as T
   if (path === '/api/v3/reminder-generations/codex') return {

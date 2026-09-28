@@ -75,6 +75,15 @@ export interface Utterance {
   revision: number
   status: 'active' | 'stale'
   evidence: Record<string, unknown>
+  person_name?: string | null
+}
+
+export interface TimelinePage {
+  items: Utterance[]
+  next_cursor: string | null
+  total: number
+  speakers: { label: string; count: number; speaker_track_id: string | null; person_name: string | null }[]
+  speaker_tracks: { speaker_track_id: string; label: string; person_name: string | null }[]
 }
 
 export type SelfIdentity = 'self' | 'not_self' | 'unknown'
@@ -116,7 +125,9 @@ export interface BackupSummary {
 
 export interface SessionDetail {
   session: SessionSummary
+  utterance_count: number
   segments: SegmentSummary[]
+  segment_ranges?: { session_start_ms: number; session_end_ms: number }[]
   runs: RunSummary[]
   speaker_tracks: SpeakerTrackSummary[]
   utterances: Utterance[]

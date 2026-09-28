@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
+import time
 import wave
 from collections.abc import Mapping
 from pathlib import Path
@@ -31,6 +33,9 @@ class DeviceReviewService:
 
     def __init__(self, core: Any) -> None:
         self.core = core
+        self._source_digest: str | None = None
+        self._cached_snapshot: dict[str, Any] | None = None
+        self._cache_until: float = 0.0
 
     def snapshot(self, only_review_id: str | None = None) -> dict[str, Any]:
         candidates = self.core.people.list_review_candidates(None, "pending", 500)
@@ -38,7 +43,22 @@ class DeviceReviewService:
             str(candidate["prototype_id"]): candidate for candidate in candidates
         }
         items: list[dict[str, Any]] = []
-        for raw in self.core.desktop.list_reviews(500):
+        shared_review_query = getattr(self.core.desktop, "list_reviews_with_candidates", None)
+        raw_reviews = (
+            shared_review_query(500, candidates)
+            if shared_review_query is not None
+            else self.core.desktop.list_reviews(500)
+        )
+        confirmed_candidates = self.core.people.list_review_candidates(None, 'confirmed', 500)
+        source_digest = canonical_json_sha256({
+            "pending": candidates, "reviews": raw_reviews,
+            "confirmed": confirmed_candidates,
+        })
+        if (only_review_id is None and time.monotonic() < self._cache_until
+                and source_digest == self._source_digest
+                and self._cached_snapshot is not None):
+            return copy.deepcopy(self._cached_snapshot)
+        for raw in raw_reviews:
             if only_review_id is not None and raw.get('review_id') != only_review_id:
                 continue
             item = dict(raw)
@@ -68,7 +88,7 @@ class DeviceReviewService:
             items.append(item)
         # Reuse the existing per-sample review surface for historical grants.
         # These rows offer withdrawal only, including noncurrent/inactive sources.
-        for candidate in self.core.people.list_review_candidates(None, 'confirmed', 500):
+        for candidate in confirmed_candidates:
             if only_review_id is not None and only_review_id != f"voice-grant:{candidate['prototype_id']}:{candidate['person_id']}":
                 continue
             items.append({
@@ -83,19 +103,35 @@ class DeviceReviewService:
                     'prototype_ids': [candidate['prototype_id']],
                     'voice_candidates': [_public_voice_candidate(candidate)]},
             })
+        clips_by_session: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            for candidate in item.get("context", {}).get("voice_candidates", []):
+                clips_by_session.setdefault(str(candidate["session_id"]), []).extend(
+                    candidate.get("representative_clips", [])
+                )
         details = {}
+        lightweight_evidence = getattr(self.core.desktop, "review_evidence_detail", None)
+        for session_id, clips in clips_by_session.items():
+            try:
+                details[session_id] = (
+                    lightweight_evidence(session_id, tuple(clips))
+                    if lightweight_evidence is not None
+                    else self.core.desktop.session_detail(session_id)
+                )
+            except (KeyError, ValueError, AttributeError):
+                details[session_id] = {}
         for item in items:
             for candidate in item.get("context", {}).get("voice_candidates", []):
                 candidate.update(self.audio_description(candidate))
                 session_id = candidate['session_id']
-                if session_id not in details:
-                    try:
-                        details[session_id] = self.core.desktop.session_detail(session_id)
-                    except (KeyError, ValueError, AttributeError):
-                        details[session_id] = {}
                 candidate['evidence_utterances'] = candidate_evidence(candidate, details[session_id])
                 candidate['review_key'] = candidate_key(candidate)
-        return {"items": items, "version": canonical_json_sha256(items)}
+        snapshot = {"items": items, "version": canonical_json_sha256(items)}
+        if only_review_id is None:
+            self._source_digest = source_digest
+            self._cached_snapshot = copy.deepcopy(snapshot)
+            self._cache_until = time.monotonic() + 3.0
+        return snapshot
 
     def resolve(
         self, device_id: str, payload: Mapping[str, Any]
@@ -178,6 +214,9 @@ class DeviceReviewService:
                 raise ValueError("unsupported knowledge proposal review action")
         else:
             raise ValueError("this review kind cannot be resolved from the phone")
+        self._source_digest = None
+        self._cached_snapshot = None
+        self._cache_until = 0.0
         return {"result": result, "reviews": self.snapshot()}
 
     def audio(self, payload: Mapping[str, Any]) -> dict[str, Any]:

@@ -44,6 +44,17 @@ def verify(read_desktop, read_phone):
     receipt = json.loads(phone_raw)
     if receipt['canonical_manifest_sha256'] != digest(raw):
         raise ValueError('Harmony manifest digest mismatch')
+    release = json.loads(read_desktop('contracts/v3/release-lock.json'))
+    for name in ('release_version', 'core_schema_version', 'phone_projection_schema_version'):
+        if receipt['release_lock'][name] != release[name]:
+            raise ValueError('Harmony release lock mismatch: ' + name)
+    snapshot = read_phone(receipt['consumer_snapshot']).decode('utf-8')
+    for name, value in (
+        ('V3_CORE_SCHEMA_VERSION', release['core_schema_version']),
+        ('V3_PHONE_PROJECTION_SCHEMA_VERSION', release['phone_projection_schema_version']),
+    ):
+        if f'export const {name}: number = {value};' not in snapshot:
+            raise ValueError('Harmony consumer snapshot mismatch: ' + name)
     fixture_test = read_phone('phone/src/test/V3ContractFixture.test.ets').decode('utf-8')
     for name, expected in receipt['canonical_fixtures'].items():
         if digest(read_desktop('contracts/v3/fixtures/' + name)) != expected or expected not in fixture_test:
@@ -64,6 +75,22 @@ def generate(desktop, phone):
     path = phone / 'contracts/v3/source.json'
     receipt = json.loads(path.read_bytes())
     receipt['canonical_manifest_sha256'] = digest(manifest_path.read_bytes())
+    release = json.loads((root / 'release-lock.json').read_bytes())
+    for name in ('release_version', 'core_schema_version', 'phone_projection_schema_version'):
+        receipt['release_lock'][name] = release[name]
+    snapshot_path = phone / receipt['consumer_snapshot']
+    snapshot = canonical(snapshot_path.read_bytes()).decode('utf-8')
+    for name, value in (
+        ('V3_CORE_SCHEMA_VERSION', release['core_schema_version']),
+        ('V3_PHONE_PROJECTION_SCHEMA_VERSION', release['phone_projection_schema_version']),
+    ):
+        snapshot, count = re.subn(
+            r'(export const ' + name + r': number = )\d+(;)',
+            lambda match, value=value: match[1] + str(value) + match[2], snapshot,
+        )
+        if count != 1:
+            raise ValueError('expected one consumer version: ' + name)
+    snapshot_path.write_bytes(snapshot.encode('utf-8'))
     fixture_path = phone / 'phone/src/test/V3ContractFixture.test.ets'
     fixture = canonical(fixture_path.read_bytes()).decode('utf-8')
     for name, constant in [('core-resources.json', 'CORE_FIXTURE_SHA256'), ('forward-enums.json', 'FORWARD_FIXTURE_SHA256')]:

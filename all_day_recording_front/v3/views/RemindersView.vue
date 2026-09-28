@@ -5,7 +5,7 @@ import PageState from '../components/PageState.vue'
 import { desktopApi } from '../core/api'
 import { formatDate } from '../core/format'
 import { playRange, release } from '../core/media'
-import { useQuery } from '../core/query'
+import { invalidateQuery, useQuery } from '../core/query'
 import type { ReminderCandidate, ReminderCandidateStatus } from '../core/types'
 
 const query = useQuery('reminders', async () => {
@@ -91,6 +91,7 @@ async function act(candidateId: string, action: () => Promise<unknown>): Promise
   actionError.value = ''
   try {
     await action()
+    for (const key of ['reviews', 'daily-summaries', 'relationship-reports']) invalidateQuery(key)
     await query.refresh(true)
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : String(error)
@@ -134,6 +135,7 @@ async function generateWithCodex(): Promise<void> {
       selectedSessionId.value,
       reasoningEffort.value,
     )
+    for (const key of ['reviews', 'daily-summaries', 'relationship-reports']) invalidateQuery(key)
     generationMessage.value = result.candidates.length
       ? `Codex 使用 ${result.codex.reasoning_effort} 推理生成 ${result.candidates.length} 个候选。`
       : `Codex 使用 ${result.codex.reasoning_effort} 推理完成分析，没有发现证据充分的提醒。`
@@ -183,7 +185,7 @@ onBeforeUnmount(release)
     </div>
 
     <p v-if="actionError" class="form-error reminder-error">{{ actionError }}</p>
-    <PageState :loading="query.loading.value" :error="query.error.value" :empty="!candidates.length" empty-text="当前筛选下没有候选提醒。" @retry="query.refresh(true)">
+    <PageState :loading="query.loading.value" :error="query.error.value" :has-content="query.data.value !== null" :empty="!candidates.length" empty-text="当前筛选下没有候选提醒。" @retry="query.refresh(true)">
       <div class="reminder-layout">
         <section class="reminder-candidate-list">
           <article v-for="item in candidates" :id="`reminder-candidate-${item.candidate_id}`" :key="item.candidate_id" :class="['panel', 'reminder-card', item.candidate_id === focusedCandidateId ? 'focused-review' : '']" :data-status="item.status">

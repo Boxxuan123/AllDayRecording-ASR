@@ -7,11 +7,6 @@ from typing import Any
 
 from allday_asr.v3.domain.ids import new_ulid
 
-from .person_memory_repository_codec import (
-    _contains_reference,
-)
-
-
 class PersonMemoryQueryRepositoryMixin:
     def person_detail(self, person_id: str, limit: int = 200) -> dict[str, Any]:
         profile = self.profile(person_id)
@@ -68,30 +63,37 @@ class PersonMemoryQueryRepositoryMixin:
     def summary_counts(self) -> dict[str, dict[str, Any]]:
         rows = self.connection.execute(
             f"""
-            SELECT p.person_id,
-              COUNT(DISTINCT CASE WHEN m.status = 'active' THEN m.memory_id END)
-                AS memory_count,
-              COUNT(DISTINCT s.session_id) AS encounter_count,
-              MAX(s.captured_start) AS last_encounter_at
-            FROM persons p
-            LEFT JOIN (
-              SELECT value.* FROM person_memory_entries value
+            WITH current_memories AS (
+              SELECT value.person_id, COUNT(*) AS memory_count
+              FROM person_memory_entries value
               JOIN (
                 SELECT memory_id, MAX(revision) AS revision
                 FROM person_memory_entries GROUP BY memory_id
               ) latest ON latest.memory_id = value.memory_id
                 AND latest.revision = value.revision
-            ) m ON m.person_id = p.person_id
-            LEFT JOIN person_cluster_links l
-              ON l.person_id = p.person_id AND l.status = 'active'
-            LEFT JOIN speaker_cluster_memberships membership
-              ON membership.cluster_id = l.cluster_id AND membership.state = 'active'
-            LEFT JOIN speaker_tracks track
-              ON track.speaker_track_id = membership.speaker_track_id
-            LEFT JOIN recording_sessions s ON s.session_id = track.session_id
-              AND EXISTS (SELECT 1 FROM utterances u WHERE u.speaker_track_id = track.speaker_track_id
-                          AND u.status = 'active' AND {confirmed_interaction("u")})
-            GROUP BY p.person_id
+              WHERE value.status = 'active'
+              GROUP BY value.person_id
+            ), encounters AS (
+              SELECT l.person_id, COUNT(DISTINCT s.session_id) AS encounter_count,
+                MAX(s.captured_start) AS last_encounter_at
+              FROM person_cluster_links l
+              JOIN speaker_cluster_memberships membership
+                ON membership.cluster_id = l.cluster_id AND membership.state = 'active'
+              JOIN speaker_tracks track
+                ON track.speaker_track_id = membership.speaker_track_id
+              JOIN recording_sessions s ON s.session_id = track.session_id
+              WHERE l.status = 'active'
+                AND EXISTS (SELECT 1 FROM utterances u
+                  WHERE u.speaker_track_id = track.speaker_track_id
+                    AND u.status = 'active' AND {confirmed_interaction("u")})
+              GROUP BY l.person_id
+            )
+            SELECT p.person_id, COALESCE(m.memory_count, 0) AS memory_count,
+              COALESCE(e.encounter_count, 0) AS encounter_count,
+              e.last_encounter_at
+            FROM persons p
+            LEFT JOIN current_memories m ON m.person_id = p.person_id
+            LEFT JOIN encounters e ON e.person_id = p.person_id
             """
         ).fetchall()
         events = self.connection.execute(
@@ -102,19 +104,28 @@ class PersonMemoryQueryRepositoryMixin:
             """
         ).fetchall()
         result: dict[str, dict[str, Any]] = {}
+        event_counts: Counter[str] = Counter()
+        event_last: dict[str, str] = {}
+        person_ids = {str(row["person_id"]) for row in rows}
+        for event in events:
+            references: set[str] = set()
+            pending: list[object] = [json.loads(event["payload_json"])]
+            while pending:
+                value = pending.pop()
+                if isinstance(value, str) and value in person_ids:
+                    references.add(value)
+                elif isinstance(value, dict):
+                    pending.extend(value.values())
+                elif isinstance(value, list):
+                    pending.extend(value)
+            for person_id in references:
+                event_counts[person_id] += 1
+                updated_at = str(event["updated_at"])
+                if updated_at > event_last.get(person_id, ""):
+                    event_last[person_id] = updated_at
         for row in rows:
             person_id = str(row["person_id"])
-            event_count = 0
-            last_event_at: str | None = None
-            for event in events:
-                if not _contains_reference(
-                    json.loads(event["payload_json"]), person_id
-                ):
-                    continue
-                event_count += 1
-                updated_at = str(event["updated_at"])
-                if last_event_at is None or updated_at > last_event_at:
-                    last_event_at = updated_at
+            last_event_at = event_last.get(person_id)
             last_interaction_at = max(
                 (
                     value
@@ -125,7 +136,7 @@ class PersonMemoryQueryRepositoryMixin:
             )
             result[person_id] = {
                 "memory_count": int(row["memory_count"]),
-                "interaction_count": int(row["encounter_count"]) + event_count,
+                "interaction_count": int(row["encounter_count"]) + event_counts[person_id],
                 "last_interaction_at": last_interaction_at,
             }
         return result

@@ -252,10 +252,22 @@ class PeopleCatalogRepositoryMixin:
         )
 
     def list_clusters(
-        self, status: str | None, limit: int
+        self, status: str | None, limit: int,
+        discovery_only: bool = False, excluded_ids: tuple[str, ...] = (),
     ) -> tuple[dict[str, Any], ...]:
-        where = "WHERE c.status = ?" if status else ""
-        parameters: tuple[object, ...] = (status, limit) if status else (limit,)
+        clauses: list[str] = []
+        parameters: list[object] = []
+        if status:
+            clauses.append("c.status = ?")
+            parameters.append(status)
+        if discovery_only:
+            clauses.extend(("c.suggested_person_id IS NULL", "l.person_id IS NULL"))
+        if excluded_ids:
+            clauses.append("c.cluster_id NOT IN (SELECT value FROM json_each(?))")
+            parameters.append(json.dumps(excluded_ids))
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        having = "HAVING COUNT(DISTINCT t.session_id) >= 2" if discovery_only else ""
+        parameters.append(limit)
         rows = self.connection.execute(
             f"""
             SELECT c.*, l.person_id, p.display_name AS person_name,
@@ -276,6 +288,7 @@ class PeopleCatalogRepositoryMixin:
             LEFT JOIN speaker_tracks t ON t.speaker_track_id = m.speaker_track_id
             {where}
             GROUP BY c.cluster_id
+            {having}
             ORDER BY c.updated_at DESC, c.cluster_id DESC LIMIT ?
             """,
             parameters,

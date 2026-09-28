@@ -12,9 +12,14 @@ def test_crlf_repair_is_idempotent_and_checks_exact_bytes(tmp_path):
     fixture = phone / 'phone/src/test/V3ContractFixture.test.ets'
     fixture.parent.mkdir(parents=True)
     fixture.write_text("const CORE_FIXTURE_SHA256: string = '" + '0'*64 + "';\nconst FORWARD_FIXTURE_SHA256: string = '" + '0'*64 + "';\n")
+    snapshot = phone / 'phone/src/main/ets/v3/contracts/V3ContractModels.ets'
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text('export const V3_CORE_SCHEMA_VERSION: number = 0;\n'
+                        'export const V3_PHONE_PROJECTION_SCHEMA_VERSION: number = 0;\n')
     receipt = phone / 'contracts/v3/source.json'
     receipt.parent.mkdir(parents=True)
-    receipt.write_text('{"canonical_fixtures":{}}')
+    receipt.write_text('{"canonical_fixtures":{},"release_lock":{},'
+                       '"consumer_snapshot":"phone/src/main/ets/v3/contracts/V3ContractModels.ets"}')
     contract = desktop / 'contracts/v3/release-lock.json'
     contract.write_bytes(contract.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
     generate(desktop, phone)

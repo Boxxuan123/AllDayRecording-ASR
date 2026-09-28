@@ -5,7 +5,7 @@ import PageState from '../components/PageState.vue'
 import { desktopApi } from '../core/api'
 import { formatDate, statusLabel } from '../core/format'
 import { watchProcessingEvents } from '../core/processingEvents'
-import { invalidateQuery, useQuery } from '../core/query'
+import { useQuery } from '../core/query'
 import type { ProcessingSnapshot } from '../core/types'
 
 const status = ref(new URLSearchParams(location.search).get('status') ?? '')
@@ -17,23 +17,34 @@ const detailLoading = ref(false)
 const detailError = ref<Error | null>(null)
 const acting = ref(false)
 let closeEvents: () => void = () => undefined
+let snapshotRequest = 0
 
 watch(() => jobs.data.value, (value) => {
-  if (!selected.value && value?.items.length) selected.value = value.items[0].job_id
+  if (!value) return
+  if (!value.items.some((job) => job.job_id === selected.value)) {
+    selected.value = value.items[0]?.job_id ?? null
+  }
 }, { immediate: true })
 watch(selected, () => void loadSnapshot(), { immediate: true })
 
 async function loadSnapshot(): Promise<void> {
-  if (!selected.value) { snapshot.value = null; return }
+  const jobId = selected.value
+  const request = ++snapshotRequest
+  if (!jobId) { snapshot.value = null; detailLoading.value = false; return }
+  if (snapshot.value?.job.job_id !== jobId) snapshot.value = null
   detailLoading.value = true
   detailError.value = null
-  try { snapshot.value = await desktopApi.processingJob(selected.value) }
-  catch (error) { detailError.value = error instanceof Error ? error : new Error(String(error)) }
-  finally { detailLoading.value = false }
+  try {
+    const result = await desktopApi.processingJob(jobId)
+    if (request === snapshotRequest) snapshot.value = result
+  } catch (error) {
+    if (request === snapshotRequest) detailError.value = error instanceof Error ? error : new Error(String(error))
+  } finally {
+    if (request === snapshotRequest) detailLoading.value = false
+  }
 }
 
 async function refresh(): Promise<void> {
-  invalidateQuery('processing-jobs')
   await Promise.all([jobs.refresh(true), loadSnapshot()])
 }
 
@@ -65,17 +76,18 @@ onBeforeUnmount(() => closeEvents())
   <section class="page processing-page">
     <header class="page-header"><div><p class="overline">DURABLE ORCHESTRATION</p><h1>处理中心</h1></div><span class="live-label"><i></i>SSE / REST RECOVERY</span></header>
     <div class="filter-tabs process-filters"><button v-for="item in [['','全部'],['running','运行中'],['failed_retryable','需重试'],['succeeded','已完成'],['cancelled','已取消']]" :key="item[0]" :class="{ active: status === item[0] }" @click="setStatus(item[0])">{{ item[1] }}</button></div>
-    <PageState :loading="jobs.loading.value" :error="jobs.error.value" :empty="!jobs.data.value?.items.length" empty-text="当前没有处理任务。" @retry="refresh">
-      <div class="processing-layout">
-        <aside class="panel job-list">
+    <div class="processing-layout">
+      <aside class="panel job-list">
+        <PageState :loading="jobs.loading.value" :error="jobs.error.value" :empty="!jobs.data.value?.items.length" :has-content="!!jobs.data.value" empty-text="当前没有处理任务。" @retry="refresh">
           <button v-for="job in jobs.data.value?.items" :key="job.job_id" :class="{ active: selected === job.job_id }" @click="selected = job.job_id">
             <span><strong>{{ job.current_stage ?? '等待 worker' }}</strong><small>{{ job.session_id.slice(-10) }} · {{ formatDate(job.updated_at) }}</small></span>
             <span class="status-pill" :data-status="job.status">{{ statusLabel(job.status) }}</span>
             <i><b :style="{ width: `${job.progress * 100}%` }"></b></i>
           </button>
-        </aside>
-        <section class="panel run-inspector">
-          <PageState :loading="detailLoading" :error="detailError" :empty="!snapshot" @retry="loadSnapshot">
+        </PageState>
+      </aside>
+      <section class="panel run-inspector">
+          <PageState :loading="detailLoading" :error="detailError" :empty="!snapshot" :has-content="!!snapshot" empty-text="选择处理任务查看详情。" @retry="loadSnapshot">
             <template v-if="snapshot">
               <header><div><p class="section-kicker">RUN / {{ snapshot.run.run_id.slice(-10) }}</p><h2>{{ snapshot.run.pipeline_version }}</h2></div><div class="run-actions"><button v-if="snapshot.job.status === 'failed_retryable' || snapshot.job.status === 'stale'" :disabled="acting" @click="retry">重试</button><button v-if="snapshot.job.status === 'running' || snapshot.job.status === 'queued'" class="danger-button" :disabled="acting" @click="cancel">取消</button></div></header>
               <div class="run-summary"><span><small>会话</small><strong>{{ snapshot.run.session_id.slice(-12) }}</strong></span><span><small>run revision</small><strong>{{ snapshot.run.revision }}</strong></span><span><small>总进度</small><strong>{{ Math.round(snapshot.run.progress * 100) }}%</strong></span><span><small>状态</small><strong>{{ statusLabel(snapshot.job.status) }}</strong></span></div>
@@ -87,8 +99,7 @@ onBeforeUnmount(() => closeEvents())
               </div>
             </template>
           </PageState>
-        </section>
-      </div>
-    </PageState>
+      </section>
+    </div>
   </section>
 </template>

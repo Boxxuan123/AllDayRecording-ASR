@@ -113,6 +113,15 @@ def _service():
     return DeviceReviewService(core), people
 
 
+def test_review_snapshot_cache_does_not_restore_processed_items() -> None:
+    service, people = _service()
+    first = service.snapshot()
+    first["items"].clear()
+    assert service.snapshot()["items"]
+    people.candidates.clear()
+    assert service.snapshot()["items"] == []
+
+
 def test_review_snapshot_enriches_and_orders_voice_samples_without_vectors() -> None:
     service, _people = _service()
 

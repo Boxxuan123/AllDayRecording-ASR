@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import PageState from '../components/PageState.vue'
 import VoiceReviewActions from '../components/VoiceReviewActions.vue'
 import { desktopApi } from '../core/api'
 import { formatDate } from '../core/format'
 import { playRange } from '../core/media'
-import { useQuery } from '../core/query'
+import { invalidateQuery, useQuery } from '../core/query'
 import {
   reviewCategories,
   reviewCategory,
@@ -31,21 +31,68 @@ type ReviewFilter = 'all' | ReviewCategory
 type ReviewGroupMode = 'session' | 'person'
 type ReviewUnit = ReviewItem & { members: ReviewItem[] }
 
-const query = useQuery('reviews', async () => {
-  const reviews = await desktopApi.reviews()
+const query = useQuery('reviews', async (signal) => {
+  const reviews = await desktopApi.reviews(signal)
   const needsReminders = reviews.items.some((item) => item.kind === 'reminder')
+  const needsVoice = reviews.items.some((item) => item.kind === 'voice_identity'
+    && item.context.voice_mode !== 'speaker_discovery'
+    && !Array.isArray(item.context.voice_candidates))
   const [voiceCandidates, reminderCandidates] = await Promise.all([
-    desktopApi.voicePrototypeCandidates().catch(() => ({ items: [] as VoicePrototypeCandidate[] })),
+    needsVoice
+      ? desktopApi.voicePrototypeCandidates('', 'pending', signal).catch(() => ({ items: [] as VoicePrototypeCandidate[] }))
+      : Promise.resolve({ items: [] as VoicePrototypeCandidate[] }),
     needsReminders
-      ? desktopApi.reminderCandidates().catch(() => ({ items: [] as ReminderCandidate[] }))
+      ? desktopApi.reminderCandidates(signal).catch(() => ({ items: [] as ReminderCandidate[] }))
       : Promise.resolve({ items: [] as ReminderCandidate[] }),
   ])
   return {
     items: reviews.items,
+    nextCursor: reviews.next_cursor,
     voiceCandidates: voiceCandidates.items,
     reminderCandidates: reminderCandidates.items,
   }
 })
+const moreItems = ref<ReviewItem[]>([])
+const moreCursor = ref<string | null>(null)
+const moreLoading = ref(false)
+const moreError = ref('')
+const moreVoiceCandidates = ref<VoicePrototypeCandidate[]>([])
+const moreReminderCandidates = ref<ReminderCandidate[]>([])
+let moreRequest = 0
+let moreAbort: AbortController | null = null
+watch(query.data, (value) => {
+  moreRequest += 1
+  moreAbort?.abort()
+  moreLoading.value = false
+  moreItems.value = []
+  moreCursor.value = value?.nextCursor ?? null
+  moreVoiceCandidates.value = []
+  moreReminderCandidates.value = []
+}, { immediate: true })
+onBeforeUnmount(() => moreAbort?.abort())
+const loadedItems = computed(() => [...(query.data.value?.items ?? []), ...moreItems.value])
+async function loadMoreReviews(): Promise<void> {
+  if (!moreCursor.value || moreLoading.value) return
+  moreLoading.value = true
+  moreError.value = ''
+  const request = ++moreRequest
+  const controller = new AbortController()
+  moreAbort = controller
+  try {
+    const page = await desktopApi.reviews(controller.signal, moreCursor.value)
+    if (request !== moreRequest) return
+    moreItems.value = [...moreItems.value, ...page.items]
+    moreCursor.value = page.next_cursor
+    if (page.items.some((item) => item.kind === 'reminder')) {
+      moreReminderCandidates.value = (await desktopApi.reminderCandidates(controller.signal)).items
+    }
+    if (page.items.some((item) => item.kind === 'voice_identity' && !Array.isArray(item.context.voice_candidates))) {
+      moreVoiceCandidates.value = (await desktopApi.voicePrototypeCandidates('', 'pending', controller.signal)).items
+    }
+  } catch (error) {
+    if (request === moreRequest) moreError.value = error instanceof Error ? error.message : String(error)
+  } finally { if (request === moreRequest) moreLoading.value = false }
+}
 
 const selectedKind = ref<ReviewFilter>('all')
 const groupMode = ref<ReviewGroupMode>('session')
@@ -61,16 +108,19 @@ const tierLabels: Record<SpeakerMatchTier, string> = {
 }
 
 const voiceCandidates = computed(() => new Map(
-  (query.data.value?.voiceCandidates ?? []).map((item) => [item.prototype_id, item]),
+  [...(query.data.value?.voiceCandidates ?? []), ...moreVoiceCandidates.value,
+    ...loadedItems.value.flatMap((item) => Array.isArray(item.context.voice_candidates)
+      ? item.context.voice_candidates as VoicePrototypeCandidate[] : [])]
+    .map((item) => [item.prototype_id, item]),
 ))
 
 const reminderCandidates = computed(() => new Map(
-  (query.data.value?.reminderCandidates ?? []).map((item) => [item.candidate_id, item]),
+  [...(query.data.value?.reminderCandidates ?? []), ...moreReminderCandidates.value].map((item) => [item.candidate_id, item]),
 ))
 
 const reviewUnits = computed<ReviewUnit[]>(() => {
   const units = new Map<string, ReviewUnit>()
-  for (const item of query.data.value?.items ?? []) {
+  for (const item of loadedItems.value) {
     // Backward compatibility with a local server that has not restarted yet.
     if (item.kind === 'workflow_failure') continue
     if (item.kind !== 'voice_identity') {
@@ -288,6 +338,7 @@ async function act(item: ReviewItem, action: () => Promise<unknown>, message: st
   notice.value = ''
   try {
     await action()
+    for (const key of ['reviews', 'persons', 'person-choices', 'people-voice']) invalidateQuery(key)
     notice.value = message
     await query.refresh(true)
   } catch (error) {
@@ -401,7 +452,7 @@ function unique(values: string[]): string[] {
     </header>
     <PageState
       :loading="query.loading.value"
-      :error="query.error.value"
+      :error="query.error.value" :has-content="query.data.value !== null"
       :empty="!primaryItems.length"
       empty-text="当前没有需要你决定的事项。明确指令会直接执行，普通推断由系统自行维护。"
       @retry="query.refresh(true)"
@@ -490,6 +541,8 @@ function unique(values: string[]): string[] {
           </div>
         </section>
       </div>
+      <p v-if="moreError" class="review-message error-state">{{ moreError }}</p>
+      <footer v-if="moreCursor" class="load-more-row"><button class="quiet-button" type="button" :disabled="moreLoading" @click="loadMoreReviews">{{ moreLoading ? '正在读取…' : '继续加载审核' }}</button></footer>
     </PageState>
   </section>
 </template>

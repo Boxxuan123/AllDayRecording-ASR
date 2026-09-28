@@ -7,22 +7,39 @@ import PageState from '../components/PageState.vue'
 import { desktopApi } from '../core/api'
 import { formatDate } from '../core/format'
 import { playRange, release } from '../core/media'
-import { useQuery } from '../core/query'
+import { invalidateQuery, useQuery } from '../core/query'
 import { voiceReviewLane } from '../core/reviews'
 import type { PersonDetail, PersonMemory, PersonMemoryKind, SpeakerCluster, VoicePrototypeCandidate } from '../core/types'
 
-const query = useQuery('people', async () => {
-  const [clusters, people, sessions, voiceCandidates] = await Promise.all([
-    desktopApi.speakerClusters(), desktopApi.people(), desktopApi.sessions(), desktopApi.voicePrototypeCandidates('', 'all'),
-  ])
-  return { clusters: clusters.items, people: people.items, sessions: sessions.items, voiceCandidates: voiceCandidates.items }
-})
 const routeParams = new URLSearchParams(window.location.search)
 const requestedPersonId = routeParams.get('person') ?? ''
 const focusedMemoryId = routeParams.get('memory') ?? ''
 const focusedPrototypeId = routeParams.get('prototype') ?? ''
 const focusedClusterId = routeParams.get('cluster') ?? ''
 const mode = ref<'memory' | 'voice'>(routeParams.get('mode') === 'voice' ? 'voice' : 'memory')
+const peopleQuery = useQuery('persons', async (signal) => (await desktopApi.people(signal)).items)
+const voiceQuery = useQuery('people-voice', async (signal) => {
+  const [clusters, sessions, voiceCandidates] = await Promise.all([
+    desktopApi.speakerClusters(signal), desktopApi.sessions('', signal), desktopApi.voicePrototypeCandidates('', 'all', signal),
+  ])
+  return { clusters: clusters.items, sessions: sessions.items, voiceCandidates: voiceCandidates.items }
+}, () => mode.value === 'voice')
+const query = {
+  data: computed(() => peopleQuery.data.value === null ? null : {
+    people: peopleQuery.data.value,
+    clusters: voiceQuery.data.value?.clusters ?? [],
+    sessions: voiceQuery.data.value?.sessions ?? [],
+    voiceCandidates: voiceQuery.data.value?.voiceCandidates ?? [],
+  }),
+  loading: computed(() => peopleQuery.loading.value || (mode.value === 'voice' && voiceQuery.loading.value)),
+  error: computed(() => peopleQuery.error.value ?? (mode.value === 'voice' ? voiceQuery.error.value : null)),
+  refresh: async (force = false): Promise<void> => {
+    await Promise.all([
+      peopleQuery.refresh(force),
+      ...(mode.value === 'voice' ? [voiceQuery.refresh(force)] : []),
+    ])
+  },
+}
 const selectedSession = ref('')
 const selectedId = ref('')
 const detail = ref<SpeakerCluster | null>(null)
@@ -57,6 +74,7 @@ let focusedDeepLink = false
 let focusedCluster = false
 
 watchEffect(() => {
+  if (mode.value === 'voice') {
   if (!selectedSession.value && query.data.value?.sessions.length) {
     selectedSession.value = query.data.value.sessions[0].session_id
   }
@@ -75,7 +93,8 @@ watchEffect(() => {
     const nextCluster = visible.find((cluster) => cluster.status === 'active' && !cluster.person_id) ?? visible[0]
     if (nextCluster) void selectCluster(nextCluster.cluster_id)
   }
-  if (!selectedPersonId.value && query.data.value?.people.length) {
+  }
+  if (mode.value === 'memory' && !selectedPersonId.value && query.data.value?.people.length) {
     const requested = query.data.value.people.find((person) => person.person_id === requestedPersonId)
     void selectPerson(requested?.person_id ?? query.data.value.people[0].person_id)
   }
@@ -129,13 +148,17 @@ async function selectPerson(personId: string): Promise<void> {
   if (selectedPersonId.value !== personId) showMemoryHistory.value = false
   selectedPersonId.value = personId
   try {
-    personDetail.value = await desktopApi.person(personId)
-    profileName.value = personDetail.value.display_name
-    profileAliases.value = personDetail.value.aliases.join('、')
-    profileRelationships.value = personDetail.value.relationship_labels.join('、')
-    profileNotes.value = personDetail.value.notes
+    const nextDetail = await desktopApi.person(personId)
+    if (selectedPersonId.value !== personId) return
+    personDetail.value = nextDetail
+    profileName.value = nextDetail.display_name
+    profileAliases.value = nextDetail.aliases.join('、')
+    profileRelationships.value = nextDetail.relationship_labels.join('、')
+    profileNotes.value = nextDetail.notes
     memoryEventId.value = eventChoices.value[0]?.event_id ?? ''
-  } catch (error) { errorMessage.value = error instanceof Error ? error.message : String(error) }
+  } catch (error) {
+    if (selectedPersonId.value === personId) errorMessage.value = error instanceof Error ? error.message : String(error)
+  }
 }
 
 async function act(action: () => Promise<unknown>, message: string): Promise<void> {
@@ -144,6 +167,7 @@ async function act(action: () => Promise<unknown>, message: string): Promise<voi
   resultMessage.value = ''
   try {
     await action()
+    for (const key of ['persons', 'person-choices', 'people-voice', 'reviews']) invalidateQuery(key)
     if (message) resultMessage.value = message
     await query.refresh(true)
     if (selectedId.value && query.data.value?.clusters.some((cluster) => cluster.cluster_id === selectedId.value)) {
@@ -365,7 +389,7 @@ onBeforeUnmount(release)
     <p v-if="errorMessage" class="form-error speaker-message">{{ errorMessage }}</p>
     <p v-if="resultMessage" class="generation-message">{{ resultMessage }}</p>
 
-    <PageState v-if="mode === 'memory'" :loading="query.loading.value" :error="query.error.value" :empty="!query.data.value?.people.length" empty-text="还没有已确认人物。请先在“未知声纹聚类”中确认人物身份。" @retry="query.refresh(true)">
+    <PageState v-if="mode === 'memory'" :loading="query.loading.value" :error="query.error.value" :has-content="query.data.value !== null" :empty="!query.data.value?.people.length" empty-text="还没有已确认人物。请先在“未知声纹聚类”中确认人物身份。" @retry="query.refresh(true)">
       <div class="people-layout memory-layout">
         <aside class="panel cluster-list person-list">
           <button v-for="person in query.data.value?.people" :key="person.person_id" :class="{ active: selectedPersonId === person.person_id }" @click="selectPerson(person.person_id)">
@@ -456,7 +480,7 @@ onBeforeUnmount(release)
       </div>
     </PageState>
 
-    <PageState v-else :loading="query.loading.value" :error="query.error.value" :empty="!visibleClusters.length" empty-text="所选录音还没有说话人簇。点击“聚类并重新匹配身份”开始本机分析。" @retry="query.refresh(true)">
+    <PageState v-else :loading="query.loading.value" :error="query.error.value" :has-content="query.data.value !== null" :empty="!visibleClusters.length" empty-text="所选录音还没有说话人簇。点击“聚类并重新匹配身份”开始本机分析。" @retry="query.refresh(true)">
       <div class="people-layout">
         <aside class="panel cluster-list">
           <div class="cluster-list-section">

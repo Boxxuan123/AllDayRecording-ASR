@@ -16,30 +16,25 @@ const busy = ref<'daily' | 'relationship' | 'action' | null>(null)
 const actionError = ref('')
 const message = ref('')
 
-const query = useQuery('insights', async () => {
-  const [summaries, relationships, people] = await Promise.all([
-    desktopApi.dailySummaries(),
-    desktopApi.relationshipReports(),
-    desktopApi.people(),
-  ])
-  return { summaries: summaries.items, relationships: relationships.items, people: people.items }
-})
+const query = useQuery('daily-summaries', async (signal) => (await desktopApi.dailySummaries(signal)).items)
+const relationshipsQuery = useQuery('relationship-reports', async (signal) => (await desktopApi.relationshipReports('', signal)).items)
+const peopleQuery = useQuery('person-choices', async (signal) => (await desktopApi.personChoices(signal)).items)
 
 watchEffect(() => {
-  if (!selectedPersonId.value && query.data.value?.people.length) {
-    selectedPersonId.value = query.data.value.people[0].person_id
+  if (!selectedPersonId.value && peopleQuery.data.value?.length) {
+    selectedPersonId.value = peopleQuery.data.value[0].person_id
   }
 })
 
-const daily = computed(() => query.data.value?.summaries.find(
+const daily = computed(() => query.data.value?.find(
   (item) => item.summary_date === selectedDate.value && item.timezone === timezone.value,
 ) ?? null)
 
-const relationship = computed(() => query.data.value?.relationships.find(
+const relationship = computed(() => relationshipsQuery.data.value?.find(
   (item) => item.person_id === selectedPersonId.value && item.window_days === windowDays.value,
 ) ?? null)
 
-const selectedPerson = computed(() => query.data.value?.people.find(
+const selectedPerson = computed(() => peopleQuery.data.value?.find(
   (item) => item.person_id === selectedPersonId.value,
 ) ?? null)
 
@@ -85,7 +80,7 @@ async function generateRelationship(): Promise<void> {
       reasoningEffort.value,
     )
     message.value = `已生成 ${result.window_days} 天关系观察；事实与模型观察保持分栏。`
-    await query.refresh(true)
+    await relationshipsQuery.refresh(true)
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -128,7 +123,7 @@ async function act(action: () => Promise<unknown>): Promise<void> {
   actionError.value = ''
   try {
     await action()
-    await query.refresh(true)
+    await relationshipsQuery.refresh(true)
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -159,7 +154,7 @@ onBeforeUnmount(release)
     <p v-if="message" class="generation-message">{{ message }}</p>
     <p v-if="actionError" class="reminder-error">{{ actionError }}</p>
 
-    <PageState :loading="query.loading.value" :error="query.error.value" @retry="query.refresh(true)">
+    <PageState :loading="query.loading.value" :error="query.error.value" :has-content="query.data.value !== null" @retry="query.refresh(true)">
       <section v-if="daily" class="daily-insight-layout">
         <article class="panel verified-ledger">
           <header><div><p class="section-kicker">PROGRAM VERIFIED</p><h2>{{ daily.summary_date }} 客观底账</h2></div><span class="status-pill" :data-status="daily.derivation_status">{{ daily.derivation_status === 'stale' ? '源数据已改，建议重建' : `修订 ${daily.revision}` }}</span></header>
@@ -189,15 +184,18 @@ onBeforeUnmount(release)
         </article>
       </section>
       <div v-else class="state-panel empty-state">这个日期还没有总结。点击“重建每日总结”从事件层生成。</div>
+    </PageState>
 
       <section class="relationship-section">
         <header class="section-heading"><div><p class="section-kicker">7 / 30 DAY WINDOW</p><h2>关系观察</h2></div></header>
         <div class="panel relationship-runner">
-          <label><span>人物</span><select v-model="selectedPersonId"><option value="" disabled>选择人物</option><option v-for="person in query.data.value?.people" :key="person.person_id" :value="person.person_id">{{ person.display_name }}</option></select></label>
+          <label><span>人物</span><select v-model="selectedPersonId"><option value="" disabled>选择人物</option><option v-for="person in peopleQuery.data.value" :key="person.person_id" :value="person.person_id">{{ person.display_name }}</option></select></label>
           <label><span>观察窗口</span><select v-model="windowDays"><option :value="7">近 7 天</option><option :value="30">近 30 天</option></select></label>
           <button class="primary-action" :disabled="!selectedPersonId || busy !== null" @click="generateRelationship">{{ busy === 'relationship' ? '正在生成…' : '生成关系观察' }}</button>
         </div>
 
+        <p v-if="peopleQuery.loading.value || relationshipsQuery.loading.value" class="state-panel">正在读取关系资料…</p>
+        <p v-if="peopleQuery.error.value || relationshipsQuery.error.value" class="state-panel error-state">关系资料读取失败 <button @click="peopleQuery.refresh(true); relationshipsQuery.refresh(true)">重试</button></p>
         <div v-if="relationship" class="relationship-grid">
           <article class="panel relationship-facts">
             <header><div><p class="section-kicker">VERIFIED FACTS</p><h3>{{ selectedPerson?.display_name }} · {{ relationship.window_days }} 天</h3></div><span class="status-pill" :data-status="relationship.derivation_status">{{ relationship.derivation_status }}</span></header>
@@ -222,6 +220,5 @@ onBeforeUnmount(release)
         </div>
         <div v-else-if="selectedPersonId" class="state-panel empty-state">尚未为这个人物生成 {{ windowDays }} 天关系观察。</div>
       </section>
-    </PageState>
   </section>
 </template>

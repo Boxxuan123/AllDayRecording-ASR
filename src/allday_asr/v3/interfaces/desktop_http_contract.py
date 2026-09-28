@@ -22,6 +22,10 @@ ASSET_ROOT = Path(__file__).parents[1] / "web_assets"
 _JOB_ROUTE = re.compile(r"^/api/v3/processing-jobs/([^/]+)$")
 _RUN_ROUTE = re.compile(r"^/api/v3/processing-runs/([^/]+)$")
 _SESSION_ROUTE = re.compile(r"^/api/v3/recording-sessions/([^/]+)$")
+_SESSION_TIMELINE_ROUTE = re.compile(r"^/api/v3/recording-sessions/([^/]+)/timeline$")
+_SESSION_TRACKS_ROUTE = re.compile(r"^/api/v3/recording-sessions/([^/]+)/speaker-tracks$")
+_SESSION_SPEAKERS_ROUTE = re.compile(r"^/api/v3/recording-sessions/([^/]+)/speakers$")
+_SESSION_UTTERANCE_ROUTE = re.compile(r"^/api/v3/recording-sessions/([^/]+)/utterances/([^/]+)$")
 _SESSION_AUDIO_ROUTE = re.compile(
     r"^/api/v3/recording-sessions/([^/]+)/audio$"
 )

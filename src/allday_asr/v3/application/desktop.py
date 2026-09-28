@@ -78,9 +78,36 @@ class DesktopQueryService:
             )
         return SessionPage(page, next_cursor)
 
-    def session_detail(self, session_id: str) -> dict[str, Any]:
+    def session_detail(self, session_id: str, include_timeline: bool = True,
+                       include_history: bool = True,
+                       segment_ranges_only: bool = False) -> dict[str, Any]:
         with self._uow_factory().reading() as uow:
-            return uow.desktop.session_detail(session_id)
+            return uow.desktop.session_detail(session_id, include_timeline,
+                                              include_history, segment_ranges_only)
+
+    def timeline_page(self, session_id: str, limit: int = 80, cursor: str | None = None,
+                      search: str | None = None, speaker: str | None = None,
+                      start_ms: int | None = None, end_ms: int | None = None) -> dict[str, Any]:
+        with self._uow_factory().reading() as uow:
+            return uow.desktop.timeline_page(session_id, limit, cursor, search, speaker, start_ms, end_ms)
+
+    def timeline_speaker_tracks(self, session_id: str) -> tuple[dict[str, Any], ...]:
+        with self._uow_factory().reading() as uow:
+            return uow.desktop.timeline_speaker_tracks(session_id)
+
+    def timeline_speakers(self, session_id: str) -> tuple[dict[str, Any], ...]:
+        with self._uow_factory().reading() as uow:
+            return uow.desktop.timeline_speakers(session_id)
+
+    def timeline_utterance(self, session_id: str, utterance_id: str) -> dict[str, Any]:
+        with self._uow_factory().reading() as uow:
+            return uow.desktop.timeline_utterance(session_id, utterance_id)
+
+    def review_evidence_detail(
+        self, session_id: str, clips: tuple[dict[str, Any], ...]
+    ) -> dict[str, Any]:
+        with self._uow_factory().reading() as uow:
+            return uow.desktop.review_evidence_detail(session_id, clips)
 
     def session_audio_clips(
         self, session_id: str, start_ms: int, end_ms: int
@@ -143,6 +170,22 @@ class DesktopQueryService:
             raise ValueError("review page limit must be between 1 and 500")
         with self._uow_factory().reading() as uow:
             return uow.desktop.list_reviews(limit)
+
+    def list_reviews_page(self, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        if not 1 <= limit <= 500 or not 0 <= offset <= 100_000:
+            raise ValueError("review page limit or cursor is invalid")
+        with self._uow_factory().reading() as uow:
+            items = uow.desktop.list_reviews(limit + 1, offset=offset)
+        return {"items": items[:limit],
+                "next_cursor": str(offset + limit) if len(items) > limit else None}
+
+    def list_reviews_with_candidates(
+        self, limit: int, voice_candidates: tuple[dict[str, Any], ...]
+    ) -> tuple[dict[str, Any], ...]:
+        if not 1 <= limit <= 500:
+            raise ValueError("review page limit must be between 1 and 500")
+        with self._uow_factory().reading() as uow:
+            return uow.desktop.list_reviews(limit, voice_candidates)
 
     def list_devices(self) -> tuple[dict[str, Any], ...]:
         with self._uow_factory().reading() as uow:

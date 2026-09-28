@@ -94,6 +94,7 @@ const current = mockOverview.recent_sessions[0]
 
 export const mockSessionDetail: SessionDetail = {
   session: current,
+  utterance_count: 3,
   segments: Array.from({ length: 4 }, (_, index) => ({
     segment_id: `01K4SEGMENT00000000000000${index}`,
     sequence: index,

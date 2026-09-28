@@ -199,6 +199,37 @@ class V3DesktopApiTests(unittest.TestCase):
         _, detail, _ = self._request("/api/v3/recording-sessions/session-1")
         self.assertEqual(detail["session"]["session_id"], "session-1")
         self.assertEqual(detail["segments"][0]["media_id"], self.media_id)
+        _, overview, _ = self._request(
+            "/api/v3/recording-sessions/session-1?view=overview"
+        )
+        self.assertEqual(overview["utterance_count"], len(detail["utterances"]))
+        self.assertEqual(overview["utterances"], [])
+        self.assertEqual(overview["speaker_tracks"], [])
+        self.assertEqual(overview["segments"], detail["segments"])
+        _, timeline_summary, _ = self._request(
+            "/api/v3/recording-sessions/session-1?view=timeline"
+        )
+        self.assertEqual(timeline_summary["segments"], [])
+        self.assertEqual(
+            [value["session_start_ms"] for value in timeline_summary["segment_ranges"]],
+            [value["session_start_ms"] for value in detail["segments"]],
+        )
+        self.assertEqual(timeline_summary["utterances"], [])
+        self.assertEqual(timeline_summary["runs"], [])
+        self.assertEqual(timeline_summary["artifacts"], [])
+        _, timeline, _ = self._request(
+            "/api/v3/recording-sessions/session-1/timeline?limit=2")
+        self.assertEqual(timeline["items"], [])
+        self.assertIsNone(timeline["next_cursor"])
+        self.assertEqual(timeline["total"], 0)
+        _, speakers, _ = self._request(
+            "/api/v3/recording-sessions/session-1/speakers")
+        self.assertEqual(speakers, {"items": []})
+        _, tracks, _ = self._request(
+            "/api/v3/recording-sessions/session-1/speaker-tracks")
+        self.assertEqual(tracks, {"items": []})
+        _, review_page, _ = self._request("/api/v3/reviews?limit=2")
+        self.assertIn("next_cursor", review_page)
 
         status, media, headers = self._request(
             f"/api/v3/media/{self.media_id}", headers={"Range": "bytes=2-5"}

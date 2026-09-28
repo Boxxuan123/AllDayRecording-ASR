@@ -18,6 +18,10 @@ from .desktop_http_contract import (
     _RUN_ROUTE,
     _SESSION_AUDIO_ROUTE,
     _SESSION_ROUTE,
+    _SESSION_TIMELINE_ROUTE,
+    _SESSION_TRACKS_ROUTE,
+    _SESSION_SPEAKERS_ROUTE,
+    _SESSION_UTTERANCE_ROUTE,
     _SPEAKER_CLUSTER_ROUTE,
     _integer,
     _location_without_token,
@@ -63,11 +67,46 @@ class DesktopGetRoutesMixin:
                 unquote(match.group(1)), start_ms=start_ms, end_ms=end_ms
             )
             return
+        if match := _SESSION_TIMELINE_ROUTE.fullmatch(path):
+            optional_start = query.get("start_ms", [None])[0]
+            optional_end = query.get("end_ms", [None])[0]
+            self._send_json(HTTPStatus.OK, self.application.core.desktop.timeline_page(
+                unquote(match.group(1)),
+                _integer(query.get("limit", ["80"])[0], "limit"),
+                query.get("cursor", [None])[0], query.get("q", [None])[0],
+                query.get("speaker", [None])[0],
+                _integer(optional_start, "start_ms") if optional_start is not None else None,
+                _integer(optional_end, "end_ms") if optional_end is not None else None,
+            ))
+            return
+        if match := _SESSION_TRACKS_ROUTE.fullmatch(path):
+            self._send_json(HTTPStatus.OK, {"items":
+                self.application.core.desktop.timeline_speaker_tracks(unquote(match.group(1)))})
+            return
+        if match := _SESSION_SPEAKERS_ROUTE.fullmatch(path):
+            self._send_json(HTTPStatus.OK, {"items":
+                self.application.core.desktop.timeline_speakers(unquote(match.group(1)))})
+            return
+        if match := _SESSION_UTTERANCE_ROUTE.fullmatch(path):
+            self._send_json(HTTPStatus.OK, self.application.core.desktop.timeline_utterance(
+                unquote(match.group(1)), unquote(match.group(2))))
+            return
         if match := _SESSION_ROUTE.fullmatch(path):
-            self._send_json(
-                HTTPStatus.OK,
-                self.application.core.desktop.session_detail(unquote(match.group(1))),
-            )
+            session_id = unquote(match.group(1))
+            view = query.get("view", ["full"])[0]
+            if view == "timeline":
+                detail = self.application.core.desktop.session_detail(
+                    session_id, False, False, True
+                )
+            elif view == "brief":
+                detail = self.application.core.desktop.session_detail(
+                    session_id, False, False
+                )
+            elif view == "overview":
+                detail = self.application.core.desktop.session_detail(session_id, False)
+            else:
+                detail = self.application.core.desktop.session_detail(session_id)
+            self._send_json(HTTPStatus.OK, detail)
             return
         if path == "/api/v3/processing-jobs":
             status = query.get("status", [None])[0]
@@ -101,10 +140,9 @@ class DesktopGetRoutesMixin:
             return
         if path == "/api/v3/reviews":
             limit = _integer(query.get("limit", ["100"])[0], "limit")
-            self._send_json(
-                HTTPStatus.OK,
-                {"items": self.application.list_reviews(limit)},
-            )
+            cursor = _integer(query.get("cursor", ["0"])[0], "cursor")
+            self._send_json(HTTPStatus.OK,
+                self.application.core.desktop.list_reviews_page(limit, cursor))
             return
         if path == "/api/v3/evidence-spans":
             session_id = _required_query(query, "session_id")
@@ -249,6 +287,12 @@ class DesktopGetRoutesMixin:
             self._send_json(
                 HTTPStatus.OK,
                 {"items": self.application.core.people.list_people()},
+            )
+            return
+        if path == "/api/v3/person-choices":
+            self._send_json(
+                HTTPStatus.OK,
+                {"items": self.application.core.people.people_choices()},
             )
             return
         if path == "/api/v3/voice-prototype-candidates":

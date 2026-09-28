@@ -34,13 +34,15 @@ class DesktopReviewQueryMixin:
         ).fetchall()
         return tuple(_job(row) for row in rows)
 
-    def list_reviews(self, limit: int) -> tuple[dict[str, Any], ...]:
+    def list_reviews(self, limit: int, voice_candidates: tuple[dict[str, Any], ...] | None = None,
+                     offset: int = 0) -> tuple[dict[str, Any], ...]:
         from . import desktop_repository as compatibility
 
+        fetch_limit = limit + offset
         items: list[dict[str, Any]] = []
         mapping_rows = self.connection.execute("""SELECT * FROM utterances
             WHERE status = 'active' AND json_type(evidence_json, '$.annotation_review') = 'object'
-            ORDER BY updated_at DESC LIMIT ?""", (limit,)).fetchall()
+            ORDER BY created_at, utterance_id LIMIT ?""", (fetch_limit,)).fetchall()
         for row in mapping_rows:
             review = json.loads(row["evidence_json"])["annotation_review"]
             items.append({"review_id": f"annotation_mapping:{row['utterance_id']}",
@@ -58,7 +60,7 @@ class DesktopReviewQueryMixin:
 
         reminders = compatibility.SqliteReminderRepository(
             self.connection
-        ).list_candidates("pending_confirmation", limit)
+        ).list_candidates("pending_confirmation", fetch_limit, oldest_first=True)
         for candidate in reminders:
             title = str(candidate.get("title") or candidate["operation"])
             evidence = candidate.get("evidence_utterance_ids", ())
@@ -98,13 +100,21 @@ class DesktopReviewQueryMixin:
             WHERE proposal.status = 'pending'
               AND proposal.kind = 'event_operation'
               AND generation.layer = 'event'
+              AND json_type(proposal.payload_json, '$.patch') = 'object'
+              AND json_extract(proposal.payload_json, '$.operation') = 'create'
+              AND json_extract(proposal.payload_json, '$.event_kind') IN ('decision', 'person_fact')
+              AND json_type(proposal.payload_json, '$.patch.confidence') IN ('integer', 'real')
+              AND json_extract(proposal.payload_json, '$.patch.confidence') >= 0.70
+              AND (json_extract(proposal.payload_json, '$.event_kind') != 'person_fact'
+                OR COALESCE(json_extract(proposal.payload_json, '$.patch.person_id'), '') != '')
+              AND json_array_length(proposal.evidence_utterance_ids_json) >= 1
               AND NOT EXISTS (
                 SELECT 1 FROM reminder_candidates reminder
                 WHERE reminder.proposal_id = proposal.proposal_id
               )
             ORDER BY proposal.created_at, proposal.proposal_id LIMIT ?
             """,
-            (limit,),
+            (fetch_limit,),
         ).fetchall()
         for row in proposal_rows:
             payload = json.loads(str(row["payload_json"]))
@@ -178,9 +188,14 @@ class DesktopReviewQueryMixin:
             LEFT JOIN event_current_states event ON event.event_id = current.event_id
             WHERE current.status = 'active'
               AND current.confirmation_status = 'unconfirmed'
+              AND current.kind IN ('stable_fact', 'preference', 'commitment')
+              AND current.confidence >= 0.60
+              AND (current.event_id IS NOT NULL OR EXISTS (
+                SELECT 1 FROM person_memory_evidence e
+                WHERE e.memory_id = current.memory_id AND e.memory_revision = current.revision))
             ORDER BY current.created_at, current.memory_id LIMIT ?
             """,
-            (limit,),
+            (fetch_limit,),
         ).fetchall()
         for row in memory_rows:
             memory = {
@@ -228,9 +243,12 @@ class DesktopReviewQueryMixin:
                 }
             )
 
-        voice_candidates = compatibility.SqlitePeopleRepository(
-            self.connection
-        ).list_review_candidates(None, "pending", limit)
+        if voice_candidates is None:
+            # Grouping can change a card's timestamp and identity. Never cap
+            # source rows before the global inbox order and offset are known.
+            voice_candidates = compatibility.SqlitePeopleRepository(
+                self.connection
+            ).list_review_candidates(None, "pending", -1, inbox_only=True)
         voice_groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         manual_counts: dict[str, int] = {}
         for candidate in voice_candidates:
@@ -296,6 +314,7 @@ class DesktopReviewQueryMixin:
                         "review_lane": lane,
                         "cluster_id": cluster_id,
                         "prototype_ids": list(prototype_ids),
+                        "voice_candidates": list(candidates),
                         "speaker_track_ids": list(track_ids),
                         "session_ids": list(session_ids),
                         "candidate_count": len(candidates),
@@ -310,7 +329,8 @@ class DesktopReviewQueryMixin:
             )
 
         clusters = compatibility.SqlitePeopleRepository(self.connection).list_clusters(
-            "active", limit
+            "active", -1, discovery_only=True,
+            excluded_ids=tuple(reviewed_cluster_ids),
         )
         for cluster in clusters:
             cluster_id = str(cluster["cluster_id"])
@@ -363,7 +383,7 @@ class DesktopReviewQueryMixin:
                 item["review_id"],
             )
         )
-        return tuple(items[:limit])
+        return tuple(items[offset:offset + limit])
 
 
 def _proposal_copy(

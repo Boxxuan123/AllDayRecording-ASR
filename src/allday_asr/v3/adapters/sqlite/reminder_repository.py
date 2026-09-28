@@ -80,10 +80,11 @@ class SqliteReminderRepository(ReminderSourceMixin):
         return _candidate(row) if row is not None else None
 
     def list_candidates(
-        self, status: str | None, limit: int
+        self, status: str | None, limit: int, *, oldest_first: bool = False
     ) -> tuple[dict[str, Any], ...]:
         where = "WHERE c.status = ?" if status else ""
         parameters: tuple[object, ...] = (status, limit) if status else (limit,)
+        order = "ASC" if oldest_first else "DESC"
         rows = self.connection.execute(
             f"""
             SELECT c.*, p.status AS proposal_status,
@@ -94,7 +95,7 @@ class SqliteReminderRepository(ReminderSourceMixin):
             JOIN structured_change_proposals p ON p.proposal_id = c.proposal_id
             JOIN generation_records g ON g.generation_id = c.generation_id
             {where}
-            ORDER BY c.created_at DESC, c.candidate_id LIMIT ?
+            ORDER BY c.created_at {order}, c.candidate_id LIMIT ?
             """,
             parameters,
         ).fetchall()

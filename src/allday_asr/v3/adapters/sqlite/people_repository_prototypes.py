@@ -268,9 +268,16 @@ class PeoplePrototypeRepositoryMixin:
         person_id: str | None,
         status: str | None,
         limit: int,
+        inbox_only: bool = False,
     ) -> tuple[dict[str, Any], ...]:
+        review_filter = (
+            "COALESCE(review.decision, 'pending') IN ('pending', 'uncertain')"
+            if status == "pending" else
+            "COALESCE(review.decision, 'pending') = ?" if status is not None else "1 = 1"
+        )
         rows = self.connection.execute(
             f"""
+            WITH base AS (
             SELECT candidate.prototype_id, candidate.speaker_track_id,
               COALESCE(membership.cluster_id,candidate.cluster_id) AS cluster_id, track.session_id, candidate.quality_score,
               (track.label LIKE 'manual:%') AS human_selection,
@@ -307,56 +314,55 @@ class PeoplePrototypeRepositoryMixin:
                 AND r.decision='confirmed' AND NOT EXISTS (SELECT 1 FROM voice_prototype_reviews newer
                 WHERE newer.prototype_id=r.prototype_id AND newer.person_id=r.person_id
                 AND (newer.created_at>r.created_at OR (newer.created_at=r.created_at AND newer.review_id>r.review_id)))))
-            ORDER BY candidate.quality_score DESC,
-              candidate.created_at DESC, candidate.prototype_id DESC
-            """
+            ), targeted AS (
+              SELECT base.*, COALESCE(base.linked_person_id,
+                base.candidate_person_id, base.suggested_person_id) AS target_person_id
+              FROM base
+            )
+            SELECT targeted.*, person.display_name AS person_name,
+              COALESCE(review.decision, 'pending') AS review_status,
+              review.review_id, review.person_id AS review_person_id,
+              review.decision AS review_decision, review.actor AS review_actor,
+              review.note AS review_note, review.created_at AS review_created_at
+            FROM targeted
+            JOIN persons person ON person.person_id = targeted.target_person_id
+            LEFT JOIN person_identity_policy_revisions policy
+              ON policy.person_id = targeted.target_person_id
+             AND policy.revision = (SELECT MAX(revision) FROM person_identity_policy_revisions
+               WHERE person_id = targeted.target_person_id)
+            LEFT JOIN voice_prototype_reviews review
+              ON review.review_id = (SELECT latest.review_id FROM voice_prototype_reviews latest
+                WHERE latest.prototype_id = targeted.prototype_id
+                  AND latest.person_id = targeted.target_person_id
+                ORDER BY latest.created_at DESC, latest.review_id DESC LIMIT 1)
+            WHERE (? IS NULL OR targeted.target_person_id = ?)
+              AND (review.decision = 'confirmed' OR
+                (policy.person_id IS NOT NULL AND targeted.quality_score >= policy.minimum_quality))
+              AND {review_filter}
+              {"AND (targeted.human_selection = 1 OR targeted.decision_tier = 'suggested')" if inbox_only else ""}
+            ORDER BY targeted.quality_score DESC,
+              targeted.created_at DESC, targeted.prototype_id DESC
+            LIMIT ?
+            """,
+            (person_id, person_id, *((status,) if status not in {None, 'pending'} else ()), limit),
         ).fetchall()
-        policies = self.identity_policies()
         values: list[dict[str, Any]] = []
         for row in rows:
-            target_person_id = (
-                row["linked_person_id"]
-                or row["candidate_person_id"]
-                or row["suggested_person_id"]
-            )
-            if target_person_id is None:
-                continue
-            target = str(target_person_id)
-            if person_id is not None and target != person_id:
-                continue
-            policy = policies.get(target)
-            review = self.connection.execute(
-                """
-                SELECT review_id, decision, actor, note, created_at
-                FROM voice_prototype_reviews
-                WHERE prototype_id = ? AND person_id = ?
-                ORDER BY created_at DESC, review_id DESC LIMIT 1
-                """,
-                (row["prototype_id"], target),
-            ).fetchone()
-            review_status = str(review["decision"]) if review is not None else "pending"
-            if review_status != 'confirmed' and (policy is None or float(row['quality_score']) < float(policy['minimum_quality'])):
-                continue
-            if status == "pending" and review_status not in {"pending", "uncertain"}:
-                continue
-            if status not in {None, "pending"} and review_status != status:
-                continue
-            person = self.connection.execute(
-                "SELECT display_name FROM persons WHERE person_id = ?",
-                (target,),
-            ).fetchone()
+            review = ({"review_id": row["review_id"], "prototype_id": row["prototype_id"],
+                       "person_id": row["review_person_id"], "decision": row["review_decision"],
+                       "actor": row["review_actor"], "note": row["review_note"],
+                       "created_at": row["review_created_at"]}
+                      if row["review_id"] is not None else None)
             values.append(
                 {
                     **_row(row),
-                    "person_id": target,
-                    "person_name": str(person["display_name"]),
-                    "review_status": review_status,
-                    "review": _row(review) if review is not None else None,
+                    "person_id": str(row["target_person_id"]),
+                    "person_name": str(row["person_name"]),
+                    "review_status": str(row["review_status"]),
+                    "review": review,
                     "representative_clips": json.loads(
                         row["representative_clips_json"]
                     ),
                 }
             )
-            if len(values) >= limit:
-                break
         return tuple(values)

@@ -15,7 +15,7 @@ const query = useQuery('settings', desktopApi.settings)
         <template v-else>读取已生效的安全边界</template>
       </span>
     </header>
-    <PageState :loading="query.loading.value" :error="query.error.value" @retry="query.refresh(true)">
+    <PageState :loading="query.loading.value" :error="query.error.value" :has-content="query.data.value !== null" @retry="query.refresh(true)">
       <div v-if="query.data.value" class="settings-grid">
         <section class="panel setting-card">
           <p class="section-kicker">PROCESSING</p><h2>持久处理</h2>
