@@ -68,6 +68,18 @@ class AutomaticWorkflowRetryMixin:
         }
         for session_id, current in current_by_session.items():
             status = current.get("status")
+            latest_revision = self._input_revision(session_id)
+            recorded_revision = int(current.get("input_revision") or 1)
+            if latest_revision > recorded_revision or int(
+                current.get("target_input_revision") or recorded_revision
+            ) > recorded_revision:
+                self._queue_session(
+                    session_id, detail="接收服务重启，继续处理最新完整录音",
+                    stage="backup", input_revision=latest_revision,
+                    target_input_revision=latest_revision, auto_retry_count=0,
+                    job_id=None,
+                )
+                continue
             if status in {"queued", "running"}:
                 self._queue_session(session_id, detail="接收服务重启，自动恢复未完成流水线")
             elif status == "retry_scheduled":
@@ -126,6 +138,8 @@ class AutomaticWorkflowRetryMixin:
                     "max_auto_retries": self.max_auto_retries,
                     "needs_manual_retry": False,
                     "next_retry_at": None,
+                    "input_revision": self._input_revision(session_id),
+                    "target_input_revision": self._input_revision(session_id),
                     **values,
                 }
             )

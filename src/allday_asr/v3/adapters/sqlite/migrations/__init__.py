@@ -1,4 +1,6 @@
 from .v016_sample_input_revision import SQL as V016_SQL
+from .v017_coalesced_sample_queue import SQL as V017_SQL
+from .v018_manifest_revisions import SQL as V018_SQL
 from .v015_annotation_receipts import SQL as V015_SQL
 from .v013_annotation_facts import SQL as V013_SQL
 from .v014_annotation_samples import SQL as V014_SQL
@@ -50,6 +52,8 @@ MIGRATIONS = (
     V3Migration(version=14, name="durable_annotation_samples", sql=V014_SQL),
     V3Migration(version=16, name="sample_input_revision", sql=V016_SQL),
     V3Migration(version=15, name="annotation_receipt_recovery", sql=V015_SQL),
+    V3Migration(version=17, name="coalesced_sample_queue", sql=V017_SQL),
+    V3Migration(version=18, name="session_manifest_revisions", sql=V018_SQL),
 )
 
 __all__ = ["MIGRATIONS"]

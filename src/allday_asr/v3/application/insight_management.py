@@ -24,11 +24,11 @@ class InsightManagementMixin:
     ) -> tuple[dict[str, Any], ...]:
         if not 1 <= limit <= 500:
             raise ValueError("relationship observation limit must be between 1 and 500")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.insights.list_relationships(person_id, limit)
 
     def relationship(self, report_id: str) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.insights.relationship(report_id)
 
     def revise_relationship(

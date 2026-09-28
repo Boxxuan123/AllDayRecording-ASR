@@ -34,7 +34,7 @@ class InsightGenerationMixin:
         generator = self._require_generator()
         day = _date(summary_date)
         start, end = _period(day, timezone_name)
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             all_events = uow.insights.event_sources()
         objective, source_events, quotes = _daily_inputs(all_events, start, end)
         request = DailyInsightModelRequest(
@@ -128,13 +128,13 @@ class InsightGenerationMixin:
         summary_id = stable_ulid(
             "daily-summary", _date(summary_date).isoformat(), timezone_name
         )
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.insights.daily(summary_id)
 
     def list_daily(self, limit: int = 31) -> tuple[dict[str, Any], ...]:
         if not 1 <= limit <= 366:
             raise ValueError("daily summary limit must be between 1 and 366")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.insights.list_daily(limit)
 
     def generate_relationship(
@@ -153,7 +153,7 @@ class InsightGenerationMixin:
         _unused, period_end = _period(day, timezone_name)
         period_start = period_end - timedelta(days=window_days)
         previous_start = period_start - timedelta(days=window_days)
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             person = uow.insights.person_profile(person_id)
             all_events = uow.insights.event_sources()
             all_interactions = uow.insights.person_interactions(person_id)

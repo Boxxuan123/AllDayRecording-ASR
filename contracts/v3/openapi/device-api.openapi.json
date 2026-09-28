@@ -217,6 +217,12 @@
           },
           "server_time": {
             "$ref": "../schemas/primitives.schema.json#/$defs/UtcDateTime"
+          },
+          "sync_features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

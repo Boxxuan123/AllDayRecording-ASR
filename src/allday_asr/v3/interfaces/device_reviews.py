@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from allday_asr.v3.domain.hashing import canonical_json_sha256
 
 from allday_asr.v3.adapters.audio.tools import extract_clip
 from allday_asr.v3.interfaces.transfer.devices import DeviceConflictError
@@ -94,7 +95,7 @@ class DeviceReviewService:
                         details[session_id] = {}
                 candidate['evidence_utterances'] = candidate_evidence(candidate, details[session_id])
                 candidate['review_key'] = candidate_key(candidate)
-        return {"items": items}
+        return {"items": items, "version": canonical_json_sha256(items)}
 
     def resolve(
         self, device_id: str, payload: Mapping[str, Any]

@@ -69,7 +69,7 @@ class CorrectionInvalidationService:
             return {"utterances": [apply_utterance_correction(uow, c, self._now()) for c in commands]}
 
     def correction_history(self, utterance_id: str) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             utterance = uow.evidence.get_utterance(utterance_id)
             current_label = uow.evidence.speaker_label(utterance.speaker_track_id)
             original_label = uow.evidence.speaker_label(

@@ -182,6 +182,25 @@ def _workspace_directory():
 
 
 class UploadStoreTests(unittest.TestCase):
+    def test_manifest_revision_preserves_original_path(self) -> None:
+        with _workspace_directory() as temporary:
+            store = UploadStore(temporary / "inbox", max_chunk_bytes=64)
+            path = "pcm_session_123/session_summary.json"
+            old, _ = store.create_upload(relative_path=path, size=3,
+                                         sha256=_digest(b"old"), kind="manifest")
+            old = store.append_chunk(old.upload_id, offset=0, data=b"old")
+            new, created = store.create_upload(relative_path=path, size=3,
+                                               sha256=_digest(b"new"), kind="manifest")
+            self.assertTrue(created)
+            completed = store.append_chunk(new.upload_id, offset=0, data=b"new")
+            self.assertEqual(store.completed_path(old).read_bytes(), b"old")
+            self.assertEqual(store.completed_path(completed).read_bytes(), b"new")
+            self.assertTrue(store.has_completed_file(completed))
+            replay, created = UploadStore(store.root).create_upload(
+                relative_path=path, size=3, sha256=_digest(b"new"), kind="manifest")
+            self.assertFalse(created)
+            self.assertEqual(replay.status, "completed")
+
     def test_scoped_verification_ignores_unrelated_audio_but_detects_target_corruption(self) -> None:
         with _workspace_directory() as temporary:
             store = UploadStore(temporary / "inbox")

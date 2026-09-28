@@ -5,7 +5,7 @@
   "openapi_version": "3.1.0",
   "release_lock": {
     "path": "release-lock.json",
-    "sha256": "e6350eb562f8837154151ff7b7087643875a56515fc30b01f4b10aaaa6f30ce6"
+    "sha256": "d94f2d099fe369c6e1cf770d52b475241171328dbb554b115e6e1c4b9684705a"
   },
   "schemas": {
     "primitives": {
@@ -30,7 +30,7 @@
     },
     "device_sync": {
       "path": "schemas/device-sync.schema.json",
-      "sha256": "c96d7633f3a286d09e95a9831101b3d55ad4fa0b4496c46561902f4d29df54c4"
+      "sha256": "6f5f95cd5513a510cd493c0937fcb1092fcfad96f6b1cf85c849afd677214cc2"
     },
     "timeline_quality": {
       "path": "schemas/timeline-quality.schema.json",
@@ -68,7 +68,7 @@
     },
     "device": {
       "path": "openapi/device-api.openapi.json",
-      "sha256": "b9f353f0ac2f9fc6aafcd3ece915bfe7a4a93cc412d108780d75db35f1f6eabd"
+      "sha256": "1e5a82e7357f45ef32254c56d1262b9e60eaee1dd3d5253397d2dea84aae9239"
     }
   },
   "fixtures": {

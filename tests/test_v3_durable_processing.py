@@ -154,6 +154,20 @@ class _RepeatedTimelineAdapter(_SuccessfulAdapter):
         )
 
 
+class _AppendDuringStageAdapter(_SuccessfulAdapter):
+    def __init__(self, append) -> None:
+        self.append = append
+        self.appended = False
+
+    def execute(
+        self, context: StageExecutionContext, control: StageExecutionControl
+    ) -> StageExecutionResult:
+        if not self.appended:
+            self.appended = True
+            self.append()
+        return super().execute(context, control)
+
+
 class _FailOnceAdapter(_SuccessfulAdapter):
     def __init__(self) -> None:
         self.failed = False
@@ -308,6 +322,80 @@ class V3DurableProcessingTests(unittest.TestCase):
                     config={"profile": "other"},
                 )
             )
+
+    def test_worker_retires_queued_old_input_and_completes_new_revision(self) -> None:
+        old = self.service.submit(self._command())
+        worker = DurableProcessingWorker(
+            self.service, _SuccessfulAdapter(), worker_id="worker-version-switch"
+        )
+        self.assertTrue(worker.run_once())
+        manifest_sha256 = self._append_test_revision()
+        with self.uow_factory() as uow:
+            self.assertIsNone(uow.processing.claim_next("repository-direct", 10, {}))
+        self.assertFalse(worker.run_once())
+        self.assertEqual(self.service.get(old.job.job_id).job.status, "cancelled")
+        self._admit_test_revision(manifest_sha256)
+        new = self.service.submit(SubmitProcessingCommand(
+            session_id=SESSION_ID, pipeline_version="v3-native.1",
+            input_revision=2, config={"profile": "fixture"},
+        ))
+        for _ in range(9):
+            self.assertTrue(worker.run_once())
+        self.assertEqual(self.service.get(new.job.job_id).job.status, "succeeded")
+        with self.database.read() as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM utterances WHERE run_id = ?", (old.run.run_id,),
+            ).fetchone()[0], 0)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM utterances WHERE run_id = ?", (new.run.run_id,),
+            ).fetchone()[0], 1)
+
+    def test_inflight_old_claim_cannot_commit_after_append(self) -> None:
+        old = self.service.submit(self._command())
+        claim = self.service.claim("worker-old-input", {})
+        self.assertIsNotNone(claim)
+        self._append_test_revision()
+        result = StageExecutionResult(
+            artifacts=(StageArtifactOutput(
+                kind="v3_transcript_evidence", payload=b"old input",
+                producer="test-v3", producer_version="1",
+            ),),
+            speakers=(SpeakerProjectionOutput("old-speaker"),),
+            utterances=(UtteranceProjectionOutput(
+                ordinal=0, start_ms=100, end_ms=900, text="过期转写",
+                speaker_label="old-speaker", evidence={},
+            ),),
+        )
+        stopped = self.service.complete(claim, result)
+        self.assertEqual(stopped.job.status, "cancelled")
+        with self.database.read() as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM artifacts WHERE run_id = ?", (old.run.run_id,),
+            ).fetchone()[0], 0)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM utterances WHERE run_id = ?", (old.run.run_id,),
+            ).fetchone()[0], 0)
+        self.assertIsNone(self.service.claim("worker-other", {}))
+
+    def test_heartbeat_cancels_old_claim_after_append(self) -> None:
+        old = self.service.submit(self._command())
+        claim = self.service.claim("worker-heartbeat", {})
+        self.assertIsNotNone(claim)
+        self._append_test_revision()
+        self.assertTrue(self.service.heartbeat(claim))
+        self.assertEqual(self.service.get(old.job.job_id).job.status, "cancel_requested")
+        self.assertEqual(self.service.cancel_claim(claim, "input revision superseded").job.status,
+                         "cancelled")
+
+    def test_real_worker_stops_stage_when_input_is_appended_mid_execution(self) -> None:
+        old = self.service.submit(self._command())
+        worker = DurableProcessingWorker(
+            self.service, _AppendDuringStageAdapter(self._append_test_revision),
+            worker_id="worker-mid-append",
+        )
+        self.assertTrue(worker.run_once())
+        self.assertEqual(self.service.get(old.job.job_id).job.status, "cancelled")
+        self.assertIsNone(self.service.claim("worker-next", {}))
 
     def test_successful_submission_is_still_reused(self) -> None:
         first = self.service.submit(self._command())
@@ -904,7 +992,7 @@ class V3DurableProcessingTests(unittest.TestCase):
         connection.execute.side_effect = [
             MagicMock(
                 fetchone=MagicMock(
-                    return_value={"sha256": "a" * 64, "storage_ref": "manifest"}
+                    return_value={"input_revision": 1, "sha256": "a" * 64, "storage_ref": "manifest"}
                 )
             ),
             MagicMock(
@@ -938,6 +1026,38 @@ class V3DurableProcessingTests(unittest.TestCase):
             input_revision=1,
             config={"profile": "fixture"},
         )
+
+    def _append_test_revision(self) -> str:
+        manifest = self.artifact_store.put_bytes(b'{"fixture":"revision-2"}')
+        with self.uow_factory() as uow:
+            connection = uow.catalog.connection
+            original = connection.execute(
+                "SELECT entries_json FROM session_manifests WHERE session_id = ?",
+                (SESSION_ID,),
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO session_manifest_revisions "
+                "(session_id,input_revision,sha256,storage_ref,entries_json,reason,created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (SESSION_ID, 2, manifest.sha256, manifest.storage_key,
+                 original["entries_json"], "test_append", self.clock.text()),
+            )
+            connection.execute(
+                "UPDATE recording_sessions SET state='admission_pending', "
+                "status_code='backup_required' WHERE session_id = ?", (SESSION_ID,),
+            )
+        return manifest.sha256
+
+    def _admit_test_revision(self, manifest_sha256: str) -> None:
+        self.assertTrue(self.admission.record_verified_backup(
+            RecordBackupEvidenceCommand(
+                session_id=SESSION_ID, provider="fixture-backup-r2",
+                storage_kind="independent_device", digest="d" * 64,
+                restore_checked_at=self.clock.now(),
+                metadata={"restore_drill": True, "input_revision": 2,
+                          "manifest_sha256": manifest_sha256},
+            )
+        ))
 
     def _seed_admitted_session(self) -> None:
         now = self.clock.now()

@@ -26,10 +26,10 @@ class PersonMemoryRefreshMixin:
     def person(self, person_id: str, limit: int = 200) -> dict[str, Any]:
         if not 1 <= limit <= 500:
             raise ValueError("person memory limit must be between 1 and 500")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.person_memories.person_detail(person_id, limit)
     def summaries(self) -> dict[str, dict[str, Any]]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.person_memories.summary_counts()
     def update_profile(
         self,
@@ -57,7 +57,7 @@ class PersonMemoryRefreshMixin:
     def refresh(
         self, person_id: str, actor: str = "system:v35-projection"
     ) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             events = uow.person_memories.event_sources(person_id)
         created = 0
         revised = 0
@@ -194,7 +194,7 @@ class PersonMemoryRefreshMixin:
             "skipped_count": skipped,
         }
     def _expire_due(self, person_id: str, actor: str) -> int:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             active = uow.person_memories.list_current(
                 person_id, limit=500, include_inactive=False
             )

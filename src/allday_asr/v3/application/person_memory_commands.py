@@ -75,7 +75,7 @@ class PersonMemoryCommandMixin:
         reminder_event_id: str | None,
         actor: str = "desktop-user",
     ) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             current = uow.person_memories.current_memory(memory_id)
         evidence_ids = tuple(
             str(item["utterance_id"])
@@ -125,7 +125,7 @@ class PersonMemoryCommandMixin:
         self, memory_id: str, *, actor: str = "desktop-user"
     ) -> dict[str, Any]:
         """Confirm the current value without making the user maintain a copy."""
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             current = uow.person_memories.current_memory(memory_id)
         return self.revise(
             memory_id,

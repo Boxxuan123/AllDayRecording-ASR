@@ -15,7 +15,7 @@ class PeoplePrototypeMixin:
             return uow.people.people_choices()
 
     def list_people(self) -> tuple[dict[str, Any], ...]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             people = uow.people.list_people()
             counts = uow.person_memories.summary_counts()
         self_status = (
@@ -67,7 +67,7 @@ class PeoplePrototypeMixin:
             raise ValueError("speaker cluster status is invalid")
         if not 1 <= limit <= 500:
             raise ValueError("speaker cluster limit must be between 1 and 500")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.people.list_clusters(status, limit)
     def list_review_candidates(
         self,
@@ -86,7 +86,7 @@ class PeoplePrototypeMixin:
             raise ValueError("voice prototype review status is invalid")
         if not 1 <= limit <= 500:
             raise ValueError("voice prototype review limit must be between 1 and 500")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             if person_id is not None and uow.people.person_kind(person_id) != "known":
                 raise ValueError("voice prototype review queue only supports known people")
             return uow.people.list_review_candidates(person_id, status, limit)
@@ -124,7 +124,7 @@ class PeoplePrototypeMixin:
         prototype_id = stable_ulid("confirmed-enrollment-prototype", source_ref)
         membership_id = stable_ulid("confirmed-enrollment-membership", source_ref)
         operation_id = stable_ulid("confirmed-enrollment-operation", source_ref)
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             if uow.people.person_kind(person_id) != PersonKind.KNOWN.value:
                 raise ValueError("confirmed enrollment only supports known people")
             try:
@@ -219,7 +219,7 @@ class PeoplePrototypeMixin:
             raise ValueError("voice prototype review decision is invalid")
         if not actor.strip():
             raise ValueError("voice prototype review actor is required")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             if uow.people.person_kind(person_id) != PersonKind.KNOWN.value:
                 raise ValueError("known-person prototype review cannot target self")
             candidate = (uow.people.prototype_retraction_target(prototype_id, person_id)
@@ -323,7 +323,7 @@ class PeoplePrototypeMixin:
     def _refresh_maturity(
         self, person_id: str, actor: str
     ) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             current = uow.people.identity_policy(person_id)
             examples = uow.people.prototype_review_examples(person_id)
         positives = tuple(

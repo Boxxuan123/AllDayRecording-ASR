@@ -122,7 +122,7 @@ class UploadStore:
             if existing is not None:
                 return self._refresh_offset(existing), False
 
-            destination = self._destination(normalized_path)
+            destination = self._versioned_destination(normalized_path, normalized_digest, kind)
             if destination.exists():
                 if not destination.is_file():
                     raise UploadConflictError(f"接收路径已被目录占用：{normalized_path}")
@@ -190,7 +190,7 @@ class UploadStore:
         if record.status != "completed":
             return False
         with self._lock:
-            destination = self._destination(record.relative_path)
+            destination = self._versioned_destination(record.relative_path, record.sha256, record.kind)
             return (
                 destination.is_file()
                 and destination.stat().st_size == record.size
@@ -234,7 +234,7 @@ class UploadStore:
             refreshed = self._refresh_offset(self._load(record.upload_id))
             if refreshed != record or refreshed.status != "completed":
                 raise UploadConflictError("上传记录不是当前已完成版本")
-            return self._destination(refreshed.relative_path)
+            return self._versioned_destination(refreshed.relative_path, refreshed.sha256, refreshed.kind)
 
     def append_chunk(
         self,
@@ -287,7 +287,7 @@ class UploadStore:
             self._write_record(reset)
             raise UploadDigestError(record.sha256, actual_digest)
 
-        destination = self._destination(record.relative_path)
+        destination = self._versioned_destination(record.relative_path, record.sha256, record.kind)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.exists():
             raise UploadConflictError(
@@ -311,7 +311,7 @@ class UploadStore:
 
     def _refresh_offset(self, record: UploadRecord) -> UploadRecord:
         if record.status == "completed":
-            destination = self._destination(record.relative_path)
+            destination = self._versioned_destination(record.relative_path, record.sha256, record.kind)
             if not destination.is_file() or destination.stat().st_size != record.size:
                 raise UploadConflictError(
                     f"已完成文件缺失或大小改变：{record.relative_path}"
@@ -321,7 +321,7 @@ class UploadStore:
                     f"已完成文件的 SHA-256 已改变：{record.relative_path}"
                 )
             return record
-        destination = self._destination(record.relative_path)
+        destination = self._versioned_destination(record.relative_path, record.sha256, record.kind)
         if destination.exists():
             if not destination.is_file() or destination.stat().st_size != record.size:
                 raise UploadConflictError(
@@ -357,6 +357,20 @@ class UploadStore:
         except ValueError as exc:
             raise UploadStoreError("接收路径越过 inbox 根目录") from exc
         return destination
+
+    def _versioned_destination(self, relative_path: str, sha256: str, kind: str) -> Path:
+        original = self._destination(relative_path)
+        if kind != "manifest" or not original.is_file():
+            return original
+        if original.stat().st_size == 0:
+            raise UploadConflictError("会话清单为空")
+        if _sha256_file(original) == sha256:
+            return original
+        # Only manifest bytes may have revisions. Audio files remain immutable.
+        return self._destination(
+            str(PurePosixPath(relative_path).with_name(
+                f"session_summary.{sha256}.json"))
+        )
 
     def _metadata_path(self, upload_id: str) -> Path:
         _validate_upload_id(upload_id)

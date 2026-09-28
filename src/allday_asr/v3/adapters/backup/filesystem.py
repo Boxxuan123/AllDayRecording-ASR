@@ -19,6 +19,8 @@ _SAFE_SESSION_DIRECTORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 @dataclass(frozen=True)
 class FilesystemBackupResult:
     session_id: str
+    input_revision: int
+    manifest_sha256: str
     provider: str
     storage_kind: str
     digest: str
@@ -49,9 +51,9 @@ class FilesystemSessionBackupAdapter:
             raise ValueError("session id is not safe for a backup directory")
         root = backup_root.expanduser().resolve()
         self._validate_independent_root(root)
-        entries = self._entries(session_id)
+        input_revision, manifest_sha256, entries = self._snapshot(session_id)
         root.mkdir(parents=True, exist_ok=True)
-        final = root / session_id
+        final = root / f"{session_id}-r{input_revision}-{manifest_sha256[:12]}"
         # Keep the staging name short enough for Windows' legacy MAX_PATH handling.
         # The final directory still carries the stable session identifier.
         temporary = root / f".stage-{uuid4().hex}"
@@ -80,6 +82,8 @@ class FilesystemSessionBackupAdapter:
                 raise RuntimeError("backup restore drill changed session digest")
             return FilesystemBackupResult(
                 session_id=session_id,
+                input_revision=input_revision,
+                manifest_sha256=manifest_sha256,
                 provider=f"filesystem:{root.name}",
                 storage_kind=storage_kind,
                 digest=digest,
@@ -92,14 +96,22 @@ class FilesystemSessionBackupAdapter:
                 shutil.rmtree(temporary, ignore_errors=True)
 
     def _entries(self, session_id: str) -> list[tuple[Path, Path, str]]:
+        return self._snapshot(session_id)[2]
+
+    def _snapshot(self, session_id: str) -> tuple[int, str, list[tuple[Path, Path, str]]]:
         with self.database.read() as connection:
             manifest = connection.execute(
                 """
-                SELECT sha256, storage_ref FROM session_manifests
-                WHERE session_id = ?
+                SELECT input_revision, sha256, storage_ref FROM session_manifest_revisions
+                WHERE session_id = ? ORDER BY input_revision DESC LIMIT 1
                 """,
                 (session_id,),
             ).fetchone()
+            if manifest is None:
+                manifest = connection.execute(
+                    "SELECT 1 AS input_revision, sha256, storage_ref FROM session_manifests WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
             rows = connection.execute(
                 """
                 SELECT s.sequence, a.sha256, a.format, r.storage_key
@@ -129,7 +141,7 @@ class FilesystemSessionBackupAdapter:
             )
             for row in rows
         )
-        return values
+        return int(manifest["input_revision"]), str(manifest["sha256"]), values
 
     def _validate_independent_root(self, root: Path) -> None:
         for source in (self.audio_store.root, self.artifact_store.root):

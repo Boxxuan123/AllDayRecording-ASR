@@ -164,7 +164,7 @@ class PeopleIdentityMixin:
                 "auto_identified_self_cluster_count": 0,
                 "auto_identity_updated_utterance_count": 0,
             }
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             person_id = uow.people.self_person_id()
             candidates = uow.people.unlinked_cluster_embeddings(session_id)
         if person_id is None:
@@ -227,30 +227,29 @@ class PeopleIdentityMixin:
             "policy_change",
         }:
             raise ValueError("speaker rematch trigger is invalid")
+        def inputs(uow):
+            return (uow.people.unlinked_cluster_embeddings(session_id),
+                    uow.people.identity_policies(), uow.people.self_person_id(),
+                    uow.people.person_vectors(self._provider.model, self._provider.model_version))
+
+        with self._uow_factory().reading() as uow:
+            snapshot = inputs(uow)
+        candidates, raw_policies, self_person_id, people = snapshot
+        policies = _identity_policies(raw_policies)
+        evaluated = []
+        for candidate in candidates:
+            if (candidate["model"], candidate["model_version"]) != (self._provider.model, self._provider.model_version):
+                continue
+            vector = tuple(candidate["vector"])
+            decision = layered_person_match(vector, _compatible(vector, people), policies,
+                quality_score=float(candidate["quality_score"]))
+            evaluated.append((candidate, decision))
         with self._uow_factory() as uow:
-            candidates = uow.people.unlinked_cluster_embeddings(session_id)
-            policies = _identity_policies(uow.people.identity_policies())
-            self_person_id = uow.people.self_person_id()
-            vector_cache: dict[
-                tuple[str, str], tuple[tuple[str, tuple[float, ...]], ...]
-            ] = {}
+            if inputs(uow) != snapshot:
+                raise ValueError("speaker matching inputs changed; retry with a fresh snapshot")
             grouped: dict[str, list[LayeredMatchDecision]] = {}
             created_at = _datetime(self._now())
-            for candidate in candidates:
-                model_key = (str(candidate["model"]), str(candidate["model_version"]))
-                if model_key != (self._provider.model, self._provider.model_version):
-                    continue
-                people = vector_cache.get(model_key)
-                if people is None:
-                    people = uow.people.person_vectors(*model_key)
-                    vector_cache[model_key] = people
-                vector = tuple(candidate["vector"])
-                decision = layered_person_match(
-                    vector,
-                    _compatible(vector, people),
-                    policies,
-                    quality_score=float(candidate["quality_score"]),
-                )
+            for candidate, decision in evaluated:
                 cluster_id = str(candidate["cluster_id"])
                 grouped.setdefault(cluster_id, []).append(decision)
                 uow.people.record_match_decision(

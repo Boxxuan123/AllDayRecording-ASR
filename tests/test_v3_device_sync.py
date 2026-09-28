@@ -3,10 +3,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import queue
 import shutil
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -28,8 +29,9 @@ from allday_asr.v3.interfaces.transfer.devices import (
 )
 from allday_asr.v3.interfaces.transfer.passkeys import RequestBinding
 from allday_asr.v3.interfaces.transfer.server import create_transfer_server
-from allday_asr.v3.interfaces.transfer.store import UploadStore
+from allday_asr.v3.interfaces.transfer.store import UploadConflictError, UploadRecord, UploadStore, UploadStoreError
 from allday_asr.v3.adapters.files import ContentAddressedStore
+from allday_asr.v3.adapters.backup import FilesystemSessionBackupAdapter
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.adapters.transfer import (
     AutomaticWorkflowStateStore,
@@ -38,6 +40,7 @@ from allday_asr.v3.adapters.transfer import (
     V3UploadIngestAdapter,
 )
 from allday_asr.v3.adapters.transfer.ingest import _parse_manifest
+from allday_asr.v3.adapters.transfer.automation import SupersededInput
 from allday_asr.v3.application import MobileSyncService
 from allday_asr.v3.domain import (
     ChangeOperation,
@@ -198,6 +201,7 @@ class V3DeviceSyncTests(unittest.TestCase):
         runner._closed = False
         runner._active = set()
         runner._queue = SimpleNamespace(put=lambda selected: None)
+        runner._input_revision = lambda selected: 1
         runner.status = lambda selected: {
             "session_id": selected,
             "status": "failed",
@@ -214,6 +218,65 @@ class V3DeviceSyncTests(unittest.TestCase):
         self.assertEqual(written["status"], "queued")
         self.assertEqual(written["job_id"], "job-existing")
 
+    def test_inflight_append_persists_target_and_queues_latest_once(self) -> None:
+        session_id = "session-append"
+        state = {"version": 1, "session_id": session_id, "status": "running",
+                 "stage": "processing", "input_revision": 1,
+                 "target_input_revision": 1, "attempt_count": 1}
+        runner = object.__new__(V3AutomaticWorkflowRunner)
+        runner._lock = threading.RLock()
+        runner._closed = False
+        runner.poll_interval = 0.01
+        runner.max_auto_retries = 3
+        runner._active = {session_id}
+        runner._queue = queue.Queue()
+        runner._input_revision = lambda _selected: 2
+        runner.status = lambda _selected: dict(state)
+
+        def write(_selected, value):
+            state.clear()
+            state.update(value)
+
+        runner._write = write
+        runner._poll_persistent_work = lambda: None
+
+        def superseded(_selected):
+            raise SupersededInput(session_id)
+
+        runner._process = superseded
+        for _ in range(2):
+            result = runner.submit(SimpleNamespace(upload_id="upload-2"),
+                                   {"session_id": session_id})
+            self.assertEqual(result["target_input_revision"], 2)
+        self.assertEqual(runner._queue.qsize(), 0)
+        with self.assertRaises(SupersededInput):
+            runner._require_input_revision(session_id, 1)
+        runner._queue.put(session_id)
+        runner._queue.put(None)
+        runner._run()
+        self.assertEqual(state["status"], "queued")
+        self.assertEqual(state["input_revision"], 2)
+        self.assertEqual(runner._queue.get_nowait(), session_id)
+
+    def test_restart_recovers_newer_target_after_old_run_completed(self) -> None:
+        session_id = "session-restart-append"
+        with _workspace_directory() as root:
+            AutomaticWorkflowStateStore(root / "automation").save(session_id, {
+                "session_id": session_id, "status": "completed",
+                "input_revision": 1, "target_input_revision": 2,
+            })
+            runner = object.__new__(V3AutomaticWorkflowRunner)
+            runner._states = AutomaticWorkflowStateStore(root / "automation")
+            runner._input_revision = lambda _selected: 2
+            database = MagicMock()
+            database.read.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = []
+            runner.core = SimpleNamespace(database=database)
+            queued = []
+            runner._queue_session = lambda selected, **values: queued.append((selected, values))
+            runner._recover_pending()
+            self.assertEqual(len(queued), 1)
+            self.assertEqual(queued[0][1]["input_revision"], 2)
+
     def test_automation_reuses_completed_processing_when_postprocessing_retries(
         self,
     ) -> None:
@@ -223,6 +286,7 @@ class V3DeviceSyncTests(unittest.TestCase):
             run=SimpleNamespace(
                 session_id=session_id,
                 pipeline_version="v3-native.1",
+                input_revision=1,
             ),
         )
         runner = object.__new__(V3AutomaticWorkflowRunner)
@@ -230,6 +294,7 @@ class V3DeviceSyncTests(unittest.TestCase):
             processing=SimpleNamespace(get=lambda job_id: snapshot)
         )
         runner.pipeline_version = "v3-native.1"
+        runner._input_revision = lambda selected: 1
         runner.status = lambda selected: {
             "session_id": selected,
             "status": "failed",
@@ -289,6 +354,7 @@ class V3DeviceSyncTests(unittest.TestCase):
             replay = service.synchronize(device_id, request)
 
             self.assertEqual(handler.calls, 1)
+
             self.assertEqual(first.receipts, replay.receipts)
             self.assertEqual(first.receipts[0].status, ClientOperationStatus.APPLIED)
             self.assertEqual(len(first.changes), 1)
@@ -319,6 +385,24 @@ class V3DeviceSyncTests(unittest.TestCase):
                 reused.receipts[0].status, ClientOperationStatus.CONFLICT
             )
             self.assertEqual(handler.calls, 1)
+
+    def test_utterance_tombstone_with_audit_payload_syncs_as_null(self) -> None:
+        with _workspace_directory() as root:
+            database, _, record, trust, _, service = self._environment(root)
+            utterance_id = stable_ulid("retired-utterance", "one")
+            with SqliteUnitOfWork(database) as uow:
+                uow.changes.append(
+                    "utterance", utterance_id, 2,
+                    ChangeOperation.TOMBSTONE.value,
+                    {"utterance_id": utterance_id, "replacement_run_id": "new-run"},
+                )
+            response = service.synchronize(
+                trust.domain_device_id(record.device_id),
+                SyncRequest(PROJECTION_VERSION, None, (), 100),
+            )
+            self.assertEqual(len(response.changes), 1)
+            self.assertEqual(response.changes[0].operation, "tombstone")
+            self.assertIsNone(response.changes[0].resource)
 
     def test_terminal_receipts_replay_and_crash_rollback_are_atomic(self) -> None:
         with _workspace_directory() as root:
@@ -435,7 +519,7 @@ class V3DeviceSyncTests(unittest.TestCase):
 
     def test_manifest_continuity_is_recomputed_from_chunk_timeline(self) -> None:
         manifest = {
-            "format": "AllDayRecording session manifest v1",
+            "format": "AllDayRecording session manifest v2",
             "sessionKey": "watch-session:1767225600000",
             "sessionStartedAt": 1767225600000,
             "device": "HUAWEI WATCH 5",
@@ -462,12 +546,23 @@ class V3DeviceSyncTests(unittest.TestCase):
             "completedSegments": 2,
             "totalSamples": 200,
             "continuityValid": True,
+            "completion": {"source": "watch_stop", "completedSegments": 2,
+                           "totalSamples": 200, "confirmedAt": 1767225601000},
         }
 
-        parsed = _parse_manifest(manifest)
-
-        self.assertFalse(parsed["continuityValid"])
-        self.assertTrue(manifest["continuityValid"])
+        complete = dict(manifest)
+        complete["chunks"] = [manifest["chunks"][0], {**manifest["chunks"][1], "index": 22}]
+        self.assertTrue(_parse_manifest(complete)["continuityValid"])
+        missing_completion = dict(complete)
+        del missing_completion["completion"]
+        with self.assertRaisesRegex(UploadStoreError, "字段不符合协议"):
+            _parse_manifest(missing_completion)
+        wrong_count = dict(complete)
+        wrong_count["completion"] = {**complete["completion"], "completedSegments": 1}
+        with self.assertRaisesRegex(UploadStoreError, "结束证明与最终清单不一致"):
+            _parse_manifest(wrong_count)
+        with self.assertRaises(UploadStoreError):
+            _parse_manifest(manifest)
 
     def test_completed_manifest_admits_audio_and_is_idempotent(self) -> None:
         with _workspace_directory() as root:
@@ -499,7 +594,7 @@ class V3DeviceSyncTests(unittest.TestCase):
                     }
                 )
             manifest = {
-                "format": "AllDayRecording session manifest v1",
+                "format": "AllDayRecording session manifest v2",
                 "sessionKey": "watch-session:1767225600000",
                 "sessionStartedAt": 1767225600000,
                 "device": "HUAWEI WATCH 5",
@@ -513,6 +608,8 @@ class V3DeviceSyncTests(unittest.TestCase):
                 "completedSegments": 2,
                 "totalSamples": 200,
                 "continuityValid": True,
+                "completion": {"source": "watch_stop", "completedSegments": 2,
+                               "totalSamples": 200, "confirmedAt": 1767225601000},
             }
             manifest_bytes = json.dumps(manifest).encode()
             upload, _ = store.create_upload(
@@ -679,6 +776,136 @@ class V3DeviceSyncTests(unittest.TestCase):
                 repaired = connection.execute("SELECT payload_json FROM change_events WHERE resource_id = ? ORDER BY sequence DESC LIMIT 1", (first["session_id"],)).fetchone()
                 self.assertEqual(json.loads(repaired[0])["session_key"], manifest["sessionKey"])
 
+
+    def test_manifest_append_preserves_original_and_rejects_changed_prefix(self) -> None:
+        with _workspace_directory() as root:
+            database, _, device, trust, _, _ = self._environment(root)
+            store = UploadStore(root / "inbox")
+            ingest = V3UploadIngestAdapter(
+                trust, lambda: SqliteUnitOfWork(database),
+                ContentAddressedStore(root / "audio"),
+                ContentAddressedStore(root / "artifacts"),
+            )
+            directory = "pcm_session_1767225600000"
+
+            def upload(path: str, content: bytes, kind: str) -> UploadRecord:
+                started, _ = store.create_upload(
+                    relative_path=f"{directory}/{path}", size=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(), kind=kind,
+                )
+                return store.append_chunk(started.upload_id, offset=0, data=content)
+
+            first_name = "segment_0_first_0.wav"
+            second_name = "segment_1_first_100.wav"
+            upload(first_name, b"a" * 244, "recording")
+            first_chunk = {"index": 0, "fileName": first_name,
+                           "firstSample": 0, "sampleCount": 100}
+            manifest = {
+                "format": "AllDayRecording session manifest v2",
+                "sessionKey": "watch-session:1767225600000",
+                "sessionStartedAt": 1767225600000,
+                "device": "HUAWEI WATCH 5", "timezone": "Asia/Singapore",
+                "audio": {"sampleRate": 16000, "channels": 1, "bitsPerSample": 16},
+                "chunks": [first_chunk], "completedSegments": 1,
+                "totalSamples": 100, "continuityValid": True,
+                "completion": {"source": "watch_stop", "completedSegments": 1,
+                               "totalSamples": 100, "confirmedAt": 1767225601000},
+            }
+
+            def submit(value: dict) -> tuple[dict, UploadRecord]:
+                encoded = json.dumps(value).encode()
+                record = upload("session_summary.json", encoded, "manifest")
+                return ingest.ingest_completed(device.device_id, record, store), record
+
+            original, original_record = submit(manifest)
+            backup_adapter = FilesystemSessionBackupAdapter(
+                database, ContentAddressedStore(root / "audio"),
+                ContentAddressedStore(root / "artifacts"),
+            )
+            first_backup = backup_adapter.backup(
+                original["session_id"], root / "independent-backups",
+                storage_kind="independent_device",
+            )
+            first_manifest_bytes = (first_backup.destination / "manifest" /
+                                    "session_summary.json").read_bytes()
+            upload(second_name, b"b" * 244, "recording")
+            second_chunk = {"index": 1, "fileName": second_name,
+                            "firstSample": 100, "sampleCount": 100}
+            appended_manifest = {**manifest, "chunks": [first_chunk, second_chunk],
+                                 "completedSegments": 2, "totalSamples": 200,
+                                 "completion": {**manifest["completion"],
+                                                "completedSegments": 2, "totalSamples": 200}}
+            appended, appended_record = submit(appended_manifest)
+            second_backup = backup_adapter.backup(
+                original["session_id"], root / "independent-backups",
+                storage_kind="independent_device",
+            )
+            retry_backup = backup_adapter.backup(
+                original["session_id"], root / "independent-backups",
+                storage_kind="independent_device",
+            )
+            self.assertEqual((first_backup.input_revision, second_backup.input_revision), (1, 2))
+            self.assertEqual(second_backup.manifest_sha256, appended_record.sha256)
+            self.assertNotEqual(first_backup.destination, second_backup.destination)
+            self.assertEqual(retry_backup.destination, second_backup.destination)
+            self.assertEqual(retry_backup.digest, second_backup.digest)
+            self.assertEqual((first_backup.destination / "manifest" /
+                              "session_summary.json").read_bytes(), first_manifest_bytes)
+            replay = ingest.ingest_completed(device.device_id, appended_record, store)
+            restarted = V3UploadIngestAdapter(
+                trust, lambda: SqliteUnitOfWork(database),
+                ContentAddressedStore(root / "audio"),
+                ContentAddressedStore(root / "artifacts"),
+            ).ingest_completed(device.device_id, appended_record, UploadStore(root / "inbox"))
+            self.assertEqual(appended["session_id"], original["session_id"])
+            self.assertEqual(appended["input_revision"], 2)
+            self.assertEqual(replay["input_revision"], 2)
+            self.assertEqual(restarted["input_revision"], 2)
+            with database.read() as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT COUNT(*) FROM capture_segments WHERE session_id=?",
+                    (original["session_id"],)).fetchone()[0], 2)
+                self.assertEqual(connection.execute(
+                    "SELECT sha256 FROM session_manifests WHERE session_id=?",
+                    (original["session_id"],)).fetchone()[0], original_record.sha256)
+                self.assertEqual(connection.execute(
+                    "SELECT sha256 FROM session_manifest_revisions WHERE session_id=?",
+                    (original["session_id"],)).fetchone()[0], appended_record.sha256)
+            old_run = SimpleNamespace(
+                job=SimpleNamespace(status="succeeded"),
+                run=SimpleNamespace(session_id=original["session_id"],
+                                    pipeline_version="v3-native.1", input_revision=1),
+            )
+            runner = object.__new__(V3AutomaticWorkflowRunner)
+            runner.core = SimpleNamespace(database=database,
+                processing=SimpleNamespace(get=lambda _job_id: old_run))
+            runner.pipeline_version = "v3-native.1"
+            runner.status = lambda _session_id: {"job_id": "old-job"}
+            self.assertEqual(runner._input_revision(original["session_id"]), 2)
+            self.assertEqual(runner._manifest_sha256(original["session_id"]), appended_record.sha256)
+            self.assertIsNone(runner._completed_processing_snapshot(original["session_id"]))
+            changed = {**appended_manifest,
+                       "chunks": [{**first_chunk, "index": 5},
+                                  {**second_chunk, "index": 6}]}
+            with self.assertRaisesRegex(UploadConflictError, "旧分片"):
+                submit(changed)
+            with self.assertRaisesRegex(UploadConflictError, "不同内容"):
+                upload(first_name, b"changed" * 34 + b"------", "recording")
+            third_name = "segment_2_first_200.wav"
+            upload(third_name, b"c" * 244, "recording")
+            third_chunk = {"index": 2, "fileName": third_name,
+                           "firstSample": 200, "sampleCount": 100}
+            ambiguous = {**appended_manifest,
+                         "chunks": [first_chunk, second_chunk, third_chunk],
+                         "completedSegments": 3, "totalSamples": 300,
+                         "completion": {**manifest["completion"],
+                                        "completedSegments": 3, "totalSamples": 300}}
+            third, _ = submit(ambiguous)
+            self.assertEqual(third["input_revision"], 3)
+            with database.read() as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT COUNT(*) FROM session_manifest_revisions WHERE session_id=?",
+                    (original["session_id"],)).fetchone()[0], 2)
 
     def test_http_sync_requires_one_time_device_signature(self) -> None:
         with _workspace_directory() as root:

@@ -4,6 +4,8 @@ import os
 import queue
 import socket
 import threading
+import time
+from contextlib import nullcontext
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +24,10 @@ from allday_asr.v3.application import (
     RecordBackupEvidenceCommand,
     SubmitProcessingCommand,
 )
+
+
+class SupersededInput(RuntimeError):
+    """The current run was replaced by a newer, durably recorded input."""
 
 
 class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
@@ -97,9 +103,19 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
         if not session_id:
             raise ValueError("V3 ingest result has no session identity")
         with self._lock:
+            input_revision = self._input_revision(session_id)
             previous = self.status(session_id)
-            if previous is not None and previous.get("status") == "completed":
+            if (previous is not None and previous.get("status") == "completed"
+                    and int(previous.get("input_revision") or 1) == input_revision):
                 return previous
+            if session_id in self._active:
+                if input_revision > int((previous or {}).get("target_input_revision") or
+                                        (previous or {}).get("input_revision") or 1):
+                    pending = dict(previous or {"version": 1, "session_id": session_id})
+                    pending["target_input_revision"] = input_revision
+                    pending["updated_at"] = _utc_now()
+                    self._write(session_id, pending)
+                return self.status(session_id) or {"status": "running", "session_id": session_id}
             if session_id not in self._active:
                 self._active.add(session_id)
                 now = _utc_now()
@@ -109,6 +125,8 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                     "stage": "backup",
                     "detail": "V3 会话已入库，等待独立备份和原生分析",
                     "session_id": session_id,
+                    "input_revision": input_revision,
+                    "target_input_revision": input_revision,
                     "upload_id": str(record.upload_id),
                     "created_at": (
                         str(previous.get("created_at"))
@@ -123,7 +141,9 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 # A retry may follow successful native processing but failed
                 # post-processing. Keep the completed job identity so _process
                 # can reuse it instead of transcribing the same session again.
-                if previous is not None and previous.get("job_id"):
+                if previous is not None and previous.get("job_id") and int(
+                    previous.get("input_revision") or 1
+                ) == input_revision:
                     queued["job_id"] = str(previous["job_id"])
                 self._write(
                     session_id,
@@ -167,14 +187,32 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
             )
             try:
                 self._process(session_id)
+            except SupersededInput:
+                pass
             except Exception as exc:  # noqa: BLE001 - persist the complete failure
                 self._handle_failure(session_id, exc)
             finally:
                 with self._lock:
                     self._active.discard(session_id)
+                    latest = self._input_revision(session_id)
+                    state = self.status(session_id) or {}
+                    if latest > int(state.get("input_revision") or 1) or int(
+                        state.get("target_input_revision") or 1
+                    ) > int(state.get("input_revision") or 1):
+                        self._queue_session(
+                            session_id,
+                            detail="检测到更新的完整录音，继续处理最新输入",
+                            stage="backup",
+                            input_revision=latest,
+                            target_input_revision=latest,
+                            auto_retry_count=0,
+                            job_id=None,
+                        )
                 self._queue.task_done()
 
     def _process(self, session_id: str) -> None:
+        input_revision = int((self.status(session_id) or {}).get("input_revision") or 1)
+        self._require_input_revision(session_id, input_revision)
         backup = None
         if self.shadow:
             self._progress(
@@ -195,6 +233,9 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 self.backup_root,
                 storage_kind=self.backup_storage_kind,
             )
+            self._require_input_revision(session_id, input_revision)
+            if backup.input_revision != input_revision:
+                raise SupersededInput(session_id)
             self.core.admission.record_verified_backup(
                 RecordBackupEvidenceCommand(
                     session_id=session_id,
@@ -207,6 +248,8 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                         "file_count": backup.file_count,
                         "byte_count": backup.byte_count,
                         "restore_drill": True,
+                        "input_revision": backup.input_revision,
+                        "manifest_sha256": backup.manifest_sha256,
                     },
                 )
             )
@@ -218,7 +261,8 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 "独立备份证据已存在，继续执行后续完整流程",
             )
 
-        snapshot, reused = self._processing_snapshot(session_id)
+        self._require_input_revision(session_id, input_revision)
+        snapshot, reused = self._processing_snapshot(session_id, input_revision)
         if reused:
             detail = f"继续 V3 原生分析任务：{snapshot.job.job_id}"
         else:
@@ -238,8 +282,10 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
             "cancelled",
         }
         while snapshot.job.status not in terminal:
+            self._require_input_revision(session_id, input_revision)
             worked = self._worker.run_once()
             snapshot = self.core.processing.get(snapshot.job.job_id)
+            self._require_input_revision(session_id, input_revision)
             self._progress(
                 session_id,
                 "running",
@@ -248,12 +294,16 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 job_id=snapshot.job.job_id,
             )
             if not worked and snapshot.job.status not in terminal:
-                raise RuntimeError("V3 processing job could not be claimed")
+                # Another durable worker may own the current stage. Continue
+                # observing that job instead of misclassifying it as failed.
+                time.sleep(self.poll_interval)
         if snapshot.job.status != "succeeded":
             raise RuntimeError(snapshot.job.error or f"V3 processing ended as {snapshot.job.status}")
 
+        self._require_input_revision(session_id, input_revision)
         self._progress(session_id, "running", "speaker_identity", "正在分析开放集说话人身份")
         identity = self.core.people.analyze(session_id)
+        self._require_input_revision(session_id, input_revision)
         detail = self.core.desktop.session_detail(session_id)
         active_utterances = [
             value
@@ -268,6 +318,7 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
             active_utterances
             and settings["knowledge"]["codex_event_generation_enabled"]
         ):
+            self._require_input_revision(session_id, input_revision)
             self._progress(
                 session_id,
                 "running",
@@ -279,12 +330,14 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 reasoning_effort=self.reasoning_effort,
             )
         if active_utterances and settings["reminders"]["codex_enabled"]:
+            self._require_input_revision(session_id, input_revision)
             self._progress(session_id, "running", "reminder_generation", "正在生成待人工审核的提醒")
             reminder_result = self.core.reminder_extraction.extract(
                 session_id,
                 reasoning_effort=self.reasoning_effort,
             )
         if active_utterances and settings["insights"]["codex_enabled"]:
+            self._require_input_revision(session_id, input_revision)
             self._progress(session_id, "running", "daily_insight", "正在生成带证据引用的当日洞察")
             session = detail["session"]
             timezone_name = _timezone_name(str(session["timezone"]))
@@ -295,6 +348,7 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 timezone_name,
                 reasoning_effort=self.reasoning_effort,
             )
+        self._require_input_revision(session_id, input_revision)
         memory_results = [
             self.core.person_memory.refresh(
                 str(person["person_id"]), actor="system:v3-native-workflow"
@@ -303,6 +357,7 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
         ]
         reminders = reminder_result.get("candidates", []) if reminder_result else []
         reviews = self.core.desktop.list_reviews(limit=500)
+        self._require_input_revision(session_id, input_revision)
         self._progress(
             session_id,
             "completed",
@@ -336,18 +391,36 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
         )
 
     def _session_is_admitted(self, session_id: str) -> bool:
-        with self.core.database.read() as connection:
-            row = connection.execute(
-                "SELECT status_code FROM recording_sessions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"recording session does not exist: {session_id}")
-        if str(row["status_code"]) == "ready":
-            return True
         return self.core.admission.evaluate(session_id)
 
-    def _processing_snapshot(self, session_id: str) -> tuple[Any, bool]:
+    def _input_revision(self, session_id: str) -> int:
+        with self.core.database.read() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(input_revision), 1) FROM session_manifest_revisions "
+                "WHERE session_id = ?", (session_id,),
+            ).fetchone()
+        return int(row[0])
+
+    def _manifest_sha256(self, session_id: str) -> str:
+        with self.core.database.read() as connection:
+            row = connection.execute(
+                "SELECT sha256 FROM session_manifest_revisions WHERE session_id = ? "
+                "ORDER BY input_revision DESC LIMIT 1", (session_id,),
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT sha256 FROM session_manifests WHERE session_id = ?", (session_id,),
+                ).fetchone()
+        if row is None:
+            raise KeyError(session_id)
+        return str(row[0])
+
+    def _require_input_revision(self, session_id: str, expected: int) -> None:
+        if self._input_revision(session_id) != expected:
+            raise SupersededInput(session_id)
+
+    def _processing_snapshot(self, session_id: str, input_revision: int | None = None) -> tuple[Any, bool]:
+        revision = self._input_revision(session_id) if input_revision is None else input_revision
         current = self.status(session_id) or {}
         job_id = str(current.get("job_id") or "")
         snapshot = None
@@ -360,6 +433,7 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 candidate is not None
                 and candidate.run.session_id == session_id
                 and candidate.run.pipeline_version == self.pipeline_version
+                and candidate.run.input_revision == revision
             ):
                 snapshot = candidate
         if snapshot is not None:
@@ -372,7 +446,7 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 SubmitProcessingCommand(
                     session_id=session_id,
                     pipeline_version=self.pipeline_version,
-                    input_revision=1,
+                    input_revision=revision,
                     config={"pipeline": self.pipeline_version},
                     admission_mode="shadow" if self.shadow else "production",
                     force_reprocess=snapshot is not None,
@@ -389,17 +463,19 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
         detail: str,
         **values: Any,
     ) -> None:
-        current = self.status(session_id) or {"version": 1, "session_id": session_id}
-        current.update(
-            {
-                "status": status,
-                "stage": stage,
-                "detail": detail,
-                "updated_at": _utc_now(),
-                **values,
-            }
-        )
-        self._write(session_id, current)
+        lock = getattr(self, "_lock", None)
+        with lock if lock is not None else nullcontext():
+            current = self.status(session_id) or {"version": 1, "session_id": session_id}
+            current.update(
+                {
+                    "status": status,
+                    "stage": stage,
+                    "detail": detail,
+                    "updated_at": _utc_now(),
+                    **values,
+                }
+            )
+            self._write(session_id, current)
         print(f"[transfer:v3] {session_id} | {stage} | {detail}")
 
     def _completed_processing_snapshot(self, session_id: str) -> Any | None:
@@ -415,6 +491,7 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
             snapshot.job.status != "succeeded"
             or snapshot.run.session_id != session_id
             or snapshot.run.pipeline_version != self.pipeline_version
+            or snapshot.run.input_revision != self._input_revision(session_id)
         ):
             return None
         return snapshot

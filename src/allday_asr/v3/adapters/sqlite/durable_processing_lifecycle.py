@@ -9,6 +9,29 @@ from .processing_repository_codec import _job, _run, _stage, _attempt, _lease, _
 
 
 class DurableProcessingLifecycleMixin:
+    def is_current_input(self, claim: ProcessingClaim) -> bool:
+        row = self.connection.execute(
+            "SELECT COALESCE(MAX(input_revision), 1) FROM session_manifest_revisions "
+            "WHERE session_id = ?", (claim.run.session_id,),
+        ).fetchone()
+        return int(row[0]) == claim.run.input_revision
+
+    def cancel_superseded(self) -> tuple[ProcessingSnapshot, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT j.job_id FROM processing_jobs j
+            JOIN processing_runs p ON p.run_id = j.run_id
+            WHERE j.status IN ('queued', 'running', 'failed_retryable', 'stale')
+              AND p.input_revision < COALESCE((
+                SELECT MAX(m.input_revision) FROM session_manifest_revisions m
+                WHERE m.session_id = p.session_id
+              ), 1)
+            ORDER BY j.created_at, j.job_id
+            """
+        ).fetchall()
+        return tuple(self.request_cancel(str(row["job_id"]), "input revision superseded")
+                     for row in rows)
+
     def request_cancel(self, job_id: str, reason: str) -> ProcessingSnapshot:
         snapshot = self.get_snapshot(job_id)
         if snapshot.job.status in {"succeeded", "failed_final", "cancelled"}:

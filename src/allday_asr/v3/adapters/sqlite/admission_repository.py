@@ -56,12 +56,26 @@ class SqliteAdmissionRepository:
             """,
             (session_id,),
         ).fetchall()
+        latest = self.connection.execute(
+            "SELECT input_revision, sha256 FROM session_manifest_revisions "
+            "WHERE session_id = ? ORDER BY input_revision DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
         evidence = self.connection.execute(
             """
             SELECT 1 FROM backup_evidence WHERE session_id = ? AND status = 'verified'
-              AND restore_checked_at IS NOT NULL LIMIT 1
+              AND restore_checked_at IS NOT NULL
+              AND (? IS NULL OR (
+                CAST(json_extract(metadata_json, '$.input_revision') AS INTEGER) = ?
+                AND json_extract(metadata_json, '$.manifest_sha256') = ?
+              )) LIMIT 1
             """,
-            (session_id,),
+            (
+                session_id,
+                latest["input_revision"] if latest is not None else None,
+                latest["input_revision"] if latest is not None else None,
+                latest["sha256"] if latest is not None else None,
+            ),
         ).fetchone()
         if manifest_count != 1:
             return False, "session_manifest_missing"

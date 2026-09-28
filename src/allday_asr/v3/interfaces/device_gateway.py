@@ -55,6 +55,7 @@ class DeviceGateway:
             "contract_version": CONTRACT_VERSION,
             "projection_version": PROJECTION_VERSION,
             "server_time": _utc_now(),
+            "sync_features": ["snapshot-v1", "adaptive-batch-v1"],
         }
 
     def synchronize(
@@ -119,7 +120,7 @@ def parse_sync_request(payload: Mapping[str, Any]) -> SyncRequest:
         "client_operations",
         "pull_limit",
     }
-    if set(payload) != required:
+    if not required <= set(payload) or set(payload) - required - {"bootstrap", "pull_bytes"}:
         raise ValueError("sync request fields do not match the V3 contract")
     raw_operations = payload["client_operations"]
     if not isinstance(raw_operations, list):
@@ -174,6 +175,8 @@ def parse_sync_request(payload: Mapping[str, Any]) -> SyncRequest:
         cursor=cursor,
         client_operations=tuple(operations),
         pull_limit=pull_limit,
+        bootstrap=payload.get("bootstrap", False),
+        pull_bytes=payload.get("pull_bytes"),
     )
 
 

@@ -128,8 +128,15 @@ class PeopleCatalogRepositoryMixin:
         )
 
     def person_basic(self, person_id):
+        cached = self._person_basics.get(person_id) if self.cache_annotation_people else None
+        if cached is not None:
+            return dict(cached)
         row = self.connection.execute("SELECT person_id,display_name,kind FROM persons WHERE person_id=?", (person_id,)).fetchone()
-        return dict(row) if row else None
+        if row is not None:
+            if self.cache_annotation_people:
+                self._person_basics[person_id] = dict(row)
+            return dict(row)
+        return None
 
     def people_choices(self):
         return tuple(dict(r) for r in self.connection.execute("SELECT person_id,display_name,kind FROM persons ORDER BY display_name,person_id"))

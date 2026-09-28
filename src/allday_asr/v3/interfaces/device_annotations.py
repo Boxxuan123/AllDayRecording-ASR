@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 from uuid import uuid4
+from allday_asr.v3.domain.hashing import canonical_json_sha256
 
 from allday_asr.v3.adapters.audio.tools import AudioClip, assemble_audio_clips
 from .device_reviews import DeviceReviewService, MAX_REVIEW_AUDIO_BYTES, _required_text
@@ -22,12 +23,11 @@ class DeviceAnnotationService:
             self.core.people.process_annotation_samples([{"utterance_id": uid} for uid in ids])
             return self.core.people.annotation_status(ids)
         if action == "people":
-            return {
-                "people": [
+            people = [
                     {"person_id": p["person_id"], "display_name": p["display_name"]}
                     for p in self.core.people.people_choices()
                 ]
-            }
+            return {"people": people, "version": canonical_json_sha256(people)}
         if action == "assign":
             selections = payload.get("selections")
             if not isinstance(selections, list):

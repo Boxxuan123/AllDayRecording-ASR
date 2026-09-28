@@ -45,7 +45,7 @@ class DesktopQueryService:
         }
 
     def overview(self) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.desktop.overview()
 
     def list_sessions(
@@ -62,7 +62,7 @@ class DesktopQueryService:
         if normalized_search is not None and len(normalized_search) > 200:
             raise ValueError("session search must not exceed 200 characters")
         before_start, before_id = _decode_cursor(cursor)
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             values = uow.desktop.list_sessions(
                 before_start,
                 before_id,
@@ -79,7 +79,7 @@ class DesktopQueryService:
         return SessionPage(page, next_cursor)
 
     def session_detail(self, session_id: str) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.desktop.session_detail(session_id)
 
     def session_audio_clips(
@@ -89,7 +89,7 @@ class DesktopQueryService:
             raise ValueError("session audio range must be non-empty")
         if end_ms - start_ms > 5 * 60 * 1000:
             raise ValueError("session audio range must not exceed 5 minutes")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             segments = uow.desktop.session_audio_segments(
                 session_id, start_ms, end_ms
             )
@@ -135,25 +135,25 @@ class DesktopQueryService:
     ) -> tuple[dict[str, Any], ...]:
         if not 1 <= limit <= 500:
             raise ValueError("processing page limit must be between 1 and 500")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.desktop.list_processing_jobs(status, limit)
 
     def list_reviews(self, limit: int = 100) -> tuple[dict[str, Any], ...]:
         if not 1 <= limit <= 500:
             raise ValueError("review page limit must be between 1 and 500")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.desktop.list_reviews(limit)
 
     def list_devices(self) -> tuple[dict[str, Any], ...]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.desktop.list_devices()
 
     def data_health(self) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.desktop.data_health()
 
     def media(self, media_id: str) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.desktop.media(media_id)
 
     def processing_events(
@@ -161,7 +161,7 @@ class DesktopQueryService:
     ) -> tuple[dict[str, Any], ...]:
         if after_sequence < 0 or not 1 <= limit <= 500:
             raise ValueError("processing event range is invalid")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.desktop.processing_events(after_sequence, limit)
 
     def settings(self) -> dict[str, Any]:

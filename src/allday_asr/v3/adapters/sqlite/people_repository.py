@@ -22,3 +22,7 @@ class SqlitePeopleRepository(
 ):
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
+        # Repository instances live for one UOW. Only immutable annotation choices
+        # are cached; missing people are queried again after an in-batch creation.
+        self._person_basics = {}
+        self.cache_annotation_people = False

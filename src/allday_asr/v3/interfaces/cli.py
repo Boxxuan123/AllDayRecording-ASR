@@ -190,6 +190,11 @@ def backup_admit_command(
     result = FilesystemSessionBackupAdapter(
         core.database, core.audio_store, core.artifact_store
     ).backup(session_id, backup_root, storage_kind=storage_kind)
+    with core.database.read() as connection:
+        manifest = connection.execute(
+            "SELECT input_revision, sha256 FROM session_manifest_revisions "
+            "WHERE session_id = ? ORDER BY input_revision DESC LIMIT 1", (session_id,),
+        ).fetchone()
     admitted = core.admission.record_verified_backup(
         RecordBackupEvidenceCommand(
             session_id=session_id,
@@ -201,6 +206,8 @@ def backup_admit_command(
                 "file_count": result.file_count,
                 "byte_count": result.byte_count,
                 "restore_drill": True,
+                "input_revision": int(manifest["input_revision"]) if manifest else 1,
+                "manifest_sha256": str(manifest["sha256"]) if manifest else None,
             },
         )
     )

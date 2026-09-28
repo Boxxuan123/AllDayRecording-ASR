@@ -146,7 +146,7 @@ class ReminderCommandMixin:
             if "scheduled_at" in changes
             else original.scheduled_at
         )
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             original_evidence = uow.knowledge.get_proposal(
                 original.proposal_id
             ).evidence_utterance_ids

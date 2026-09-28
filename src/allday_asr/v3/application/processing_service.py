@@ -33,6 +33,7 @@ from .durable_processing_types import (
 from .durable_processing_support import (
     _publish_processing,
     _utc_now,
+    publish_superseded_utterances,
 )
 
 
@@ -68,6 +69,12 @@ class DurableProcessingService:
         config_digest = canonical_json_sha256(effective_config)
         now = self._now()
         with self._uow_factory() as uow:
+            current_input = uow.catalog.connection.execute(
+                "SELECT COALESCE(MAX(input_revision), 1) FROM session_manifest_revisions "
+                "WHERE session_id = ?", (command.session_id,),
+            ).fetchone()
+            if command.input_revision != int(current_input[0]):
+                raise ValueError("processing input revision does not match current manifest")
             admitted, reason = uow.admission.evaluate(command.session_id)
             if not admitted:
                 session = uow.catalog.get_session(command.session_id)
@@ -162,15 +169,23 @@ class DurableProcessingService:
             return snapshot
 
     def get(self, job_id: str) -> ProcessingSnapshot:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.processing.get_snapshot(job_id)
 
     def get_for_run(self, run_id: str) -> ProcessingSnapshot:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.processing.get_snapshot_for_run(run_id)
 
     def claim(self, worker_id: str, config: dict[str, Any]) -> ProcessingClaim | None:
         with self._uow_factory() as uow:
+            for obsolete in uow.processing.cancel_superseded():
+                _publish_processing(uow, obsolete)
+                uow.audit.append(
+                    "processing.input.superseded", "system", "processing_job",
+                    obsolete.job.job_id,
+                    {"run_id": obsolete.run.run_id,
+                     "input_revision": obsolete.run.input_revision},
+                )
             claim = uow.processing.claim_next(worker_id, self.lease_seconds, config)
             if claim is not None:
                 _publish_processing(uow, uow.processing.get_snapshot(claim.job.job_id))
@@ -190,6 +205,13 @@ class DurableProcessingService:
         self, claim: ProcessingClaim, checkpoint: dict[str, Any] | None = None
     ) -> bool:
         with self._uow_factory() as uow:
+            if not uow.processing.is_current_input(claim):
+                snapshot = uow.processing.get_snapshot(claim.job.job_id)
+                if snapshot.job.status == "running":
+                    snapshot = uow.processing.request_cancel(
+                        claim.job.job_id, "input revision superseded"
+                    )
+                    _publish_processing(uow, snapshot)
             return uow.processing.heartbeat(claim, self.lease_seconds, checkpoint)
 
     def complete(
@@ -201,6 +223,12 @@ class DurableProcessingService:
         ]
         now = self._now()
         with self._uow_factory() as uow:
+            if not uow.processing.is_current_input(claim):
+                snapshot = uow.processing.cancel_claim(
+                    claim, "input revision superseded"
+                )
+                _publish_processing(uow, snapshot)
+                return snapshot
             created: dict[str, Artifact] = {}
             for output, stored in stored_outputs:
                 artifact = Artifact(
@@ -330,6 +358,7 @@ class DurableProcessingService:
                 },
             )
             _publish_processing(uow, snapshot)
+            publish_superseded_utterances(uow, snapshot)
             uow.audit.append(
                 "processing.stage.succeeded",
                 f"worker:{claim.attempt.worker_id}",
@@ -352,6 +381,12 @@ class DurableProcessingService:
         log_summary: str = "",
     ) -> ProcessingSnapshot:
         with self._uow_factory() as uow:
+            if not uow.processing.is_current_input(claim):
+                snapshot = uow.processing.cancel_claim(
+                    claim, "input revision superseded"
+                )
+                _publish_processing(uow, snapshot)
+                return snapshot
             snapshot = uow.processing.fail_stage(claim, error, log_summary, retryable)
             _publish_processing(uow, snapshot)
             uow.audit.append(
@@ -384,6 +419,13 @@ class DurableProcessingService:
 
     def retry(self, job_id: str) -> ProcessingSnapshot:
         with self._uow_factory() as uow:
+            current = uow.processing.get_snapshot(job_id)
+            latest = uow.catalog.connection.execute(
+                "SELECT COALESCE(MAX(input_revision), 1) FROM session_manifest_revisions "
+                "WHERE session_id = ?", (current.run.session_id,),
+            ).fetchone()
+            if current.run.input_revision != int(latest[0]):
+                raise ValueError("processing input revision has been superseded")
             snapshot = uow.processing.retry(job_id)
             _publish_processing(uow, snapshot)
             uow.audit.append(
@@ -411,7 +453,7 @@ class DurableProcessingService:
             return recovered
 
     def prior_artifacts(self, run_id: str) -> dict[str, tuple[Artifact, bytes]]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             artifacts = uow.artifacts.list_active_for_run(run_id)
         values: dict[str, tuple[Artifact, bytes]] = {}
         for artifact in artifacts:

@@ -40,7 +40,7 @@ class PeopleClusterMixin:
         return [{"session_id": sid, "status": "queued"} for sid in sorted(sessions)]
 
     def cluster(self, cluster_id: str) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.people.cluster_detail(cluster_id)
     def create_person(self, display_name: str, kind: PersonKind = PersonKind.KNOWN) -> dict[str, Any]:
         name = display_name.strip()
@@ -102,7 +102,7 @@ class PeopleClusterMixin:
         rebound: list[str] = []
         warnings: list[str] = []
         for event in events:
-            with self._uow_factory() as uow:
+            with self._uow_factory().reading() as uow:
                 evidence_ids = uow.people.cluster_evidence_ids(
                     cluster_id, str(event["session_id"])
                 )
@@ -229,7 +229,7 @@ class PeopleClusterMixin:
         if reverted["kind"] == "label" and current.get("person_id"):
             replacement = reverted["payload"].get("previous_person_id") or cluster_id
             for event in events:
-                with self._uow_factory() as uow:
+                with self._uow_factory().reading() as uow:
                     evidence_ids = uow.people.cluster_evidence_ids(
                         cluster_id, str(event["session_id"])
                     )
@@ -340,7 +340,7 @@ class PeopleClusterMixin:
         next_payload = _replace_reference(event["payload"], old_reference, person_id)
         if next_payload == event["payload"]:
             return
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             schedule = uow.reminders.get_schedule(str(event["event_id"]))
             if schedule and uow.reminders.get_candidate(schedule.source_candidate_id).status.value == "confirmed":
                 raise ValueError("confirmed task retained; source change requires user review")

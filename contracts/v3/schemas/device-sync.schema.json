@@ -203,6 +203,16 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 500
+        },
+        "bootstrap": {
+          "type": "boolean",
+          "description": "Opt in to an immutable watermark snapshot when cursor is null or cursor-0."
+        },
+        "pull_bytes": {
+          "type": "integer",
+          "minimum": 16384,
+          "maximum": 1048576,
+          "description": "Soft UTF-8 response budget; one resource plus receipts may exceed it to make progress."
         }
       }
     },
@@ -242,6 +252,11 @@
         },
         "server_time": {
           "$ref": "primitives.schema.json#/$defs/UtcDateTime"
+        },
+        "transaction_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Server write transaction duration, excluding lock wait and projection reads."
         }
       }
     }

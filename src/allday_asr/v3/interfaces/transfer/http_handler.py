@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import gzip
+import socket
 import secrets
 import logging
 import re
@@ -55,6 +57,21 @@ from .store import (
 logger = logging.getLogger(__name__)
 
 
+def accepts_gzip(value: str) -> bool:
+    weights = {}
+    for entry in value.lower().split(','):
+        name, *parameters = entry.strip().split(';')
+        weight = 1.0
+        for parameter in parameters:
+            if parameter.strip().startswith('q='):
+                try:
+                    weight = float(parameter.strip()[2:])
+                except ValueError:
+                    weight = 0.0
+        weights[name] = weight
+    return 0 < weights.get('gzip', weights.get('*', 0)) <= 1
+
+
 def safe_exception_stack(exc: BaseException) -> str:
     """Keep frame/function/line and cause types, never payloads, locals or paths."""
     parts = []
@@ -72,9 +89,12 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
     server: Any
     server_version = "AllDayRecordingTransfer/2"
     sys_version = ""
+    protocol_version = "HTTP/1.1"
     def setup(self) -> None:
         super().setup()
         self.connection.settimeout(60)
+        self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.connection_id = new_ulid()
     def do_GET(self) -> None:
         self._handle(self._dispatch_get)
     def do_POST(self) -> None:
@@ -88,6 +108,7 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         self.client_request_id = candidate if re.fullmatch(r'[A-Za-z0-9-]{1,80}', candidate) else ''
         started = time.monotonic()
         self.response_status = 0
+        self.body_consumed = self.command == 'GET' and not self.headers.get('Content-Length') and not self.headers.get('Transfer-Encoding')
         # Paths can contain resource IDs; redact dynamic suffixes and query strings.
         path = urlparse(self.path).path
         known = {_V3_STATUS_PATH, _V3_SYNC_PATH, _DEVICE_CHALLENGE_PATH,
@@ -153,7 +174,7 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             return
         except Exception as exc:
-            logger.error('transfer id=%s category=internal stack=%s', self.request_id, safe_exception_stack(exc))
+            logger.error('transfer id=%s client_id=%s category=internal stack=%s', self.request_id, self.client_request_id, safe_exception_stack(exc))
             self._send_error(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "接收服务内部错误",
@@ -188,7 +209,7 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
             path=path,
             body=b"",
         )
-        self._authenticate_request(binding)
+        device = self._authenticate_request(binding)
         if path == "/api/v1/status":
             self._send_json(
                 HTTPStatus.OK,
@@ -206,6 +227,8 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
                     "enrollment": "passkey",
                     "passkey_rp_id": self.server.passkeys.store.rp_id,
                     "receiver_id": self.server.receiver_id,
+                    "v3": (self.server.v3_gateway.status(device.device_id)
+                           if self.server.v3_gateway is not None and device is not None else None),
                 },
             )
             return
@@ -461,6 +484,8 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         return payload
 
     def _read_body(self, *, max_bytes: int) -> bytes:
+        if len(self.headers.get_all("Content-Length", [])) != 1:
+            raise UploadStoreError("必须提供唯一 Content-Length")
         if self.headers.get("Transfer-Encoding"):
             raise UploadStoreError("不支持 Transfer-Encoding，请发送 Content-Length")
         length_text = self.headers.get("Content-Length")
@@ -477,6 +502,7 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         data = self.rfile.read(length)
         if len(data) != length:
             raise UploadStoreError("请求正文未完整到达")
+        self.body_consumed = True
         return data
 
     def _send_upload_record(
@@ -524,10 +550,26 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
         *,
         headers: dict[str, str] | None = None,
     ) -> None:
-        data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        data = json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":")).encode("utf-8")
+        original_bytes = len(data)
+        compressed = False
+        if len(data) >= 4096 and accepts_gzip(self.headers.get("Accept-Encoding", "")):
+            encoded = gzip.compress(data, compresslevel=1, mtime=0)
+            if len(encoded) < len(data):
+                data, compressed = encoded, True
+        # Unread bodies must never be mistaken for the next persistent request.
+        if not self.body_consumed:
+            self.close_connection = True
         self.response_status = int(status)
         self.send_response(status)
         self.send_header('X-AllDay-Request-ID', self.request_id)
+        self.send_header('X-AllDay-Connection-ID', self.connection_id)
+        self.send_header('X-AllDay-JSON-Bytes', str(original_bytes))
+        self.send_header('Vary', 'Accept-Encoding')
+        if compressed:
+            self.send_header('Content-Encoding', 'gzip')
+        if self.close_connection:
+            self.send_header('Connection', 'close')
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")

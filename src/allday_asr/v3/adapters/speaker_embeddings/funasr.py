@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
+import shutil
 import tempfile
+from contextlib import contextmanager
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
 import numpy as np
 import soundfile as sf
@@ -51,12 +55,7 @@ class FunASRSpeakerEmbeddingProvider:
         sample_tracks: list[int] = []
         representatives: dict[int, list[RepresentativeClip]] = {}
         durations: dict[int, int] = {}
-        if self._temp_root is not None:
-            self._temp_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix="allday-v34-speakers-", dir=self._temp_root
-        ) as raw_root:
-            root = Path(raw_root)
+        with _clip_directory(self._temp_root) as root:
             for track_index, track in enumerate(tracks):
                 for clip_index, clip in enumerate(track.clips):
                     destination = root / f"{track_index}-{clip_index}.wav"
@@ -120,6 +119,33 @@ class FunASRSpeakerEmbeddingProvider:
                 )
             )
         return tuple(results)
+
+
+@contextmanager
+def _clip_directory(temp_root: Path | None):
+    """Create an accessible private clip directory on Windows and POSIX.
+
+    Python's Windows TemporaryDirectory creates a 0700 directory which can be
+    inaccessible to its own process under the restricted desktop runtime.
+    """
+    base = (temp_root or Path(tempfile.gettempdir())).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    mode = 0o777 if os.name == "nt" else 0o700
+    for _ in range(10):
+        root = base / f"allday-v34-speakers-{uuid4().hex}"
+        try:
+            root.mkdir(mode=mode)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise RuntimeError("could not allocate a speaker clip directory")
+    try:
+        yield root
+    finally:
+        if root.resolve().parent != base:
+            raise RuntimeError("speaker clip directory escaped its temporary root")
+        shutil.rmtree(root)
 
 
 __all__ = ["FunASRSpeakerEmbeddingProvider"]

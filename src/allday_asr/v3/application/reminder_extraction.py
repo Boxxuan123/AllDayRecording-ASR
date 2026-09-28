@@ -152,7 +152,7 @@ class ReminderExtractionService:
             self._generator.close()
 
     def _request(self, session_id: str) -> ReminderModelRequest:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             detail = uow.desktop.session_detail(session_id)
             scheduled = uow.reminders.list_schedules(
                 status="scheduled",

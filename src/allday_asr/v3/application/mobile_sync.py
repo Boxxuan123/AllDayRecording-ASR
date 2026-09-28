@@ -180,59 +180,74 @@ class MobileSyncService:
 
     def synchronize(self, device_id: str, request: SyncRequest) -> SyncResponse:
         started = time.perf_counter()
-        cursor_sequence = _decode_cursor(request.cursor)
+        snapshot = re.fullmatch(r"snapshot-v1-(0|[1-9][0-9]*)-(0|[1-9][0-9]*)", request.cursor or "")
+        watermark = int(snapshot[1]) if snapshot else None
+        position = int(snapshot[2]) if snapshot else 0
+        cursor_sequence = 0 if snapshot else _decode_cursor(request.cursor)
+        if snapshot and position > watermark:
+            raise ValueError("invalid snapshot cursor")
         receipts: list[OperationReceipt] = []
         with self._uow_factory() as uow:
+            transaction_started = time.perf_counter()
+            wait_ms = (transaction_started - started) * 1000
+            if watermark is not None and watermark > uow.changes.high_water():
+                raise ValueError("snapshot cursor exceeds change log")
+            uow.people.cache_annotation_people = True
             for operation in request.client_operations:
                 receipts.append(self._apply_once(device_id, operation, uow))
-            events = uow.changes.list_after(
-                cursor_sequence,
-                request.pull_limit + 1,
-            )
-            selected = events[: request.pull_limit]
-            changes = tuple(
-                SyncChange(
-                    sequence=event.sequence,
-                    resource_type=event.resource_type,
-                    resource_id=event.resource_id,
-                    revision=event.revision,
-                    operation=event.operation.value,
-                    resource=(
+            uow.mobile_sync.acknowledge_cursor(device_id, PROJECTION_VERSION, cursor_sequence)
+            uow.audit.append("device.sync", f"device:{device_id}", "device", device_id,
+                {"cursor": request.cursor, "operation_count": len(request.client_operations)})
+        transaction_ms = (time.perf_counter() - transaction_started) * 1000
+        # Large first-sync reads and response construction never hold the writer.
+        with self._uow_factory().reading() as uow:
+            latest = uow.changes.high_water()
+            if watermark is None and request.bootstrap and cursor_sequence == 0:
+                watermark = latest
+            events = (uow.changes.snapshot_after(watermark, position, request.pull_limit + 1)
+                      if watermark is not None else uow.changes.list_after(cursor_sequence, request.pull_limit + 1))
+        selected = events[:request.pull_limit]
+        changes = tuple(
+            SyncChange(
+                sequence=event.sequence,
+                resource_type=event.resource_type,
+                resource_id=event.resource_id,
+                revision=event.revision,
+                operation=event.operation.value,
+                resource=(
+                    None if event.operation.value == "tombstone" else (
                         validate_utterance_dto(event.payload)
-                        if event.resource_type == "utterance"
-                        and event.payload is not None
+                        if event.resource_type == "utterance" and event.payload is not None
                         else validate_reminder_dto(event.payload)
-                        if event.resource_type == "reminder"
-                        and event.payload is not None
+                        if event.resource_type == "reminder" and event.payload is not None
                         else event.payload
-                    ),
-                )
-                for event in selected
+                    )
+                ),
             )
-            next_sequence = (
-                selected[-1].sequence if selected else cursor_sequence
-            )
-            uow.mobile_sync.acknowledge_cursor(
-                device_id,
-                PROJECTION_VERSION,
-                cursor_sequence,
-            )
-            uow.audit.append(
-                "device.sync",
-                f"device:{device_id}",
-                "device",
-                device_id,
-                {
-                    "cursor": request.cursor,
-                    "operation_count": len(request.client_operations),
-                    "change_count": len(changes),
-                    "next_cursor": _encode_cursor(next_sequence),
-                },
-            )
+            for event in selected
+        )
+        if request.pull_bytes is not None:
+            selected_changes = []
+            size = 512 + len(json.dumps([r.as_dict() for r in receipts], ensure_ascii=False).encode("utf-8"))
+            for change in changes:
+                encoded_size = len(json.dumps(change.as_dict(), ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
+                # A single oversized resource must still make progress.
+                if selected_changes and size + encoded_size > request.pull_bytes:
+                    break
+                selected_changes.append(change)
+                size += encoded_size
+            changes = tuple(selected_changes)
+        has_more = len(events) > len(changes)
+        if watermark is not None:
+            next_cursor = (f"snapshot-v1-{watermark}-{changes[-1].sequence}" if has_more
+                           else _encode_cursor(watermark))
+            has_more = has_more or latest > watermark
+        else:
+            next_cursor = _encode_cursor(changes[-1].sequence if changes else cursor_sequence)
         if request.client_operations:
-            logging.getLogger(__name__).debug("annotation phase=T4-commit ops=%s count=%d service_ms=%.1f",
+            logging.getLogger(__name__).debug("annotation phase=T4-commit ops=%s count=%d service_ms=%.1f wait_ms=%.1f transaction_ms=%.1f",
                 ",".join(op.operation_id for op in request.client_operations[:32]), len(request.client_operations),
-                (time.perf_counter()-started)*1000)
+                (time.perf_counter()-started)*1000, wait_ms, transaction_ms)
         if self._annotation_samples is not None:
             applied = {r.operation_id for r in receipts if r.status is ClientOperationStatus.APPLIED}
             selections = [s for op in request.client_operations
@@ -244,9 +259,10 @@ class MobileSyncService:
             projection_version=PROJECTION_VERSION,
             receipts=tuple(receipts),
             changes=changes,
-            next_cursor=_encode_cursor(next_sequence),
-            has_more=len(events) > request.pull_limit,
+            next_cursor=next_cursor,
+            has_more=has_more,
             server_time=self._now().astimezone(timezone.utc),
+            transaction_ms=round(transaction_ms, 3) if request.pull_bytes is not None else None,
         )
 
     def _apply_once(

@@ -30,7 +30,8 @@ from allday_asr.v3.ports.repositories import UnitOfWork
 
 
 UnitOfWorkFactory = Callable[[], UnitOfWork]
-_MANIFEST_FORMAT = "AllDayRecording session manifest v1"
+_MANIFEST_FORMAT = "AllDayRecording session manifest v2"
+_LEGACY_MANIFEST_FORMAT = "AllDayRecording session manifest v1"
 _MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 _MAX_CHUNKS = 50_000
 
@@ -66,6 +67,20 @@ class V3UploadIngestAdapter:
             payload = json.loads(raw)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise UploadStoreError("V3 会话清单不是有效的 UTF-8 JSON") from exc
+        if isinstance(payload, dict) and payload.get("format") == _LEGACY_MANIFEST_FORMAT:
+            # Already admitted V1 sessions remain replayable, but V1 can no
+            # longer admit new audio without an explicit finalization record.
+            old_key = payload.get("sessionKey")
+            if isinstance(old_key, str) and old_key:
+                old_ref = (
+                    f"phone-upload:{self.trust.receiver_id}:{key_id}:{old_key}"
+                )
+                old_id = stable_ulid(old_ref)
+                with self._uow_factory() as uow:
+                    saved = uow.idempotency.response(f"phone-manifest:{old_id}")
+                    if saved is not None and saved.get("manifest_sha256") == record.sha256:
+                        return saved
+            raise UploadStoreError("旧版清单缺少录音结束证明；请在手机明确确认旧录音完整")
         manifest = _parse_manifest(payload)
         device_id = self.trust.domain_device_id(key_id)
         session_ref = (
@@ -80,18 +95,33 @@ class V3UploadIngestAdapter:
             saved = uow.idempotency.response(idempotency_key)
             if saved is not None and saved.get("manifest_sha256") == record.sha256:
                 return saved
+            revision = uow.catalog.connection.execute(
+                "SELECT input_revision, entries_json FROM session_manifest_revisions "
+                "WHERE session_id = ? AND sha256 = ?",
+                (session_id, record.sha256),
+            ).fetchone()
+            if revision is not None:
+                entries = json.loads(revision["entries_json"])
+                return {"status": "already_ingested", "session_id": session_id,
+                        "asset_count": len(entries["chunks"]),
+                        "input_revision": int(revision["input_revision"]),
+                        "manifest_sha256": record.sha256}
 
         manifest_directory = PurePosixPath(record.relative_path).parent
         referenced_paths = {
             (manifest_directory / chunk["fileName"]).as_posix()
             for chunk in manifest["chunks"]
         }
-        completed = {
-            upload.relative_path: upload
-            for upload in upload_store.list_uploads(
-                kind="recording", status="completed", relative_paths=referenced_paths
-            )
-        }
+        completed: dict[str, UploadRecord] = {}
+        for upload in upload_store.list_uploads(
+            kind="recording", status="completed", relative_paths=referenced_paths
+        ):
+            previous = completed.get(upload.relative_path)
+            if previous is not None and previous.sha256 != upload.sha256:
+                raise UploadConflictError(
+                    f"同一分片路径存在不同哈希版本：{upload.relative_path}"
+                )
+            completed[upload.relative_path] = upload
         prepared: list[tuple[Mapping[str, Any], UploadRecord]] = []
         for chunk in manifest["chunks"]:
             relative_path = (manifest_directory / chunk["fileName"]).as_posix()
@@ -112,16 +142,6 @@ class V3UploadIngestAdapter:
                 )
             prepared.append((chunk, upload))
 
-        stored_manifest = self.artifact_store.put_file(
-            manifest_path, expected_sha256=record.sha256
-        )
-        stored_audio = [
-            self.audio_store.put_file(
-                upload_store.completed_path(upload),
-                expected_sha256=upload.sha256,
-            )
-            for _, upload in prepared
-        ]
         started_at = datetime.fromtimestamp(
             manifest["sessionStartedAt"] / 1000, tz=timezone.utc
         )
@@ -159,6 +179,7 @@ class V3UploadIngestAdapter:
             "status": "ingested",
             "session_id": session_id,
             "asset_count": len(prepared),
+            "input_revision": 1,
             "manifest_sha256": record.sha256,
         }
         with self._uow_factory() as uow:
@@ -208,14 +229,25 @@ class V3UploadIngestAdapter:
             if existing is not None:
                 saved = uow.idempotency.response(idempotency_key)
                 if saved is None or saved.get("manifest_sha256") != record.sha256:
-                    raise UploadConflictError(
-                        "同一 Phone 会话已提交不同的清单内容"
+                    return self._append_existing_manifest(
+                        uow, existing, manifest, prepared, record, manifest_path,
+                        upload_store, device_id, session_ref, now,
                     )
                 return saved
             if not uow.idempotency.begin(idempotency_key, "phone.upload.ingest"):
                 raise UploadConflictError("Phone 会话正在由另一个请求入库")
             if not uow.catalog.add_session(session):
                 raise UploadConflictError("Phone 会话身份与现有目录冲突")
+            stored_manifest = self.artifact_store.put_file(
+                manifest_path, expected_sha256=record.sha256
+            )
+            stored_audio = [
+                self.audio_store.put_file(
+                    upload_store.completed_path(upload),
+                    expected_sha256=upload.sha256,
+                )
+                for _, upload in prepared
+            ]
             for index, ((chunk, upload), stored) in enumerate(
                 zip(prepared, stored_audio, strict=True)
             ):
@@ -323,6 +355,157 @@ class V3UploadIngestAdapter:
             uow.idempotency.complete(idempotency_key, response)
         return response
 
+    def _append_existing_manifest(
+        self, uow: UnitOfWork, existing: RecordingSession,
+        manifest: Mapping[str, Any],
+        prepared: list[tuple[Mapping[str, Any], UploadRecord]],
+        record: UploadRecord, manifest_path: Any, upload_store: UploadStore,
+        device_id: str, session_ref: str, now: datetime,
+    ) -> dict[str, Any]:
+        connection = uow.catalog.connection
+        latest = connection.execute(
+            "SELECT input_revision, sha256, entries_json FROM session_manifest_revisions "
+            "WHERE session_id = ? ORDER BY input_revision DESC LIMIT 1",
+            (existing.session_id,),
+        ).fetchone()
+        original = connection.execute(
+            "SELECT sha256, entries_json FROM session_manifests WHERE session_id = ?",
+            (existing.session_id,),
+        ).fetchone()
+        if original is None:
+            raise UploadConflictError("原会话缺少可核验的清单，请人工修复")
+        previous = json.loads(latest["entries_json"] if latest else original["entries_json"])
+        previous_revision = int(latest["input_revision"]) if latest else 1
+        old_chunks = previous["chunks"]
+        if any(previous.get(key) != manifest[key] for key in
+               ("sessionKey", "sessionStartedAt", "device", "timezone", "audio")):
+            raise UploadConflictError("清单身份或音频格式改变，不能追加到原会话")
+        if manifest["chunks"][:len(old_chunks)] != old_chunks:
+            raise UploadConflictError("旧分片的位置或长度改变，不能追加到原会话")
+        if len(manifest["chunks"]) <= len(old_chunks):
+            raise UploadConflictError("新清单没有连续追加分片，不能替换已确认版本")
+        old_assets = connection.execute(
+            "SELECT s.sequence, a.sha256, a.size_bytes FROM capture_segments s "
+            "JOIN audio_assets a ON a.asset_id = s.asset_id "
+            "WHERE s.session_id = ? ORDER BY s.sequence",
+            (existing.session_id,),
+        ).fetchall()
+        if len(old_assets) != len(old_chunks) or any(
+            int(asset["sequence"]) != index or
+            asset["sha256"] != prepared[index][1].sha256 or
+            int(asset["size_bytes"]) != prepared[index][1].size
+            for index, asset in enumerate(old_assets)
+        ):
+            raise UploadConflictError("旧分片哈希与已入库音频不一致，不能追加")
+
+        next_revision = previous_revision + 1
+        stored_manifest = self.artifact_store.put_file(
+            manifest_path, expected_sha256=record.sha256,
+        )
+        started_at = datetime.fromtimestamp(
+            manifest["sessionStartedAt"] / 1000, tz=timezone.utc,
+        )
+        for index in range(len(old_chunks), len(prepared)):
+            chunk, upload = prepared[index]
+            stored = self.audio_store.put_file(
+                upload_store.completed_path(upload), expected_sha256=upload.sha256,
+            )
+            duration_ms = _samples_to_ms(
+                chunk["sampleCount"], manifest["audio"]["sampleRate"],
+            )
+            asset = AudioAsset(
+                asset_id=stable_ulid("audio-asset", upload.sha256),
+                sha256=upload.sha256, size_bytes=upload.size,
+                duration_ms=duration_ms, format=AudioFormat.WAV,
+                media_id=stored.media_id, created_at=now, legacy_ref=None,
+            )
+            existing_asset = uow.catalog.find_asset_by_sha256(upload.sha256)
+            if existing_asset is not None and (
+                existing_asset.size_bytes != asset.size_bytes or
+                existing_asset.duration_ms != asset.duration_ms or
+                existing_asset.media_id != asset.media_id
+            ):
+                raise UploadConflictError("新增分片摘要对应了不同音频元数据")
+            canonical_asset = existing_asset or asset
+            if existing_asset is None and not uow.catalog.add_asset(asset):
+                raise UploadConflictError("新增音频资产身份冲突")
+            replica_id = stable_ulid(
+                "phone-replica", device_id, existing.session_id, chunk["index"],
+            )
+            if not uow.catalog.add_replica(AudioReplica(
+                replica_id=replica_id, asset_id=canonical_asset.asset_id,
+                device_id=device_id, storage_key=stored.storage_key,
+                state=AudioReplicaState.AVAILABLE, verified_at=now,
+                created_at=now,
+                legacy_ref=f"{session_ref}:chunk:{chunk['index']}",
+            )):
+                raise UploadConflictError("新增分片副本身份冲突")
+            start_ms = _sample_offset_to_ms(
+                chunk["firstSample"], manifest["audio"]["sampleRate"],
+            )
+            if not uow.catalog.add_segment(CaptureSegment(
+                segment_id=stable_ulid(
+                    "capture-segment", existing.session_id, chunk["index"],
+                ),
+                session_id=existing.session_id,
+                asset_id=canonical_asset.asset_id, replica_id=replica_id,
+                sequence=index, session_start_ms=start_ms,
+                session_end_ms=_sample_offset_to_ms(
+                    chunk["firstSample"] + chunk["sampleCount"],
+                    manifest["audio"]["sampleRate"],
+                ),
+                source_start_ms=0, source_end_ms=duration_ms,
+                start_sample=chunk["firstSample"],
+                captured_at=started_at + timedelta(milliseconds=start_ms),
+                legacy_ref=f"{session_ref}:segment:{chunk['index']}",
+            )):
+                raise UploadConflictError("新增分片身份冲突")
+            uow.changes.append(
+                "audio_asset", canonical_asset.asset_id, 1,
+                ChangeOperation.UPSERT.value,
+                _asset_projection(canonical_asset, existing.session_id, index),
+            )
+
+        connection.execute(
+            "INSERT INTO session_manifest_revisions "
+            "(session_id,input_revision,sha256,storage_ref,entries_json,reason,created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (existing.session_id, next_revision, record.sha256,
+             stored_manifest.storage_key,
+             json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+             "verified_append", now.isoformat()),
+        )
+        end = started_at + timedelta(milliseconds=_samples_to_ms(
+            manifest["totalSamples"], manifest["audio"]["sampleRate"],
+        ))
+        connection.execute(
+            "UPDATE recording_sessions SET captured_end=?, revision=?, "
+            "state='admission_pending', status_code='backup_required', "
+            "current_stage='backup_admission', progress=0, "
+            "blocking_reason='backup_restore_evidence_required', updated_at=? "
+            "WHERE session_id=?",
+            (end.isoformat().replace("+00:00", "Z"), existing.revision + 1,
+             now.isoformat().replace("+00:00", "Z"), existing.session_id),
+        )
+        refreshed = uow.catalog.get_session(existing.session_id)
+        uow.changes.append(
+            "recording_session", existing.session_id, refreshed.revision,
+            ChangeOperation.UPSERT.value, _session_projection(refreshed, manifest),
+        )
+        uow.audit.append(
+            "phone.upload.append_manifest", f"device:{device_id}",
+            "recording_session", existing.session_id,
+            {"previous_revision": previous_revision,
+             "input_revision": next_revision,
+             "old_segments": len(old_chunks),
+             "new_segments": len(manifest["chunks"]),
+             "previous_manifest_sha256": latest["sha256"] if latest else original["sha256"],
+             "manifest_sha256": record.sha256},
+        )
+        return {"status": "ingested", "session_id": existing.session_id,
+                "asset_count": len(prepared), "input_revision": next_revision,
+                "manifest_sha256": record.sha256}
+
 
 def _parse_manifest(payload: object) -> dict[str, Any]:
     required = {
@@ -336,6 +519,7 @@ def _parse_manifest(payload: object) -> dict[str, Any]:
         "completedSegments",
         "totalSamples",
         "continuityValid",
+        "completion",
     }
     if not isinstance(payload, dict) or set(payload) != required:
         raise UploadStoreError("V3 会话清单字段不符合协议")
@@ -351,6 +535,22 @@ def _parse_manifest(payload: object) -> dict[str, Any]:
         raise UploadStoreError("V3 会话时间和样本总数必须为正数")
     if not isinstance(payload["continuityValid"], bool):
         raise UploadStoreError("V3 continuityValid 必须是布尔值")
+    completion = payload["completion"]
+    if not isinstance(completion, dict) or set(completion) != {
+        "source", "completedSegments", "totalSamples", "confirmedAt"
+    }:
+        raise UploadStoreError("V3 会话清单缺少明确的结束证明")
+    if not isinstance(completion["source"], str) or completion["source"] not in {
+        "watch_stop", "legacy_user_confirmed"
+    }:
+        raise UploadStoreError("V3 结束证明来源无效")
+    for key in ("completedSegments", "totalSamples", "confirmedAt"):
+        _nonnegative_int(completion[key], f"completion.{key}")
+    if completion["confirmedAt"] <= 0 or (
+        completion["completedSegments"] != payload["completedSegments"]
+        or completion["totalSamples"] != payload["totalSamples"]
+    ):
+        raise UploadStoreError("V3 结束证明与最终清单不一致")
     audio = payload["audio"]
     if not isinstance(audio, dict) or set(audio) != {
         "sampleRate",
@@ -408,9 +608,8 @@ def _parse_manifest(payload: object) -> dict[str, Any]:
         )
     if highest_sample != payload["totalSamples"]:
         raise UploadStoreError("V3 totalSamples 与 chunks 不一致")
-    if payload["continuityValid"] and not computed_continuity:
-        payload = dict(payload)
-        payload["continuityValid"] = False
+    if not computed_continuity or not payload["continuityValid"]:
+        raise UploadStoreError("V3 结束清单中的分片不连续")
     return payload
 
 

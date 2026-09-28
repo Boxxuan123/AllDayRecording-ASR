@@ -26,9 +26,14 @@ class DurableProcessingExecutionMixin:
         now = self.now()
         jobs = self.connection.execute(
             """
-            SELECT * FROM processing_jobs
-            WHERE status = 'queued' AND available_at <= ?
-            ORDER BY priority DESC, created_at, job_id
+            SELECT j.* FROM processing_jobs j
+            JOIN processing_runs p ON p.run_id = j.run_id
+            WHERE j.status = 'queued' AND j.available_at <= ?
+              AND p.input_revision = COALESCE((
+                SELECT MAX(m.input_revision) FROM session_manifest_revisions m
+                WHERE m.session_id = p.session_id
+              ), 1)
+            ORDER BY j.priority DESC, j.created_at, j.job_id
             """,
             (now,),
         ).fetchall()

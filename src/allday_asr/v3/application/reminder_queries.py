@@ -33,7 +33,7 @@ class ReminderQueryMixin:
         if status is not None:
             ReminderCandidateStatus(status)
         _validate_limit(limit)
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             items = list(uow.reminders.list_candidates(status, limit))
         evidence_by_session: dict[str, tuple[dict[str, Any], ...]] = {}
         for item in items:
@@ -71,7 +71,7 @@ class ReminderQueryMixin:
         ):
             raise ValueError("reminder due boundary must be timezone-aware")
         _validate_limit(limit)
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             if session_id is not None:
                 uow.catalog.get_session(session_id)
             return uow.reminders.list_schedules(
@@ -87,7 +87,7 @@ class ReminderQueryMixin:
         return self.list_schedules(due_before=at or self._now(), limit=limit)
 
     def schedule(self, event_id: str) -> dict[str, Any]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             schedule = uow.reminders.get_schedule(event_id)
             if schedule is None:
                 raise KeyError(f"reminder does not exist: {event_id}")
@@ -100,7 +100,7 @@ class ReminderQueryMixin:
         return next(value for value in values if value["event_id"] == event_id)
 
     def feedback(self, candidate_id: str) -> tuple[dict[str, Any], ...]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             uow.reminders.get_candidate(candidate_id)
             return uow.reminders.list_feedback(candidate_id)
 
@@ -108,7 +108,7 @@ class ReminderQueryMixin:
         self, intents: tuple[ReminderIntent, ...]
     ) -> tuple[tuple[ProposalKind, dict[str, Any], tuple[str, ...]], ...]:
         values: list[tuple[ProposalKind, dict[str, Any], tuple[str, ...]]] = []
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             for intent in intents:
                 event_kind, operation = _event_operation(intent, uow)
                 payload: dict[str, Any] = {
@@ -131,7 +131,7 @@ class ReminderQueryMixin:
 
     def _classify(self, candidate_id: str, *, allow_auto_apply: bool) -> None:
         candidate = self._pending_candidate(candidate_id)
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             duplicate = (
                 uow.reminders.duplicate_for(
                     candidate.dedup_key, exclude_candidate_id=candidate.candidate_id
@@ -205,7 +205,7 @@ class ReminderQueryMixin:
         )
 
     def _pending_candidate(self, candidate_id: str) -> ReminderCandidate:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             candidate = uow.reminders.get_candidate(candidate_id)
         if candidate.status is not ReminderCandidateStatus.PENDING_CONFIRMATION:
             raise ValueError("reminder candidate is no longer pending")

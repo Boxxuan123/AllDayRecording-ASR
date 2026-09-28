@@ -16,12 +16,12 @@ class KnowledgeQueryMixin:
         return self.materialize_evidence(session_id)
 
     def list_events(self, session_id: str) -> tuple[dict[str, Any], ...]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             uow.catalog.get_session(session_id)
             return uow.knowledge.list_events(session_id)
 
     def event_history(self, event_id: str) -> tuple[dict[str, Any], ...]:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.knowledge.event_history(event_id)
 
     def list_memories(
@@ -35,7 +35,7 @@ class KnowledgeQueryMixin:
             raise ValueError("memory subject type and id must be provided together")
         if session_id is None and subject_id is None:
             raise ValueError("memory query requires a session or subject")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             if session_id is not None:
                 uow.catalog.get_session(session_id)
             return uow.knowledge.list_memories(session_id, subject_type, subject_id)
@@ -47,13 +47,13 @@ class KnowledgeQueryMixin:
             ProposalStatus(status)
         if not 1 <= limit <= 500:
             raise ValueError("proposal page limit must be between 1 and 500")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.knowledge.list_proposals(status, limit)
 
     def affected_by(self, source_type: str, source_id: str) -> dict[str, Any]:
         if not source_type.strip() or not source_id.strip():
             raise ValueError("derivation source is required")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             affected = uow.derivations.dependent_closure(source_type, source_id)
             return {
                 "source": {"type": source_type, "id": source_id},
@@ -71,7 +71,7 @@ class KnowledgeQueryMixin:
     ) -> tuple[dict[str, Any], ...]:
         if not 1 <= limit <= 500:
             raise ValueError("invalidation page limit must be between 1 and 500")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.derivations.list_invalidations(target_type, target_id, limit)
 
     def list_recompute_requests(
@@ -87,7 +87,7 @@ class KnowledgeQueryMixin:
             raise ValueError("recompute status is invalid")
         if not 1 <= limit <= 500:
             raise ValueError("recompute page limit must be between 1 and 500")
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             return uow.derivations.list_recompute_requests(status, limit)
 
     def _resolve_inputs(

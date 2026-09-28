@@ -215,7 +215,7 @@ class SemanticEventExtractionService:
             self._generator.close()
 
     def _request(self, session_id: str) -> SemanticEventModelRequest:
-        with self._uow_factory() as uow:
+        with self._uow_factory().reading() as uow:
             detail = uow.desktop.session_detail(session_id)
         speaker_references = {
             str(value["speaker_track_id"]): value for value in detail["speaker_tracks"]

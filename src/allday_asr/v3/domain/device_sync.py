@@ -118,6 +118,8 @@ class SyncRequest:
     cursor: str | None
     client_operations: tuple[ClientOperation, ...]
     pull_limit: int
+    bootstrap: bool = False
+    pull_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if self.projection_version != PROJECTION_VERSION:
@@ -126,6 +128,10 @@ class SyncRequest:
             raise ValueError("too many client operations")
         if not 1 <= self.pull_limit <= MAX_SYNC_CHANGES:
             raise ValueError("pull_limit is outside the supported range")
+        if type(self.bootstrap) is not bool:
+            raise ValueError("bootstrap must be a boolean")
+        if self.pull_bytes is not None and (type(self.pull_bytes) is not int or not 16384 <= self.pull_bytes <= 1048576):
+            raise ValueError("pull_bytes must be between 16384 and 1048576")
 
 
 @dataclass(frozen=True)
@@ -156,9 +162,10 @@ class SyncResponse:
     next_cursor: str
     has_more: bool
     server_time: datetime
+    transaction_ms: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "projection_version": self.projection_version,
             "receipts": [receipt.as_dict() for receipt in self.receipts],
             "changes": [change.as_dict() for change in self.changes],
@@ -166,6 +173,9 @@ class SyncResponse:
             "has_more": self.has_more,
             "server_time": self.server_time.isoformat().replace("+00:00", "Z"),
         }
+        if self.transaction_ms is not None:
+            result["transaction_ms"] = self.transaction_ms
+        return result
 
 
 __all__ = [

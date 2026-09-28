@@ -8,7 +8,6 @@ import sqlite3
 import unittest
 import wave
 from dataclasses import replace
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -935,22 +934,13 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
             destination.write_bytes(source.read_bytes())
             return destination
 
-        manual_temp = self.root / "adapter-temp" / "manual"
-        manual_temp.mkdir(parents=True)
-
-        @contextmanager
-        def static_temp(**kwargs):
-            yield str(manual_temp)
-
         with patch(
             "allday_asr.v3.adapters.speaker_embeddings.funasr.extract_clip",
             side_effect=copy_clip,
-        ), patch(
-            "allday_asr.v3.adapters.speaker_embeddings.funasr.tempfile.TemporaryDirectory",
-            side_effect=static_temp,
         ):
             result = provider.embed((request,))[0]
 
+        self.assertEqual(list((self.root / "adapter-temp").iterdir()), [])
         self.assertAlmostEqual(result.vector[0], 0.6)
         self.assertAlmostEqual(result.vector[1], 0.8)
         self.assertEqual(result.representatives[0].media_id, stored.media_id)

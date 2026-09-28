@@ -18,7 +18,8 @@ class AnnotationSampleRepositoryMixin:
     def enqueue_samples(self, session_id):
         self.connection.execute(
             """INSERT INTO annotation_sample_queue(session_id) VALUES(?)
-            ON CONFLICT(session_id) DO UPDATE SET generation=generation+1,status='queued',attempts=0,retry_at=0""",
+            ON CONFLICT(session_id) DO UPDATE SET generation=generation+1,status='queued',attempts=0,retry_at=0
+            WHERE status!='queued' OR attempts!=0 OR retry_at!=0""",
             (session_id,),
         )
 

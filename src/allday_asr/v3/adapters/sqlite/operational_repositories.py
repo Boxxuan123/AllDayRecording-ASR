@@ -95,6 +95,19 @@ class SqliteChangeLogRepository:
             ).fetchone()
             if manifest is not None and isinstance(manifest["session_key"], str):
                 payload = {**payload, "session_key": manifest["session_key"]}
+            latest = self.connection.execute(
+                "SELECT input_revision, sha256, "
+                "json_extract(entries_json, '$.totalSamples') AS total_samples, "
+                "json_extract(entries_json, '$.completedSegments') AS segment_count "
+                "FROM session_manifest_revisions WHERE session_id = ? "
+                "ORDER BY input_revision DESC LIMIT 1",
+                (resource_id,),
+            ).fetchone()
+            if latest is not None:
+                payload = {**payload, "input_revision": int(latest["input_revision"]),
+                           "manifest_sha256": str(latest["sha256"]),
+                           "total_samples": int(latest["total_samples"]),
+                           "segment_count": int(latest["segment_count"])}
         cursor = self.connection.execute(
             """
             INSERT INTO change_events (
@@ -138,6 +151,21 @@ class SqliteChangeLogRepository:
             (resource_type, resource_id),
         ).fetchone()
         return _change_event(row) if row is not None else None
+
+    def high_water(self) -> int:
+        return int(self.connection.execute("SELECT COALESCE(MAX(sequence),0) FROM change_events").fetchone()[0])
+
+    def snapshot_after(self, high_water: int, sequence: int, limit: int) -> tuple[ChangeEvent, ...]:
+        # The log is immutable. A numeric watermark therefore survives process
+        # restarts and concurrent edits without holding a transaction across pages.
+        if not 0 <= sequence <= high_water or not 1 <= limit <= 501:
+            raise ValueError("invalid snapshot range")
+        rows = self.connection.execute("""SELECT e.* FROM change_events e
+            WHERE e.sequence>? AND e.sequence<=? AND NOT EXISTS (
+              SELECT 1 FROM change_events newer WHERE newer.resource_type=e.resource_type
+                AND newer.resource_id=e.resource_id AND newer.sequence>e.sequence AND newer.sequence<=?)
+            ORDER BY e.sequence LIMIT ?""", (sequence, high_water, high_water, limit))
+        return tuple(_change_event(row) for row in rows)
 
 
 class SqliteAuditRepository:
