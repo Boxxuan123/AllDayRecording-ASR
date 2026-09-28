@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 from allday_asr.v3.domain.hashing import canonical_json_sha256
+from allday_asr.v3.application.speaker_profile_purity import (
+    append_review as append_purity_review,
+    list_phone_tasks as list_purity_phone_tasks,
+)
 
 from allday_asr.v3.adapters.audio.tools import extract_clip
 from allday_asr.v3.interfaces.transfer.devices import DeviceConflictError
@@ -49,10 +53,18 @@ class DeviceReviewService:
             if shared_review_query is not None
             else self.core.desktop.list_reviews(500)
         )
+        purity_items: list[dict[str, Any]] = []
+        purity_history: list[dict[str, Any]] = []
+        factory = getattr(self.core.desktop, "_uow_factory", None)
+        if factory is not None:
+            with factory().reading() as uow:
+                purity_items = list_purity_phone_tasks(uow.desktop.connection)
+                purity_history = list_purity_phone_tasks(uow.desktop.connection, history=True)
         confirmed_candidates = self.core.people.list_review_candidates(None, 'confirmed', 500)
         source_digest = canonical_json_sha256({
             "pending": candidates, "reviews": raw_reviews,
-            "confirmed": confirmed_candidates,
+            "confirmed": confirmed_candidates, "purity": purity_items,
+            "purity_history": purity_history,
         })
         if (only_review_id is None and time.monotonic() < self._cache_until
                 and source_digest == self._source_digest
@@ -86,6 +98,9 @@ class DeviceReviewService:
                     continue
             item["context"] = context
             items.append(item)
+        for raw in (*purity_items, *purity_history):
+            if only_review_id is None or raw["review_id"] == only_review_id:
+                items.append(raw)
         # Reuse the existing per-sample review surface for historical grants.
         # These rows offer withdrawal only, including noncurrent/inactive sources.
         for candidate in confirmed_candidates:
@@ -144,7 +159,14 @@ class DeviceReviewService:
         source_id = str(item["source_id"])
         context = dict(item.get("context") or {})
 
-        if kind == "voice_identity":
+        if kind == "speaker_profile_purity":
+            if set(payload) - {"review_id", "action", "primary_speaker_person_id",
+                                  "primary_speaker_unknown", "purity", "other_speaker_ids",
+                                  "quality_flags"}:
+                raise ValueError("purity review fields are invalid")
+            with self.core.desktop._uow_factory() as uow:
+                result = append_purity_review(uow.desktop.connection, source_id, dict(payload), device_id)
+        elif kind == "voice_identity":
             if context.get("voice_mode") == "speaker_discovery":
                 if action == "create_person":
                     result = self.core.people.create_and_label(
@@ -220,15 +242,15 @@ class DeviceReviewService:
         return {"result": result, "reviews": self.snapshot()}
 
     def audio(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        if set(payload) - {"review_id", "prototype_id", "audition_key", "audio_content_key", "prefetch"}:
+        if set(payload) - {"review_id", "prototype_id", "audition_key", "audio_content_key", "prefetch", "context"}:
             raise ValueError("audio requests cannot override sample windows")
         review_id = _required_text(payload, "review_id")
         prototype_id = _required_text(payload, "prototype_id")
         item = self._current_item(review_id)
         context = dict(item.get("context") or {})
         if (
-            item.get("kind") != "voice_identity"
-            or context.get("voice_mode") not in {"known_person", "speaker_discovery", "accepted_grant"}
+            item.get("kind") not in {"voice_identity", "speaker_profile_purity"}
+            or context.get("voice_mode") not in {"known_person", "speaker_discovery", "accepted_grant", "speaker_profile_purity"}
             or prototype_id
             not in {str(value) for value in context.get("prototype_ids", [])}
         ):
@@ -246,8 +268,23 @@ class DeviceReviewService:
             raise DeviceConflictError("voice sample is no longer pending")
         if payload.get('prefetch', False) not in (True, False):
             raise ValueError('prefetch must be boolean')
-        result = self.render_audio(review_id, candidate, payload.get("audition_key"),
-                                   payload.get('audio_content_key'), prefetch=payload.get('prefetch') is True)
+        context_requested = payload.get("context", False)
+        if type(context_requested) is not bool or (context_requested and item["kind"] != "speaker_profile_purity"):
+            raise ValueError("context playback is only supported for purity reviews")
+        if context_requested:
+            original = candidate["representative_clips"][0]
+            media = self.core.desktop.media(original["media_id"])
+            start = max(0, original["start_ms"] - 4000)
+            end = min(int(media["duration_ms"]), original["end_ms"] + 4000)
+            context_candidate = {**candidate, "representative_clips": [{
+                "media_id": original["media_id"], "start_ms": start, "end_ms": end,
+            }]}
+            result = self.render_audio(review_id, context_candidate)
+            result["target_start_ms"] = original["start_ms"] - start
+            result["target_end_ms"] = original["end_ms"] - start
+        else:
+            result = self.render_audio(review_id, candidate, payload.get("audition_key"),
+                                       payload.get('audio_content_key'), prefetch=payload.get('prefetch') is True)
         # Queued/running rendering must not turn an obsolete grant into permission.
         current = self._current_item(review_id)
         current_candidate = next((c for c in current.get('context', {}).get('voice_candidates', [])

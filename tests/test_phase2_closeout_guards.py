@@ -277,21 +277,23 @@ def test_receipt_migration_atomic_and_legacy_recovery_idempotent(people):
         facts = [tuple(r) for r in db.execute("SELECT * FROM annotation_facts")]
         db.execute("DROP TABLE annotation_receipt_recovery")
         db.execute("DELETE FROM schema_migrations WHERE version=15")
+    receipt_migration = next(m for m in MIGRATIONS if m.version == 15)
     broken = replace(
-        MIGRATIONS[-1], sql=MIGRATIONS[-1].sql + "\nSELECT invalid_upgrade;"
+        receipt_migration, sql=receipt_migration.sql + "\nSELECT invalid_upgrade;"
     )
     with pytest.raises(sqlite3.OperationalError):
         V3MigrationRunner(
-            f.core.paths.database_path, migrations=(*MIGRATIONS[:-1], broken)
+            f.core.paths.database_path,
+            migrations=tuple(broken if m.version == 15 else m for m in MIGRATIONS),
         ).initialize()
     with f.core.database.transaction() as db:
-        assert (
-            db.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 14
-        )
+        assert not db.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=15"
+        ).fetchone()
         assert not db.execute(
             "SELECT 1 FROM sqlite_master WHERE name='annotation_receipt_recovery'"
         ).fetchone()
-    assert f.core.initialize() == 15 and f.core.initialize() == 15
+    assert f.core.initialize() == f.core.database.migrations.latest_version and f.core.initialize() == f.core.database.migrations.latest_version
     with f.core.database.transaction() as db:
         assert [tuple(r) for r in db.execute("SELECT * FROM annotation_facts")] == facts
     from tests.phase2_closeout_export import export

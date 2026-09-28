@@ -42,7 +42,7 @@ class DesktopSystemQueryMixin:
     def media(self, media_id: str) -> dict[str, Any]:
         row = self.connection.execute(
             """
-            SELECT a.media_id, a.size_bytes, a.format, r.storage_key
+            SELECT a.media_id, a.size_bytes, a.duration_ms, a.format, r.storage_key
             FROM audio_assets a JOIN audio_replicas r ON r.asset_id = a.asset_id
             WHERE a.media_id = ? AND r.state = 'available'
             ORDER BY r.verified_at DESC, r.replica_id LIMIT 1
