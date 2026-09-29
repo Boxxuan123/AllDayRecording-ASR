@@ -111,27 +111,37 @@ def profile_provenance(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return result
 
 
-def latest_reviews(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+def latest_reviews(
+    connection: sqlite3.Connection, task_id: str | None = None
+) -> dict[str, dict[str, Any]]:
+    where = "WHERE review.task_id=? AND" if task_id is not None else "WHERE"
     return {
         row["task_id"]: dict(row)
         for row in connection.execute(
-            """SELECT review.* FROM speaker_profile_purity_reviews review
-            WHERE NOT EXISTS(SELECT 1 FROM speaker_profile_purity_reviews newer
-              WHERE newer.task_id=review.task_id AND newer.revision>review.revision)"""
+            f"""SELECT review.* FROM speaker_profile_purity_reviews review
+            {where} NOT EXISTS(SELECT 1 FROM speaker_profile_purity_reviews newer
+              WHERE newer.task_id=review.task_id AND newer.revision>review.revision)""",
+            (task_id,) if task_id is not None else (),
         )
     }
 
 
-def list_phone_tasks(connection: sqlite3.Connection, *, history: bool = False) -> list[dict[str, Any]]:
-    latest = latest_reviews(connection)
+def list_phone_tasks(
+    connection: sqlite3.Connection, *, history: bool = False,
+    task_id: str | None = None,
+) -> list[dict[str, Any]]:
+    latest = latest_reviews(connection, task_id)
     result = []
+    where = "WHERE task.task_id=?" if task_id is not None else ""
     rows = connection.execute(
-        """SELECT task.*, run.audit_version, person.display_name
+        f"""SELECT task.*, run.audit_version, person.display_name
         FROM speaker_profile_purity_tasks task
         JOIN speaker_profile_purity_runs run ON run.audit_run_id=task.audit_run_id
         JOIN persons person ON person.person_id=task.target_person_id
+        {where}
         ORDER BY CASE task.priority WHEN 'P0-special' THEN 0 WHEN 'P0' THEN 1
-          WHEN 'P1' THEN 2 ELSE 3 END,task.created_at,task.task_id"""
+          WHEN 'P1' THEN 2 ELSE 3 END,task.created_at,task.task_id""",
+        (task_id,) if task_id is not None else (),
     )
     for row in rows:
         task = dict(row)
@@ -185,12 +195,33 @@ def list_phone_tasks(connection: sqlite3.Connection, *, history: bool = False) -
 def append_review(
     connection: sqlite3.Connection, task_id: str, payload: dict[str, Any], device_id: str
 ) -> dict[str, Any]:
+    operation_id = payload.get("operation_id")
+    if operation_id is not None:
+        if not isinstance(operation_id, str) or not operation_id.isalnum() or len(operation_id) > 64:
+            raise ValueError("purity operation id is invalid")
+        existing = connection.execute(
+            "SELECT * FROM speaker_profile_purity_reviews WHERE review_id=?", (operation_id,)
+        ).fetchone()
+        if existing is not None:
+            if existing["task_id"] != task_id or existing["action"] != payload.get("action"):
+                raise ValueError("purity operation id was reused")
+            if existing["action"] == "submit" and (
+                existing["primary_speaker_person_id"] != payload.get("primary_speaker_person_id")
+                or bool(existing["primary_speaker_unknown"]) != (payload.get("primary_speaker_unknown") is True)
+                or existing["purity"] != payload.get("purity")
+                or json.loads(existing["other_speaker_ids_json"]) != payload.get("other_speaker_ids", [])
+                or json.loads(existing["quality_flags_json"]) != payload.get("quality_flags", [])
+            ):
+                raise ValueError("purity operation id was reused with a different answer")
+            return {"review_id": operation_id, "task_id": task_id,
+                    "revision": existing["revision"], "action": existing["action"],
+                    "reviewed_at": existing["reviewed_at"]}
     task = connection.execute(
         "SELECT task_id FROM speaker_profile_purity_tasks WHERE task_id=?", (task_id,)
     ).fetchone()
     if task is None:
         raise ValueError("purity audit task does not exist")
-    latest = latest_reviews(connection).get(task_id)
+    latest = latest_reviews(connection, task_id).get(task_id)
     action = payload.get("action")
     if action == "undo":
         if latest is None or latest["action"] != "submit":
@@ -222,7 +253,7 @@ def append_review(
         raise ValueError("purity review action is invalid")
     revision = (latest["revision"] if latest else 0) + 1
     reviewed_at = datetime.now(timezone.utc).isoformat()
-    review_id = uuid4().hex
+    review_id = operation_id or uuid4().hex
     connection.execute(
         """INSERT INTO speaker_profile_purity_reviews VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
         (review_id, task_id, revision, person_id, int(unknown), purity,

@@ -77,3 +77,18 @@ def test_duplicate_source_range_and_invalid_verdict_rejected():
             "action": "submit", "primary_speaker_person_id": "zhang",
             "primary_speaker_unknown": False, "purity": "accepted",
         }, "device")
+
+
+def test_phone_retries_same_purity_operation_without_duplicate_revision():
+    connection = audit_db()
+    request = {
+        "operation_id": "01TESTPURITIDEMPOTENT00000001",
+        "action": "submit", "primary_speaker_person_id": "zhang",
+        "primary_speaker_unknown": False, "purity": "clean_single",
+        "other_speaker_ids": [], "quality_flags": [],
+    }
+    first = append_review(connection, "task", request, "device")
+    assert append_review(connection, "task", request, "device") == first
+    assert connection.execute("SELECT COUNT(*) FROM speaker_profile_purity_reviews").fetchone()[0] == 1
+    with pytest.raises(ValueError, match="different answer"):
+        append_review(connection, "task", {**request, "purity": "uncertain"}, "device")

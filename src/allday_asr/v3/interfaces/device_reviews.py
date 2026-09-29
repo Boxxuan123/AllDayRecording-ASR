@@ -120,6 +120,8 @@ class DeviceReviewService:
             })
         clips_by_session: dict[str, list[dict[str, Any]]] = {}
         for item in items:
+            if item["kind"] == "speaker_profile_purity":
+                continue
             for candidate in item.get("context", {}).get("voice_candidates", []):
                 clips_by_session.setdefault(str(candidate["session_id"]), []).extend(
                     candidate.get("representative_clips", [])
@@ -138,8 +140,12 @@ class DeviceReviewService:
         for item in items:
             for candidate in item.get("context", {}).get("voice_candidates", []):
                 candidate.update(self.audio_description(candidate))
-                session_id = candidate['session_id']
-                candidate['evidence_utterances'] = candidate_evidence(candidate, details[session_id])
+                if item["kind"] == "speaker_profile_purity":
+                    candidate.update(self._purity_context_description(candidate))
+                    candidate["evidence_utterances"] = []
+                else:
+                    session_id = candidate['session_id']
+                    candidate['evidence_utterances'] = candidate_evidence(candidate, details[session_id])
                 candidate['review_key'] = candidate_key(candidate)
         snapshot = {"items": items, "version": canonical_json_sha256(items)}
         if only_review_id is None:
@@ -162,7 +168,7 @@ class DeviceReviewService:
         if kind == "speaker_profile_purity":
             if set(payload) - {"review_id", "action", "primary_speaker_person_id",
                                   "primary_speaker_unknown", "purity", "other_speaker_ids",
-                                  "quality_flags"}:
+                                  "quality_flags", "operation_id"}:
                 raise ValueError("purity review fields are invalid")
             with self.core.desktop._uow_factory() as uow:
                 result = append_purity_review(uow.desktop.connection, source_id, dict(payload), device_id)
@@ -272,14 +278,11 @@ class DeviceReviewService:
         if type(context_requested) is not bool or (context_requested and item["kind"] != "speaker_profile_purity"):
             raise ValueError("context playback is only supported for purity reviews")
         if context_requested:
+            context_candidate, start = self._purity_context_candidate(candidate)
+            result = self.render_audio(review_id, context_candidate,
+                requested_content_key=payload.get('audio_content_key'),
+                prefetch=payload.get('prefetch') is True)
             original = candidate["representative_clips"][0]
-            media = self.core.desktop.media(original["media_id"])
-            start = max(0, original["start_ms"] - 4000)
-            end = min(int(media["duration_ms"]), original["end_ms"] + 4000)
-            context_candidate = {**candidate, "representative_clips": [{
-                "media_id": original["media_id"], "start_ms": start, "end_ms": end,
-            }]}
-            result = self.render_audio(review_id, context_candidate)
             result["target_start_ms"] = original["start_ms"] - start
             result["target_end_ms"] = original["end_ms"] - start
         else:
@@ -300,6 +303,22 @@ class DeviceReviewService:
             return {**plan, 'audio_available': True, 'audio_unavailable_reason': ''}
         except (KeyError, ValueError, OSError) as error:
             return {'audio_available': False, 'audio_unavailable_reason': str(error)}
+
+    def _purity_context_candidate(self, candidate):
+        original = candidate["representative_clips"][0]
+        media = self.core.desktop.media(original["media_id"])
+        start = max(0, original["start_ms"] - 4000)
+        end = min(int(media["duration_ms"]), original["end_ms"] + 4000)
+        return {**candidate, "representative_clips": [{
+            "media_id": original["media_id"], "start_ms": start, "end_ms": end,
+        }]}, start
+
+    def _purity_context_description(self, candidate):
+        try:
+            context_candidate, _ = self._purity_context_candidate(candidate)
+            return {"context_audio_content_key": self._content_key(audio_plan(context_candidate))}
+        except (KeyError, ValueError, OSError):
+            return {}
 
     def desktop_audio(self, payload):
         if set(payload) - {'prototype_id', 'person_id', 'describe', 'audition_key'}:
@@ -369,6 +388,27 @@ class DeviceReviewService:
         return data
 
     def _current_item(self, review_id: str) -> dict[str, Any]:
+        if review_id.startswith("purity:"):
+            factory = getattr(self.core.desktop, "_uow_factory", None)
+            if factory is not None:
+                task_id = review_id.removeprefix("purity:")
+                with factory().reading() as uow:
+                    pending = list_purity_phone_tasks(
+                        uow.desktop.connection, task_id=task_id
+                    )
+                    history = list_purity_phone_tasks(
+                        uow.desktop.connection, history=True, task_id=task_id
+                    )
+                for item in (*pending, *history):
+                    if item["review_id"] != review_id:
+                        continue
+                    for candidate in item["context"]["voice_candidates"]:
+                        candidate.update(self.audio_description(candidate))
+                        candidate.update(self._purity_context_description(candidate))
+                        candidate["evidence_utterances"] = []
+                        candidate["review_key"] = candidate_key(candidate)
+                    return item
+                raise DeviceConflictError("review item is no longer pending")
         for item in self.snapshot(only_review_id=review_id)["items"]:
             if item.get("review_id") == review_id:
                 return item
