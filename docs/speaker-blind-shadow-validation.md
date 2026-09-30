@@ -28,8 +28,15 @@ worker 也周期发现已处理的 blind session，覆盖重启/漏通知恢复�
 既有 --probe-thresholds；未冻结阈值时记 INSUFFICIENT，不临时训练。
 
 预测先冻结，然后产生 blind_identity_review。如果普通人物事实先于预测、
-原音在冻结前已使用或录音早于实验 cutoff，该 job 显式 blocked，不能伪装成
-独立 blind。冻结前原音 hash 不限于已 enrollment 音频，包含历史学习/诊断。
+原音在冻结前已使用、已有学习暴露或 session 首次准入早于实验 cutoff，该 job
+显式 blocked，不能伪装成独立 blind。冻结前原音 hash 不限于已 enrollment
+音频，包含历史学习/诊断。准入政策 first-admission-after-freeze-v2 使用插入事务
+内的 role_assigned_at，与录音时间分开：录音可先在设备离线保存；首次上传时
+须在实验冻结之后，而且未被历史数据使用。每条 query/prediction 保存准入证据。
+此前仅因 capture-time-cutoff-v1 拦截、且尚无预测的任务可按新版政策重新审查；
+保留原拦截原因和时间，仍重新检查历史 hash、学习暴露和提前人物真值。没有
+语音/query 的成功处理也显示 blocked 原因，不再静默消失。模型、profile 快照
+和 G/P/margin 始终不变，已有预测与真值不重算。
 一次追加处理只新增未出现的范围 query；重复处理不重复 role/prediction/task。
 
 事件按原音 SHA + 范围重叠，或同 session/track 五秒内邻近、同 cluster 两秒

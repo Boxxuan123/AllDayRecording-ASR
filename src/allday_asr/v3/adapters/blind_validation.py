@@ -11,6 +11,7 @@ from uuid import uuid4
 import numpy as np
 
 from allday_asr.v3.adapters.sqlite.blind_queries import automatic_queries, latest_run
+from allday_asr.v3.adapters.sqlite.blind_admission import admission, CAPTURE_TIME_BLOCK
 from allday_asr.v3.adapters.sqlite.blind_reviews import phone_tasks, submit_truth
 from allday_asr.v3.adapters.sqlite.dataset_reservations import now, settings
 from allday_asr.v3.ports.speaker_embeddings import SpeakerClipInput, SpeakerTrackInput
@@ -89,20 +90,18 @@ class BlindValidationService:
         if not run_id:
             return False
         old = c.execute('SELECT * FROM blind_shadow_jobs WHERE session_id=? AND experiment_id=?', (session_id, experiment['experiment_id'])).fetchone()
-        if old and (old['input_revision'] == run_id or old['status'] == 'running'):
+        capture_time_recheck = old and old['status'] == 'blocked' and old['error'] == CAPTURE_TIME_BLOCK
+        if old and (old['status'] == 'running' or (old['input_revision'] == run_id and not capture_time_recheck)):
             return False
         queries = automatic_queries(c, session_id, experiment['experiment_id'], run_id)
         existing = {r[0] for r in c.execute('SELECT query_id FROM blind_query_views WHERE experiment_id=?', (experiment['experiment_id'],))}
         new_queries = [q for q in queries if q['query_id'] not in existing]
         frozen = json.loads(experiment['snapshot_json'])
-        contamination = c.execute("""SELECT 1 FROM annotation_facts f JOIN utterances u ON u.utterance_id=f.source_utterance_id
-            WHERE u.session_id=? AND f.dimension='person' LIMIT 1""", (session_id,)).fetchone()
-        seen = set(frozen['seen_audio_sha256'])
-        old_capture = c.execute('SELECT captured_start FROM recording_sessions WHERE session_id=?', (session_id,)).fetchone()[0] < frozen['data_cutoff']
-        error = ('human person facts preceded new prediction' if contamination and new_queries else
-                 'historical audio predates experiment' if old_capture else
-                 'original media already used before experiment' if any(w['sha256'] in seen for q in new_queries for w in q['windows']) else
-                 'no usable automatic speaker queries' if not queries else None)
+        evidence, error = admission(c, session_id, role, frozen, new_queries, old)
+        if not new_queries and queries:
+            error = None  # Existing immutable predictions need no new admission.
+        for query in new_queries:
+            query['admission'] = evidence
         stamp = now()
         state = 'blocked' if error else 'queued' if new_queries else 'completed'
         c.execute("""INSERT INTO blind_shadow_jobs(session_id,experiment_id,status,input_revision,inputs_json,updated_at,error)
@@ -143,8 +142,23 @@ class BlindValidationService:
             if (self.provider.model, self.provider.model_version) != (frozen['model'], frozen['model_version']):
                 raise ValueError('embedding provider differs from frozen experiment')
             self.model_verifier(frozen)
+            queries = json.loads(job['inputs_json'])
+            if any('admission' not in query for query in queries):
+                # Upgrade already queued jobs without trusting the old capture-time check.
+                with self.database.transaction() as c:
+                    role = c.execute('SELECT * FROM session_dataset_roles WHERE session_id=?', (job['session_id'],)).fetchone()
+                    evidence, error = admission(c, job['session_id'], role, frozen, queries, job)
+                    if error:
+                        c.execute("UPDATE blind_shadow_jobs SET status='blocked',error=?,updated_at=? WHERE token=?", (error, now(), token))
+                    else:
+                        for query in queries:
+                            query['admission'] = evidence
+                        c.execute('UPDATE blind_shadow_jobs SET inputs_json=? WHERE token=?', (encoded(queries), token))
+                if error:
+                    self.report(job['experiment_id'])
+                    return True
             results = []
-            for query in json.loads(job['inputs_json']):
+            for query in queries:
                 tracks = tuple(SpeakerTrackInput(f"{query['query_id']}:{i}", query['session_id'],
                     (SpeakerClipInput(w['media_id'], w['storage_key'], w['start_ms'], w['end_ms'], w['utterance_id']),))
                     for i, w in enumerate(query['windows']))
@@ -171,7 +185,7 @@ class BlindValidationService:
                     'matcher_version': frozen['matcher_version'], 'GP_version': frozen['GP_version'],
                     'experiment_hash': job['snapshot_hash'], 'duration_s': query['duration_s'],
                     'window_count': query['window_count'], 'session_id': query['session_id'],
-                    'speaker_track_id': query['speaker_track_id']}
+                    'speaker_track_id': query['speaker_track_id'], 'admission': query['admission']}
                 results.append((query, prediction))
             with self.database.transaction() as c:
                 active = c.execute('SELECT token,status FROM blind_shadow_jobs WHERE session_id=? AND experiment_id=?', (job['session_id'], job['experiment_id'])).fetchone()

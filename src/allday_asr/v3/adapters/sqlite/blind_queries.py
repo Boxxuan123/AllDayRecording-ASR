@@ -11,7 +11,6 @@ def latest_run(connection, session_id):
         LEFT JOIN processing_jobs j ON j.run_id=p.run_id
         WHERE p.session_id=? AND p.status='succeeded'
           AND COALESCE(json_extract(j.request_json,'$.admission_mode'),'production')='production'
-          AND EXISTS(SELECT 1 FROM utterances u WHERE u.run_id=p.run_id)
         ORDER BY p.created_at DESC,p.run_id DESC LIMIT 1""", (session_id,)).fetchone()
     return row[0] if row else None
 

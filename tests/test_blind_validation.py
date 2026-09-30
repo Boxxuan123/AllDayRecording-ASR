@@ -9,6 +9,8 @@ import pytest
 from tests import test_v34_open_speaker_identity as fixtures
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork
 from allday_asr.v3.adapters.sqlite.dataset_reservations import configure, open_holdout
+from allday_asr.v3.adapters.sqlite.blind_admission import admission, CAPTURE_TIME_BLOCK
+from allday_asr.v3.adapters.sqlite.blind_queries import automatic_queries, latest_run
 from allday_asr.v3.application.blind_scoring import components, digest
 from allday_asr.v3.application.purity_shadow import build_shadow
 from tests.test_enrollment_purity_gate import enrollment_source
@@ -203,3 +205,70 @@ def test_used_learning_cannot_be_promoted_to_blind(world):
     with core.database.transaction() as c:
         with pytest.raises(sqlite3.IntegrityError, match='cannot_promote_to_blind'):
             c.execute("UPDATE session_dataset_roles SET dataset_role='blind',frozen_at='now',role_revision=2 WHERE session_id=?", (session,))
+
+
+def test_offline_capture_recovers_by_first_admission_without_changing_experiment(world):
+    _, core, service, _, _, _, _, _ = world
+    session = seed(world)
+    with core.database.transaction() as c:
+        c.execute("UPDATE recording_sessions SET captured_start='2020-01-01T00:00:00Z' WHERE session_id=?", (session,))
+        original = dict(c.execute('SELECT * FROM blind_experiments').fetchone())
+        run = latest_run(c, session)
+        c.execute("""INSERT INTO blind_shadow_jobs(session_id,experiment_id,status,input_revision,inputs_json,error,updated_at)
+            VALUES(?,'synthetic-v1','blocked',?,'[]',?,'prior-block-time')""", (session, run, CAPTURE_TIME_BLOCK))
+    assert service.run_once()
+    assert len(service.tasks()) == 1
+    assert not service.run_once()
+    with core.database.read() as c:
+        assert dict(c.execute('SELECT * FROM blind_experiments').fetchone()) == original
+        prediction = json.loads(c.execute('SELECT prediction_json FROM blind_prediction_snapshots').fetchone()[0])
+        evidence = prediction['admission']
+        assert evidence['policy_version'] == 'first-admission-after-freeze-v2'
+        assert evidence['previous_decision']['reason'] == CAPTURE_TIME_BLOCK
+        assert evidence['previously_seen_audio_sha256'] == []
+        assert c.execute('SELECT COUNT(*) FROM voice_prototypes').fetchone()[0] == 0
+
+
+def test_first_admission_still_excludes_old_session_reused_audio_and_learning_exposure(world):
+    _, core, service, _, _, _, _, frozen = world
+    session = seed(world)
+    with core.database.transaction() as c:
+        role = dict(c.execute('SELECT * FROM session_dataset_roles WHERE session_id=?', (session,)).fetchone())
+        queries = automatic_queries(c, session, 'synthetic-v1', latest_run(c, session))
+        _, error = admission(c, session, role | {'role_assigned_at': '2025-01-01T00:00:00Z'}, frozen, queries, None)
+        assert error == 'session admission predates experiment'
+        reused = frozen | {'seen_audio_sha256': [queries[0]['windows'][0]['sha256']]}
+        _, error = admission(c, session, role, reused, queries, None)
+        assert error == 'original media already used before experiment'
+        c.execute("INSERT INTO session_learning_exposure VALUES(?,'calibration','synthetic','now')", (session,))
+    assert not service.run_once()
+    assert service.status()['shadow_jobs'] == {'blocked': 1}
+    with core.database.read() as c:
+        assert c.execute('SELECT COUNT(*) FROM blind_prediction_snapshots').fetchone()[0] == 0
+
+
+def test_successful_empty_asr_has_visible_blocked_reason(world):
+    _, core, service, *_ = world
+    session = seed(world)
+    with core.database.transaction() as c:
+        c.execute('DELETE FROM utterances WHERE session_id=?', (session,))
+    assert not service.run_once()
+    assert service.status()['shadow_jobs'] == {'blocked': 1}
+    with core.database.read() as c:
+        assert c.execute('SELECT error FROM blind_shadow_jobs').fetchone()[0] == 'no usable automatic speaker queries'
+
+
+def test_legacy_queued_job_gets_admission_check_after_upgrade(world):
+    _, core, service, *_ = world
+    session = seed(world)
+    assert service.enqueue(session)
+    with core.database.transaction() as c:
+        queries = json.loads(c.execute('SELECT inputs_json FROM blind_shadow_jobs').fetchone()[0])
+        for query in queries:
+            query.pop('admission')
+        c.execute('UPDATE blind_shadow_jobs SET inputs_json=?', (json.dumps(queries),))
+    assert service.run_once()
+    assert len(service.tasks()) == 1
+    with core.database.read() as c:
+        prediction = json.loads(c.execute('SELECT prediction_json FROM blind_prediction_snapshots').fetchone()[0])
+        assert prediction['admission']['policy_version'] == 'first-admission-after-freeze-v2'
