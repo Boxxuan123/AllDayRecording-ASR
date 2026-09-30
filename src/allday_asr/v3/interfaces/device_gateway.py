@@ -106,7 +106,7 @@ class DeviceGateway:
         if result is None:
             return None
         response = dict(result)
-        if self.session_ingested is not None:
+        if self.session_ingested is not None and not response.get("input_unchanged"):
             automation = self.session_ingested(record, response)
             if automation is not None:
                 response["automation"] = dict(automation)

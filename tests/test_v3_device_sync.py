@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from dataclasses import replace
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
@@ -776,6 +777,84 @@ class V3DeviceSyncTests(unittest.TestCase):
                 repaired = connection.execute("SELECT payload_json FROM change_events WHERE resource_id = ? ORDER BY sequence DESC LIMIT 1", (first["session_id"],)).fetchone()
                 self.assertEqual(json.loads(repaired[0])["session_key"], manifest["sessionKey"])
 
+
+    def test_legacy_completion_confirms_identical_audio_without_reprocessing(self) -> None:
+        for tamper in (False, True):
+            with self.subTest(tamper=tamper), _workspace_directory() as root:
+                database, _, device, trust, _, sync = self._environment(root)
+                store = UploadStore(root / "inbox")
+                artifacts = ContentAddressedStore(root / "artifacts")
+                ingest = V3UploadIngestAdapter(
+                    trust, lambda database=database: SqliteUnitOfWork(database),
+                    ContentAddressedStore(root / "audio"), artifacts,
+                )
+                directory = "pcm_session_1767225600000"
+
+                def upload(name, content, kind, store=store, directory=directory):
+                    started, _ = store.create_upload(
+                        relative_path=f"{directory}/{name}", size=len(content),
+                        sha256=hashlib.sha256(content).hexdigest(), kind=kind,
+                    )
+                    return store.append_chunk(started.upload_id, offset=0, data=content)
+
+                name = "segment_0_first_0.wav"
+                audio_record = upload(name, b"a" * 244, "recording")
+                legacy = {
+                    "format": "AllDayRecording session manifest v1",
+                    "sessionKey": "watch-session:1767225600000",
+                    "sessionStartedAt": 1767225600000,
+                    "device": "HUAWEI WATCH 5", "timezone": "Asia/Singapore",
+                    "audio": {"sampleRate": 16000, "channels": 1, "bitsPerSample": 16},
+                    "chunks": [{"index": 0, "fileName": name,
+                                "firstSample": 0, "sampleCount": 100}],
+                    "completedSegments": 1, "totalSamples": 100, "continuityValid": True,
+                }
+                completed = {**legacy, "format": "AllDayRecording session manifest v2",
+                             "completion": {"source": "legacy_user_confirmed",
+                                            "completedSegments": 1, "totalSamples": 100,
+                                            "confirmedAt": 1767225601000}}
+                initial_record = upload("session_summary.json", json.dumps(completed).encode(), "manifest")
+                initial = ingest.ingest_completed(device.device_id, initial_record, store)
+                # Reproduce a session admitted by the old V1 receiver.
+                legacy_record = upload("session_summary.json", json.dumps(legacy).encode(), "manifest")
+                stored = artifacts.put_file(store.completed_path(legacy_record))
+                with database.transaction() as connection:
+                    trigger = connection.execute(
+                        "SELECT sql FROM sqlite_master WHERE name='protect_session_manifests_from_update'"
+                    ).fetchone()[0]
+                    connection.execute("DROP TRIGGER protect_session_manifests_from_update")
+                    connection.execute(
+                        "UPDATE session_manifests SET sha256=?, storage_ref=?, entries_json=? WHERE session_id=?",
+                        (legacy_record.sha256, stored.storage_key, json.dumps(legacy), initial["session_id"]),
+                    )
+                    connection.execute(trigger)
+                    connection.execute(
+                        "UPDATE idempotency_records SET response_json=? WHERE idempotency_key=?",
+                        (json.dumps({**initial, "manifest_sha256": legacy_record.sha256}),
+                         f"phone-manifest:{initial['session_id']}"),
+                    )
+                if tamper:
+                    with patch.object(store, "list_uploads", return_value=[replace(audio_record, sha256="f" * 64)]), self.assertRaisesRegex(UploadConflictError, "旧分片哈希"):
+                        ingest.ingest_completed(device.device_id, initial_record, store)
+                    continue
+                workflow = MagicMock()
+                gateway = DeviceGateway(trust, sync, ingest, workflow)
+                confirmed = gateway.upload_completed(device.device_id, initial_record, store)
+                self.assertEqual(confirmed["input_revision"], 1)
+                self.assertTrue(confirmed["input_unchanged"])
+                workflow.assert_not_called()
+                restarted = V3UploadIngestAdapter(
+                    trust, lambda database=database: SqliteUnitOfWork(database),
+                    ContentAddressedStore(root / "audio"), artifacts,
+                )
+                self.assertEqual(restarted.ingest_completed(device.device_id, initial_record, store), confirmed)
+                with database.read() as connection:
+                    self.assertEqual(connection.execute("SELECT sha256 FROM session_manifests").fetchone()[0], legacy_record.sha256)
+                    self.assertEqual(connection.execute("SELECT count(*) FROM session_manifest_revisions").fetchone()[0], 0)
+                    self.assertEqual(connection.execute("SELECT count(*) FROM capture_segments").fetchone()[0], 1)
+                changed = {**completed, "completion": {**completed["completion"], "confirmedAt": 1767225602000}}
+                changed_record = upload("session_summary.json", json.dumps(changed).encode(), "manifest")
+                self.assertEqual(ingest.ingest_completed(device.device_id, changed_record, store)["input_revision"], 1)
 
     def test_manifest_append_preserves_original_and_rejects_changed_prefix(self) -> None:
         with _workspace_directory() as root:

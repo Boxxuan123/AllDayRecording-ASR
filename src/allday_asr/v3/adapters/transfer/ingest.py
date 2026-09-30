@@ -95,6 +95,11 @@ class V3UploadIngestAdapter:
             saved = uow.idempotency.response(idempotency_key)
             if saved is not None and saved.get("manifest_sha256") == record.sha256:
                 return saved
+            confirmed = uow.idempotency.response(
+                f"phone-manifest-confirmation:{session_id}:{record.sha256}"
+            )
+            if confirmed is not None:
+                return confirmed
             revision = uow.catalog.connection.execute(
                 "SELECT input_revision, entries_json FROM session_manifest_revisions "
                 "WHERE session_id = ? AND sha256 = ?",
@@ -382,7 +387,13 @@ class V3UploadIngestAdapter:
             raise UploadConflictError("清单身份或音频格式改变，不能追加到原会话")
         if manifest["chunks"][:len(old_chunks)] != old_chunks:
             raise UploadConflictError("旧分片的位置或长度改变，不能追加到原会话")
-        if len(manifest["chunks"]) <= len(old_chunks):
+        confirmation_only = (
+            previous.get("format") == _LEGACY_MANIFEST_FORMAT
+            and len(manifest["chunks"]) == len(old_chunks)
+            and all(previous.get(key) == manifest[key] for key in
+                    ("completedSegments", "totalSamples", "continuityValid"))
+        )
+        if len(manifest["chunks"]) <= len(old_chunks) and not confirmation_only:
             raise UploadConflictError("新清单没有连续追加分片，不能替换已确认版本")
         old_assets = connection.execute(
             "SELECT s.sequence, a.sha256, a.size_bytes FROM capture_segments s "
@@ -397,6 +408,33 @@ class V3UploadIngestAdapter:
             for index, asset in enumerate(old_assets)
         ):
             raise UploadConflictError("旧分片哈希与已入库音频不一致，不能追加")
+
+        if confirmation_only:
+            # Completion metadata does not change the audio input or invalidate
+            # existing processing. Keep the original manifest and its backups.
+            stored = self.artifact_store.put_file(
+                manifest_path, expected_sha256=record.sha256,
+            )
+            response = {
+                "status": "already_ingested", "session_id": existing.session_id,
+                "asset_count": len(prepared), "input_revision": previous_revision,
+                "manifest_sha256": record.sha256, "input_unchanged": True,
+            }
+            key = f"phone-manifest-confirmation:{existing.session_id}:{record.sha256}"
+            if not uow.idempotency.begin(key, "phone.upload.confirm_manifest"):
+                raise UploadConflictError("旧录音确认正在由另一个请求处理")
+            uow.audit.append(
+                "phone.upload.confirm_manifest", f"device:{device_id}",
+                "recording_session", existing.session_id,
+                {"input_revision": previous_revision,
+                 "previous_manifest_sha256": latest["sha256"] if latest else original["sha256"],
+                 "manifest_sha256": record.sha256,
+                 "storage_ref": stored.storage_key,
+                 "completion": manifest["completion"],
+                 "verified_segments": len(prepared)},
+            )
+            uow.idempotency.complete(key, response)
+            return response
 
         next_revision = previous_revision + 1
         stored_manifest = self.artifact_store.put_file(
