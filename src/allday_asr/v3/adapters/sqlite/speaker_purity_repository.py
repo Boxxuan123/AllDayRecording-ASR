@@ -232,6 +232,8 @@ def register_candidates(connection, plan, now, *, capacity=5):
     Dates/acoustic proxies are not inferred without evidence. New sessions and
     clean coverage gaps rank first. Old selections become superseded.
     """
+    from allday_asr.v3.domain.dataset_roles import require_learning
+    require_learning(connection, plan.track.session_id)
     session = plan.track.session_id
     connection.execute(
         """UPDATE purity_candidates SET status='superseded',updated_at=?
@@ -337,6 +339,14 @@ def propose_recrop(
     key = ensure_source(connection, media_id, start_ms, end_ms)
     if key == parent_key:
         raise ValueError("recrop must have a new, smaller range")
+    from allday_asr.v3.domain.dataset_roles import require_learning
+    session_id = provenance.get('session_id')
+    if session_id is None:
+        task = connection.execute('SELECT source_session_id FROM speaker_profile_purity_tasks WHERE source_key=? AND target_person_id=? LIMIT 1',
+                                  (parent_key, target)).fetchone()
+        session_id = task[0] if task else None
+    require_learning(connection, session_id)
+    provenance = dict(provenance) | {'session_id': session_id}
     # Never inherit the parent verdict, even when parent is clean.
     connection.execute(
         "INSERT OR IGNORE INTO speaker_purity_targets VALUES(?,?)", (key, target)

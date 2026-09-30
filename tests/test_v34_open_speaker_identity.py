@@ -129,6 +129,8 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
         )
         self.assertEqual(self.core.initialize(), LATEST_V3_SCHEMA_VERSION)
         with self.core.database.transaction() as connection:
+            # These fixtures specifically exercise the existing learning pipeline.
+            connection.execute('UPDATE dataset_reservation_settings SET blind_ratio=0,holdout_ratio=0')
             connection.execute(
                 """
                 INSERT INTO devices (

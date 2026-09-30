@@ -3,7 +3,9 @@ from .sound_eligibility import usable_sample
 
 def usable_voice_sample(alias: str, *, require_current: bool = True) -> str:
     # Call sites supply fixed SQL aliases, never external input.
-    return f"""NOT EXISTS (SELECT 1 FROM annotation_sample_sets sample_set
+    return f"""EXISTS (SELECT 1 FROM speaker_tracks role_track JOIN session_dataset_roles role USING(session_id)
+      WHERE role_track.speaker_track_id={alias}.speaker_track_id AND role.dataset_role='learning')
+      AND NOT EXISTS (SELECT 1 FROM annotation_sample_sets sample_set
       WHERE sample_set.prototype_id IN ({alias}.prototype_id,{alias}.source_prototype_id)
       AND (({1 if require_current else 0}=1 AND sample_set.current=0 AND {alias}.status='candidate') OR EXISTS (
         SELECT 1 FROM json_each(sample_set.facts_json) authorized

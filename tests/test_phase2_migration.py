@@ -12,6 +12,8 @@ from allday_asr.v3.adapters.sqlite.migration_runner import V3MigrationRunner
 
 def test_existing_annotations_backfill_atomically_and_idempotently(people):
     f = people
+    # Historical v13 -> v15 fixture, independent of later schema additions.
+    f.core.database.migrations = V3MigrationRunner(f.core.paths.database_path, migrations=[m for m in MIGRATIONS if m.version <= 15])
     person = assign(f, _utterance_id(1), "Synthetic A")
     candidate = f.core.people.list_review_candidates(person["person_id"])[0]
     f.core.people.review_prototype(

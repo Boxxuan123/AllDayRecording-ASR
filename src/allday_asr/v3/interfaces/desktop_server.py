@@ -41,6 +41,7 @@ class V3DesktopApplication:
     def __init__(self, core: V3Core, *, token: str | None = None) -> None:
         self.core = core
         self.core.people.sample_worker.start()
+        self.core.blind_validation.start()
         self.automatic_workflows = AutomaticWorkflowStateStore(
             core.paths.state_dir / "automation"
         )

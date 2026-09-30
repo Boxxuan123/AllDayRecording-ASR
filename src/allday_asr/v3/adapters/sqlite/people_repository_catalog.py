@@ -30,6 +30,10 @@ class PeopleCatalogRepositoryMixin:
         actor: str = "system:local-clustering",
         reuse_membership: bool = False,
     ) -> None:
+        from allday_asr.v3.domain.dataset_roles import require_learning
+        session = self.connection.execute('SELECT session_id FROM speaker_tracks WHERE speaker_track_id=?',
+                                          (embedding.speaker_track_id,)).fetchone()
+        require_learning(self.connection, session[0] if session else None)
         if membership_source not in {"automatic", "human"}:
             raise ValueError("speaker membership source is invalid")
         if reuse_membership and self.connection.execute(

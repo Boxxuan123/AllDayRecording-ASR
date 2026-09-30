@@ -269,6 +269,7 @@ def create_transfer_server(
         from allday_asr.v3.interfaces.device_reviews import DeviceReviewService
 
         v3_core.initialize()
+        v3_core.blind_validation.start()
         trust = TransferDeviceTrustAdapter(
             device_manager,
             lambda: SqliteUnitOfWork(v3_core.database),

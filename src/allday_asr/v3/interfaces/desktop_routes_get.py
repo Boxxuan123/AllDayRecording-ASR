@@ -47,6 +47,12 @@ class DesktopGetRoutesMixin:
             )
             return
         query = parse_qs(parsed.query)
+        if path == '/api/v3/blind/status':
+            self._send_json(HTTPStatus.OK, self.application.core.blind_validation.status())
+            return
+        if path == '/api/v3/blind/report':
+            self._send_json(HTTPStatus.OK, self.application.core.blind_validation.report())
+            return
         if path == "/api/v3/status":
             self._send_json(HTTPStatus.OK, self.application.core.desktop.status())
             return

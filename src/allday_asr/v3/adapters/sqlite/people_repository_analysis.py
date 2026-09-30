@@ -123,6 +123,8 @@ class PeopleAnalysisRepositoryMixin:
         speaker_track_id: str,
         windows: tuple[tuple[int, int], ...],
     ) -> dict[str, Any]:
+        from allday_asr.v3.domain.dataset_roles import require_learning
+        require_learning(self.connection, session_id)
         if not windows:
             raise ValueError("confirmed enrollment requires at least one window")
         context = self.connection.execute(

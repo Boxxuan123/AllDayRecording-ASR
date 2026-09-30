@@ -30,6 +30,7 @@ def build_shadow(sources, provider, *, minimum_quality=0.5):
         seen.add(key)
         if (
             source.get("source_session_id")
+            and source.get('dataset_role') == 'learning'
             and source["end_ms"] - source["start_ms"] >= 800
             and is_source_eligible_for_clean_profile(
                 source["evidence"],

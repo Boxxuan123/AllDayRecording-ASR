@@ -37,6 +37,7 @@ from allday_asr.v3.ports.insight_generation import InsightModelGenerator
 from allday_asr.v3.ports.event_generation import SemanticEventModelGenerator
 from allday_asr.v3.ports.speaker_embeddings import SpeakerEmbeddingProvider
 from allday_asr.v3.ports.self_identity_matching import SelfIdentityMatcher
+from allday_asr.v3.adapters.blind_validation import BlindValidationService
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,7 @@ class V3Core:
     people: SpeakerIdentityService
     person_memory: PersonMemoryService
     insights: DailyInsightService
+    blind_validation: BlindValidationService
     review_audio_cache: ReviewAudioCacheOwner = field(default_factory=ReviewAudioCacheOwner)
 
     def initialize(self) -> int:
@@ -98,6 +100,7 @@ class V3Core:
         return version
 
     def close(self) -> None:
+        self.blind_validation.close()
         self.review_audio_cache.close()
         self.people.sample_worker.close()
         self.semantic_events.close()
@@ -144,6 +147,9 @@ def compose_v3_core(
             else CalibratedSelfIdentityMatcher(selected.state_dir)
         ),
     )
+    blind_validation = BlindValidationService(database, speaker_provider,
+        PROJECT_ROOT / 'outputs' / 'speaker-blind-shadow-validation')
+    people.blind_validation = blind_validation
     mobile_sync = MobileSyncService(
         lambda: SqliteUnitOfWork(database),
         operation_handler=UtteranceCorrectionOperationHandler(),
@@ -210,6 +216,7 @@ def compose_v3_core(
         people=people,
         person_memory=person_memory,
         insights=insights,
+        blind_validation=blind_validation,
     )
 
 

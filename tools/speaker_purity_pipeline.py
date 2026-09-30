@@ -253,12 +253,16 @@ def sources(connection, raw):
     ]
     result = []
     for task in tasks:
+        from allday_asr.v3.domain.dataset_roles import is_learning
+        if not is_learning(connection, task['source_session_id']):
+            continue
         key = source_key(task["source_media_id"], task["start_ms"], task["end_ms"])
         media = raw.resolve(task["source_media_id"])
         result.append(
             task
             | {
                 "source_key": key,
+                'dataset_role': 'learning',
                 "evidence": current_evidence(connection, key),
                 "audio_available": media is not None
                 and task["end_ms"] <= media["duration_ms"],

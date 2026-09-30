@@ -52,6 +52,8 @@ def connection():
         AUDIT_SQL.replace("source_key TEXT NOT NULL UNIQUE", "source_key TEXT NOT NULL")
     )
     c.executescript(SQL)
+    c.execute('CREATE TABLE session_dataset_roles(session_id TEXT PRIMARY KEY,dataset_role TEXT)')
+    c.execute("INSERT INTO session_dataset_roles VALUES('session','learning')")
     c.execute(
         "INSERT INTO speaker_profile_purity_runs VALUES(?,?,?,?,?,?,?,?)",
         ("run", "v1", "CAM++", "v1", "embedding", "profile", "{}", "now"),
@@ -197,7 +199,7 @@ def test_reconciliation_rollback_preserves_all_old_data():
 def test_recrop_new_range_never_inherits_clean_and_must_be_contained():
     c = connection()
     parent = ensure_source(c, "media", 0, 8000)
-    key = propose_recrop(c, parent, "target", "media", 0, 6000, "now", {})
+    key = propose_recrop(c, parent, "target", "media", 0, 6000, "now", {'session_id': 'session'})
     assert key != parent
     assert current_evidence(c, key) is None
     assert (
@@ -238,6 +240,7 @@ def enrollment_source(verdict="clean_single", *, start=0, end=8000, session="ses
         "source_key": key,
         "target_person_id": "target",
         "source_session_id": session,
+        'dataset_role': 'learning',
         "source_media_id": "media",
         "start_ms": start,
         "end_ms": end,
@@ -317,8 +320,8 @@ def test_version_21_to_22_is_additive_repeatable_and_preserves_audit():
                 "INSERT INTO speaker_profile_purity_runs VALUES(?,?,?,?,?,?,?,?)",
                 ("run", "v1", "model", "version", "hash", "profile", "{}", "now"),
             )
-        assert V3MigrationRunner(path).initialize() == 22
-        assert V3MigrationRunner(path).initialize() == 22
+        assert V3MigrationRunner(path, migrations=[m for m in MIGRATIONS if m.version <= 22]).initialize() == 22
+        assert V3MigrationRunner(path, migrations=[m for m in MIGRATIONS if m.version <= 22]).initialize() == 22
         with closing(sqlite3.connect(path)) as c:
             assert (
                 c.execute(

@@ -17,6 +17,7 @@ class SampleSnapshot:
     projections: tuple
     links: tuple
     replicas: tuple
+    dataset_role: str = "learning"
 
 
 def load_snapshot(connection, session_id):
@@ -35,9 +36,11 @@ def load_snapshot(connection, session_id):
             result.append(value)
         return tuple(result)
 
-    revision = connection.execute(
-        "SELECT revision FROM annotation_input_revision WHERE singleton=1"
-    ).fetchone()[0]
+    reservation = connection.execute(
+        'SELECT revision,(SELECT dataset_role FROM session_dataset_roles WHERE session_id=?) '
+        'FROM annotation_input_revision WHERE singleton=1', (session_id,)
+    ).fetchone()
+    revision = reservation[0]
     # Include all facts touching media used by this session, even another session's facts.
     scope = """SELECT DISTINCT a.media_id FROM annotation_fact_audio a
         JOIN annotation_facts f ON f.fact_id=a.fact_id
@@ -72,9 +75,8 @@ def load_snapshot(connection, session_id):
         WHERE s.session_id=? AND r.state='available' ORDER BY s.sequence,s.segment_id""",
         (session_id,),
     )
-    return SampleSnapshot(
-        revision, session_id, facts, audio, projections, links, replicas
-    )
+    return SampleSnapshot(revision, session_id, facts, audio, projections, links, replicas,
+                          reservation[1] or "unassigned")
 
 
 class Intervals:

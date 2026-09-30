@@ -18,6 +18,7 @@ from allday_asr.v3.application.speaker_profile_purity import (
 
 from allday_asr.v3.adapters.audio.tools import extract_clip
 from allday_asr.v3.interfaces.transfer.devices import DeviceConflictError
+from .device_review_fields import _public_voice_candidate, _weakest_candidate_first, _required_text, _optional_reason
 from .review_audio import audio_plan, concatenate
 from .review_evidence import candidate_evidence, candidate_key
 
@@ -61,10 +62,14 @@ class DeviceReviewService:
                 purity_items = list_purity_phone_tasks(uow.desktop.connection)
                 purity_history = list_purity_phone_tasks(uow.desktop.connection, history=True)
         confirmed_candidates = self.core.people.list_review_candidates(None, 'confirmed', 500)
+        blind = getattr(self.core, 'blind_validation', None)
+        blind_items = blind.tasks() if blind else []
+        blind_history = blind.tasks(history=True) if blind else []
         source_digest = canonical_json_sha256({
             "pending": candidates, "reviews": raw_reviews,
             "confirmed": confirmed_candidates, "purity": purity_items,
             "purity_history": purity_history,
+            'blind': blind_items, 'blind_history': blind_history,
         })
         if (only_review_id is None and time.monotonic() < self._cache_until
                 and source_digest == self._source_digest
@@ -98,7 +103,7 @@ class DeviceReviewService:
                     continue
             item["context"] = context
             items.append(item)
-        for raw in (*purity_items, *purity_history):
+        for raw in (*purity_items, *purity_history, *blind_items, *blind_history):
             if only_review_id is None or raw["review_id"] == only_review_id:
                 items.append(raw)
         # Reuse the existing per-sample review surface for historical grants.
@@ -120,7 +125,7 @@ class DeviceReviewService:
             })
         clips_by_session: dict[str, list[dict[str, Any]]] = {}
         for item in items:
-            if item["kind"] == "speaker_profile_purity":
+            if item["kind"] in {"speaker_profile_purity", 'blind_identity_review'}:
                 continue
             for candidate in item.get("context", {}).get("voice_candidates", []):
                 clips_by_session.setdefault(str(candidate["session_id"]), []).extend(
@@ -143,6 +148,8 @@ class DeviceReviewService:
                 if item["kind"] == "speaker_profile_purity":
                     candidate.update(self._purity_context_description(candidate))
                     candidate["evidence_utterances"] = []
+                elif item['kind'] == 'blind_identity_review':
+                    candidate['evidence_utterances'] = []
                 else:
                     session_id = candidate['session_id']
                     candidate['evidence_utterances'] = candidate_evidence(candidate, details[session_id])
@@ -165,7 +172,9 @@ class DeviceReviewService:
         source_id = str(item["source_id"])
         context = dict(item.get("context") or {})
 
-        if kind == "speaker_profile_purity":
+        if kind == 'blind_identity_review':
+            result = self.core.blind_validation.submit(source_id, dict(payload), actor)
+        elif kind == "speaker_profile_purity":
             if set(payload) - {"review_id", "action", "primary_speaker_person_id",
                                   "primary_speaker_unknown", "purity", "other_speaker_ids",
                                   "quality_flags", "operation_id"}:
@@ -255,8 +264,8 @@ class DeviceReviewService:
         item = self._current_item(review_id)
         context = dict(item.get("context") or {})
         if (
-            item.get("kind") not in {"voice_identity", "speaker_profile_purity"}
-            or context.get("voice_mode") not in {"known_person", "speaker_discovery", "accepted_grant", "speaker_profile_purity"}
+            item.get("kind") not in {"voice_identity", "speaker_profile_purity", 'blind_identity_review'}
+            or context.get("voice_mode") not in {"known_person", "speaker_discovery", "accepted_grant", "speaker_profile_purity", 'blind_identity_review'}
             or prototype_id
             not in {str(value) for value in context.get("prototype_ids", [])}
         ):
@@ -388,6 +397,16 @@ class DeviceReviewService:
         return data
 
     def _current_item(self, review_id: str) -> dict[str, Any]:
+        if review_id.startswith('blind:'):
+            task_id = review_id.removeprefix('blind:')
+            blind = self.core.blind_validation
+            for item in (*blind.tasks(task_id=task_id), *blind.tasks(history=True, task_id=task_id)):
+                for candidate in item['context']['voice_candidates']:
+                    candidate.update(self.audio_description(candidate))
+                    candidate['evidence_utterances'] = []
+                    candidate['review_key'] = candidate_key(candidate)
+                return item
+            raise DeviceConflictError('blind review is no longer available; refresh inbox')
         if review_id.startswith("purity:"):
             factory = getattr(self.core.desktop, "_uow_factory", None)
             if factory is not None:
@@ -438,53 +457,6 @@ def _normalized_review_audio(
         destination.unlink(missing_ok=True)
 
 
-def _public_voice_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
-    # Never repair, widen or silently drop a stored window for audition.
-    clips = [{key: raw.get(key) for key in ('media_id', 'start_ms', 'end_ms')}
-             if isinstance(raw, dict) else {} for raw in candidate.get('representative_clips', [])]
-    return {
-        "prototype_id": str(candidate["prototype_id"]),
-        "session_id": str(candidate["session_id"]),
-        "speaker_track_id": str(candidate["speaker_track_id"]),
-        "person_id": str(candidate["person_id"]),
-        "person_name": str(candidate["person_name"]),
-        "quality_score": _optional_number(candidate.get("quality_score")),
-        "best_score": _optional_number(candidate.get("best_score")),
-        "score_margin": _optional_number(candidate.get("score_margin")),
-        "decision_tier": candidate.get("decision_tier"),
-        "review_status": str(candidate.get("review_status") or "pending"),
-        "representative_clips": clips,
-    }
-
-
-def _weakest_candidate_first(value: Mapping[str, Any]) -> tuple[float, float, str]:
-    score = value.get("best_score")
-    margin = value.get("score_margin")
-    return (
-        float(score) if isinstance(score, (int, float)) else -1.0,
-        float(margin) if isinstance(margin, (int, float)) else -1.0,
-        str(value["prototype_id"]),
-    )
-
-
-def _required_text(payload: Mapping[str, Any], field: str) -> str:
-    value = payload.get(field)
-    if not isinstance(value, str) or not value.strip() or len(value) > 500:
-        raise ValueError(f"{field} must be a non-empty string")
-    return value.strip()
-
-
-def _optional_reason(payload: Mapping[str, Any]) -> str:
-    value = payload.get("reason", "手机审核未采纳")
-    if not isinstance(value, str) or not value.strip() or len(value) > 500:
-        raise ValueError("review reason must be a non-empty string")
-    return value.strip()
-
-
-def _optional_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
 
 
 __all__ = [

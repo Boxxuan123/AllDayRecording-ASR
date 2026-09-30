@@ -16,6 +16,9 @@ class AnnotationSampleRepositoryMixin:
         )
 
     def enqueue_samples(self, session_id):
+        from allday_asr.v3.domain.dataset_roles import is_learning
+        if not is_learning(self.connection, session_id):
+            return
         self.connection.execute(
             """INSERT INTO annotation_sample_queue(session_id) VALUES(?)
             ON CONFLICT(session_id) DO UPDATE SET generation=generation+1,status='queued',attempts=0,retry_at=0
@@ -46,7 +49,9 @@ class AnnotationSampleRepositoryMixin:
         )
         row = self.connection.execute(
             """SELECT * FROM annotation_sample_queue
-            WHERE ((status IN ('queued','retryable') AND retry_at<=? AND attempts<3)
+            WHERE EXISTS(SELECT 1 FROM session_dataset_roles role
+              WHERE role.session_id=annotation_sample_queue.session_id AND role.dataset_role='learning')
+            AND ((status IN ('queued','retryable') AND retry_at<=? AND attempts<3)
             OR (status='running' AND lease_until<? AND attempts<3)) AND lease_until<?
             ORDER BY retry_at,session_id LIMIT 1""",
             (now, now, now),
@@ -122,6 +127,8 @@ class AnnotationSampleRepositoryMixin:
         return True
 
     def record_sample_set(self, plan, embedding, prototype_id, now):
+        from allday_asr.v3.domain.dataset_roles import require_learning
+        require_learning(self.connection, plan.track.session_id)
         from allday_asr.v3.domain.ids import new_ulid
         from dataclasses import replace
 

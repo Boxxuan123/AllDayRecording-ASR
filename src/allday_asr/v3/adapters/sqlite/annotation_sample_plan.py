@@ -31,6 +31,9 @@ def plans(connection, evidence, session_id, model, version):
 def compute_plans(snapshot, model, version):
     from .annotation_sample_snapshot import PlanInputs
 
+    if snapshot.dataset_role != "learning":
+        return (), ["dataset_role_excluded"]
+
     inputs = PlanInputs(snapshot)
     session_id = snapshot.session_id
     groups, reasons = {}, set()

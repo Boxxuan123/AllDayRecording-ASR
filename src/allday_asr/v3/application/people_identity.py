@@ -23,6 +23,23 @@ from .people_support import (
 
 class PeopleIdentityMixin:
     def analyze(self, session_id: str, *, annotation_only: bool = False) -> dict[str, Any]:
+        with self._uow_factory().reading() as uow:
+            role = uow.people.connection.execute(
+                'SELECT dataset_role FROM session_dataset_roles WHERE session_id=?', (session_id,)
+            ).fetchone()
+        if role is None:
+            raise ValueError('session dataset role is unassigned')
+        if role[0] != 'learning':
+            shadow = getattr(self, 'blind_validation', None)
+            if role[0] == 'blind' and shadow is not None:
+                try:
+                    shadow.enqueue(session_id)
+                    shadow.start()
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception('Shadow enqueue will retry independently')
+            return {'session_id': session_id, 'status': 'succeeded', 'dataset_role': role[0],
+                    'learning_excluded': True, 'shadow_status': 'queued' if role[0] == 'blind' else 'frozen_holdout'}
         if annotation_only:
             with self._uow_factory() as uow:
                 uow.people.enqueue_samples(session_id)

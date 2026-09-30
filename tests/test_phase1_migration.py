@@ -10,6 +10,10 @@ from allday_asr.v3.adapters.sqlite.annotation_fact_migration import (
 
 
 def v12_snapshot(f):
+    from allday_asr.v3.adapters.sqlite.migration_runner import V3MigrationRunner
+    from allday_asr.v3.adapters.sqlite.migrations import MIGRATIONS
+    # This historical regression intentionally exercises only v12 -> v15.
+    f.core.database.migrations = V3MigrationRunner(f.core.paths.database_path, migrations=[m for m in MIGRATIONS if m.version <= 15])
     with f.core.database.transaction() as db:
         for row in db.execute(
             "SELECT utterance_id,evidence_json FROM utterances"
