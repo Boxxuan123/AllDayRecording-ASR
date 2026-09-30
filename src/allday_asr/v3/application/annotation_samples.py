@@ -149,7 +149,16 @@ class AnnotationSampleWorker:
                 if not valid:
                     status, reason = "retryable", "source_or_model_changed"
                 else:
+                    from allday_asr.v3.adapters.sqlite.speaker_purity_repository import (
+                        register_candidates,
+                    )
+
                     for plan in plans:
+                        # A person fact proposes enrollment; it never grants purity.
+                        # This shadow queue cannot authorize legacy prototypes.
+                        register_candidates(
+                            uow.people.connection, plan, service._now().isoformat()
+                        )
                         if (
                             not uow.people.sample_set_exists(plan.key)
                             and plan.key in computed

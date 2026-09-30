@@ -4,6 +4,7 @@ from .v018_manifest_revisions import SQL as V018_SQL
 from .v019_page_read_indexes import SQL as V019_SQL
 from .v020_timeline_paging import SQL as V020_SQL
 from .v021_speaker_profile_purity import SQL as V021_SQL
+from .v022_enrollment_purity import SQL as V022_SQL
 from .v015_annotation_receipts import SQL as V015_SQL
 from .v013_annotation_facts import SQL as V013_SQL
 from .v014_annotation_samples import SQL as V014_SQL
@@ -60,6 +61,7 @@ MIGRATIONS = (
     V3Migration(version=19, name="page_read_indexes", sql=V019_SQL),
     V3Migration(version=20, name="timeline_paging", sql=V020_SQL),
     V3Migration(version=21, name="speaker_profile_purity_evidence", sql=V021_SQL),
+    V3Migration(version=22, name="enrollment_purity_sources", sql=V022_SQL),
 )
 
 __all__ = ["MIGRATIONS"]
