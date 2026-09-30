@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
@@ -779,8 +780,8 @@ class V3DeviceSyncTests(unittest.TestCase):
 
 
     def test_legacy_completion_confirms_identical_audio_without_reprocessing(self) -> None:
-        for tamper in (False, True):
-            with self.subTest(tamper=tamper), _workspace_directory() as root:
+        for duplicate, tamper in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(duplicate=duplicate, tamper=tamper), _workspace_directory() as root:
                 database, _, device, trust, _, sync = self._environment(root)
                 store = UploadStore(root / "inbox")
                 artifacts = ContentAddressedStore(root / "artifacts")
@@ -816,7 +817,12 @@ class V3DeviceSyncTests(unittest.TestCase):
                 initial_record = upload("session_summary.json", json.dumps(completed).encode(), "manifest")
                 initial = ingest.ingest_completed(device.device_id, initial_record, store)
                 # Reproduce a session admitted by the old V1 receiver.
-                legacy_record = upload("session_summary.json", json.dumps(legacy).encode(), "manifest")
+                previous = legacy if not duplicate else {
+                    "sample_rate": 16000, "channels": 1, "bits_per_sample": 16,
+                    "chunk_count": 1, "duration_samples": 100,
+                    "declared_continuity_valid": True,
+                }
+                legacy_record = upload("session_summary.json", json.dumps(previous).encode(), "manifest")
                 stored = artifacts.put_file(store.completed_path(legacy_record))
                 with database.transaction() as connection:
                     trigger = connection.execute(
@@ -825,7 +831,7 @@ class V3DeviceSyncTests(unittest.TestCase):
                     connection.execute("DROP TRIGGER protect_session_manifests_from_update")
                     connection.execute(
                         "UPDATE session_manifests SET sha256=?, storage_ref=?, entries_json=? WHERE session_id=?",
-                        (legacy_record.sha256, stored.storage_key, json.dumps(legacy), initial["session_id"]),
+                        (legacy_record.sha256, stored.storage_key, json.dumps(previous), initial["session_id"]),
                     )
                     connection.execute(trigger)
                     connection.execute(
@@ -833,18 +839,34 @@ class V3DeviceSyncTests(unittest.TestCase):
                         (json.dumps({**initial, "manifest_sha256": legacy_record.sha256}),
                          f"phone-manifest:{initial['session_id']}"),
                     )
+                active_trust = trust
+                if duplicate:
+                    active_trust = TransferDeviceTrustAdapter(
+                        trust.authenticator, lambda database=database: SqliteUnitOfWork(database), "b" * 64,
+                    )
+                    alias_ref = f"phone-upload:{'b' * 64}:{device.device_id}:{completed['sessionKey']}"
+                    with SqliteUnitOfWork(database) as uow:
+                        canonical = uow.catalog.get_session(initial["session_id"])
+                        alias_id = stable_ulid(alias_ref)
+                        uow.catalog.add_session(replace(canonical, session_id=alias_id, legacy_ref=alias_ref))
+                        uow.catalog.tombstone_duplicate_session(alias_id, canonical.session_id, datetime.now(timezone.utc))
+                    ingest = V3UploadIngestAdapter(
+                        active_trust, lambda database=database: SqliteUnitOfWork(database),
+                        ContentAddressedStore(root / "audio"), artifacts,
+                    )
                 if tamper:
-                    with patch.object(store, "list_uploads", return_value=[replace(audio_record, sha256="f" * 64)]), self.assertRaisesRegex(UploadConflictError, "旧分片哈希"):
+                    with patch.object(store, "list_uploads", return_value=[replace(audio_record, sha256="f" * 64)]), self.assertRaisesRegex(UploadConflictError, "分片哈希"):
                         ingest.ingest_completed(device.device_id, initial_record, store)
                     continue
                 workflow = MagicMock()
-                gateway = DeviceGateway(trust, sync, ingest, workflow)
+                gateway = DeviceGateway(active_trust, sync, ingest, workflow)
                 confirmed = gateway.upload_completed(device.device_id, initial_record, store)
                 self.assertEqual(confirmed["input_revision"], 1)
                 self.assertTrue(confirmed["input_unchanged"])
+                self.assertEqual(confirmed["session_id"], initial["session_id"])
                 workflow.assert_not_called()
                 restarted = V3UploadIngestAdapter(
-                    trust, lambda database=database: SqliteUnitOfWork(database),
+                    active_trust, lambda database=database: SqliteUnitOfWork(database),
                     ContentAddressedStore(root / "audio"), artifacts,
                 )
                 self.assertEqual(restarted.ingest_completed(device.device_id, initial_record, store), confirmed)
@@ -852,9 +874,18 @@ class V3DeviceSyncTests(unittest.TestCase):
                     self.assertEqual(connection.execute("SELECT sha256 FROM session_manifests").fetchone()[0], legacy_record.sha256)
                     self.assertEqual(connection.execute("SELECT count(*) FROM session_manifest_revisions").fetchone()[0], 0)
                     self.assertEqual(connection.execute("SELECT count(*) FROM capture_segments").fetchone()[0], 1)
+                    if duplicate:
+                        self.assertEqual(connection.execute(
+                            "SELECT state FROM recording_sessions WHERE session_id=?", (alias_id,)
+                        ).fetchone()[0], "quarantined")
                 changed = {**completed, "completion": {**completed["completion"], "confirmedAt": 1767225602000}}
                 changed_record = upload("session_summary.json", json.dumps(changed).encode(), "manifest")
                 self.assertEqual(ingest.ingest_completed(device.device_id, changed_record, store)["input_revision"], 1)
+                if duplicate:
+                    wrong_time = {**completed, "sessionStartedAt": completed["sessionStartedAt"] + 1}
+                    wrong_record = upload("session_summary.json", json.dumps(wrong_time).encode(), "manifest")
+                    with self.assertRaisesRegex(UploadConflictError, "开始时间"):
+                        ingest.ingest_completed(device.device_id, wrong_record, store)
 
     def test_manifest_append_preserves_original_and_rejects_changed_prefix(self) -> None:
         with _workspace_directory() as root:

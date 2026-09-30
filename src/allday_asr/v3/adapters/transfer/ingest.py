@@ -14,6 +14,10 @@ from allday_asr.v3.interfaces.transfer.store import (
 )
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.transfer.trust import TransferDeviceTrustAdapter
+from allday_asr.v3.adapters.transfer.completion import (
+    confirm_duplicate_completion,
+    record_completion_confirmation,
+)
 from allday_asr.v3.domain.ids import stable_ulid
 from allday_asr.v3.domain.models import (
     AudioAsset,
@@ -378,7 +382,10 @@ class V3UploadIngestAdapter:
             (existing.session_id,),
         ).fetchone()
         if original is None:
-            raise UploadConflictError("原会话缺少可核验的清单，请人工修复")
+            return confirm_duplicate_completion(
+                uow, existing, manifest, prepared, record, manifest_path,
+                self.artifact_store, device_id,
+            )
         previous = json.loads(latest["entries_json"] if latest else original["entries_json"])
         previous_revision = int(latest["input_revision"]) if latest else 1
         old_chunks = previous["chunks"]
@@ -412,29 +419,11 @@ class V3UploadIngestAdapter:
         if confirmation_only:
             # Completion metadata does not change the audio input or invalidate
             # existing processing. Keep the original manifest and its backups.
-            stored = self.artifact_store.put_file(
-                manifest_path, expected_sha256=record.sha256,
+            return record_completion_confirmation(
+                uow, existing, existing.session_id, manifest, record, manifest_path,
+                self.artifact_store, device_id, previous_revision,
+                latest["sha256"] if latest else original["sha256"],
             )
-            response = {
-                "status": "already_ingested", "session_id": existing.session_id,
-                "asset_count": len(prepared), "input_revision": previous_revision,
-                "manifest_sha256": record.sha256, "input_unchanged": True,
-            }
-            key = f"phone-manifest-confirmation:{existing.session_id}:{record.sha256}"
-            if not uow.idempotency.begin(key, "phone.upload.confirm_manifest"):
-                raise UploadConflictError("旧录音确认正在由另一个请求处理")
-            uow.audit.append(
-                "phone.upload.confirm_manifest", f"device:{device_id}",
-                "recording_session", existing.session_id,
-                {"input_revision": previous_revision,
-                 "previous_manifest_sha256": latest["sha256"] if latest else original["sha256"],
-                 "manifest_sha256": record.sha256,
-                 "storage_ref": stored.storage_key,
-                 "completion": manifest["completion"],
-                 "verified_segments": len(prepared)},
-            )
-            uow.idempotency.complete(key, response)
-            return response
 
         next_revision = previous_revision + 1
         stored_manifest = self.artifact_store.put_file(
