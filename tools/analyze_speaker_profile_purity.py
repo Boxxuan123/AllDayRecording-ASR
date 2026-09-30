@@ -257,6 +257,53 @@ def compare_queries(queries: list[dict], current: dict, clean: dict, frozen: dic
     return result
 
 
+def clean_failure_query_sensitivity(neighbor: dict, tasks: list[dict], reviews: dict,
+                                    vectors: dict, self_id: str, focus_id: str,
+                                    current: dict, clean: dict, frozen: dict) -> dict:
+    """Inspect query purity and rescore only individually clean self windows.
+
+    This deliberately changes the frozen query composition, so its scores are
+    exploratory and must not replace the frozen benchmark result.
+    """
+    task_by_id = {task["task_id"]: task for task in tasks}
+    audit = []
+    queries = []
+    for event in neighbor.get("failure_events", []):
+        keys = event["query_sources"]
+        clean_keys = [key for key in keys if (review := reviews.get(key))
+                      and review["action"] == "submit"
+                      and review["primary_speaker_person_id"] == self_id
+                      and review["purity"] == "clean_single"]
+        mixed_focus = sum(
+            (review := reviews.get(key)) is not None
+            and review["purity"] == "mixed_overlap"
+            and (review["primary_speaker_person_id"] == focus_id
+                 or focus_id in json.loads(review["other_speaker_ids_json"]))
+            for key in keys
+        )
+        audit.append({"failure_id": event["failure_id"], "query_sources": len(keys),
+                      "clean_self_sources": len(clean_keys),
+                      "mixed_sources": sum(reviews.get(key, {}).get("purity") == "mixed_overlap"
+                                           for key in keys),
+                      "mixed_with_focus_sources": mixed_focus,
+                      "all_clean_self": len(clean_keys) == len(keys)})
+        if not clean_keys or any(key not in vectors or key not in task_by_id for key in clean_keys):
+            continue
+        queries.append({"id": event["failure_id"], "truth": self_id,
+                        "session": "", "date": "", "windows": clean_keys,
+                        "duration_s": sum((task_by_id[key]["end_ms"] - task_by_id[key]["start_ms"]) / 1000
+                                          for key in clean_keys),
+                        "quality": 1.0,
+                        "vector": unit(np.mean([vectors[key] for key in clean_keys], axis=0))})
+    complete = len(queries) == len(audit)
+    return {"status": "EXPLORATORY" if complete else "INCOMPLETE_QUERY_EMBEDDINGS",
+            "query_review": audit,
+            "comparison": compare_queries(queries, current, clean, frozen) if complete else None,
+            "note": "Only individually reviewed clean-self query windows are averaged. "
+                    "This changes frozen V2 query composition and is a sensitivity check, "
+                    "not the frozen benchmark."}
+
+
 def main() -> None:
     verification = read("verification.json")
     focus_id = verification["focus_person_id"]
@@ -335,15 +382,24 @@ def main() -> None:
     clean_wrong = any(row["prediction"] == focus_id for row in clean_failures)
     current_score = max((row["score"] for row in current_failures), default=None)
     clean_score = max((row["score"] for row in clean_failures), default=None)
+    neighbor = read("failure-nearest-neighbors.json")
+    sensitivity = clean_failure_query_sensitivity(neighbor, tasks, reviews, vectors,
+                                                  self_id, focus_id, current, clean, frozen)
+    save("clean-query-sensitivity.json", sensitivity)
+    wrong_ids = {row["id"] for row in current_failures if row["prediction"] == focus_id}
+    query_confound = any(not row["all_clean_self"] for row in sensitivity["query_review"]
+                         if row["failure_id"] in wrong_ids)
     if summary["focus_self_in_enrollment"] == "YES" and current_wrong and not clean_wrong:
-        conclusion = "A: strong evidence for H1"
+        conclusion = ("A (query-confounded): profile contamination exists and clean profile "
+                      "removes the frozen G errors, but mixed failure queries prevent "
+                      "attributing those errors solely to profile contamination"
+                      if query_confound else "A: strong evidence for H1")
     elif summary["focus_self_in_enrollment"] == "YES" and clean_wrong:
         conclusion = "B: H1 exists, H2 remains possible"
     elif summary["focus_self_in_enrollment"] == "NO" and clean_wrong:
         conclusion = "C: evidence favors H2"
     else:
         conclusion = "INCONCLUSIVE: inspect score change and source overlap"
-    neighbor = read("failure-nearest-neighbors.json")
     nearest = {}
     for event in neighbor.get("failure_events", []):
         nearest[event["failure_id"]] = [{**r, "purity_review":
@@ -359,6 +415,8 @@ def main() -> None:
     save("failure-comparison.json", {"status": "COMPUTED", "failure_ids": list(failure_ids),
                                      "comparison": failure_result, "nearest_source_reviews": nearest,
                                      "focus_self_in_enrollment": summary["focus_self_in_enrollment"],
+                                     "mixed_failure_query_confound": query_confound,
+                                     "query_review": sensitivity["query_review"],
                                      "current_best_score": current_score,
                                      "clean_best_score": clean_score,
                                      "conclusion": conclusion})
