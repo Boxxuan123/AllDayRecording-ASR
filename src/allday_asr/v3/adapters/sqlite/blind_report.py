@@ -51,6 +51,10 @@ def build_report(connection, experiment_id):
     all_metrics = metrics(rows, known, self_id)
     strata = {p: metrics([r for r in rows if r['truth']['purity'] == p], known, self_id)
               for p in ('clean_single', 'mixed_overlap', 'boundary_cross', 'uncertain')}
+    composition_strata = {p: metrics([r for r in rows if r['truth'].get('speaker_composition') == p], known, self_id)
+        for p in ('clean_single', 'simultaneous_overlap', 'sequential_multi_speaker', 'backchannel', 'uncertain')}
+    boundary_strata = {p: metrics([r for r in rows if r['truth'].get('boundary_quality') == p], known, self_id)
+        for p in ('clean', 'cut', 'uncertain')}
     people = Counter(r['truth']['primary_person_id'] or 'stranger' for r in rows)
     person_sessions = {p: len({r['session_id'] for r in rows if (r['truth']['primary_person_id'] or 'stranger') == p}) for p in people}
     coverage = {'independent_events': len(rows), 'generated_events': len(events), 'query_views': len(queries),
@@ -86,6 +90,11 @@ def build_report(connection, experiment_id):
               'updated_at': now(), 'settings': settings(connection), 'progress': progress,
               'primary_unit': 'independent event; fixed representative query',
               'event_metrics': all_metrics, 'purity_strata': strata, 'comparison': comparison,
+              'speaker_composition_strata': composition_strata, 'boundary_quality_strata': boundary_strata,
+              'review_schema_version': frozen.get('review_schema_version', 1),
+              'projection_version': frozen.get('projection_version', 'native-token-grouping-v1'),
+              'query_builder_version': frozen.get('query_builder_version', 'longest5-head8s-v1'),
+              'denominator_policy': 'this experiment only; V1 and V2 never pooled',
               'evidence_requirements': gates,
               'query_view_metrics': {'label': 'diagnostic only; only individually heard canonical views scored',
                                      'metrics': metrics(rows, known, self_id)},

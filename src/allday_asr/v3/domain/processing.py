@@ -157,6 +157,7 @@ class BackupEvidence:
 
 @dataclass(frozen=True)
 class SpeakerTrack:
+    """Run-scoped identity grouping, never a contiguous speaker turn/audio hull."""
     speaker_track_id: str
     session_id: str
     run_id: str

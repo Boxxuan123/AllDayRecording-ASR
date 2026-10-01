@@ -81,6 +81,56 @@ class BlindValidationService:
         with self.database.transaction() as c:
             return self._enqueue(c, session_id)
 
+    def upgrade_turn_experiment(self, experiment_id):
+        """Clone the frozen enrollment/model side; retire V1 atomically.
+
+        No current person library, human verdict or profile builder is consulted.
+        Repeating the command returns the existing immutable V2 snapshot.
+        """
+        from allday_asr.v3.domain.speaker_turns import PROJECTION_VERSION, QUERY_BUILDER_VERSION
+        with self.database.read() as c:
+            existing = c.execute('SELECT * FROM blind_experiments WHERE experiment_id=?',
+                                 (experiment_id,)).fetchone()
+            if existing:
+                snapshot = json.loads(existing['snapshot_json'])
+                if (snapshot.get('review_schema_version') != 2
+                        or snapshot.get('query_builder_version') != QUERY_BUILDER_VERSION
+                        or existing['retired_at'] is not None):
+                    raise ValueError('requested V2 version already exists with incompatible state')
+                self.model_verifier(snapshot)
+                return dict(existing)
+            parent = c.execute('SELECT * FROM blind_experiments WHERE retired_at IS NULL').fetchone()
+            if parent is None:
+                raise ValueError('an active frozen V1 experiment is required')
+            parent = dict(parent)
+            snapshot = json.loads(parent['snapshot_json'])
+            if snapshot.get('review_schema_version', 1) != 1:
+                raise ValueError('active experiment is already V2; do not refreeze')
+        self.model_verifier(snapshot)
+        with self.database.transaction() as c:
+            active = c.execute('SELECT * FROM blind_experiments WHERE retired_at IS NULL').fetchone()
+            if active is None or active['snapshot_hash'] != parent['snapshot_hash']:
+                raise ValueError('active experiment changed while verifying model')
+            stamp = now()
+            snapshot.update({
+                'parent_experiment_id': parent['experiment_id'],
+                'parent_snapshot_hash': parent['snapshot_hash'],
+                'projection_version': PROJECTION_VERSION,
+                'query_builder_version': QUERY_BUILDER_VERSION,
+                'review_schema_version': 2, 'data_cutoff': stamp,
+                'seen_audio_sha256': sorted({r[0] for r in c.execute('SELECT sha256 FROM audio_assets')}),
+                'denominator_policy': 'this-experiment-only',
+            })
+            c.execute('UPDATE blind_experiments SET retired_at=? WHERE experiment_id=?',
+                      (stamp, parent['experiment_id']))
+            c.execute('INSERT INTO blind_experiments VALUES(?,?,?,?,?,NULL)',
+                      (experiment_id, parent['clean_profile_version'], encoded(snapshot), digest(snapshot), stamp))
+            result = dict(c.execute('SELECT * FROM blind_experiments WHERE experiment_id=?',
+                                    (experiment_id,)).fetchone())
+        self.report(parent['experiment_id'])
+        self.report(experiment_id)
+        return result
+
     def _enqueue(self, c, session_id):
         role = c.execute('SELECT dataset_role,historical_diagnostic_only,role_assigned_at FROM session_dataset_roles WHERE session_id=?', (session_id,)).fetchone()
         experiment = c.execute('SELECT * FROM blind_experiments WHERE retired_at IS NULL ORDER BY created_at DESC LIMIT 1').fetchone()
@@ -93,10 +143,20 @@ class BlindValidationService:
         capture_time_recheck = old and old['status'] == 'blocked' and old['error'] == CAPTURE_TIME_BLOCK
         if old and (old['status'] == 'running' or (old['input_revision'] == run_id and not capture_time_recheck)):
             return False
-        queries = automatic_queries(c, session_id, experiment['experiment_id'], run_id)
+        frozen = json.loads(experiment['snapshot_json'])
+        from allday_asr.v3.domain.speaker_turns import LEGACY_QUERY_BUILDER_VERSION
+        if frozen.get('review_schema_version') == 2:
+            from allday_asr.v3.adapters.sqlite.blind_admission import instant
+            if instant(role['role_assigned_at']) < instant(frozen['data_cutoff']):
+                return False  # Prior V1/historical sessions never become prospective V2.
+        queries = automatic_queries(c, session_id, experiment['experiment_id'], run_id,
+            builder_version=frozen.get('query_builder_version', LEGACY_QUERY_BUILDER_VERSION),
+            artifact_root=self.database.path.parent / 'artifacts')
+        if frozen.get('review_schema_version') == 2 and any(
+                q.get('projection_version') != frozen['projection_version'] for q in queries):
+            raise ValueError('V2 requires the frozen turn-preserving projection; reprocess new session')
         existing = {r[0] for r in c.execute('SELECT query_id FROM blind_query_views WHERE experiment_id=?', (experiment['experiment_id'],))}
         new_queries = [q for q in queries if q['query_id'] not in existing]
-        frozen = json.loads(experiment['snapshot_json'])
         evidence, error = admission(c, session_id, role, frozen, new_queries, old)
         if not new_queries and queries:
             error = None  # Existing immutable predictions need no new admission.
@@ -241,9 +301,11 @@ class BlindValidationService:
     def submit(self, task_id, payload, source):
         with self.database.transaction() as c:
             result = submit_truth(c, task_id, payload, source)
+            experiment_id = c.execute('SELECT q.experiment_id FROM blind_review_tasks t '
+                'JOIN blind_query_views q USING(query_id) WHERE t.task_id=?', (task_id,)).fetchone()[0]
         # Truth remains durable if export fails; worker regenerates exports on startup.
         try:
-            self.report()
+            self.report(experiment_id)
         except Exception:
             LOG.exception('Blind truth saved; private report export will retry')
         return result

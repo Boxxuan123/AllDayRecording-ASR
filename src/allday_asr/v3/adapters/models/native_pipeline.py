@@ -275,7 +275,7 @@ class NativeModelPipelineAdapter:
             }
             for token in tokens
         ]
-        projected = _group_utterances(attributed)
+        projected = _group_utterances(attributed, turns)
         speakers = sorted(
             {
                 str(value["speaker"])
@@ -296,6 +296,9 @@ class NativeModelPipelineAdapter:
                     "format": "v3-native-token-span-v1",
                     "source_refs": value["source_refs"],
                     "token_count": value["token_count"],
+                    "projection_version": value["projection_version"],
+                    "speaker_boundary_crossing": value["speaker_boundary_crossing"],
+                    "token_attributions": value["token_attributions"],
                 },
                 identity=SelfIdentity.UNKNOWN,
                 identity_evidence=unknown_identity_evidence(
@@ -309,6 +312,7 @@ class NativeModelPipelineAdapter:
             "session_id": context.claim.run.session_id,
             "utterances": projected,
             "speaker_labels": speakers,
+            "projection_version": projected[0]["projection_version"] if projected else "exclusive-turn-preserving-v2",
         }
         return StageExecutionResult(
             checkpoint={

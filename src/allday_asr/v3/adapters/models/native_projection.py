@@ -10,6 +10,9 @@ from .native_contracts import (
     _Source,
 )
 from .native_runtime import _json_safe
+from allday_asr.v3.domain.speaker_turns import (
+    PROJECTION_VERSION, foreign_turns, can_merge_same_speaker_tokens,
+)
 
 
 def _artifact_json(context: StageExecutionContext, kind: str) -> dict[str, Any]:
@@ -67,7 +70,7 @@ def _speaker_for(
     return label if overlap / duration >= threshold else None
 
 
-def _group_utterances(tokens: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _group_utterances_legacy(tokens: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     groups: list[dict[str, Any]] = []
     for token in sorted(
         tokens, key=lambda item: (int(item["start_ms"]), int(item["end_ms"]))
@@ -107,6 +110,48 @@ def _group_utterances(tokens: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
             if (value["asset_id"], value["source_start_ms"], value["source_end_ms"])
             not in known
         )
+    return groups
+
+
+def _group_utterances(tokens, exclusive_turns=()):
+    """Retain each text token once; isolate tokens crossing exclusive speakers.
+
+    A crossing token keeps its majority attribution in provenance but is an
+    unassigned singleton in the transcript: its text/timestamps are never split,
+    copied, clipped or thrown away to fabricate a clean speaker utterance.
+    """
+    groups = []
+    for original in sorted(tokens, key=lambda t: (t["start_ms"], t["end_ms"])):
+        if not str(original["text"]):
+            continue
+        token = dict(original)
+        attributed = token.get("speaker")
+        foreign = foreign_turns(token["start_ms"], token["end_ms"], attributed,
+                                exclusive_turns)
+        token["speaker_boundary_crossing"] = bool(foreign)
+        if foreign:
+            token["speaker"] = None
+        provenance = {"start_ms": token["start_ms"], "end_ms": token["end_ms"],
+                      "attributed_speaker": attributed,
+                      "foreign_exclusive_turns": foreign,
+                      "source_refs": list(token["source_refs"])}
+        if not groups or not can_merge_same_speaker_tokens(groups[-1], token, exclusive_turns):
+            groups.append({"start_ms": token["start_ms"], "end_ms": token["end_ms"],
+                           "text": str(token["text"]), "speaker": token.get("speaker"),
+                           "token_count": 1, "source_refs": list(token["source_refs"]),
+                           "speaker_boundary_crossing": bool(foreign),
+                           "token_attributions": [provenance],
+                           "projection_version": PROJECTION_VERSION})
+            continue
+        current = groups[-1]
+        current["end_ms"] = max(current["end_ms"], token["end_ms"])
+        current["text"] = _join_text(current["text"], str(token["text"]))
+        current["token_count"] += 1
+        current["token_attributions"].append(provenance)
+        known = {(r["asset_id"], r["source_start_ms"], r["source_end_ms"])
+                 for r in current["source_refs"]}
+        current["source_refs"].extend(r for r in token["source_refs"]
+            if (r["asset_id"], r["source_start_ms"], r["source_end_ms"]) not in known)
     return groups
 
 

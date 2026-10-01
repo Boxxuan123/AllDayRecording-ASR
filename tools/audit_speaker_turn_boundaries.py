@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from allday_asr.v3.adapters.models.native_projection import (  # noqa: E402
-    _group_utterances,
+    _group_utterances_legacy as _group_utterances,
     _speaker_for,
 )
 from allday_asr.v3.adapters.models.speech_gate import (  # noqa: E402
