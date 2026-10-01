@@ -30,6 +30,9 @@ class PeopleIdentityMixin:
         if role is None:
             raise ValueError('session dataset role is unassigned')
         if role[0] != 'learning':
+            from .product_self_identity import infer_product_self
+            product = (infer_product_self(self, session_id) if not annotation_only else
+                       {"product_inference_executed": False, "product_skip_reason": "annotation_only"})
             shadow = getattr(self, 'blind_validation', None)
             if role[0] == 'blind' and shadow is not None:
                 try:
@@ -39,7 +42,7 @@ class PeopleIdentityMixin:
                     import logging
                     logging.getLogger(__name__).exception('Shadow enqueue will retry independently')
             return {'session_id': session_id, 'status': 'succeeded', 'dataset_role': role[0],
-                    'learning_excluded': True, 'shadow_status': 'queued' if role[0] == 'blind' else 'frozen_holdout'}
+                    'learning_excluded': True, 'shadow_status': 'queued' if role[0] == 'blind' else 'frozen_holdout', **product}
         if annotation_only:
             with self._uow_factory() as uow:
                 uow.people.enqueue_samples(session_id)

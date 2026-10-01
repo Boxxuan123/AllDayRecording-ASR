@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 
 from allday_asr.v3.domain.people import ClusterMatchPolicy
 from allday_asr.v3.ports.repositories import UnitOfWork
@@ -31,6 +32,7 @@ class SpeakerIdentityService(
         policy: ClusterMatchPolicy | None = None,
         self_identity_matcher: SelfIdentityMatcher | None = None,
         now: DateTimeClock | None = None,
+        artifact_root: Path | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._provider = embedding_provider
@@ -38,6 +40,7 @@ class SpeakerIdentityService(
         self._policy = policy or ClusterMatchPolicy()
         self._self_identity_matcher = self_identity_matcher
         self._now = now or (lambda: datetime.now(timezone.utc))
+        self._artifact_root = artifact_root
         from .annotation_samples import AnnotationSampleWorker
         self.sample_worker = AnnotationSampleWorker(self)
 

@@ -141,6 +141,7 @@ def compose_v3_core(
         lambda: SqliteUnitOfWork(database),
         speaker_provider,
         knowledge,
+        artifact_root=selected.artifact_store_path,
         self_identity_matcher=(
             self_identity_matcher
             if self_identity_matcher is not None

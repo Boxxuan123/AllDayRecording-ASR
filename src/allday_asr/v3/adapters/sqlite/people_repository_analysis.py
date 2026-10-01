@@ -12,6 +12,10 @@ from .people_repository_codec import _json, _row, _vectors
 
 
 class PeopleAnalysisRepositoryMixin:
+    def product_self_queries(self, session_id, artifact_root):
+        from .product_self_queries import product_self_queries
+        return product_self_queries(self.connection, session_id, artifact_root)
+
     def analysis_inputs(self, session_id: str) -> tuple[SpeakerTrackInput, ...]:
         exists = self.connection.execute(
             "SELECT 1 FROM recording_sessions WHERE session_id = ?", (session_id,)
