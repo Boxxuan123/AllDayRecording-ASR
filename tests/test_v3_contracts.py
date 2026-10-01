@@ -53,7 +53,8 @@ class V3ContractTests(unittest.TestCase):
         self.assertEqual(release["contract_version"], CONTRACT_VERSION)
         self.assertEqual(release["projection_version"], PROJECTION_VERSION)
         self.assertEqual(
-            release["core_schema_version"], max(item.version for item in MIGRATIONS)
+            release["core_schema_version"],
+            max(item.version for item in MIGRATIONS if item.contract_visible),
         )
         self.assertEqual(release["phone_projection_schema_version"], 16)
         self.assertEqual(

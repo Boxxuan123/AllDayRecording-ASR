@@ -13,6 +13,9 @@ class V3Migration:
     version: int
     name: str
     sql: str
+    # PC-private metadata may advance SQLite without changing the frozen phone
+    # contract. Default True keeps every existing migration/version check strict.
+    contract_visible: bool = True
 
     @property
     def sha256(self) -> str:
@@ -25,7 +28,7 @@ def _default_migrations() -> tuple[V3Migration, ...]:
     return MIGRATIONS
 
 
-LATEST_V3_SCHEMA_VERSION = 24
+LATEST_V3_SCHEMA_VERSION = 25
 
 
 class V3MigrationRunner:

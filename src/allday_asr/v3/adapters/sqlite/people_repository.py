@@ -26,3 +26,13 @@ class SqlitePeopleRepository(
         # are cached; missing people are queried again after an in-batch creation.
         self._person_basics = {}
         self.cache_annotation_people = False
+
+    def begin_identity_prediction(self, session_id: str) -> dict | None:
+        from .speaker_research_reservations import record_prediction
+
+        return record_prediction(self.connection, session_id)
+
+    def speaker_event_provenance(self, utterance_id: str) -> dict:
+        from .speaker_research_reservations import provenance
+
+        return provenance(self.connection, utterance_id)

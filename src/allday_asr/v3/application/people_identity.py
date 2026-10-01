@@ -29,6 +29,10 @@ class PeopleIdentityMixin:
             ).fetchone()
         if role is None:
             raise ValueError('session dataset role is unassigned')
+        reservation = None
+        if not annotation_only:
+            with self._uow_factory() as uow:
+                reservation = uow.people.begin_identity_prediction(session_id)
         if role[0] != 'learning':
             from .product_self_identity import infer_product_self
             product = (infer_product_self(self, session_id) if not annotation_only else
@@ -42,7 +46,7 @@ class PeopleIdentityMixin:
                     import logging
                     logging.getLogger(__name__).exception('Shadow enqueue will retry independently')
             return {'session_id': session_id, 'status': 'succeeded', 'dataset_role': role[0],
-                    'learning_excluded': True, 'shadow_status': 'queued' if role[0] == 'blind' else 'frozen_holdout', **product}
+                    'learning_excluded': True, 'research_reservation': reservation, 'shadow_status': 'queued' if role[0] == 'blind' else 'frozen_holdout', **product}
         if annotation_only:
             with self._uow_factory() as uow:
                 uow.people.enqueue_samples(session_id)

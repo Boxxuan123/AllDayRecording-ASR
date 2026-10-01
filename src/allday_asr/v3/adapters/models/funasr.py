@@ -17,6 +17,7 @@ from allday_asr.v3.paths import (
 VAD_MODEL_ID = "fsmn-vad"
 ASR_MODEL_ID = "iic/SenseVoiceSmall"
 SPEAKER_MODEL_ID = "cam++"
+SPEAKER_INFERENCE_PROTOCOL = "cam++-single-waveform-v2"
 MODEL_CACHE_IDS = {
     VAD_MODEL_ID: "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
     ASR_MODEL_ID: ASR_MODEL_ID,
@@ -132,13 +133,21 @@ class FunASRBackend:
     def extract_speaker_embeddings(
         self, samples: list[np.ndarray], *, batch_size: int = 8
     ) -> np.ndarray:
-        """Extract one CAM++ embedding for each mono 16 kHz float waveform."""
+        """Extract companion-invariant CAM++ embeddings from mono 16 kHz audio.
+
+        FunASR 1.4.4 pads fbank frames across a batch, but CAM++ forward and
+        temporal pooling do not accept valid lengths. Keep each model call at
+        one waveform: batching by similar duration still changes the evidence.
+        batch_size is retained for caller compatibility, not model batching.
+        """
+        if batch_size < 1:
+            raise ValueError("speaker batch size must be positive")
         if not samples:
             return np.empty((0, 192), dtype=np.float32)
         self.ensure_speaker_loaded()
         result = self._speaker_model.generate(
             input=[np.asarray(item, dtype=np.float32) for item in samples],
-            batch_size=batch_size,
+            batch_size=1,
         )
         embeddings: list[np.ndarray] = []
         for item in result:

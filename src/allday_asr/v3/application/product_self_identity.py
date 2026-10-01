@@ -1,6 +1,7 @@
 """Infer self on a non-learning recording without creating voice samples."""
 
 import json
+import logging
 from dataclasses import asdict
 
 from allday_asr.v3.domain.ids import new_ulid
@@ -11,13 +12,24 @@ from .people_support import _datetime
 
 def infer_product_self(service, session_id):
     matcher = service._self_identity_matcher
-    status = matcher.status() if matcher is not None else {"auto_identity_enabled": False}
+    degraded = False
+    try:
+        status = matcher.status() if matcher is not None else {"auto_identity_enabled": False}
+    except Exception:
+        logging.getLogger(__name__).exception('Self matcher status unavailable')
+        status = {"auto_identity_enabled": False, "reason": "matcher_status_exception"}
+        degraded = True
     with service._uow_factory().reading() as uow:
         queries = uow.people.product_self_queries(session_id, service._artifact_root)
         person_id = uow.people.self_person_id()
     available = bool(person_id and status.get("auto_identity_enabled"))
     tracks = tuple(t for q in queries for t in q["tracks"]) if available else ()
-    embeddings = {e.speaker_track_id: e for e in service._provider.embed(tracks)}
+    try:
+        embeddings = {e.speaker_track_id: e for e in service._provider.embed(tracks)}
+    except Exception:
+        logging.getLogger(__name__).exception('Speaker embedding failed; identity remains Unknown')
+        embeddings = {}
+        degraded = True
     traces = []
     for query in queries:
         decisions = []
@@ -34,7 +46,13 @@ def infer_product_self(service, session_id):
                                       "duration_ms": duration})
                 else:
                     invoked = True
-                    decisions.append({**matcher.match(embedding).evidence, "duration_ms": duration})
+                    try:
+                        decision = matcher.match(embedding).evidence
+                    except Exception:
+                        logging.getLogger(__name__).exception('Self matcher failed; window remains Unknown')
+                        decision = {"decision": "unknown", "reason": "matcher_exception"}
+                        degraded = True
+                    decisions.append({**decision, "duration_ms": duration})
         # Existing V3.1 window requirement: two disjoint >=2s windows, all agree.
         eligible = [d for d in decisions if d["duration_ms"] >= 2000]
         identity = SelfIdentity.UNKNOWN
@@ -80,5 +98,6 @@ def infer_product_self(service, session_id):
            json.dumps({"purpose": "product_inference_only", "self_enrollment": status,
                        "profile_learning": False, "traces": traces}), len(tracks),now,now))
     return {"product_identity_run_id": run_id, "product_inference_executed": True,
+            "product_inference_degraded": degraded,
             "product_self_updated_utterance_count": updated,
             "product_self_matched_utterance_count": sum(t["decision_before_projection"] == "self" for t in traces)}

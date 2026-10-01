@@ -19,6 +19,7 @@ from allday_asr.v3.adapters.transfer.automation_state import (
 from allday_asr.v3.adapters.transfer.automation_retry import (
     AutomaticWorkflowRetryMixin,
 )
+from allday_asr.v3.adapters.transfer.speaker_continuity import infer_safely
 from allday_asr.v3.application import (
     DurableProcessingWorker,
     RecordBackupEvidenceCommand,
@@ -302,7 +303,7 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
 
         self._require_input_revision(session_id, input_revision)
         self._progress(session_id, "running", "speaker_identity", "正在分析开放集说话人身份")
-        identity = self.core.people.analyze(session_id)
+        identity = infer_safely(self.core, session_id)
         self._require_input_revision(session_id, input_revision)
         detail = self.core.desktop.session_detail(session_id)
         active_utterances = [

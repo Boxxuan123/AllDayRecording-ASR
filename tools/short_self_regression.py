@@ -14,7 +14,9 @@ from allday_asr.v3.adapters.sqlite.product_self_queries import product_self_quer
 from allday_asr.v3.ports.speaker_embeddings import SpeakerClipInput, SpeakerTrackInput
 
 
-def replay(state, output, previous_manifest, previous_replay):
+def replay(
+    state, output, previous_manifest, previous_replay, *, verify_prior_baseline=True
+):
     state, output = Path(state), Path(output)
     target = output / "fixed-regression.json"
     if target.exists():
@@ -192,7 +194,7 @@ def replay(state, output, previous_manifest, previous_replay):
         }
         for g in ("paired", "production_ownership")
     }
-    assert metrics == {
+    expected_baseline = {
         "paired": {"self_accepted": 6, "self_unknown": 6, "negative_self": 0},
         "production_ownership": {
             "self_accepted": 2,
@@ -200,14 +202,14 @@ def replay(state, output, previous_manifest, previous_replay):
             "negative_self": 0,
         },
     }
-    assert (
-        sum(
-            r["truth"] == "non-self"
-            and r["current_single_default_batch"]["decision"] == "self"
-            for r in raw
-        )
-        == 3
+    single_false_self_count = sum(
+        r["truth"] == "non-self"
+        and r["current_single_default_batch"]["decision"] == "self"
+        for r in raw
     )
+    if verify_prior_baseline:
+        assert metrics == expected_baseline
+        assert single_false_self_count == 3
     assert integrity(c) == read(output / "before/fingerprints.json")
     write(
         target,
@@ -216,6 +218,7 @@ def replay(state, output, previous_manifest, previous_replay):
             "previous_replay_sha256": digest(previous_replay),
             "production_batch_size": 8,
             "production_writes": False,
+            "verify_prior_baseline": verify_prior_baseline,
             "metrics": metrics,
             "events": rows,
             "single_default_batch": raw,

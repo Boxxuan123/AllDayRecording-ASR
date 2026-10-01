@@ -7,6 +7,7 @@ from .v021_speaker_profile_purity import SQL as V021_SQL
 from .v022_enrollment_purity import SQL as V022_SQL
 from .v023_blind_reservation import SQL as V023_SQL
 from .v024_blind_turn_truth import SQL as V024_SQL
+from .v025_speaker_research_reservation import SQL as V025_SQL
 from .v015_annotation_receipts import SQL as V015_SQL
 from .v013_annotation_facts import SQL as V013_SQL
 from .v014_annotation_samples import SQL as V014_SQL
@@ -66,6 +67,8 @@ MIGRATIONS = (
     V3Migration(version=22, name="enrollment_purity_sources", sql=V022_SQL),
     V3Migration(version=23, name="blind_session_reservation", sql=V023_SQL),
     V3Migration(version=24, name="blind_turn_truth_dimensions", sql=V024_SQL),
+    V3Migration(version=25, name="prospective_speaker_research_reservation", sql=V025_SQL,
+                contract_visible=False),
 )
 
 __all__ = ["MIGRATIONS"]
