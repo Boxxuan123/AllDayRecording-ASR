@@ -81,6 +81,8 @@ def test_freeze_clones_model_matcher_profiles_and_excludes_all_old_sessions(worl
     assert service.upgrade_turn_experiment("synthetic-v2")["snapshot_hash"] == v2["snapshot_hash"]
     assert not service.enqueue(session)
     assert service.report("synthetic-v2")["progress"]["generated_events"] == 0
+    assert service.report("synthetic-v2")["progress"]["reserved_sessions"] == 0
+    assert service.report("synthetic-v1")["progress"]["reserved_sessions"] == 1
     assert service.report("synthetic-v1")["progress"]["generated_events"] == before
     with core.database.read() as c:
         assert c.execute("SELECT retired_at FROM blind_experiments WHERE experiment_id='synthetic-v1'").fetchone()[0]
@@ -93,6 +95,8 @@ def test_new_v2_session_builder_prediction_review_identity_and_isolation(world):
     service.upgrade_turn_experiment("synthetic-v2")
     new = seed(world, number=2)
     assert not service.enqueue(old)
+    assert service.report("synthetic-v1")["progress"]["reserved_sessions"] == 1
+    assert service.report("synthetic-v2")["progress"]["reserved_sessions"] == 1
     with SqliteUnitOfWork(core.database) as uow:
         row = uow.desktop.connection.execute("SELECT utterance_id FROM utterances WHERE session_id=? AND ordinal=0",(new,)).fetchone()
         template = uow.evidence.get_utterance(row[0])

@@ -5,6 +5,7 @@ from collections import Counter
 
 from allday_asr.v3.adapters.sqlite.blind_reviews import latest_truth
 from allday_asr.v3.adapters.sqlite.dataset_reservations import now, settings
+from allday_asr.v3.adapters.sqlite.blind_admission import instant
 from allday_asr.v3.application.blind_scoring import digest, encoded, metrics
 
 
@@ -78,8 +79,13 @@ def build_report(connection, experiment_id):
             'clean_minus_legacy': b[k]['rate'] - a[k]['rate'] if a[k]['rate'] is not None else None}
             for k in ('known_recall', 'wrong_known_rate', 'unknown_FA', 'self_to_other_rate')}
     roles = [dict(r) for r in connection.execute('SELECT * FROM session_dataset_roles')]
+    reserved = [r for r in roles if r['dataset_role'] == 'blind'
+        and not r['historical_diagnostic_only']
+        and instant(r['role_assigned_at']) >= instant(frozen['data_cutoff'])
+        and (experiment['retired_at'] is None
+             or instant(r['role_assigned_at']) < instant(experiment['retired_at']))]
     jobs = [dict(r) for r in connection.execute('SELECT session_id,experiment_id,status,attempts,error,updated_at FROM blind_shadow_jobs WHERE experiment_id=?', (experiment_id,))]
-    progress = {'reserved_sessions': sum(r['dataset_role'] == 'blind' for r in roles),
+    progress = {'reserved_sessions': len(reserved),
                 'processed_sessions': sum(r['status'] == 'completed' for r in jobs),
                 'job_status_counts': dict(Counter(r['status'] for r in jobs)), 'jobs': jobs, **coverage,
                 'known': all_metrics['legacy_G']['known'], 'unknown': all_metrics['legacy_G']['unknown'],
