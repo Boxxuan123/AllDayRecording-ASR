@@ -4,14 +4,11 @@ import hashlib
 from dataclasses import replace
 
 import pytest
-from tests.test_blind_validation import seed
+from tests.test_blind_validation import seed, world as world
 from allday_asr.v3.application.blind_scoring import digest, encoded
 from allday_asr.v3.domain.speaker_turns import PROJECTION_VERSION, QUERY_BUILDER_VERSION
 from allday_asr.v3.adapters.sqlite.blind_queries import automatic_queries, latest_run
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork
-
-pytest_plugins = ["tests.test_blind_validation"]
-
 
 def v2_task(world):
     _, core, service, *_ = world

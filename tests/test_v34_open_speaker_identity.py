@@ -39,6 +39,7 @@ from allday_asr.v3.domain.people import (
     conservative_match,
     layered_person_match,
 )
+from allday_asr.v3.interfaces.device_reviews import DeviceReviewService
 from allday_asr.v3.ports.speaker_embeddings import SpeakerClipInput, SpeakerTrackInput
 
 
@@ -619,6 +620,52 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
         summary = self.core.people.list_people()[0]
         self.assertEqual(summary["prototype_count"], 0)
         self.assertEqual(summary["voice_maturity_status"], "seed")
+
+    def test_self_sample_can_be_reviewed_without_known_person_policy(self) -> None:
+        self._seed_track(1)
+        self.core.people.analyze(_session_id(1))
+        cluster_id = self.core.people.list_clusters()[0]["cluster_id"]
+        self_person = self.core.people.create_person("我", PersonKind.SELF)
+        self.core.people.label_cluster(cluster_id, self_person["person_id"])
+        with self.core.database.transaction() as connection:
+            prototype_id = connection.execute(
+                "SELECT prototype_id FROM voice_prototypes WHERE speaker_track_id=? AND status='candidate'",
+                (_track_id(1),),
+            ).fetchone()[0]
+        operation_id = stable_ulid("self-phone-review", prototype_id)
+        result = self.core.people.review_prototype(
+            prototype_id, self_person["person_id"], "confirmed",
+            actor="phone-device:device-1", operation_id=operation_id,
+        )
+        self.assertEqual(result["review_id"], operation_id)
+        self.assertIsNotNone(result["accepted_prototype_id"])
+        self.assertIsNone(result["identity_policy"])
+        self.assertIsNone(result["historical_rematch"])
+        replay = DeviceReviewService(self.core).resolve("device-1", {
+            "review_id": "voice_identity:obsolete", "prototype_id": prototype_id,
+            "action": "confirm", "operation_id": operation_id,
+        })
+        self.assertEqual(replay["result"]["review_id"], operation_id)
+        service = DeviceReviewService(self.core)
+        for device, prototype, action in [
+            ("device-2", prototype_id, "confirm"),
+            ("device-1", "another-prototype", "confirm"),
+            ("device-1", prototype_id, "reject"),
+        ]:
+            with self.assertRaisesRegex(ValueError, "another decision"):
+                service.resolve(device, {
+                    "review_id": "voice_identity:obsolete", "prototype_id": prototype,
+                    "action": action, "operation_id": operation_id,
+                })
+        with self.assertRaisesRegex(ValueError, "operation_id is invalid"):
+            service.resolve("device-1", {"review_id": "voice_identity:obsolete",
+                "action": "confirm", "operation_id": "invalid"})
+        retracted = self.core.people.review_prototype(
+            prototype_id, self_person["person_id"], "retracted",
+            actor="phone-device:device-1",
+        )
+        self.assertIsNone(retracted["accepted_prototype_id"])
+        self.assertIsNone(retracted["historical_rematch"])
 
     def test_confirmed_historical_windows_create_one_idempotent_v3_seed(self) -> None:
         self._seed_track(1)

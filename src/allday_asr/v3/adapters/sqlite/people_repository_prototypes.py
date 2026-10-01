@@ -99,12 +99,12 @@ class PeoplePrototypeRepositoryMixin:
         ).fetchone()
         if person is None:
             raise KeyError(f"person does not exist: {person_id}")
-        if str(person["kind"]) != "known":
-            raise ValueError("known-person prototype review cannot target self")
+        if str(person["kind"]) not in {"known", "self"}:
+            raise ValueError("voice prototype review requires a named person")
         if decision == 'confirmed':
             if candidate.get('linked_person_id') != person_id:
                 raise ValueError('prototype cluster is not linked to this person')
-            if float(candidate['quality_score']) < float(self.identity_policy(person_id)['minimum_quality']):
+            if str(person["kind"]) == "known" and float(candidate['quality_score']) < float(self.identity_policy(person_id)['minimum_quality']):
                 raise ValueError('sample does not meet current quality policy')
         current = self.connection.execute(
             """

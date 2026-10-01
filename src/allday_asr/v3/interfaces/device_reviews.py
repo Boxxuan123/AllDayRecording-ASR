@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import json
+import re
 import time
 import wave
 from collections.abc import Mapping
@@ -166,8 +167,25 @@ class DeviceReviewService:
     ) -> dict[str, Any]:
         review_id = _required_text(payload, "review_id")
         action = _required_text(payload, "action")
-        item = self._current_item(review_id)
         actor = f"phone-device:{device_id}"
+        operation_id = payload.get("operation_id")
+        if operation_id is not None:
+            if not isinstance(operation_id, str) or not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", operation_id):
+                raise ValueError("review operation_id is invalid")
+            with self.core.desktop._uow_factory().reading() as uow:
+                prior = uow.desktop.connection.execute(
+                    "SELECT prototype_id, person_id, decision, actor FROM voice_prototype_reviews WHERE review_id=?",
+                    (operation_id,),
+                ).fetchone()
+            if prior is not None:
+                decision = {"confirm": "confirmed", "reject": "rejected", "uncertain": "uncertain", "retract": "retracted"}.get(action)
+                if (prior["actor"] != actor or prior["prototype_id"] != payload.get("prototype_id")
+                        or prior["decision"] != decision):
+                    raise ValueError("review operation_id was used for another decision")
+                return {"result": {"review_id": operation_id, "decision": decision,
+                                   "prototype_id": prior["prototype_id"], "person_id": prior["person_id"]},
+                        "reviews": self.snapshot()}
+        item = self._current_item(review_id)
         kind = str(item["kind"])
         source_id = str(item["source_id"])
         context = dict(item.get("context") or {})
@@ -221,6 +239,7 @@ class DeviceReviewService:
                     decision,
                     note="手机审核",
                     actor=actor,
+                    operation_id=operation_id,
                 )
         elif kind == "reminder":
             if action == "confirm":

@@ -87,8 +87,8 @@ class PeoplePrototypeMixin:
         if not 1 <= limit <= 500:
             raise ValueError("voice prototype review limit must be between 1 and 500")
         with self._uow_factory().reading() as uow:
-            if person_id is not None and uow.people.person_kind(person_id) != "known":
-                raise ValueError("voice prototype review queue only supports known people")
+            if person_id is not None and uow.people.person_kind(person_id) not in {"known", "self"}:
+                raise ValueError("voice prototype review queue only supports people")
             return uow.people.list_review_candidates(person_id, status, limit)
     def enroll_confirmed_windows(
         self,
@@ -214,22 +214,25 @@ class PeoplePrototypeMixin:
         *,
         note: str = "",
         actor: str = "desktop-user",
+        operation_id: str | None = None,
     ) -> dict[str, Any]:
         if decision not in {"confirmed", "rejected", "uncertain", "retracted"}:
             raise ValueError("voice prototype review decision is invalid")
         if not actor.strip():
             raise ValueError("voice prototype review actor is required")
         with self._uow_factory().reading() as uow:
-            if uow.people.person_kind(person_id) != PersonKind.KNOWN.value:
-                raise ValueError("known-person prototype review cannot target self")
+            person_kind = uow.people.person_kind(person_id)
+            if person_kind not in {PersonKind.KNOWN.value, PersonKind.SELF.value}:
+                raise ValueError("voice prototype review requires a named person")
             candidate = (uow.people.prototype_retraction_target(prototype_id, person_id)
                          if decision == 'retracted' else uow.people.prototype_candidate(prototype_id))
             if decision == "confirmed":
                 if (candidate['model'], candidate['model_version']) != (self._provider.model, self._provider.model_version):
                     raise ValueError('样本模型版本已变化，不能采纳旧版本')
-                policy = uow.people.identity_policy(person_id)
-                if float(candidate["quality_score"]) < float(policy["minimum_quality"]):
-                    raise ValueError("样本未达到此人物当前的质量策略，不能采纳")
+                if person_kind == PersonKind.KNOWN.value:
+                    policy = uow.people.identity_policy(person_id)
+                    if float(candidate["quality_score"]) < float(policy["minimum_quality"]):
+                        raise ValueError("样本未达到此人物当前的质量策略，不能采纳")
             current_review = uow.people.latest_prototype_review(
                 prototype_id, person_id
             )
@@ -263,7 +266,7 @@ class PeoplePrototypeMixin:
                     confidence=1.0,
                     promote_candidates=False,
                 )
-        review_id = new_ulid()
+        review_id = operation_id or new_ulid()
         with self._uow_factory() as uow:
             if decision == 'confirmed':
                 latest = uow.people.prototype_candidate(prototype_id)
@@ -279,8 +282,8 @@ class PeoplePrototypeMixin:
                 note=note,
                 created_at=_datetime(self._now()),
             )
-        policy = self._refresh_maturity(person_id, actor)
-        rematch = self.rematch_existing(trigger="prototype_review")
+        policy = self._refresh_maturity(person_id, actor) if person_kind == PersonKind.KNOWN.value else None
+        rematch = self.rematch_existing(trigger="prototype_review") if person_kind == PersonKind.KNOWN.value else None
         return {
             **review,
             "cluster_id": target_cluster_id,
