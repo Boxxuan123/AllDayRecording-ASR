@@ -994,6 +994,30 @@ class V3DeviceSyncTests(unittest.TestCase):
             self.assertEqual(runner._input_revision(original["session_id"]), 2)
             self.assertEqual(runner._manifest_sha256(original["session_id"]), appended_record.sha256)
             self.assertIsNone(runner._completed_processing_snapshot(original["session_id"]))
+            # A watch stop record can arrive after a manual completion. Its
+            # source/timestamp change must not replace identical audio inputs.
+            reconfirmed_manifest = {
+                **appended_manifest,
+                "completion": {**appended_manifest["completion"],
+                               "source": "legacy_user_confirmed",
+                               "confirmedAt": 1767225602000},
+            }
+            reconfirmed, reconfirmed_record = submit(reconfirmed_manifest)
+            self.assertTrue(reconfirmed["input_unchanged"])
+            self.assertEqual(reconfirmed["input_revision"], 2)
+            self.assertEqual(reconfirmed["session_id"], original["session_id"])
+            self.assertEqual(reconfirmed["manifest_sha256"], reconfirmed_record.sha256)
+            reconfirmed_retry = V3UploadIngestAdapter(
+                trust, lambda: SqliteUnitOfWork(database),
+                ContentAddressedStore(root / "audio"),
+                ContentAddressedStore(root / "artifacts"),
+            ).ingest_completed(device.device_id, reconfirmed_record, UploadStore(root / "inbox"))
+            self.assertEqual(reconfirmed_retry, reconfirmed)
+            self.assertEqual(runner._manifest_sha256(original["session_id"]), appended_record.sha256)
+            self.assertEqual(backup_adapter.backup(
+                original["session_id"], root / "independent-backups",
+                storage_kind="independent_device",
+            ).destination, second_backup.destination)
             changed = {**appended_manifest,
                        "chunks": [{**first_chunk, "index": 5},
                                   {**second_chunk, "index": 6}]}

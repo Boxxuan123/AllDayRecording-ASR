@@ -395,8 +395,9 @@ class V3UploadIngestAdapter:
         if manifest["chunks"][:len(old_chunks)] != old_chunks:
             raise UploadConflictError("旧分片的位置或长度改变，不能追加到原会话")
         confirmation_only = (
-            previous.get("format") == _LEGACY_MANIFEST_FORMAT
-            and len(manifest["chunks"]) == len(old_chunks)
+            # Completion evidence can be refreshed for either manifest version.
+            # Identity, chunk positions and audio hashes still must match.
+            len(manifest["chunks"]) == len(old_chunks)
             and all(previous.get(key) == manifest[key] for key in
                     ("completedSegments", "totalSamples", "continuityValid"))
         )
