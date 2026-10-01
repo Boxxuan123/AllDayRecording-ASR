@@ -56,6 +56,21 @@ def product_self_queries(connection, session_id, artifact_root):
         else:
             plan = plan_source_windows(dict(row), row["label"], row["speaker_track_id"],
                                        turns, tokens, [], captures, "product-self-v1")
+            if plan["exclusions"] and all(
+                    e["reason"] == "below_minimum_useful_duration"
+                    for e in plan["exclusions"]):
+                # Token boundaries can leave a tiny tail at a capture edge.
+                # Replan inside the already verified single exclusive turn;
+                # source continuity and every mapping check still apply.
+                complete = plan_source_windows(
+                    dict(row), row["label"], row["speaker_track_id"],
+                    turns, [], [], captures, "product-self-v1")
+                if not complete["exclusions"]:
+                    query["replanning"] = {
+                        "reason": "token_boundary_short_tail",
+                        "original_exclusions": plan["exclusions"],
+                    }
+                    plan = complete
             query["windows"] = plan["windows"]
             query["exclusions"] = plan["exclusions"]
             if plan["exclusions"]:
