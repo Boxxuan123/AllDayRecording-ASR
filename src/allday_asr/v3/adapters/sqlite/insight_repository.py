@@ -4,9 +4,10 @@ from .sound_eligibility import usable_content, confirmed_interaction
 import json
 import sqlite3
 from typing import Any
+from .daily_source_repository import DailySourceRepositoryMixin
 
 
-class SqliteInsightRepository:
+class SqliteInsightRepository(DailySourceRepositoryMixin):
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
 

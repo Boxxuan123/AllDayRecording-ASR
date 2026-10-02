@@ -169,6 +169,52 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "resource_type": {
+                "const": "daily_event"
+              },
+              "operation": {
+                "const": "upsert"
+              }
+            },
+            "required": [
+              "resource_type",
+              "operation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resource": {
+                "$ref": "daily-event.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "resource_type": {
+                "const": "daily_summary"
+              },
+              "operation": {
+                "const": "upsert"
+              }
+            },
+            "required": [
+              "resource_type",
+              "operation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resource": {
+                "$ref": "daily-summary.schema.json"
+              }
+            }
+          }
         }
       ]
     },
@@ -183,7 +229,7 @@
       ],
       "properties": {
         "projection_version": {
-          "const": 4
+          "const": 5
         },
         "cursor": {
           "type": [
@@ -229,7 +275,7 @@
       ],
       "properties": {
         "projection_version": {
-          "const": 4
+          "const": 5
         },
         "receipts": {
           "type": "array",

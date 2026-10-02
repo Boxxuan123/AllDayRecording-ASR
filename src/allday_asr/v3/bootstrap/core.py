@@ -200,6 +200,7 @@ def compose_v3_core(
     insights = DailyInsightService(
         lambda: SqliteUnitOfWork(database), narrative_generator
     )
+    mobile_sync.daily_refresh = insights.refresh_daily_cache
     return V3Core(
         paths=selected,
         database=database,

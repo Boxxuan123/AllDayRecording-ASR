@@ -22,6 +22,8 @@ export interface DailySummary {
   summary_date: string
   timezone: string
   objective: {
+    headline?: string
+    events?: DailyEvent[]
     statistics: Record<string, number | Record<string, number>>
     decisions: Array<Record<string, unknown>>
     new_todos: Array<Record<string, unknown>>
@@ -37,6 +39,22 @@ export interface DailySummary {
   derivation_status: 'active' | 'retracted' | 'stale'
   created_at: string
   evidence: InsightEvidence[]
+}
+
+export interface DailyEvent {
+  event_id: string
+  revision: number
+  title: string
+  start_at: string
+  end_at: string
+  linked_task_ids: string[]
+  participants: Array<{ key: string; kind: string; label: string }>
+  reconciliation: { boundary: string; merge_reasons: string[]; rule_version: string }
+  evidence_snapshots: Array<{
+    utterance_id: string; revision: number; session_id: string
+    start_at: string; text: string; participant: { label: string }
+    audio_ranges: Array<{ media_id: string; start_ms: number; end_ms: number }>
+  }>
 }
 
 export interface RelationshipObservation extends InsightNarrativeItem {

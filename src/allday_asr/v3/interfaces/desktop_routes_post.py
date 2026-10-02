@@ -260,10 +260,9 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
                 raise ValueError("daily summary generation values are invalid")
             self._send_json(
                 HTTPStatus.ACCEPTED,
-                self.application.core.insights.generate_daily(
+                self.application.core.insights.refresh_daily(
                     summary_date,
                     timezone_name,
-                    reasoning_effort=effort,
                 ),
             )
             return

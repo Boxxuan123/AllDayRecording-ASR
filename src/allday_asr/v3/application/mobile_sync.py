@@ -175,11 +175,13 @@ class MobileSyncService:
         operation_handler: ClientOperationHandler | None = None,
         now: DateTimeClock | None = None,
         annotation_samples: Callable | None = None,
+        daily_refresh: Callable[[bool], None] | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._handler = operation_handler or RejectingClientOperationHandler()
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._annotation_samples = annotation_samples
+        self.daily_refresh = daily_refresh
 
     def synchronize(self, device_id: str, request: SyncRequest) -> SyncResponse:
         started = time.perf_counter()
@@ -202,6 +204,8 @@ class MobileSyncService:
             uow.audit.append("device.sync", f"device:{device_id}", "device", device_id,
                 {"cursor": request.cursor, "operation_count": len(request.client_operations)})
         transaction_ms = (time.perf_counter() - transaction_started) * 1000
+        if self.daily_refresh is not None:
+            self.daily_refresh(bool(request.client_operations))
         # Large first-sync reads and response construction never hold the writer.
         with self._uow_factory().reading() as uow:
             latest = uow.changes.high_water()

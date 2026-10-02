@@ -172,7 +172,7 @@ onBeforeUnmount(release)
         </article>
 
         <article class="panel narrative-ledger">
-          <header><div><p class="section-kicker">CODEX LANGUAGE LAYER</p><h2>语言总结</h2></div><small>{{ String(daily.provenance.model ?? 'Codex') }} · {{ String(daily.provenance.reasoning_effort ?? 'auto') }}</small></header>
+          <header><div><p class="section-kicker">DAILY SUMMARY</p><h2>{{ daily.objective.headline ?? '每日总结' }}</h2></div><small>{{ String(daily.provenance.model ?? 'Codex') }}</small></header>
           <section v-for="(items, section) in daily.narrative" :key="section" class="narrative-section">
             <h3>{{ sectionLabels[section] ?? section }}</h3>
             <article v-for="item in items" :key="item.text">
@@ -181,6 +181,21 @@ onBeforeUnmount(release)
             </article>
             <small v-if="!items.length">没有证据充分的内容</small>
           </section>
+        </article>
+        <article v-if="daily.objective.events" class="panel">
+          <h2>事件与证据</h2>
+          <details v-for="event in daily.objective.events" :key="event.event_id">
+            <summary>{{ event.title }} · 修订 {{ event.revision }}</summary>
+            <p>{{ event.start_at }} — {{ event.end_at }}</p>
+            <p>{{ event.participants.map(person => person.label).join('、') }}</p>
+            <p>关联任务：{{ event.linked_task_ids.join('、') || '无' }}</p>
+            <small>切分：{{ event.reconciliation.boundary }}；合并：{{ event.reconciliation.merge_reasons.join('、') || '无' }}；规则：{{ event.reconciliation.rule_version }}</small>
+            <div v-for="evidence in event.evidence_snapshots" :key="`${evidence.utterance_id}:${evidence.revision}`">
+              <p>{{ evidence.start_at }} · {{ evidence.participant.label }} · {{ evidence.text }}</p>
+              <button v-for="range in evidence.audio_ranges" :key="`${range.media_id}:${range.start_ms}`" class="text-button" @click="playRange(range.media_id, range.start_ms, range.end_ms)">▶ 播放原音</button>
+            </div>
+          </details>
+          <pre>{{ JSON.stringify(daily.provenance, null, 2) }}</pre>
         </article>
       </section>
       <div v-else class="state-panel empty-state">这个日期还没有总结。点击“重建每日总结”从事件层生成。</div>

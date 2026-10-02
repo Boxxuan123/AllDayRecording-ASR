@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Structured daily summary projection",
+  "type": "object",
+  "required": [
+    "summary_id",
+    "revision",
+    "summary_date",
+    "timezone",
+    "objective",
+    "provenance"
+  ],
+  "properties": {
+    "summary_id": {
+      "$ref": "primitives.schema.json#/$defs/StableId"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "summary_date": {
+      "type": "string"
+    },
+    "timezone": {
+      "type": "string"
+    },
+    "objective": {
+      "type": "object",
+      "required": [
+        "date",
+        "headline",
+        "headline_event_ids",
+        "key_events",
+        "tasks_created",
+        "tasks_completed",
+        "tasks_pending",
+        "people_interacted",
+        "unresolved_items",
+        "source_event_ids",
+        "generation_version"
+      ],
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "headline": {
+          "type": "string"
+        },
+        "headline_event_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "primitives.schema.json#/$defs/StableId"
+          },
+          "uniqueItems": true
+        },
+        "source_event_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "primitives.schema.json#/$defs/StableId"
+          },
+          "uniqueItems": true
+        },
+        "generation_version": {
+          "type": "string"
+        },
+        "key_events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "event_ids"
+            ],
+            "properties": {
+              "event_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "primitives.schema.json#/$defs/StableId"
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "tasks_created": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "event_ids"
+            ],
+            "properties": {
+              "event_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "primitives.schema.json#/$defs/StableId"
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "tasks_completed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "event_ids"
+            ],
+            "properties": {
+              "event_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "primitives.schema.json#/$defs/StableId"
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "tasks_pending": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "event_ids"
+            ],
+            "properties": {
+              "event_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "primitives.schema.json#/$defs/StableId"
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "people_interacted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "event_ids"
+            ],
+            "properties": {
+              "event_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "primitives.schema.json#/$defs/StableId"
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "unresolved_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "event_ids"
+            ],
+            "properties": {
+              "event_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "primitives.schema.json#/$defs/StableId"
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object"
+    }
+  }
+}

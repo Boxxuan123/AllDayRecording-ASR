@@ -33,7 +33,7 @@ def candidate(env):
 
 def operation(env, kind, payload, revision=None, operation_id=None):
     command = ClientOperation(operation_id or new_ulid(), kind, revision, payload)
-    response = env.sync.synchronize("computer-1", SyncRequest(4, "cursor-0", (command,), 100))
+    response = env.sync.synchronize("computer-1", SyncRequest(5, "cursor-0", (command,), 100))
     return command, response
 
 
@@ -95,7 +95,7 @@ def test_unknown_speaker_not_silently_self(env):
 
 def test_confirmation_sync_restart_and_http_retry(env):
     schedule, command, response = confirmed(env)
-    replay = env.sync.synchronize("computer-1", SyncRequest(4, "cursor-0", (command,), 100))
+    replay = env.sync.synchronize("computer-1", SyncRequest(5, "cursor-0", (command,), 100))
     assert replay.receipts == response.receipts
     assert len(env.reminders.list_schedules()) == 1
     assert len(env.reminders.list_candidates()) == 1
@@ -175,7 +175,7 @@ def test_event_changed_outside_reminder_rejects_task_with_durable_conflict(env):
         uow.knowledge.put_event_state(replace(state, revision=state.revision + 1), state.revision)
     command, response = operation(env, "reminder.task", {"event_id": schedule["event_id"], "action": "complete"}, 1)
     assert response.receipts[0].status == "conflict"
-    replay = env.sync.synchronize("computer-1", SyncRequest(4, "cursor-0", (command,), 100))
+    replay = env.sync.synchronize("computer-1", SyncRequest(5, "cursor-0", (command,), 100))
     assert replay.receipts == response.receipts
     assert env.reminders.schedule(schedule["event_id"])["status"] == "scheduled"
 
@@ -188,7 +188,7 @@ def test_unexpected_storage_failure_rolls_back_task_and_receipt(env, monkeypatch
     monkeypatch.setattr(ReminderApplyMixin, "_apply_candidate", fail)
     command = ClientOperation(new_ulid(), "reminder.review", None, {"candidate_id": item["candidate_id"], "action": "confirm"})
     with pytest.raises(RuntimeError, match="disk failure"):
-        env.sync.synchronize("computer-1", SyncRequest(4, "cursor-0", (command,), 100))
+        env.sync.synchronize("computer-1", SyncRequest(5, "cursor-0", (command,), 100))
     assert env.knowledge.list_events(seed.SESSION_ID) == ()
     assert env.reminders.candidate(item["candidate_id"])["status"] == "pending_confirmation"
     with env.factory().reading() as uow:

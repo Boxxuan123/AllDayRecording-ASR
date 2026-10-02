@@ -1,5 +1,5 @@
 {
-  "contract_version": "3.7.1",
+  "contract_version": "3.8.0",
   "recording_session": {
     "session_id": "01990d5a-7c00-7000-8000-000000000001",
     "captured_start": "2026-09-01T02:23:15Z",
@@ -78,7 +78,7 @@
     "updated_at": "2026-09-01T02:29:00Z"
   },
   "device_sync_request": {
-    "projection_version": 4,
+    "projection_version": 5,
     "cursor": "cursor-41",
     "client_operations": [
       {
@@ -96,7 +96,7 @@
     "pull_limit": 500
   },
   "device_sync_response": {
-    "projection_version": 4,
+    "projection_version": 5,
     "receipts": [
       {
         "operation_id": "01990d5a-7c00-7000-8000-000000000006",
@@ -149,7 +149,7 @@
     "server_time": "2026-09-01T02:29:00Z"
   },
   "expected_decode": {
-    "contract_version": "3.7.1",
+    "contract_version": "3.8.0",
     "session_state": "ready_for_processing",
     "aggregate_status": "ready",
     "processing_status": "running",

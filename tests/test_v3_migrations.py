@@ -369,7 +369,7 @@ class V3MigrationTests(unittest.TestCase):
         self.assertEqual(utterance["original_text"], "模型文本")
         self.assertEqual(utterance["start_at"], "2026-08-31T02:00:00.125Z")
         self.assertEqual(utterance["end_at"], "2026-08-31T02:00:00.900Z")
-        self.assertEqual(tuple(cursor), (4, 0))
+        self.assertEqual(tuple(cursor), (5, 0))
         self.assertEqual(utterance["identity"], "unknown")
         self.assertEqual(utterance["original_identity"], "unknown")
         self.assertEqual(

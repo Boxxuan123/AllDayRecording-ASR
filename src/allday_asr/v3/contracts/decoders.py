@@ -61,6 +61,8 @@ KNOWN_ENUMS: dict[str, frozenset[str]] = {
             "utterance",
             "review_item",
             "reminder",
+            "daily_event",
+            "daily_summary",
         }
     ),
     "sync_operation": frozenset({"upsert", "tombstone"}),

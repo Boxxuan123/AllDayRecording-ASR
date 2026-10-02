@@ -28,7 +28,7 @@ def _default_migrations() -> tuple[V3Migration, ...]:
     return MIGRATIONS
 
 
-LATEST_V3_SCHEMA_VERSION = 26
+LATEST_V3_SCHEMA_VERSION = 27
 
 
 class V3MigrationRunner:
