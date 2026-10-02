@@ -1,6 +1,6 @@
 # 一次性本人待办闭环
 
-2026-10-01：实现与隔离测试已完成，真机验收待完成。当前不能据此宣称可日用。
+2026-10-02：实现、隔离测试和手机审核/任务操作已验证；真机系统发布返回 1700002，实际通知尚未通过。当前不能据此宣称可日用。
 
 自动上传处理在 durable ASR 与已有本人 inference 后调用 `ReminderExtractionService.extract_product`，无需 Codex 登录或网络。只处理有效、可用 speech 且投影身份为 self 的明确第一人称任务。示例“我明天下午三点给老师发材料”以 utterance.start_at 和会话时区解析为绝对时间，延迟上传不会把日期再推后一天。
 
@@ -14,6 +14,10 @@
 
 手机复用 ReminderAgentCalendar；同 event group 保留一条系统请求。断网改期、取消、完成保存在 outbox，并在本地重载时应用；取消与完成撤销系统请求，改期替换旧时间。通知权限拒绝和调度失败显示于任务页，过期任务不会向后滚动。设备能力、签名、锁屏/后台实际触发和系统重启行为必须另做真机验收。
 
-当前沿用 SDK 26 的 UTC `FIXED_TIME_ZONE` 请求；工程 compatible SDK 为 23，构建仍会提示该既有 API 的兼容警告。目标手机实际是否支持这项能力尚待连接验证，不能把主机 mock 的通过当成低版本兼容证明。
+真机发现新建候选 expected_revision=0 被错误投影为 source_revision，手机严格 DTO 将其过滤。审核投影现将无现有事件修订的创建候选序列化为 null，保留正修订与手机校验。
+
+Calendar 原生构造先按本地时间校验，之后才读取时区模式；传 UTC 日期字段会在 UTC+8 设备被判为过期。现在从持久化的绝对时刻转换为手机本地日期字段，使用默认 Calendar 请求，取消 API 26 fixedTimeZone 依赖。跨时区后需应用重新调度，未证明旅行期间应用不运行时仍按原绝对时刻触发。
+
+真机当前有效系统提醒为 0，publishReminder 仍返回 1700002。当前调试签名 Profile 的 allowed-acls 为空；需核对 AppGallery Connect 的代理提醒开放能力及更新后的签名 Profile。没有以常驻轮询或前台即时通知绕过系统限制。候选和任务状态成功不等于系统通知已经安排。
 
 隔离 Python 用例：`python -m pytest tests/test_product_reminder_loop.py`。完整回归：`python -m pytest tests`。数据标记 `PRODUCT_REMINDER_E2E_TEST`，仅在临时数据库运行，不写生产、Blind、学习或人物画像。

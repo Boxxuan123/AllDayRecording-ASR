@@ -70,7 +70,10 @@ class DesktopReviewQueryMixin:
                     "kind": "reminder",
                     "priority": "high",
                     "source_id": str(candidate["candidate_id"]),
-                    "source_revision": candidate.get("expected_revision"),
+                    # Zero means a new event, so there is no existing source
+                    # revision. The mobile contract accepts null or a positive
+                    # revision, never the internal creation sentinel.
+                    "source_revision": candidate.get("expected_revision") or None,
                     "session_id": str(candidate["session_id"]),
                     "person_id": str(candidate["actor_person_id"]),
                     "title": title,

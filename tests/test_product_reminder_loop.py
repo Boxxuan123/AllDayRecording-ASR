@@ -63,6 +63,17 @@ def test_same_source_three_runs_and_concurrent_retry_single_candidate(env):
     assert len(env.reminders.list_candidates()) == 1
 
 
+def test_new_candidate_review_has_no_existing_source_revision(env):
+    item = candidate(env)
+    assert item["expected_revision"] == 0
+    with env.factory().reading() as uow:
+        review = next(row for row in uow.desktop.list_reviews(50)
+                      if row["source_id"] == item["candidate_id"])
+    assert review["source_revision"] is None
+    assert review["context"]["source_text"] == "我明天下午三点给老师发材料"
+    assert review["context"]["scheduled_at"] == item["scheduled_at"]
+
+
 @pytest.mark.parametrize("text", [
     "我昨天已经发过了", "不用发了", "这个取消", "我本来准备明天发，但是现在不用了",
     "不用提醒我发材料了", "我明天下午三点不用发材料", "明天下午三点发材料",
