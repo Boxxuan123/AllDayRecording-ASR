@@ -6,6 +6,7 @@ from allday_asr.v3.domain.blind_windows import plan_source_windows
 from allday_asr.v3.domain.sound_kind import sound_uses
 from allday_asr.v3.domain.speaker_turns import foreign_turns
 from allday_asr.v3.domain.product_self_gate import independent_source_windows
+from allday_asr.v3.domain.product_query_ownership import owned_ranges, omitted_ranges, captures_cover_range
 from allday_asr.v3.ports.speaker_embeddings import SpeakerClipInput, SpeakerTrackInput
 
 from .blind_queries import _evidence, latest_run
@@ -22,7 +23,15 @@ def product_self_queries(connection, session_id, artifact_root):
         (run_id,),
     ).fetchall()
     try:
+        evidence_rows = connection.execute("""SELECT kind,status FROM artifacts WHERE run_id=?
+            AND kind IN ('v3_asr_evidence','v3_diarization_evidence','v3_transcript_evidence')""", (run_id,)).fetchall()
+        # _evidence is shared with frozen experiments. Keep product-only
+        # stale/ambiguous guards here, without changing their builder semantics.
+        if any(r['status'] != 'active' for r in evidence_rows) or len({r['kind'] for r in evidence_rows}) != len(evidence_rows):
+            raise ValueError('product query evidence is stale or ambiguous')
         data = _evidence(connection, run_id, artifact_root)
+        if any(d.get('session_id', session_id) != session_id for d in data.values()):
+            raise ValueError('product query evidence belongs to another session')
     except (OSError, ValueError, TypeError, KeyError) as exc:
         return [{"utterance_id": r["utterance_id"], "revision": r["revision"],
                  "tracks": (), "reason": f"automatic_turn_evidence_unavailable:{type(exc).__name__}"}
@@ -49,29 +58,37 @@ def product_self_queries(connection, session_id, artifact_root):
         elif foreign_turns(row["start_ms"], row["end_ms"], row["label"],
                            data["v3_diarization_evidence"].get("regular_turns", [])):
             query["reason"] = "overlapping_or_foreign_regular_turn"
-        elif not any(t["speaker_label"] == row["label"] and
-                     t["start_ms"] <= row["start_ms"] and t["end_ms"] >= row["end_ms"]
-                     for t in turns):
-            # A track is a grouping, not a guarantee of one speaker throughout.
+        elif not captures_cover_range(row['start_ms'], row['end_ms'], captures):
+            query['reason'] = 'incomplete_or_mixed_query'
+            query['exclusions'] = [{'start_ms': row['start_ms'], 'end_ms': row['end_ms'],
+                                    'reason': 'missing_or_invalid_candidate_capture_mapping'}]
+        elif not (ranges := owned_ranges(row['start_ms'], row['end_ms'], row['label'], turns)):
+            # Foreign exclusive evidence still invalidates the whole candidate.
             query["reason"] = "not_contained_in_single_exclusive_turn"
         else:
-            plan = plan_source_windows(dict(row), row["label"], row["speaker_track_id"],
-                                       turns, tokens, [], captures, "product-self-v1")
-            if plan["exclusions"] and all(
-                    e["reason"] == "below_minimum_useful_duration"
-                    for e in plan["exclusions"]):
-                # Token boundaries can leave a tiny tail at a capture edge.
-                # Replan inside the already verified single exclusive turn;
-                # source continuity and every mapping check still apply.
-                complete = plan_source_windows(
-                    dict(row), row["label"], row["speaker_track_id"],
-                    turns, [], [], captures, "product-self-v1")
-                if not complete["exclusions"]:
-                    query["replanning"] = {
-                        "reason": "token_boundary_short_tail",
-                        "original_exclusions": plan["exclusions"],
-                    }
-                    plan = complete
+            query['ownership'] = {'version': 'positive-exclusive-ownership-v2',
+                'original_range': [row['start_ms'], row['end_ms']],
+                'selected_ranges': [list(r) for r in ranges],
+                'omitted_ranges': omitted_ranges(row['start_ms'], row['end_ms'], ranges)}
+            plan = {'windows': [], 'exclusions': []}
+            for lo, hi in ranges:
+                owned = dict(row, start_ms=lo, end_ms=hi)
+                piece = plan_source_windows(owned, row['label'], row['speaker_track_id'],
+                                            turns, tokens, [], captures, 'product-self-v1')
+                if piece['exclusions'] and all(e['reason'] == 'below_minimum_useful_duration' for e in piece['exclusions']):
+                    # The existing capture-tail retry remains inside this
+                    # positively owned span; it never fills ownership gaps.
+                    complete = plan_source_windows(owned, row['label'], row['speaker_track_id'],
+                                                   turns, [], [], captures, 'product-self-v1')
+                    if not complete['exclusions']:
+                        query['replanning'] = {'reason': 'token_boundary_short_tail',
+                                              'original_exclusions': piece['exclusions']}
+                        piece = complete
+                for window in piece['windows']:
+                    window['provenance']['original_utterance_range'] = [row['start_ms'], row['end_ms']]
+                    window['provenance']['selected_owned_range'] = [lo, hi]
+                plan['windows'].extend(piece['windows'])
+                plan['exclusions'].extend(piece['exclusions'])
             query["windows"] = plan["windows"]
             query["exclusions"] = plan["exclusions"]
             if plan["exclusions"]:
