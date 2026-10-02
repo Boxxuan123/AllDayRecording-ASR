@@ -68,6 +68,9 @@ class UtteranceCorrectionOperationHandler:
     def apply(
         self, operation: ClientOperation, uow: UnitOfWork
     ) -> OperationReceipt:
+        if operation.kind in {"reminder.review", "reminder.task"}:
+            from .reminder_phone_operations import apply_reminder_operation
+            return apply_reminder_operation(operation, uow, self._now())
         if operation.kind in {"speaker.assign", "segment.classify"}:
             return self._assign_speaker(operation, uow)
         if operation.kind != "utterance.correct":

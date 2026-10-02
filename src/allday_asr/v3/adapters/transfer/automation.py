@@ -330,10 +330,10 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 session_id,
                 reasoning_effort=self.reasoning_effort,
             )
-        if active_utterances and settings["reminders"]["codex_enabled"]:
+        if active_utterances:
             self._require_input_revision(session_id, input_revision)
             self._progress(session_id, "running", "reminder_generation", "正在生成待人工审核的提醒")
-            reminder_result = self.core.reminder_extraction.extract(
+            reminder_result = self.core.reminder_extraction.extract_product(
                 session_id,
                 reasoning_effort=self.reasoning_effort,
             )

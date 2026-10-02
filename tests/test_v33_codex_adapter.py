@@ -122,7 +122,7 @@ class V33CodexAdapterTests(unittest.TestCase):
         defaults = CodexReminderSettings.from_environment(
             {"ALLDAY_V3_CODEX_WORKDIR": str(self.workdir)}
         )
-        self.assertTrue(defaults.allow_auto_apply)
+        self.assertFalse(defaults.allow_auto_apply)
         settings = CodexReminderSettings.from_environment(
             {
                 "ALLDAY_V3_CODEX_ENABLED": "1",

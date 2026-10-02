@@ -81,6 +81,11 @@ class DeviceReviewService:
                 continue
             item = dict(raw)
             context = dict(item.get("context") or {})
+            if item.get("kind") == "reminder":
+                candidate = self.core.reminders.candidate(str(item["source_id"]))
+                context["source"] = candidate["input_scope"]
+                context["actor_person_id"] = candidate["actor_person_id"]
+                context["source_text"] = candidate["input_scope"].get("source_text") or context.get("source_text", "")
             if (
                 item.get("kind") == "voice_identity"
                 and context.get("voice_mode") == "known_person"

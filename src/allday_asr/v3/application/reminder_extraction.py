@@ -4,6 +4,8 @@ from allday_asr.v3.domain.sound_kind import is_usable_speech
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
+from allday_asr.v3.domain.hashing import canonical_json_sha256
+from allday_asr.v3.domain.reminder_time import explicit_task, VERSION
 
 from allday_asr.v3.domain.reminders import (
     CommitmentDirection,
@@ -72,7 +74,7 @@ class ReminderExtractionService:
         generator: ReminderModelGenerator | None,
         *,
         default_effort: str = "auto",
-        allow_auto_apply: bool = True,
+        allow_auto_apply: bool = False,
         now: DateTimeClock | None = None,
     ) -> None:
         if default_effort not in _ALLOWED_EFFORTS:
@@ -136,7 +138,7 @@ class ReminderExtractionService:
                 },
                 intents=intents,
             ),
-            allow_auto_apply=self._allow_auto_apply,
+            allow_auto_apply=False,
             allow_empty=True,
         )
         result["codex"] = {
@@ -150,6 +152,45 @@ class ReminderExtractionService:
     def close(self) -> None:
         if self._generator is not None:
             self._generator.close()
+
+    def extract_product(self, session_id: str, **_options) -> dict[str, Any]:
+        request = self._request(session_id)
+        candidates = []
+        now = datetime.fromisoformat(request.now_utc.replace("Z", "+00:00"))
+        for utterance in request.utterances:
+            if utterance["identity"] != "self":
+                continue
+            parsed = explicit_task(utterance["text"], utterance["start_at"], request.captured_timezone)
+            if parsed is None:
+                continue
+            title, due, expression = parsed
+            source = {
+                "session_id": session_id, "start_at": utterance["start_at"],
+                "end_at": utterance["end_at"], "action": title, "scheduled_at": _datetime(due),
+            }
+            key = "product-reminder:" + canonical_json_sha256(source)
+            # Consult prior decisions even after a task has become overdue.
+            with self._uow_factory().reading() as uow:
+                prior = uow.idempotency.response(key)
+            if due <= now and prior is None:
+                continue
+            intent = ReminderIntent(
+                operation=ReminderOperation.CREATE_TASK, session_id=session_id,
+                actor_person_id="self", commitment_direction=CommitmentDirection.NOT_APPLICABLE,
+                title=title, scheduled_at=due, confidence=1.0, needs_confirmation=True,
+                evidence_utterance_ids=(utterance["utterance_id"],), reason="explicit_self_future_task",
+            )
+            result = self._reminders.submit_generation(ReminderGenerationSubmission(
+                producer="product-reminder", producer_version=VERSION, model="bounded-rule",
+                prompt_version=VERSION, extractor_version=VERSION,
+                input_scope={**source, "product_source_key": key,
+                    "utterance_ids": [utterance["utterance_id"]],
+                    "source_text": utterance["text"], "speaker_identity": "self",
+                    "recorded_at": utterance["start_at"], "timezone": request.captured_timezone,
+                    "time_expression": expression, "utterance_revision": utterance["revision"]},
+                intents=(intent,)), allow_auto_apply=False)
+            candidates.extend(result["candidates"])
+        return {"status": "succeeded", "candidates": candidates, "extractor_version": VERSION}
 
     def _request(self, session_id: str) -> ReminderModelRequest:
         with self._uow_factory().reading() as uow:

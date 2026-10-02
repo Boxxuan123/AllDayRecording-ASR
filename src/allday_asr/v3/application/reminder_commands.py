@@ -92,7 +92,21 @@ class ReminderCommandMixin:
             ),
             on_proposal_created=add_candidate,
             allow_empty=allow_empty,
+            idempotency_key=submission.input_scope.get("product_source_key"),
         )
+        if not candidate_ids:
+            with self._uow_factory().reading() as uow:
+                candidate_ids = [
+                    candidate.candidate_id
+                    for proposal in result["proposals"]
+                    if (candidate := uow.reminders.get_candidate_by_proposal(
+                        proposal["proposal_id"]
+                    )) is not None
+                ]
+            # Replays retain the user's ignored/completed/edited decision.
+            result.pop("proposals", None)
+            result["candidates"] = [self.candidate(cid) for cid in candidate_ids]
+            return result
         for candidate_id in candidate_ids:
             self._classify(candidate_id, allow_auto_apply=allow_auto_apply)
         result.pop("proposals", None)

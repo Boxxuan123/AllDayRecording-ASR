@@ -420,7 +420,7 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
             self._send_json(
                 HTTPStatus.ACCEPTED,
                 self.application.core.reminders.submit_generation(
-                    _reminder_generation_submission(body)
+                    _reminder_generation_submission(body), allow_auto_apply=False
                 ),
             )
             return

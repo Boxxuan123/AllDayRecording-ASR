@@ -85,6 +85,11 @@ class DesktopReviewQueryMixin:
                         "scheduled_at": candidate.get("scheduled_at"),
                         "location": candidate.get("location"),
                         "confidence": float(candidate["confidence"]),
+                        "actor_person_id": candidate["actor_person_id"],
+                        "source": candidate.get("input_scope", {}),
+                        "source_text": candidate.get("input_scope", {}).get("source_text") or "\n".join(
+                            str(row[0]) for uid in evidence for row in self.connection.execute(
+                                "SELECT text FROM utterances WHERE utterance_id=?", (uid,))),
                     },
                 }
             )

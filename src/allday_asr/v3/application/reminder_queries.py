@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import asdict
 from typing import Any
 
 from allday_asr.v3.domain.knowledge import (
@@ -35,6 +36,8 @@ class ReminderQueryMixin:
         _validate_limit(limit)
         with self._uow_factory().reading() as uow:
             items = list(uow.reminders.list_candidates(status, limit))
+            for item in items:
+                item["input_scope"] = uow.knowledge.get_generation(item["generation_id"]).input_scope
         evidence_by_session: dict[str, tuple[dict[str, Any], ...]] = {}
         for item in items:
             session_id = str(item["session_id"])
@@ -51,10 +54,24 @@ class ReminderQueryMixin:
         return tuple(items)
 
     def candidate(self, candidate_id: str) -> dict[str, Any]:
-        for item in self.list_candidates(limit=500):
-            if item["candidate_id"] == candidate_id:
-                return item
-        raise KeyError(f"reminder candidate does not exist: {candidate_id}")
+        # Durable source replays and old pending reviews must remain addressable
+        # after they fall outside the most recent list page.
+        with self._uow_factory().reading() as uow:
+            candidate = uow.reminders.get_candidate(candidate_id)
+            proposal = uow.knowledge.get_proposal(candidate.proposal_id)
+            generation = uow.knowledge.get_generation(candidate.generation_id)
+        item = asdict(candidate)
+        for key in ("scheduled_at", "created_at", "resolved_at"):
+            item[key] = _datetime(item[key]) if item[key] is not None else None
+        item["related_person_ids"] = list(candidate.related_person_ids)
+        item.update(proposal_status=proposal.status.value,
+            evidence_utterance_ids=list(proposal.evidence_utterance_ids),
+            resolution_reason=proposal.resolution_reason, input_scope=generation.input_scope)
+        for key in ("producer", "producer_version", "model", "prompt_version", "extractor_version"):
+            item[key] = getattr(generation, key)
+        item["evidence"] = [span for span in self._knowledge.list_evidence(candidate.session_id)
+            if span["utterance_id"] in proposal.evidence_utterance_ids]
+        return item
 
     def list_schedules(
         self,

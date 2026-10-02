@@ -57,10 +57,17 @@ class KnowledgeGenerationMixin:
         *,
         on_proposal_created: ProposalCreatedHook | None = None,
         allow_empty: bool = False,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         now = self._now()
         _validate_submission(submission, allow_empty=allow_empty)
         with self._uow_factory() as uow:
+            if idempotency_key is not None:
+                prior = uow.idempotency.response(idempotency_key)
+                if prior is not None:
+                    return prior
+                if not uow.idempotency.begin(idempotency_key, "reminder-source"):
+                    raise ValueError("reminder source operation is incomplete")
             normalized_scope = self._resolve_inputs(uow, submission)
             input_sha256 = canonical_json_sha256(normalized_scope)
             generation_number = uow.knowledge.next_generation_number(
@@ -123,7 +130,7 @@ class KnowledgeGenerationMixin:
                     "proposal_count": len(proposals),
                 },
             )
-            return {
+            result = {
                 "generation_id": generation.generation_id,
                 "layer": generation.layer.value,
                 "input_sha256": generation.input_sha256,
@@ -138,6 +145,9 @@ class KnowledgeGenerationMixin:
                     for proposal in proposals
                 ],
             }
+            if idempotency_key is not None:
+                uow.idempotency.complete(idempotency_key, result)
+            return result
 
     def accept_proposal(
         self,
