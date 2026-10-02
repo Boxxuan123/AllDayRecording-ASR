@@ -1,6 +1,6 @@
 # Short regular overlap acoustic audit — 2026-10-02
 
-本轮结论：**Case B = INSUFFICIENT_EVIDENCE**。当前证据确认有 75 ms 的 regular 双激活与 target exclusive ownership 冲突，但不能确认这 75 ms 是第二个人的声音，也不能确认它是 diarization 误报。保持 current gate，下一步收集专门的声学审核。
+更新结论：**Case B = REGULAR_FALSE_POSITIVE（likely，单人直接听审支持，置信度中等）**。用户完成独立 PC 声学审核后，将固定 Case B 的 75 ms 标为“只听到目标人”。13 个组件全部完成：10 个 target only、3 个 real foreign、0 个 uncertain；14 次提交按组件取最新值，重复提交不重复计数。保持 current gate；值得下一轮研究边界生成，但不能按 overlap 时长自动忽略。
 
 ## 实际版本与冻结范围
 
@@ -31,7 +31,7 @@ Case B raw clip：16 kHz、1200 samples；RMS 0.008584（-41.326 dBFS），peak 
 
 在 -77 ms exclusive switch 附近，波形仍有连续录音能量；仅凭这一时间点和谱图无法证明一次真实的人物切换。前一段对应自动标签 SPEAKER_01，前一个 utterance 未提供覆盖 foreign-exclusive 片段的严格人物声学审核；没有将 profile/cluster prediction 当作真实人物来源。其真实人物尚未确认。
 
-Case B 分类 `INSUFFICIENT_EVIDENCE`；对时序几何的把握高，对“真实 foreign / 纯 target / 噪声”的声学类别置信度不足。已有 clean_single 是一项人工标注，不是排除 75 ms foreign phoneme 的证明。没有由 pure Self 分数推出“无 overlap”。
+初始报告在专门听审前将 Case B 分类为 `INSUFFICIENT_EVIDENCE`。2026-10-02 用户直接听审完整上下文和边界区域后，明确提交 `target_only`；本次更新为 `REGULAR_FALSE_POSITIVE`（likely，置信度中等）。证据是绑定同一 immutable manifest 与原始音频 SHA 的独立声学记录，不是已有 clean_single 或 pure Self 分数。单人听审不能构成声学上绝对排除第二人的证明，也没有进一步确认前人的真实身份、短音素内容或具体边界漂移机制；`DIARIZATION_BOUNDARY_DRIFT` 和 `MODEL_TEMPORAL_RESOLUTION` 不能据此确诊。
 
 ## Regular 与 Exclusive 的算法来源
 
@@ -141,15 +141,36 @@ regular 后人开始早于 exclusive switch 的正 lead 有 1868 个，其正值
 
 | duration / ms | 队列 N | reviewed N | real foreign | target only | uncertain | 未审核 |
 |---|---:|---:|---:|---:|---:|---:|
-| 0-25 | 1 | 0 | 0 | 0 | 0 | 1 |
+| 0-25 | 1 | 1 | 0 | 1 | 0 | 0 |
 | 25-50 | 0 | 0 | 0 | 0 | 0 | 0 |
-| 50-100 | 3 | 0 | 0 | 0 | 0 | 3 |
-| 100-200 | 6 | 0 | 0 | 0 | 0 | 6 |
-| 200-500 | 2 | 0 | 0 | 0 | 0 | 2 |
-| 500+ | 1 | 0 | 0 | 0 | 0 | 1 |
+| 50-100 | 3 | 3 | 0 | 3 | 0 | 0 |
+| 100-200 | 6 | 6 | 3 | 3 | 0 | 0 |
+| 200-500 | 2 | 2 | 0 | 2 | 0 | 0 |
+| 500+ | 1 | 1 | 0 | 1 | 0 | 0 |
 
+14 次实际提交覆盖 13 个唯一组件、9 个事件；同一组件的重复提交只取最新值。用户完成全队列听审，所有提交均带 listened-context 声明；本次重新验证 immutable manifest、每个提交绑定的音频 SHA 与实际 WAV，全部一致。实际记录时间为 2026-10-02 12:05–12:29 UTC。私人 `validated-review-summary.json` 绑定该版账本 SHA。冻结 manifest 的初始分类保持原样，新结论保存为单独审计派生结果。
 
-本报告收尾时新增专门声学审核为 0，未把 pending 当作 uncertain，也没有代替用户勾选结果；Case B 及重点事件仍分类为 INSUFFICIENT_EVIDENCE。审核箱已生成并打开，可继续积累独立声学记录。
+组件级分类如下。`REGULAR_FALSE_POSITIVE` 表示 likely false positive；`LIKELY_REAL_OVERLAP` 表示用户明确听到第二个人，但尚无第二位审核者或独立 activity posterior。两者置信度均为中等，不提升为客观确证。
+
+| 匿名事件 / 组件 | truth 控制组 | duration / ms | position | 听审 | 分类 |
+|---|---|---:|---|---|---|
+| 8be4e7e4c18b1fbc / 0 | self | 75 | START_EDGE | target only | REGULAR_FALSE_POSITIVE |
+| 00a7e3277bd80f85 / 0 | non-self | 169 | INTERIOR | real foreign | LIKELY_REAL_OVERLAP |
+| 0bbcb1f3adf7a9ca / 0 | non-self | 169 | INTERIOR | real foreign | LIKELY_REAL_OVERLAP |
+| 0f9edf956a03948b / 0 | non-self | 168 | INTERIOR | real foreign | LIKELY_REAL_OVERLAP |
+| 0f9edf956a03948b / 1 | non-self | 220 | INTERIOR | target only | REGULAR_FALSE_POSITIVE |
+| 15841b6f3e283265 / 0 | non-self | 102 | INTERIOR | target only | REGULAR_FALSE_POSITIVE |
+| 15841b6f3e283265 / 1 | non-self | 152 | INTERIOR | target only | REGULAR_FALSE_POSITIVE |
+| 44132432c482135c / 0 | self | 196 | START_EDGE | target only | REGULAR_FALSE_POSITIVE |
+| 5dd5ad33f92d22a4 / 0 | non-self | 95 | START_EDGE | target only | REGULAR_FALSE_POSITIVE |
+| 67d73e41c93e82f6 / 0 | non-self | 338 | START_EDGE | target only | REGULAR_FALSE_POSITIVE |
+| 67d73e41c93e82f6 / 1 | non-self | 51 | INTERIOR | target only | REGULAR_FALSE_POSITIVE |
+| ac88deccd7c87775 / 0 | non-self | 506 | INTERIOR | target only | REGULAR_FALSE_POSITIVE |
+| ac88deccd7c87775 / 1 | non-self | 17 | INTERIOR | target only | REGULAR_FALSE_POSITIVE |
+
+4 个 START_EDGE 组件均为 target only；9 个 INTERIOR 为 6 个 target only、3 个 real foreign；队列没有 END_EDGE 或 FULL 样本。两个 Self 事件均为 target only，其余 11 个 Non-self 组件为 8 个 target only、3 个 real foreign。队列也保留含 foreign-exclusive 的对照事件，不把全部 13 个组件当成严格 B-pattern。
+
+3 个 real foreign 的时长为 168、169、169 ms，而同一 100–200 ms 桶内也有 102、152、196 ms 的 target only。即便很短、exclusive 选出 target，也不能按时长认定无外人。全部样本来自固定筛选、事件内组件相关、只有一位审核者；10/13 不能包装成总体误报率。原 clean_single 与新专门听审在 3 个组件上不一致，原人审事实不改写。
 
 ## Case A、historical 与冻结资产验收
 
@@ -161,11 +182,11 @@ Historical `dry_run(limit=100)` 结果：AUTO_SELF=0、REVIEW_SELF_CANDIDATE=1�
 
 ## Current gate 与建议
 
-支持保持 gate：exclusive 主动压掉第二活动，不构成无 foreign 的声学证据；大量冲突也包含内部与较长 overlap；当前没有专门审核证明大多数短 overlap 是误报。Case B 非零能量与原 clean 标签不能排除短外人音素。
+支持保持 gate：3 个组件被明确听到第二个人，时长仅 168–169 ms，其中两个事件满足严格 B-pattern，第三个来自保留的 foreign-exclusive 对照事件。exclusive 的 top-one 输出与短时长都不能保障单人。原 clean_single 也可能遗漏短外人声音。
 
-支持未来研究的证据：冲突存在于 Self 和多个明确 Non-self speaker；输出有明确 frame grid，部分 short activity 跨 speaker switch，而 exclusive 为单一 target。这值得专门审核并追踪 activity 输出的来源。
+支持未来研究的证据：Case B 与另外 9 个组件仅听到 target，4 个 START_EDGE 全部如此，且覆盖 Self 和 Non-self。current gate 在这些被人工判为 target only 的输入上存在保守拒绝的证据；这足以支持下一轮调查边界生成与 regular 活动来源。内部也有 target only，不能归因于统一的边界短尾。样本小且非随机，尚不能断言总体 gate 明显过严或定位一个生产软件 bug。
 
-**建议：KEEP CURRENT GATE + COLLECT MORE REVIEW。** 目前不能断言 current gate 明显过严。尚不支持直接 FIX DIARIZATION BOUNDARY 或 DESIGN BOUNDARY UNCERTAINTY MODEL；只有人工声学复核与进一步活动证据形成一致趋势后，才判断这些方案是否值得下一轮研究。即便未来研究 uncertainty，也不等于 overlap<N ms 自动忽略。
+**建议：KEEP CURRENT GATE + COLLECT MORE REVIEW，并开展下一轮 FIX DIARIZATION BOUNDARY 的诊断研究。** 这里是研究方向，不是已经确定边界生成有错误，也不是本轮修复授权。先扩展 END_EDGE、真实 speaker switch、独立第二位听审及可追溯 activity 输出，区分边界漂移与内部误报。暂不直接选择 DESIGN BOUNDARY UNCERTAINTY MODEL：target only 也包括 338/506 ms 及内部组件，尚不满足“大量落在时间分辨率误差内”的条件。禁止据此新增 overlap<N ms 自动忽略；Case B 在 current production gate 下仍为 Unknown。
 
 ## 验证与复现
 
@@ -182,3 +203,5 @@ Historical `dry_run(limit=100)` 结果：AUTO_SELF=0、REVIEW_SELF_CANDIDATE=1�
 ```
 
 默认只读扫描，拒绝覆盖已有 immutable manifest 或写入 production state。审核服务仅监听 127.0.0.1；提交只写独立 audit JSON ledger，没有 identity/profile 更新入口。Phone NO CHANGE。
+
+本次听审更新只修改匿名报告及忽略的独立审计摘要；生产源码、门控、模型、Phone 和冻结 manifest 无修改。前述 611/1/2 与 140 项测试属于 `1c732249eb0db2429132738a1a82995a4976781c` 的工具版本，本次文档更新没有重跑全套测试。
