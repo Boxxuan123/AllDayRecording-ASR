@@ -23,12 +23,15 @@ from allday_asr.v3.application import (
 from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core, start_empty_runtime
 from allday_asr.v3.config import V3ConfigurationError, V3Settings
 from allday_asr.v3.interfaces.desktop_server import serve_v3_desktop
+from .self_backfill_cli import register as register_self_backfill
 
 
 app = typer.Typer(
     help="V3 Core、桌面工作台和持久处理命令；不包含 Legacy V2 运行时。",
     no_args_is_help=True,
 )
+
+register_self_backfill(app)
 
 
 @app.command(name="status")

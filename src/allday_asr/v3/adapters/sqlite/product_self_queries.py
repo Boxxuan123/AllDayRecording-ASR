@@ -5,6 +5,7 @@ import json
 from allday_asr.v3.domain.blind_windows import plan_source_windows
 from allday_asr.v3.domain.sound_kind import sound_uses
 from allday_asr.v3.domain.speaker_turns import foreign_turns
+from allday_asr.v3.domain.product_self_gate import independent_source_windows
 from allday_asr.v3.ports.speaker_embeddings import SpeakerClipInput, SpeakerTrackInput
 
 from .blind_queries import _evidence, latest_run
@@ -75,6 +76,8 @@ def product_self_queries(connection, session_id, artifact_root):
             query["exclusions"] = plan["exclusions"]
             if plan["exclusions"]:
                 query["reason"] = "incomplete_or_mixed_query"
+            elif not independent_source_windows(plan['windows']):
+                query['reason'] = 'non_independent_source_windows'
             else:
                 tracks = []
                 for window in plan["windows"]:

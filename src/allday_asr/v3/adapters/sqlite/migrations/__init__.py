@@ -8,6 +8,7 @@ from .v022_enrollment_purity import SQL as V022_SQL
 from .v023_blind_reservation import SQL as V023_SQL
 from .v024_blind_turn_truth import SQL as V024_SQL
 from .v025_speaker_research_reservation import SQL as V025_SQL
+from .v026_historical_self_backfill import SQL as V026_SQL
 from .v015_annotation_receipts import SQL as V015_SQL
 from .v013_annotation_facts import SQL as V013_SQL
 from .v014_annotation_samples import SQL as V014_SQL
@@ -68,6 +69,8 @@ MIGRATIONS = (
     V3Migration(version=23, name="blind_session_reservation", sql=V023_SQL),
     V3Migration(version=24, name="blind_turn_truth_dimensions", sql=V024_SQL),
     V3Migration(version=25, name="prospective_speaker_research_reservation", sql=V025_SQL,
+                contract_visible=False),
+    V3Migration(version=26, name="historical_self_identity_review", sql=V026_SQL,
                 contract_visible=False),
 )
 

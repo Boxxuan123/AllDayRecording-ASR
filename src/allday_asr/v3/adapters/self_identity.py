@@ -39,6 +39,8 @@ class CalibratedSelfIdentityMatcher:
             "auto_identity_enabled": True,
             "reference_count": int(references.shape[0]),
             "policy_version": str(policy["policy_version"]),
+            "policy_sha256": _sha256(self._policy_path),
+            "voiceprint_sha256": str(policy["voiceprint_sha256"]),
             "self_threshold": float(policy["self_threshold"]),
             "not_self_threshold": float(policy["not_self_threshold"]),
             "false_accept_rate": float(policy["false_accept_rate"]),

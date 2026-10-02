@@ -22,6 +22,7 @@ from allday_asr.v3.interfaces.transfer.devices import DeviceConflictError
 from .device_review_fields import _public_voice_candidate, _weakest_candidate_first, _required_text, _optional_reason
 from .review_audio import audio_plan, concatenate
 from .review_evidence import candidate_evidence, candidate_key
+from allday_asr.v3.application.self_identity_review import list_reviews as list_self_reviews, resolve_review as resolve_self_review
 
 
 MAX_REVIEW_AUDIO_BYTES = 16 * 1024 * 1024
@@ -58,6 +59,7 @@ class DeviceReviewService:
         purity_items: list[dict[str, Any]] = []
         purity_history: list[dict[str, Any]] = []
         factory = getattr(self.core.desktop, "_uow_factory", None)
+        self_items = list_self_reviews(factory) if factory is not None else []
         if factory is not None:
             with factory().reading() as uow:
                 purity_items = list_purity_phone_tasks(uow.desktop.connection)
@@ -71,6 +73,7 @@ class DeviceReviewService:
             "confirmed": confirmed_candidates, "purity": purity_items,
             "purity_history": purity_history,
             'blind': blind_items, 'blind_history': blind_history,
+            'self': self_items,
         })
         if (only_review_id is None and time.monotonic() < self._cache_until
                 and source_digest == self._source_digest
@@ -109,7 +112,7 @@ class DeviceReviewService:
                     continue
             item["context"] = context
             items.append(item)
-        for raw in (*purity_items, *purity_history, *blind_items, *blind_history):
+        for raw in (*purity_items, *purity_history, *blind_items, *blind_history, *self_items):
             if only_review_id is None or raw["review_id"] == only_review_id:
                 items.append(raw)
         # Reuse the existing per-sample review surface for historical grants.
@@ -131,7 +134,7 @@ class DeviceReviewService:
             })
         clips_by_session: dict[str, list[dict[str, Any]]] = {}
         for item in items:
-            if item["kind"] in {"speaker_profile_purity", 'blind_identity_review'}:
+            if item["kind"] in {"speaker_profile_purity", 'blind_identity_review', 'self_identity_review'}:
                 continue
             for candidate in item.get("context", {}).get("voice_candidates", []):
                 clips_by_session.setdefault(str(candidate["session_id"]), []).extend(
@@ -154,7 +157,7 @@ class DeviceReviewService:
                 if item["kind"] == "speaker_profile_purity":
                     candidate.update(self._purity_context_description(candidate))
                     candidate["evidence_utterances"] = []
-                elif item['kind'] == 'blind_identity_review':
+                elif item['kind'] in {'blind_identity_review', 'self_identity_review'}:
                     candidate['evidence_utterances'] = []
                 else:
                     session_id = candidate['session_id']
@@ -174,6 +177,11 @@ class DeviceReviewService:
         action = _required_text(payload, "action")
         actor = f"phone-device:{device_id}"
         operation_id = payload.get("operation_id")
+        if review_id.startswith('self:'):
+            if not isinstance(operation_id, str) or not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", operation_id):
+                raise ValueError('identity review operation_id is invalid')
+            result = resolve_self_review(self.core.people, payload, actor)
+            return {'result': result, 'reviews': self.snapshot()}
         if operation_id is not None:
             if not isinstance(operation_id, str) or not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", operation_id):
                 raise ValueError("review operation_id is invalid")
@@ -288,8 +296,8 @@ class DeviceReviewService:
         item = self._current_item(review_id)
         context = dict(item.get("context") or {})
         if (
-            item.get("kind") not in {"voice_identity", "speaker_profile_purity", 'blind_identity_review'}
-            or context.get("voice_mode") not in {"known_person", "speaker_discovery", "accepted_grant", "speaker_profile_purity", 'blind_identity_review'}
+            item.get("kind") not in {"voice_identity", "speaker_profile_purity", 'blind_identity_review', 'self_identity_review'}
+            or context.get("voice_mode") not in {"known_person", "speaker_discovery", "accepted_grant", "speaker_profile_purity", 'blind_identity_review', 'self_identity_review'}
             or prototype_id
             not in {str(value) for value in context.get("prototype_ids", [])}
         ):

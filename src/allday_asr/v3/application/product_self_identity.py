@@ -6,6 +6,7 @@ from dataclasses import asdict
 
 from allday_asr.v3.domain.ids import new_ulid
 from allday_asr.v3.domain.identity import SelfIdentity
+from allday_asr.v3.domain.product_self_gate import product_self_gate
 from .durable_processing import CorrectUtteranceCommand, apply_utterance_correction
 from .people_support import _datetime
 
@@ -54,21 +55,11 @@ def infer_product_self(service, session_id):
                         degraded = True
                     decisions.append({**decision, "duration_ms": duration})
         # Existing V3.1 window requirement: two disjoint >=2s windows, all agree.
-        eligible = [d for d in decisions if d["duration_ms"] >= 2000]
-        identity = SelfIdentity.UNKNOWN
-        if reason is None:
-            if len(eligible) < 2:
-                reason = "insufficient_clean_windows"
-            elif all(d["decision"] == "self" for d in decisions):
-                identity, reason = SelfIdentity.SELF, "all_clean_windows_above_self_threshold"
-            elif all(d["decision"] == "not_self" for d in decisions):
-                identity, reason = SelfIdentity.NOT_SELF, "all_clean_windows_below_not_self_threshold"
-            else:
-                reason = "window_disagreement_or_unknown_band"
+        identity, reason, eligible_count = product_self_gate(decisions, reason)
         traces.append({k: v for k, v in query.items() if k != "tracks"} | {
             "query_inputs": [asdict(t) for t in query["tracks"]],
             "self_matcher_invoked": invoked, "open_set_matcher": "SKIPPED:self-only recovery",
-            "window_decisions": decisions, "eligible_window_count": len(eligible),
+            "window_decisions": decisions, "eligible_window_count": eligible_count,
             "decision_before_projection": identity.value, "reason": reason,
             "cluster_assignment": "SKIPPED:inference does not create profiles or clusters"})
     run_id = new_ulid()

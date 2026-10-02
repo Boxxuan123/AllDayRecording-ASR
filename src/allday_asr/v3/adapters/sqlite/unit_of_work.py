@@ -4,6 +4,7 @@ import sqlite3
 from types import TracebackType
 
 from allday_asr.v3.adapters.sqlite.database import V3Database
+from .historical_self_repository import HistoricalSelfRepository
 from allday_asr.v3.adapters.sqlite.processing_repositories import (
     SqliteAdmissionRepository,
     SqliteDurableProcessingRepository,
@@ -78,6 +79,7 @@ class SqliteUnitOfWork:
         self.derivations = SqliteDerivationRepository(connection)
         self.reminders = SqliteReminderRepository(connection)
         self.people = SqlitePeopleRepository(connection)
+        self.self_backfill = HistoricalSelfRepository(connection)
         self.person_memories = SqlitePersonMemoryRepository(connection)
         self.insights = SqliteInsightRepository(connection)
         return self

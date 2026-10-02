@@ -64,7 +64,7 @@
   "apis": {
     "desktop": {
       "path": "openapi/desktop-api.openapi.json",
-      "sha256": "f5da71484b031c1e8e871ae01e3001b1bc97451023df5fda836954d38ce81eee"
+      "sha256": "4b8c0f8acf4f61f03934bf06602815025f9e9e013d08138005821a5e0cb77a31"
     },
     "device": {
       "path": "openapi/device-api.openapi.json",
