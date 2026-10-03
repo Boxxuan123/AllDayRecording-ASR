@@ -193,6 +193,25 @@ def analyze_daily(service, rows, *, allow_model=True):
     # The independent goal pass must be able to refuse first-pass key joins.
     # Never collapse chunks into an indivisible candidate before that decision.
     candidates = reconcile_segments(
-        segments, merge_keys=not callable(getattr(analyzer, "reconcile", None))
+        segments, merge_keys=not callable(getattr(analyzer, "reconcile", None)),
+        preliminary_gate=not getattr(analyzer, "reconcile_schema_version", "").startswith("daily-semantic-v1.2"),
     )
+    # Preserve the semantic partition locally, including suppressed micro/filler.
+    # This audit uses existing generation provenance; it is not a new event layer.
+    audit = [{"key": s["key"], "classification": s["classification"], "title": s["title"],
+              "claims": s["claims"], "explicit_outcome": s["explicit_outcome"],
+              "source_revisions": {r["utterance_id"]: r["revision"] for r in s["evidence"]},
+              "provenance": s["provenance"]} for s in segments]
+    if audit:
+        digest = canonical_json_sha256(audit)
+        with service._uow_factory().reading() as uow:
+            existing = uow.insights.daily_semantic_cache(digest, "daily-semantic-audit")
+        if not existing:
+            now = service._now()
+            with service._uow_factory() as uow:
+                uow.knowledge.add_generation(GenerationRecord(
+                    new_ulid(), KnowledgeLayer.EVENT, "daily-semantic-audit", "1", "local", "1", "1",
+                    {"result": audit}, digest,
+                    uow.knowledge.next_generation_number("event", "daily-semantic-audit", "1", "local", "1", "1", digest),
+                    GenerationStatus.SUCCEEDED, now, now))
     return reconcile_goals(service, candidates, allow_model=allow_model)

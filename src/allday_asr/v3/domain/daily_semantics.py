@@ -3,7 +3,7 @@
 import re
 from .daily_events import seconds, meaningful_event
 
-SEMANTIC_VERSION = "daily-semantic-v1.1"
+SEMANTIC_VERSION = "daily-semantic-v1.2"
 MICRO_SECONDS = 300
 MICRO_CHARACTERS = 6000
 MICRO_ROWS = 160
@@ -55,6 +55,8 @@ def validate_segments(segments, rows, context_keys):
         ):
             raise ValueError("semantic prose evidence is outside its segment")
         if segment["classification"] != "CORE":
+            if any(rows[i].get("task_ids") for i in range(lo, hi + 1)):
+                raise ValueError("authoritative task source cannot be classified as incidental/filler")
             continue
         title = segment["title"].strip()
         if not title or len(title) > 80 or title.startswith("讨论片段："):
@@ -85,7 +87,7 @@ def validate_segments(segments, rows, context_keys):
     return segments
 
 
-def reconcile_segments(segments, *, merge_keys=True):
+def reconcile_segments(segments, *, merge_keys=True, preliminary_gate=True):
     # Persistence/hysteresis: a brief LOW detour returning to A is incidental,
     # unless it carries an authoritative task or explicit outcome.
     for i in range(1, len(segments) - 1):
@@ -96,7 +98,8 @@ def reconcile_segments(segments, *, merge_keys=True):
             r["participant"]["key"] for r in after["evidence"]
         }
         if (
-            before["key"] == after["key"]
+            preliminary_gate
+            and before["key"] == after["key"]
             and current["key"] != before["key"]
             and duration <= 45
             and len(evidence) <= 6
@@ -112,7 +115,7 @@ def reconcile_segments(segments, *, merge_keys=True):
         if segment["classification"] != "CORE":
             continue
         rows = segment["evidence"]
-        if not meaningful_event({"topics": set(), "evidence": rows}):
+        if preliminary_gate and not meaningful_event({"topics": set(), "evidence": rows}):
             continue
         previous = (
             next((e for e in reversed(events) if e["key"] == segment["key"]), None)
@@ -204,5 +207,11 @@ def semantic_payload(event, day, timezone):
             ),
             "title_source_goal_key": event.get("title_source_goal_key"),
             "normalization_proposed_title": event.get("normalization_proposed_title"),
+            "topic_purity": event.get("topic_purity"),
+            "source_roles": event.get("source_roles", []),
+            "materialization": event.get("materialization"),
+            "information_value": event.get("information_value"),
+            "information_value_reason": event.get("information_value_reason"),
+            "routine_logistics": event.get("routine_logistics", False),
         },
     }

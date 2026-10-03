@@ -74,6 +74,7 @@ def validate_output(value, schema=DAILY_SEMANTIC_SCHEMA):
         "string": type(value) is str,
         "integer": type(value) is int,
         "number": type(value) in (int, float),
+        "boolean": type(value) is bool,
         "null": value is None,
     }
     if not valid[kind]:

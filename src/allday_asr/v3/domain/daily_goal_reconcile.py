@@ -2,11 +2,13 @@
 
 import copy
 import re
+import math
+import json
 from .daily_events import seconds
 from .daily_semantics import CONVERSATION_GAP, semantic_payload
 
 
-def candidate_description(event, index, *, include_outcome=False):
+def candidate_description(event, index, *, include_outcome=False, include_scope=False):
     payload = semantic_payload(event, "context-only", "UTC")
     rows = event["evidence"]
     activities = [p for p in event["segments"] if p["event_type"] == "activity"]
@@ -18,11 +20,37 @@ def candidate_description(event, index, *, include_outcome=False):
     wanted = set(payload["title_evidence_utterance_ids"][:2])
     wanted.update(r["utterance_id"] for r in rows[:3] + rows[-3:])
     wanted.update(uid for p in anchors for uid in p["title_evidence_utterance_ids"][:2])
+    if include_scope:
+        wanted.update(
+            rows[i]["utterance_id"] for i in (len(rows) // 3, 2 * len(rows) // 3)
+        )
+        high = [p for p in event["segments"] if p["importance"] == "HIGH"]
+        wanted.update(
+            uid
+            for p in high[:1] + high[-1:]
+            for uid in p["title_evidence_utterance_ids"][:1]
+        )
     outcome = payload["outcome"] if isinstance(payload["outcome"], dict) else None
     if include_outcome and outcome:
         wanted.update(outcome["evidence_utterance_ids"])
     return {
         "index": index,
+        "topic_purity": {
+            k: v
+            for k, v in event.get("topic_purity", {}).items()
+            if k
+            in (
+                "domain",
+                "specific_topic",
+                "active_goal",
+                "entities",
+                "decision_context",
+            )
+        },
+        "materialization": event.get("materialization"),
+        **({"source_topics": _scope_topics(event)} if include_scope else {}),
+        "source_count": len(rows),
+        "duration_seconds": seconds(rows[-1]["end_at"]) - seconds(rows[0]["start_at"]),
         **({"explicit_outcome": outcome} if include_outcome else {}),
         # Only open context carries a reusable final-goal key. Micro labels are
         # tentative similarities, never legal final continuation identities.
@@ -67,8 +95,48 @@ def candidate_description(event, index, *, include_outcome=False):
     }
 
 
+def _scope_topics(event):
+    """Keep bounded subtopic scope visible when a goal's first/last claims omit it."""
+    pieces = event["segments"]
+    chosen = {0, len(pieces) // 2, len(pieces) - 1}
+    for i, p in enumerate(pieces):
+        if len(chosen) >= 5:
+            break
+        if p.get("explicit_outcome") or p["importance"] == "HIGH":
+            chosen.add(i)
+    indices = sorted(chosen)
+    result = [
+        {
+            "title": pieces[i]["title"][:80],
+            "core_topic": pieces[i]["core_topic"][:120],
+            "claim": " ".join(
+                dict.fromkeys(
+                    c["text"][:100]
+                    for c in [pieces[i]["claims"][0], pieces[i]["claims"][-1]]
+                )
+            )
+            if pieces[i]["claims"]
+            else "",
+            "start_at": pieces[i]["evidence"][0]["start_at"],
+            "end_at": pieces[i]["evidence"][-1]["end_at"],
+        }
+        for i in indices
+    ]
+    if len(json.dumps(result, ensure_ascii=False)) > 2000:
+        for item in result:
+            item["claim"] = ""
+            item["core_topic"] = item["core_topic"][:80]
+    return result
+
+
 def validate_groups(
-    groups, candidates, context, descriptions, *, include_outcome=False
+    groups,
+    candidates,
+    context,
+    descriptions,
+    *,
+    include_outcome=False,
+    require_purity=False,
 ):
     seen, keys, previous_index = set(), set(), -1
     for group in groups:
@@ -109,6 +177,20 @@ def validate_groups(
         importance_refs = group["importance_evidence_utterance_ids"]
         if not importance_refs or not set(importance_refs) <= allowed:
             raise ValueError("goal importance evidence was not supplied for its group")
+        if require_purity or "topic_purity" in group:
+            validate_purity(
+                group,
+                candidates,
+                descriptions,
+                key in context,
+                allowed,
+                authoritative_task_ids={
+                    t
+                    for m in members
+                    for r in m["evidence"]
+                    for t in r.get("task_ids", [])
+                },
+            )
         rows = sorted(
             (r for m in members for r in m["evidence"]),
             key=lambda r: seconds(r["start_at"]),
@@ -132,6 +214,130 @@ def validate_groups(
         raise ValueError("goal grouping omitted a candidate")
 
 
+def validate_purity(
+    group, candidates, descriptions, continuing, allowed, *, authoritative_task_ids
+):
+    """Validate scope and policy, not pretend that source references prove semantics."""
+    purity = group.get("topic_purity")
+    if not purity:
+        raise ValueError("specific topic purity is required")
+    for field in (
+        "domain",
+        "specific_topic",
+        "active_goal",
+        "continuity_reason",
+        "information_value_reason",
+    ):
+        if type(purity.get(field)) is not str or not purity[field].strip():
+            raise ValueError(
+                "specific purity scope and reasons must be nonempty strings"
+            )
+    if purity["continuity_basis"] not in (
+        "single_topic",
+        "same_concrete_project",
+        "same_concrete_activity",
+        "same_unresolved_decision",
+        "same_task",
+        "same_object_and_goal",
+        "explicit_return",
+    ):
+        raise ValueError(
+            "weak domain/people/time similarity is not concrete continuity"
+        )
+    domain = purity["domain"].strip().casefold()
+    if any(
+        purity[k].strip().casefold() == domain
+        for k in ("specific_topic", "active_goal")
+    ):
+        raise ValueError("a domain label cannot be the specific topic or active goal")
+    if (
+        type(purity["materialize"]) is not bool
+        or type(purity["routine_logistics"]) is not bool
+    ):
+        raise ValueError("materialization and routine flags must be booleans")
+    value = purity["information_value"]
+    if (
+        type(value) not in (int, float)
+        or not math.isfinite(value)
+        or not 0 <= value <= 100
+    ):
+        raise ValueError("information value must be a finite score in range")
+    if (
+        len(group["candidate_indices"]) + int(continuing) > 1
+        and purity["continuity_basis"] == "single_topic"
+    ):
+        raise ValueError(
+            "merging requires strong concrete continuity, not a broad domain"
+        )
+    roles = purity["source_roles"]
+    if sorted(r["candidate_index"] for r in roles) != group["candidate_indices"]:
+        raise ValueError(
+            f"source_roles indices {[r['candidate_index'] for r in roles]} must equal THIS group's candidate_indices {group['candidate_indices']} exactly once. Open context does not get roles or standalone groups."
+        )
+    retained = set(allowed) - {
+        uid
+        for role in roles
+        if role["role"] not in ("CORE", "SUPPORTING")
+        for uid in description_refs(descriptions[role["candidate_index"]])
+    }
+    if not any(r["role"] == "CORE" for r in roles):
+        raise ValueError("a semantic group needs a specific core source")
+    for role in roles:
+        if role["role"] not in (
+            "CORE",
+            "SUPPORTING",
+            "INCIDENTAL",
+            "REJECTED_FOR_EVENT",
+        ):
+            raise ValueError("unknown evidence role")
+        refs = role["evidence_utterance_ids"]
+        if not refs or not set(refs) <= description_refs(
+            descriptions[role["candidate_index"]]
+        ):
+            raise ValueError("continuity role evidence must come from its own member")
+        member = candidates[role["candidate_index"]]
+        if role["role"] not in ("CORE", "SUPPORTING"):
+            duration = seconds(member["evidence"][-1]["end_at"]) - seconds(
+                member["evidence"][0]["start_at"]
+            )
+            if duration > 45 or member.get("materialization", {}).get("materialize"):
+                raise ValueError(
+                    "persistent or already meaningful subtopics need an independent semantic group"
+                )
+        # A literal routine choice is not necessarily consequential. The gate
+        # judges its semantic value; authoritative tasks are never suppressed.
+        strong = any(r.get("task_ids") for r in member["evidence"])
+        if strong and (
+            role["role"] not in ("CORE", "SUPPORTING") or not purity["materialize"]
+        ):
+            raise ValueError("authoritative task cannot be suppressed as an aside")
+    for field in ("title_evidence_utterance_ids", "importance_evidence_utterance_ids"):
+        if not set(group[field]) <= retained:
+            raise ValueError("event prose must not cite incidental or rejected sources")
+    if not set(purity["materialization_evidence_utterance_ids"]) <= retained:
+        raise ValueError("materialization evidence must belong to retained sources")
+    reasons = (
+        "task",
+        "explicit_decision",
+        "explicit_plan",
+        "explicit_result",
+        "schedule_change",
+        "significant_activity",
+        "sustained_meaningful_topic",
+        "future_memory_value",
+    )
+    suppressed = ("low_information_fragment", "incidental", "filler", "duplicate")
+    if purity["materialization_reason"] not in reasons + suppressed:
+        raise ValueError("unknown materialization reason")
+    if purity["materialization_reason"] == "task" and not authoritative_task_ids:
+        raise ValueError(
+            "task materialization requires an already authoritative task link"
+        )
+    positive = purity["materialization_reason"] in reasons
+    if purity["materialize"] != positive:
+        raise ValueError("materialization boolean disagrees with its reason")
+
+
 def description_refs(description):
     # Grounded claims explicitly supply source IDs even when the raw excerpt
     # budget omits that row. They remain valid citations of the same candidate.
@@ -143,8 +349,17 @@ def description_refs(description):
 
 
 def join_group(group, candidates, previous, key, provenance):
+    purity = group.get("topic_purity")
+    role_map = (
+        {r["candidate_index"]: r for r in purity["source_roles"]} if purity else {}
+    )
+    retained_indices = [
+        i
+        for i in group["candidate_indices"]
+        if not purity or role_map[i]["role"] in ("CORE", "SUPPORTING")
+    ]
     members = ([previous] if previous else []) + [
-        candidates[i] for i in group["candidate_indices"]
+        candidates[i] for i in retained_indices
     ]
     rows = {r["utterance_id"]: r for m in members for r in m["evidence"]}
     pieces = [copy.deepcopy(p) for m in members for p in m["segments"]]
@@ -169,6 +384,51 @@ def join_group(group, candidates, previous, key, provenance):
         "goal_provenance": list(history.values()) + [provenance],
     }
     merged["goal_event_type"] = group["event_type"]
+    if purity:
+        merged.update(
+            {
+                "topic_purity": {
+                    k: v
+                    for k, v in purity.items()
+                    if k
+                    in (
+                        "domain",
+                        "specific_topic",
+                        "active_goal",
+                        "entities",
+                        "decision_context",
+                        "continuity_basis",
+                        "continuity_reason",
+                    )
+                },
+                "source_roles": (
+                    [*previous.get("source_roles", [])] if previous else []
+                )
+                + [
+                    {
+                        **role_map[i],
+                        "source_utterance_ids": [
+                            r["utterance_id"] for r in candidates[i]["evidence"]
+                        ],
+                        "source_revisions": {
+                            r["utterance_id"]: r["revision"]
+                            for r in candidates[i]["evidence"]
+                        },
+                    }
+                    for i in group["candidate_indices"]
+                ],
+                "materialization": {
+                    "materialize": purity["materialize"],
+                    "reason": purity["materialization_reason"],
+                    "evidence_utterance_ids": purity[
+                        "materialization_evidence_utterance_ids"
+                    ],
+                },
+                "information_value": purity["information_value"],
+                "information_value_reason": purity["information_value_reason"],
+                "routine_logistics": purity["routine_logistics"],
+            }
+        )
     return merged
 
 

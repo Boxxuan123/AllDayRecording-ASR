@@ -100,6 +100,66 @@ def test_validation_does_not_mutate_model_schema():
     assert payload == before
 
 
+@pytest.mark.parametrize(
+    "mutation", ["key", "title_ref", "role_ref", "materialization_ref"]
+)
+def test_goal_schema_constrains_provided_ids_without_repair(mutation):
+    from allday_asr.v3.adapters.codex.daily_semantic_analyzer import (
+        _grounded_goal_schema,
+    )
+    from allday_asr.v3.adapters.codex.daily_reconcile_schema import RECONCILE_SCHEMA
+    from tests.test_daily_goal_reconcile import group
+    from tests.test_daily_v12_policy import purity
+
+    before = copy.deepcopy(RECONCILE_SCHEMA)
+    schema = _grounded_goal_schema(
+        {
+            "candidates": [{"evidence": [{"utterance_id": "source-a"}]}],
+            "open_context": [
+                {
+                    "event_key": "provided-goal",
+                    "evidence": [{"utterance_id": "source-b"}],
+                }
+            ],
+        }
+    )
+    value = group([0], ["source-a"])
+    value["topic_purity"] = purity([0], ["source-a"])
+    validate_output({"groups": [value]}, schema)
+    if mutation == "key":
+        value["event_key"] = "provided-goa-typo"
+    elif mutation == "title_ref":
+        value["title_evidence_utterance_ids"] = ["source-typo"]
+    elif mutation == "role_ref":
+        value["topic_purity"]["source_roles"][0]["evidence_utterance_ids"] = [
+            "source-typo"
+        ]
+    else:
+        value["topic_purity"]["materialization_evidence_utterance_ids"] = [
+            "source-typo"
+        ]
+    with pytest.raises(ValueError):
+        validate_output({"groups": [value]}, schema)
+    assert RECONCILE_SCHEMA == before
+
+
+def test_overview_schema_constrains_only_major_event_ids():
+    from allday_asr.v3.adapters.codex.daily_semantic_analyzer import (
+        _grounded_overview_schema,
+    )
+
+    schema = _grounded_overview_schema({"major_events": [{"event_id": "major-a"}]})
+    value = {
+        "headline": "匿名项目",
+        "headline_source_event_ids": ["major-a"],
+        "overview_sentences": [
+            {"text": "当天讨论匿名项目。", "source_event_ids": ["secondary-b"]}
+        ],
+    }
+    with pytest.raises(ValueError):
+        validate_output(value, schema)
+
+
 def test_goal_schema_cannot_generate_factual_claims_or_identity():
     from allday_asr.v3.adapters.codex.daily_reconcile_schema import RECONCILE_SCHEMA
 
@@ -116,6 +176,9 @@ def test_goal_schema_cannot_generate_factual_claims_or_identity():
         "reason": "same_overarching_goal",
         "confidence": 0.8,
     }
+    from tests.test_daily_v12_policy import purity
+
+    goal["topic_purity"] = purity([0], ["anonymous-source"])
     validate_output({"groups": [goal]}, RECONCILE_SCHEMA)
     goal["new_claim"] = "invented result"
     with pytest.raises(ValueError):
@@ -124,13 +187,14 @@ def test_goal_schema_cannot_generate_factual_claims_or_identity():
 
 def test_normalization_uses_its_own_version_and_same_bounded_strict_runtime(tmp_path):
     from tests.test_daily_goal_reconcile import group
+    from tests.test_daily_v12_policy import purity
 
     class GroupClient(Client):
         def run(self, prompt, **options):
             result = super().run(prompt, **options)
-            result.final_response = json.dumps(
-                {"groups": [group([0], ["anonymous-source"])]}
-            )
+            value = group([0], ["anonymous-source"])
+            value["topic_purity"] = purity([0], ["anonymous-source"])
+            result.final_response = json.dumps({"groups": [value]})
             return result
 
     client = GroupClient()
@@ -140,8 +204,8 @@ def test_normalization_uses_its_own_version_and_same_bounded_strict_runtime(tmp_
     result = analyzer.normalize({"candidates": []})
     assert result.provenance["prompt_version"] == analyzer.normalization_prompt_version
     assert (
-        result.provenance["schema_version"] == "daily-semantic-v1.1-reconcile-schema.2"
+        result.provenance["schema_version"] == "daily-semantic-v1.2-reconcile-schema.3"
     )
-    assert "final-event normalization" in client.start_options["developer_instructions"]
+    assert "second pass" in client.start_options["developer_instructions"]
     assert client.run_options["approval_mode"] == ApprovalMode.deny_all
     analyzer.close()

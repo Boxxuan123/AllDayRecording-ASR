@@ -9,7 +9,28 @@ from .daily_event_persistence import local_generation, event_resource
 from .insight_validation import _link_evidence
 
 
-def structured_summary(events, tasks: tuple[dict, ...], day: str) -> dict:
+def select_major(sources):
+    def score(event):
+        rec = event.get('reconciliation', {})
+        value = rec.get('information_value')
+        value = value if value is not None else event['salience'] * 10
+        strong = bool(event['linked_task_ids'] or isinstance(event.get('outcome'), dict))
+        if rec.get('routine_logistics') and not strong:
+            value = min(value, 25)
+        reason = (rec.get('materialization') or {}).get('reason')
+        consequential = reason in ('explicit_decision', 'explicit_plan', 'explicit_result',
+                                   'schedule_change', 'significant_activity')
+        policy_bonus = 20 if consequential and not rec.get('routine_logistics') and not strong else 0
+        return value + policy_bonus + (100 if event['linked_task_ids'] else 0) + (30 if isinstance(event.get('outcome'), dict) else 0) + (200 if event.get('manual_fixed') else 0)
+    major = [e for e in sources if e.get('manual_fixed') or
+             (e.get('summary_visibility') == 'major' and score(e) >= 35)]
+    ranked = sorted(major, key=lambda e: (-score(e), e['start_at']))
+    high = [e for e in ranked if e.get('importance') == 'HIGH' or e.get('manual_fixed')]
+    selected = high + [e for e in ranked if e not in high][:max(0, 8-len(high))]
+    return sorted(selected, key=lambda e: (-score(e), e['start_at']))
+
+
+def structured_summary(events, tasks: tuple[dict, ...], day: str, *, synthesis=None) -> dict:
     sources = [event_resource(state) for state in events]
     links = {t['event_id']: [e['event_id'] for e in sources if t['event_id'] in e['linked_task_ids']]
              for t in tasks}
@@ -27,12 +48,9 @@ def structured_summary(events, tasks: tuple[dict, ...], day: str) -> dict:
             key = participant['key']
             item = people.setdefault(key, {**participant, 'event_ids': []})
             item['event_ids'].append(event['event_id'])
-    major = [e for e in sources if e.get('summary_visibility')=='major' or e.get('manual_fixed')]
-    ranked = sorted(major, key=lambda e: (-e['salience'], e['start_at']))
     # Eight is a first-screen target. Never hide confirmed/high-value events
     # simply because an unusually rich day exceeds that target.
-    high = [e for e in ranked if e.get('importance') == 'HIGH' or e.get('manual_fixed')]
-    selected = high + [e for e in ranked if e not in high][:max(0, 8-len(high))]
+    selected = select_major(sources)
     key_events = [{'text': e['title'], 'summary':e.get('summary',''),
                    'event_ids': [e['event_id']],
                    'utterance_ids': [r['utterance_id'] for r in e['evidence_snapshots']],
@@ -46,16 +64,27 @@ def structured_summary(events, tasks: tuple[dict, ...], day: str) -> dict:
     created = [t for t in task_items if on_day(t['created_at'])]
     completed = [t for t in task_items if t['status'] == 'completed' and on_day(t['completed_at'])]
     pending = [t for t in task_items if t['status'] == 'active']
-    overview_claims = [{'text':e.get('summary',''), 'event_ids':[e['event_id']]}
-                       for e in selected
-                       if e.get('summary')]
+    # Local compatibility mode does not concatenate event summaries. Real Codex
+    # publication supplies structured synthesis generated outside the writer.
+    lines = [selected[i:i+3] for i in range(0, min(len(selected), 9), 3)]
+    overview_claims = [{'text': '当天涉及'+ '、'.join(e['title'] for e in line)+'。',
+                        'event_ids': [e['event_id'] for e in line]} for line in lines]
     headline = ('今天主要围绕'+ '、'.join(e['text'] for e in key_events[:3])+'展开。'
                 if key_events else '今天没有提取到值得总结的主要事件。')
-    overview = ' '.join(c['text'] for c in overview_claims) or '尚无主要事件可供概述，零散录音内容保留在证据中。'
+    if synthesis:
+        content = synthesis['result']
+        from .daily_overview import validate_overview
+        validate_overview(content, {e['event_id'] for e in selected})
+        headline = content['headline']
+        overview_claims = [{'text': s['text'], 'event_ids': s['source_event_ids']}
+                           for s in content['overview_sentences']]
+    overview = ' '.join(c['text'] for c in overview_claims) or '今天没有提取到值得总结的主要事件。'
     return {'date': day, 'headline': headline, 'overview':overview,
             'overview_claims':overview_claims,
             'major_events':key_events,
-            'headline_event_ids': [eid for e in key_events[:3] for eid in e['event_ids']],
+            'headline_event_ids': (synthesis['result']['headline_source_event_ids'] if synthesis else
+                                   [eid for e in key_events[:3] for eid in e['event_ids']]),
+            'overview_provenance': synthesis['provenance'] if synthesis else {'provider':'local', 'remote':False},
             'key_events': key_events, 'tasks_created': created,
             'tasks_completed': completed, 'tasks_pending': pending,
             'people_interacted': list(people.values()),
@@ -70,8 +99,8 @@ def structured_summary(events, tasks: tuple[dict, ...], day: str) -> dict:
             'unresolved': [{'event_id': t['task_id'], **t} for t in pending]}
 
 
-def persist_summary(uow, events, tasks, day: str, timezone: str, start, end, now, *, semantic_error=None):
-    objective = structured_summary(events, tasks, day)
+def persist_summary(uow, events, tasks, day: str, timezone: str, start, end, now, *, semantic_error=None, synthesis=None):
+    objective = structured_summary(events, tasks, day, synthesis=synthesis)
     objective['semantic_status']='pending' if semantic_error else 'complete'
     objective['semantic_error']=semantic_error
     digest = canonical_json_sha256(objective)
@@ -84,6 +113,7 @@ def persist_summary(uow, events, tasks, day: str, timezone: str, start, end, now
         return previous
     generation = local_generation(uow, KnowledgeLayer.MEMORY, digest,
                                   {'day': day, 'source_event_ids': objective['source_event_ids'],
+                                   'rule_version':SEMANTIC_VERSION,
                                    'provider': 'local', 'remote_input_characters': 0}, now)
     revision = uow.insights.next_daily_revision(sid)
     # Retain V3.6 narrative compatibility; objective carries the structured V1.
@@ -100,8 +130,12 @@ def persist_summary(uow, events, tasks, day: str, timezone: str, start, end, now
                           timezone=timezone, period_start=start.isoformat(), period_end=end.isoformat(),
                           objective=objective, narrative=narrative, input_sha256=digest,
                           generation_id=generation.generation_id,
-                          provenance={'provider': 'local-event-derived', 'model': 'structured-event-synthesis',
-                                      'generation_version': SEMANTIC_VERSION, 'remote_input_characters': 0,
+                          provenance={'provider': objective['overview_provenance'].get('provider','local-event-derived'),
+                                      'model':objective['overview_provenance'].get('model','structured-event-synthesis'),
+                                      'generation_version': SEMANTIC_VERSION,
+                                      'remote_input_characters':objective['overview_provenance'].get('input_characters',0)
+                                          if objective['overview_provenance'].get('remote') else 0,
+                                      'overview_synthesis':objective['overview_provenance'],
                                       'semantic_analyzers':list({s.payload.get('semantic_provenance',{}).get('input_sha256','local'):
                                           s.payload.get('semantic_provenance',{}) for s in events}.values()),
                                       'semantic_reconcilers':list({p.get('input_sha256','local'):p for s in events
