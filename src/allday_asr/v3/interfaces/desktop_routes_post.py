@@ -258,13 +258,12 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
                 or (effort is not None and not isinstance(effort, str))
             ):
                 raise ValueError("daily summary generation values are invalid")
-            self._send_json(
-                HTTPStatus.ACCEPTED,
-                self.application.core.insights.refresh_daily(
-                    summary_date,
-                    timezone_name,
-                ),
-            )
+            result = self.application.core.insights.refresh_daily(summary_date, timezone_name)
+            if result.get('semantic_status') == 'retryable':
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE,
+                    {'error':'semantic_generation_failed','message':'语义生成暂时失败，原有结果已保留，可重试。'})
+            else:
+                self._send_json(HTTPStatus.ACCEPTED, result)
             return
         if path == "/api/v3/relationship-observations/generate":
             required = {"person_id", "window_days", "end_date", "timezone"}

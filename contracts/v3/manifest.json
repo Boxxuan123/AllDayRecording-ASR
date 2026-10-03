@@ -62,11 +62,11 @@
     },
     "daily_event": {
       "path": "schemas/daily-event.schema.json",
-      "sha256": "20dd623c3b7832f7744037bcdaa10c191ef7afa4e63a58ef90c463df8084296e"
+      "sha256": "2b5fdecbe79aefb8f619d75fc347fe886cf3c376541ed2e3584507daae8c4e13"
     },
     "daily_summary": {
       "path": "schemas/daily-summary.schema.json",
-      "sha256": "41c6bdc231c1caff6264532319203c46d49752807fa42769baf5ad584a964e77"
+      "sha256": "ae287f7844ba948a51153844b1b9423772b02f013e7d71d59850a4fcf4eff010"
     }
   },
   "apis": {

@@ -194,6 +194,90 @@
     },
     "reconciliation": {
       "type": "object"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "summary_claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "text",
+          "evidence_utterance_ids"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_utterance_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "primitives.schema.json#/$defs/StableId"
+            }
+          }
+        }
+      }
+    },
+    "title_evidence_utterance_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "primitives.schema.json#/$defs/StableId"
+      }
+    },
+    "semantic_status": {
+      "type": "string"
+    },
+    "importance": {
+      "enum": [
+        "HIGH",
+        "MEDIUM",
+        "LOW"
+      ]
+    },
+    "summary_visibility": {
+      "enum": [
+        "major",
+        "secondary",
+        "suppressed"
+      ]
+    },
+    "semantic_reconciliation_provenance": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "importance_evidence_utterance_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "primitives.schema.json#/$defs/StableId"
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "semantic_status"
+        ],
+        "properties": {
+          "semantic_status": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "summary",
+          "summary_claims",
+          "title_evidence_utterance_ids",
+          "summary_visibility",
+          "importance"
+        ]
+      }
+    }
+  ]
 }

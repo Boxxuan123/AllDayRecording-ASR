@@ -23,6 +23,8 @@ export interface DailySummary {
   timezone: string
   objective: {
     headline?: string
+    overview?: string
+    semantic_status?: string
     events?: DailyEvent[]
     statistics: Record<string, number | Record<string, number>>
     decisions: Array<Record<string, unknown>>
@@ -45,6 +47,8 @@ export interface DailyEvent {
   event_id: string
   revision: number
   title: string
+  summary?: string
+  summary_visibility?: string
   start_at: string
   end_at: string
   linked_task_ids: string[]

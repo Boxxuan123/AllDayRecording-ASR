@@ -4,6 +4,12 @@ from .sound_eligibility import usable_content
 
 
 class DailySourceRepositoryMixin:
+    def daily_semantic_cache(self, digest: str, producer: str = 'daily-semantic') -> dict | None:
+        row = self.connection.execute("""SELECT input_scope_json FROM generation_records
+            WHERE producer=? AND input_sha256=? AND status='succeeded'
+            ORDER BY created_at DESC,generation_number DESC LIMIT 1""", (producer,digest)).fetchone()
+        return json.loads(row[0]) if row else None
+
     def daily_source_starts(self) -> tuple[str, ...]:
         return tuple(r[0] for r in self.connection.execute(
             "SELECT DISTINCT start_at FROM utterances WHERE status='active'"))

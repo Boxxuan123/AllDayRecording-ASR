@@ -11,7 +11,7 @@ from .knowledge_support import cascade_derivations
 
 def local_generation(uow, layer: KnowledgeLayer, digest: str, scope: dict, now):
     producer = 'daily-local'
-    version = 'daily-local-v1'
+    version = scope.get('rule_version', 'daily-semantic-v1.1')
     number = uow.knowledge.next_generation_number(layer.value, producer, version,
                                                 'local-rules', version, version, digest)
     generation = GenerationRecord(new_ulid(), layer, producer, version, 'local-rules',
@@ -32,7 +32,10 @@ def persist_event(uow, identifier: str, payload: dict, current, now, *, retire=F
     generation = local_generation(uow, KnowledgeLayer.EVENT, digest,
                                   {'event_id': identifier, 'source_count': len(evidence),
                                    'input_characters': sum(len(r['text']) for r in evidence),
-                                   'provider': 'local', 'remote_input_characters': 0}, now)
+                                   'provider': 'local-reconciliation', 'remote_input_characters': 0,
+                                   'rule_version':payload['daily_event_version'],
+                                   'semantic_provenance':payload.get('semantic_provenance'),
+                                   'semantic_reconciliation_provenance':payload.get('semantic_reconciliation_provenance',[])}, now)
     proposal_id = new_ulid()
     patch = {'operation': operation.value, 'session_id': session_id,
              'event_kind': EventKind.IMPORTANT_EXPERIENCE.value,

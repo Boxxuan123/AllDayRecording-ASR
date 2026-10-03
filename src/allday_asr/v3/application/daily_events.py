@@ -11,6 +11,9 @@ from .daily_event_inputs import daily_inputs
 from .daily_event_persistence import persist_event
 from .daily_structured_summary import persist_summary
 from .insight_projections import _date, _period
+from .daily_semantic_analysis import analyze_daily
+from allday_asr.v3.domain.daily_semantics import semantic_payload
+from allday_asr.v3.domain.hashing import canonical_json_sha256
 
 
 class DailyEventMixin:
@@ -27,34 +30,58 @@ class DailyEventMixin:
                     for s in starts}
             days.update(s['summary_date'] for s in existing if s['timezone'] == 'Asia/Singapore')
             for day in sorted(days):
-                self.refresh_daily(day)
+                self.refresh_daily(day, allow_model=False)
             self._daily_refreshed_at = time.monotonic()
 
-    def refresh_daily(self, summary_date, timezone_name: str = 'Asia/Singapore') -> dict:
+    def refresh_daily(self, summary_date, timezone_name: str = 'Asia/Singapore', *, allow_model=True) -> dict:
         day = _date(summary_date)
         start, end = _period(day, timezone_name)
         now = self._now()
+        # Inference never holds a writer or stalls a mobile sync request.
+        with self._uow_factory().reading() as uow:
+            rows, tasks = daily_inputs(uow, start.isoformat(), end.isoformat())
+        source_hash = canonical_json_sha256({'rows':rows,'tasks':tasks})
+        try:
+            semantic, semantic_error = analyze_daily(self, rows, allow_model=allow_model)
+        except Exception:
+            # Keep published events/summary unchanged on provider or validation failure.
+            return {'semantic_status':'retryable','error':'semantic_generation_failed'}
+        if semantic is None and not allow_model:
+            return {'semantic_status':'pending','error':semantic_error}
+        candidates = semantic if semantic is not None else normalize_candidates(candidate_windows(rows))
         # One transaction makes source snapshots, CAS event revisions, summary and sync atomic.
         with self._uow_factory() as uow:
-            rows, tasks = daily_inputs(uow, start.isoformat(), end.isoformat())
+            fresh_rows, fresh_tasks = daily_inputs(uow, start.isoformat(), end.isoformat())
+            if canonical_json_sha256({'rows':fresh_rows,'tasks':fresh_tasks})!=source_hash:
+                return {'semantic_status':'retryable','error':'daily_sources_changed'}
             existing = [uow.knowledge.get_event(v['event_id'])
                         for v in uow.insights.daily_event_states(day.isoformat(), timezone_name)]
             used = set()
+            current_source_ids = {r['utterance_id'] for r in rows}
             states = []
-            for candidate in normalize_candidates(candidate_windows(rows)):
-                if not meaningful_event(candidate):
+            for candidate in candidates:
+                if semantic is None and not meaningful_event(candidate):
                     continue
-                payload = event_payload(candidate, day.isoformat(), timezone_name)
+                payload = (semantic_payload(candidate,day.isoformat(),timezone_name) if semantic is not None
+                           else event_payload(candidate, day.isoformat(), timezone_name))
                 evidence_ids = {r['utterance_id'] for r in candidate['evidence']}
                 choices = [s for s in existing if s.event_id not in used and
                            (evidence_ids & {r['utterance_id'] for r in s.payload['evidence_snapshots']}
-                            or _source_overlap(candidate['evidence'], s.payload['evidence_snapshots']))]
+                            or (not current_source_ids & {r['utterance_id'] for r in s.payload['evidence_snapshots']}
+                                and _source_overlap(candidate['evidence'], s.payload['evidence_snapshots'])))]
                 # Keep the oldest identity when two previous events merge; split gets new IDs.
                 current = min(choices, key=lambda s: (
                     -len(evidence_ids & {r['utterance_id'] for r in s.payload['evidence_snapshots']}),
                     s.created_at, s.event_id)) if choices else None
                 eid = current.event_id if current else stable_ulid(
                     'daily-event', timezone_name, day.isoformat(), candidate['evidence'][0]['utterance_id'])
+                if eid in used:
+                    # A split may reuse the old anchor ID for an earlier branch.
+                    # Give the other branch a deterministic distinct identity.
+                    eid = stable_ulid('daily-event-split', timezone_name, day.isoformat(),
+                                      candidate['evidence'][0]['utterance_id'])
+                if eid in used:
+                    raise ValueError('daily event identity collision; retry required')
                 if not current:
                     current = uow.knowledge.get_event(eid)
                 if current and current.payload.get('manual_fixed'):
@@ -77,7 +104,8 @@ class DailyEventMixin:
                                       state, now, retire=True)
             # Never summarize stale fixed evidence as current fact.
             active = [s for s in states if s.derivation_status == 'active']
-            return persist_summary(uow, active, tasks, day.isoformat(), timezone_name, start, end, now)
+            return persist_summary(uow, active, tasks, day.isoformat(), timezone_name, start, end, now,
+                                   semantic_error=semantic_error)
 
 
 def _source_overlap(current: list[dict], previous: list[dict]) -> bool:

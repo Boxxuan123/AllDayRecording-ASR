@@ -176,8 +176,73 @@
               }
             }
           }
+        },
+        "overview": {
+          "type": "string"
+        },
+        "semantic_status": {
+          "type": "string"
+        },
+        "major_events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "event_ids"
+            ],
+            "properties": {
+              "event_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "primitives.schema.json#/$defs/StableId"
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "overview_claims": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "event_ids"
+            ],
+            "properties": {
+              "event_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "primitives.schema.json#/$defs/StableId"
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            }
+          }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "semantic_status"
+            ],
+            "properties": {
+              "semantic_status": {
+                "const": "complete"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "overview",
+              "major_events",
+              "overview_claims"
+            ]
+          }
+        }
+      ]
     },
     "provenance": {
       "type": "object"

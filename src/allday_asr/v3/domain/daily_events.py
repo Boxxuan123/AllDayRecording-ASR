@@ -2,10 +2,9 @@
 from datetime import datetime
 import re
 
-RULE_VERSION = 'daily-local-v1'
+RULE_VERSION = 'daily-local-v1.1-fallback'
 HARD_GAP_SECONDS = 300
 CONTEXT_GAP_SECONDS = 90
-MAX_EVENT_SECONDS = 1200
 CANDIDATE_SECONDS = 300
 TOPICS = ('汇报', '材料', '项目', '毕业设计', '排期', '同步', '考试', '作业',
           '购物', '买东西', '吃饭', '晚餐', '午餐', '坐车', '出发', '会议')
@@ -77,8 +76,7 @@ def normalize_candidates(candidates: list[dict]) -> list[dict]:
 
 def merge_reason(left: dict, right: dict) -> str | None:
     gap = seconds(right['evidence'][0]['start_at']) - seconds(left['evidence'][-1]['end_at'])
-    span = seconds(right['evidence'][-1]['end_at']) - seconds(left['evidence'][0]['start_at'])
-    if gap > HARD_GAP_SECONDS or span > MAX_EVENT_SECONDS:
+    if gap > HARD_GAP_SECONDS:
         return None
     if activity_conflict(left['topics'], right['topics']):
         return None
@@ -88,11 +86,11 @@ def merge_reason(left: dict, right: dict) -> str | None:
         return 'same_task_within_5_minutes'
     if left['topics'] & right['topics'] and left['participants'] & right['participants']:
         return 'shared_explicit_topic_and_participant_within_5_minutes'
-    if gap <= CONTEXT_GAP_SECONDS and span <= CANDIDATE_SECONDS and not (
+    if gap <= CONTEXT_GAP_SECONDS and not (
         left['topics'] and right['topics'] and not left['topics'] & right['topics']
     ):
         # Alternating speakers within continuous speech form a conversation.
-        return 'continuous_context_within_90_seconds_bounded_to_5_minutes'
+        return 'continuous_context_within_90_seconds'
     return None
 
 
@@ -113,9 +111,7 @@ def event_payload(event: dict, day: str, timezone: str) -> dict:
     participants = {r['participant']['key']: r['participant'] for r in evidence}
     tasks = sorted({t for r in evidence for t in r.get('task_ids', [])})
     duration = seconds(evidence[-1]['end_at']) - seconds(evidence[0]['start_at'])
-    # Titles are verbatim excerpts, not claims that discussed activities occurred.
-    quote = max(evidence, key=lambda r: (bool(signals(r['text'])),
-                                        min(64, len(r['text'].strip()))))['text'].strip()
+    # No product claims are generated while semantic analysis is unavailable.
     category = 'task_decision' if tasks else 'conversation'
     salience_reasons = ([] if not tasks else ['linked_existing_task'])
     if len(participants) > 1:
@@ -126,7 +122,10 @@ def event_payload(event: dict, day: str, timezone: str) -> dict:
         salience_reasons.append('repeated_context')
     return {'daily_event_version': RULE_VERSION, 'local_date': day, 'timezone': timezone,
             'start_at': evidence[0]['start_at'], 'end_at': evidence[-1]['end_at'],
-            'category': category, 'title': '讨论片段：' + quote[:64],
+            'category': category, 'title': '待确认的任务讨论' if tasks else '待确认的录音事项',
+            'summary': '语义分析尚未完成，相关原文保留在证据中。',
+            'summary_claims': [], 'semantic_status': 'pending',
+            'importance': 'LOW', 'summary_visibility': 'secondary',
             'participants': list(participants.values()), 'linked_task_ids': tasks,
             'outcome': 'not_inferred', 'salience': len(salience_reasons),
             'salience_reasons': salience_reasons, 'topics': sorted(event['topics']),

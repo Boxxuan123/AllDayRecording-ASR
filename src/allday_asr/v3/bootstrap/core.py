@@ -13,6 +13,7 @@ from allday_asr.v3.adapters.codex import (
     CodexReminderGenerator,
     CodexSemanticEventGenerator,
 )
+from allday_asr.v3.adapters.codex.daily_semantic_analyzer import CodexDailySemanticAnalyzer
 from allday_asr.v3.adapters.speaker_embeddings import FunASRSpeakerEmbeddingProvider
 from allday_asr.v3.adapters.self_identity import CalibratedSelfIdentityMatcher
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
@@ -198,7 +199,10 @@ def compose_v3_core(
         allow_auto_accept=selected_codex.allow_semantic_event_auto_accept,
     )
     insights = DailyInsightService(
-        lambda: SqliteUnitOfWork(database), narrative_generator
+        lambda: SqliteUnitOfWork(database), narrative_generator,
+        daily_analyzer=(CodexDailySemanticAnalyzer(selected_codex.workdir,
+            model=os.environ.get('ALLDAY_V3_DAILY_MODEL') or 'gpt-5.6-luna')
+            if selected_codex.enabled else None),
     )
     mobile_sync.daily_refresh = insights.refresh_daily_cache
     return V3Core(

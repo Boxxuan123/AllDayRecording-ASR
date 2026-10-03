@@ -173,6 +173,8 @@ onBeforeUnmount(release)
 
         <article class="panel narrative-ledger">
           <header><div><p class="section-kicker">DAILY SUMMARY</p><h2>{{ daily.objective.headline ?? '每日总结' }}</h2></div><small>{{ String(daily.provenance.model ?? 'Codex') }}</small></header>
+          <p v-if="daily.objective.overview">{{ daily.objective.overview }}</p>
+          <p v-if="daily.objective.semantic_status !== 'complete'" class="status-message">语义分析尚未完成；当前内容保留供调试。</p>
           <section v-for="(items, section) in daily.narrative" :key="section" class="narrative-section">
             <h3>{{ sectionLabels[section] ?? section }}</h3>
             <article v-for="item in items" :key="item.text">
@@ -186,6 +188,7 @@ onBeforeUnmount(release)
           <h2>事件与证据</h2>
           <details v-for="event in daily.objective.events" :key="event.event_id">
             <summary>{{ event.title }} · 修订 {{ event.revision }}</summary>
+            <p>{{ event.summary ?? '' }} <small>{{ event.summary_visibility === 'secondary' ? '次要事件' : '' }}</small></p>
             <p>{{ event.start_at }} — {{ event.end_at }}</p>
             <p>{{ event.participants.map(person => person.label).join('、') }}</p>
             <p>关联任务：{{ event.linked_task_ids.join('、') || '无' }}</p>

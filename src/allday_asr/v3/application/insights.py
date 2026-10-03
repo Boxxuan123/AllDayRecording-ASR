@@ -5,6 +5,7 @@ from datetime import datetime
 from threading import Lock
 
 from allday_asr.v3.ports.insight_generation import InsightModelGenerator
+from allday_asr.v3.ports.daily_semantics import DailySemanticAnalyzer
 from allday_asr.v3.ports.repositories import UnitOfWork
 
 from .insight_errors import InsightGenerationFailed, InsightGenerationUnavailable
@@ -18,7 +19,9 @@ UnitOfWorkFactory = Callable[[], UnitOfWork]
 DateTimeClock = Callable[[], datetime]
 
 
-class DailyInsightService(DailyEventMixin, InsightGenerationMixin, InsightManagementMixin):
+class DailyInsightService(
+    DailyEventMixin, InsightGenerationMixin, InsightManagementMixin
+):
     """Builds grounded V3.6 summaries without ever reading an older summary."""
 
     def __init__(
@@ -27,12 +30,21 @@ class DailyInsightService(DailyEventMixin, InsightGenerationMixin, InsightManage
         generator: InsightModelGenerator | None,
         *,
         now: DateTimeClock | None = None,
+        daily_analyzer: DailySemanticAnalyzer | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._generator = generator
         self._now = now or _utc_now
+        self._daily_analyzer = daily_analyzer
         self._daily_refresh_lock = Lock()
-        self._daily_refreshed_at = float('-inf')
+        self._daily_refreshed_at = float("-inf")
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            if self._daily_analyzer is not None:
+                self._daily_analyzer.close()
 
 
 __all__ = [
