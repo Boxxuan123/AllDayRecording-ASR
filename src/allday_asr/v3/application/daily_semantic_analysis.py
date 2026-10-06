@@ -16,6 +16,7 @@ from allday_asr.v3.domain.knowledge import (
     KnowledgeLayer,
 )
 from .daily_goal_reconcile import reconcile_goals
+from .daily_generation_reliability import request_fingerprint, canonical_result, cache_hit, retry_allowed, checkpoint_valid, seal_checkpoint
 
 
 def analyze_daily(service, rows, *, allow_model=True):
@@ -56,23 +57,25 @@ def analyze_daily(service, rows, *, allow_model=True):
                 for r in (batches[number + 1][:5] if number + 1 < len(batches) else [])
             ],
         }
-        digest = canonical_json_sha256(
-            {
-                "payload": payload,
-                "model": analyzer.model_label,
-                "source_revisions": [(r["utterance_id"], r["revision"]) for r in batch],
-            }
-        )
+        digest = request_fingerprint(analyzer, payload,
+                                     {"current": batch, "previous_sources": batches[:number],
+                                      "lookahead_sources": batches[number + 1][:5] if number + 1 < len(batches) else []},
+                                     analyzer.prompt_version,
+                                     getattr(analyzer, "extractor_version", "daily-semantic-v1.1-schema.1"))
         with service._uow_factory().reading() as uow:
             cached = uow.insights.daily_semantic_cache(digest)
+        if cached and not checkpoint_valid(cached, digest, "result"):
+            cached = None
         if cached:
             try:
+                cached["result"] = canonical_result(analyzer, payload, {"segments": cached["result"]})["segments"]
                 validate_segments(cached["result"], batch, set(active))
             except (ValueError, KeyError, TypeError):
                 # A cache created by an older validator is never trusted as fact.
                 # Explicit generation may retry; projection refresh stays local.
                 cached = None
         if cached:
+            cache_hit(analyzer, digest)
             result = cached["result"]
             provenance = cached["provenance"]
         else:
@@ -81,14 +84,14 @@ def analyze_daily(service, rows, *, allow_model=True):
             # Invalid indices never become facts. Retry the same bounded input;
             # keep prior published events if all attempts fail.
             request = payload
-            for attempt in range(3):
+            for attempt in range(2):
                 try:
                     result_object = analyzer.analyze(request)
-                    result = list(result_object.segments)
+                    result = canonical_result(analyzer, payload, {"segments": list(result_object.segments)})["segments"]
                     validate_segments(result, batch, set(active))
                     break
-                except Exception:
-                    if attempt == 2:
+                except Exception as exc:
+                    if attempt == 1 or not retry_allowed(exc):
                         raise
                     request = {
                         **payload,
@@ -113,6 +116,7 @@ def analyze_daily(service, rows, *, allow_model=True):
                 "input_sha256": digest,
                 "analyzed_input_sha256": canonical_json_sha256(request),
             }
+            provenance = seal_checkpoint(provenance, result)
             now = service._now()
             with service._uow_factory() as uow:
                 generation = GenerationRecord(

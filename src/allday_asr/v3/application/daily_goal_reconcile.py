@@ -16,6 +16,8 @@ from allday_asr.v3.domain.knowledge import (
     KnowledgeLayer,
 )
 
+from .daily_generation_reliability import request_fingerprint, canonical_result, cache_hit, retry_allowed, checkpoint_valid, seal_checkpoint
+
 PRODUCER = "daily-semantic-reconcile"
 
 
@@ -196,21 +198,14 @@ def _reconcile_round(
             "candidates": descriptions,
             "open_context": [describe(e, -1) for e in active.values()],
         }
-        digest = canonical_json_sha256(
-            {
-                "request": request,
-                "model": analyzer.model_label,
-                "source_revisions": [
-                    (r["utterance_id"], r["revision"])
-                    for e in source
-                    for r in e["evidence"]
-                ],
-            }
-        )
+        digest = request_fingerprint(analyzer, request, {"candidates": source, "open_context_sources": active}, request["version"], schema_version)
         with service._uow_factory().reading() as uow:
             cached = uow.insights.daily_semantic_cache(digest, PRODUCER)
+        if cached and not checkpoint_valid(cached, digest, "groups"):
+            cached = None
         if cached:
             try:
+                cached["groups"] = canonical_result(analyzer, request, {"groups": cached["groups"]})["groups"]
                 validate_groups(
                     cached["groups"],
                     source,
@@ -222,15 +217,16 @@ def _reconcile_round(
             except (ValueError, KeyError, TypeError):
                 cached = None
         if cached:
+            cache_hit(analyzer, digest)
             groups, provenance = cached["groups"], cached["provenance"]
         else:
             if not allow_model:
                 return None, "semantic_reconciliation_pending"
             analyzed_request = request
-            for attempt in range(3):
+            for attempt in range(2):
                 try:
                     result = infer(analyzed_request)
-                    groups = list(result.groups)
+                    groups = canonical_result(analyzer, request, {"groups": list(result.groups)})["groups"]
                     validate_groups(
                         groups,
                         source,
@@ -241,7 +237,7 @@ def _reconcile_round(
                     )
                     break
                 except Exception as exc:
-                    if attempt == 2:
+                    if attempt == 1 or not retry_allowed(exc):
                         raise
                     analyzed_request = {
                         **request,
@@ -267,6 +263,7 @@ def _reconcile_round(
                     len(r["text_excerpt"]) for d in descriptions for r in d["evidence"]
                 ),
             }
+            provenance = seal_checkpoint(provenance, groups)
             now = service._now()
             with service._uow_factory() as uow:
                 record = GenerationRecord(

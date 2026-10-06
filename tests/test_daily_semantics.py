@@ -403,15 +403,15 @@ def test_bad_source_indices_retry_without_repairing_model_claims(source):
     class RetryAnalyzer(AnonymousAnalyzer):
         def analyze(self, request):
             result = super().analyze(request)
-            if self.calls < 3:
+            if self.calls < 2:
                 result.segments[0]["claims"][0]["evidence_indices"] = [999]
             return result
 
     analyzer = RetryAnalyzer()
     source[1]._daily_analyzer = analyzer
     result = refresh(source)
-    assert analyzer.calls == 3 and result["semantic_status"] == "complete"
-    assert result["events"][0]["semantic_provenance"]["attempts"] == 3
+    assert analyzer.calls == 2 and result["semantic_status"] == "complete"
+    assert result["events"][0]["semantic_provenance"]["attempts"] == 2
 
 
 def test_service_closes_both_generators(source):

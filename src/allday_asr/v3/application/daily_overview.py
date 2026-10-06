@@ -2,13 +2,14 @@
 
 import json
 import re
-from allday_asr.v3.domain.hashing import canonical_json_sha256
 from allday_asr.v3.domain.ids import new_ulid
 from allday_asr.v3.domain.knowledge import (
     GenerationRecord,
     GenerationStatus,
     KnowledgeLayer,
 )
+
+from .daily_generation_reliability import request_fingerprint, canonical_result, cache_hit, retry_allowed, checkpoint_valid, seal_checkpoint
 
 PRODUCER = "daily-semantic-overview"
 
@@ -109,26 +110,32 @@ def prepare_overview(service, major, tasks, day, *, allow_model):
     }
     if len(json.dumps(request, ensure_ascii=False)) > 12000:
         raise ValueError("bounded day overview exceeds its high-level input budget")
-    digest = canonical_json_sha256({"request": request, "model": analyzer.model_label})
+    digest = request_fingerprint(analyzer, request, {"major_sources": [e for e in major if e["event_id"] in ids], "task_sources": tasks}, analyzer.overview_prompt_version, analyzer.overview_schema_version)
     with service._uow_factory().reading() as uow:
         cached = uow.insights.daily_semantic_cache(digest, PRODUCER)
+    if cached and not checkpoint_valid(cached, digest, "result"):
+        cached = None
     if cached:
         try:
+            cached["result"] = canonical_result(analyzer, request, cached["result"])
             validate_overview(cached["result"], ids)
         except (KeyError, TypeError, ValueError):
             cached = None
     if cached:
+        cache_hit(analyzer, digest)
         return cached, None
     if not allow_model:
         return None, "semantic_overview_pending"
     analyzed = request
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             result = analyzer.overview(analyzed)
+            from allday_asr.v3.ports.daily_semantics import DailyOverviewResult
+            result = DailyOverviewResult(canonical_result(analyzer, request, result.content), result.provenance)
             validate_overview(result.content, ids)
             break
         except Exception as exc:
-            if attempt == 2:
+            if attempt == 1 or not retry_allowed(exc):
                 raise
             analyzed = {
                 **request,
@@ -151,6 +158,7 @@ def prepare_overview(service, major, tasks, day, *, allow_model):
         ],
         "input_kind": "major_final_events_only",
     }
+    provenance = seal_checkpoint(provenance, result.content)
     cached = {"result": result.content, "provenance": provenance}
     now = service._now()
     with service._uow_factory() as uow:

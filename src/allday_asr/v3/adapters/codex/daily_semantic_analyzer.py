@@ -2,6 +2,8 @@
 
 import json
 import copy
+from pathlib import Path
+from allday_asr.v3.domain.daily_protocol import CANONICALIZATION_VERSION, canonicalize_response
 from openai_codex import ApprovalMode, Sandbox
 from openai_codex.types import ReasoningEffort
 from allday_asr.v3.ports.daily_semantics import (
@@ -71,7 +73,15 @@ def _grounded_overview_schema(request):
 class CodexDailySemanticAnalyzer(CodexSemanticEventGenerator):
     provider = "codex"
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, receipt_dir=None, remote_budget=None, **kwargs):
+        # Injected clients are deterministic/local test clients. The production
+        # SDK always runs inside its own suspended-then-assigned Windows Job.
+        self._isolated = kwargs.get("codex_factory") is None
+        self.receipt_dir = Path(receipt_dir) if receipt_dir else None
+        self.remote_budget = remote_budget
+        self.remote_starts = 0
+        self.cache_hits = []
+        self.canonicalization_audits = []
         super().__init__(*args, **kwargs)
         self.prompt_version = "daily-semantic-v1.1-prompt.1"
         self.extractor_version = "daily-semantic-v1.1-schema.1"
@@ -86,6 +96,20 @@ class CodexDailySemanticAnalyzer(CodexSemanticEventGenerator):
         self.reconcile_schema_version = "daily-semantic-v1.2-reconcile-schema.3"
         self.overview_prompt_version = "daily-semantic-v1.2-overview-prompt.1"
         self.overview_schema_version = "daily-semantic-v1.2-overview-schema.2"
+
+    reasoning_effort = "high"
+
+    def record_cache_hit(self, digest):
+        self.cache_hits.append(digest)
+
+    def record_canonicalization(self, audit):
+        self.canonicalization_audits.append(audit)
+
+    def validate_cached_response(self, request, payload):
+        schema = (DAILY_SEMANTIC_SCHEMA if "segments" in payload else
+                  _grounded_goal_schema(request) if "groups" in payload else
+                  _grounded_overview_schema(request))
+        validate_output(payload, schema)
 
     @property
     def model_label(self):
@@ -154,6 +178,22 @@ class CodexDailySemanticAnalyzer(CodexSemanticEventGenerator):
     def _run_bounded(
         self, request, instructions, schema, prompt_version, schema_version
     ):
+        if self._isolated:
+            from .daily_bounded_attempt import run_attempt
+            payload, provenance = run_attempt(self, request, instructions, schema,
+                                              prompt_version, schema_version)
+        else:
+            payload, provenance = self._run_direct(request, instructions, schema,
+                                                   prompt_version, schema_version)
+        # Schema remains unchanged and is checked before equivalence repair.
+        validate_output(payload, schema)
+        canonical, audit = canonicalize_response(payload)
+        if audit:
+            self.record_canonicalization(audit)
+            provenance = {**provenance, "canonicalization_audit": audit}
+        return canonical, {**provenance, "canonicalization_version": CANONICALIZATION_VERSION}
+
+    def _run_direct(self, request, instructions, schema, prompt_version, schema_version):
         with self._lock:
             model = self.model_label
             workdir = self._prepare_workdir()
