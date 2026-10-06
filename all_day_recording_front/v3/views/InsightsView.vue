@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watchEffect } from 'vue'
 
 import PageState from '../components/PageState.vue'
 import { desktopApi } from '../core/api'
+import { dailyOutcomeText } from '../core/dailyOutcome.js'
 import { playRange, release } from '../core/media'
 import { useQuery } from '../core/query'
 import type { InsightEvidence, RelationshipObservation } from '../core/types'
@@ -189,6 +190,7 @@ onBeforeUnmount(release)
           <details v-for="event in daily.objective.events" :key="event.event_id">
             <summary>{{ event.title }} · 修订 {{ event.revision }}</summary>
             <p>{{ event.summary ?? '' }} <small>{{ event.summary_visibility === 'secondary' ? '次要事件' : '' }}</small></p>
+            <p v-if="dailyOutcomeText(event)">{{ dailyOutcomeText(event) }}</p>
             <p>{{ event.start_at }} — {{ event.end_at }}</p>
             <p>{{ event.participants.map(person => person.label).join('、') }}</p>
             <p>关联任务：{{ event.linked_task_ids.join('、') || '无' }}</p>

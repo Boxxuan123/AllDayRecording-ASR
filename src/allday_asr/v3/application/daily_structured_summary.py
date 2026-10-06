@@ -9,25 +9,61 @@ from .daily_event_persistence import local_generation, event_resource
 from .insight_validation import _link_evidence
 
 
+def _major_score(event):
+    # Preserve V1.2 eligibility and its existing information-value policy.
+    rec = event.get('reconciliation', {})
+    value = rec.get('information_value')
+    value = value if value is not None else event['salience'] * 10
+    strong = bool(event['linked_task_ids'] or isinstance(event.get('outcome'), dict))
+    if rec.get('routine_logistics') and not strong:
+        value = min(value, 25)
+    reason = (rec.get('materialization') or {}).get('reason')
+    consequential = reason in ('explicit_decision', 'explicit_plan', 'explicit_result',
+                               'schedule_change', 'significant_activity')
+    policy_bonus = 20 if consequential and not rec.get('routine_logistics') and not strong else 0
+    return value + policy_bonus + (100 if event['linked_task_ids'] else 0) + (30 if isinstance(event.get('outcome'), dict) else 0) + (200 if event.get('manual_fixed') else 0)
+
+
+def major_priority_reasons(event):
+    """Read existing structured authority; never infer from title/transcript."""
+    reasons = ['manual_fixed'] if event.get('manual_fixed') else []
+    if event['linked_task_ids']:
+        reasons.append('authoritative_linked_task')
+    ids = {r['utterance_id'] for r in event['evidence_snapshots']}
+
+    def grounded(refs):
+        return isinstance(refs, list) and bool(refs) and all(uid in ids for uid in refs)
+
+    outcome = event.get('outcome')
+    if (isinstance(outcome, dict) and outcome.get('kind') in
+            ('decision', 'commitment', 'completion') and
+            isinstance(outcome.get('quote'), str) and outcome['quote'].strip() and
+            grounded(outcome.get('evidence_utterance_ids'))):
+        reasons.append('explicit_outcome_' + outcome['kind'])
+    materialization = event.get('reconciliation', {}).get('materialization') or {}
+    if (materialization.get('materialize') and materialization.get('reason') in
+            ('explicit_decision', 'explicit_plan', 'explicit_result', 'schedule_change') and
+            grounded(materialization.get('evidence_utterance_ids'))):
+        reasons.append('source_backed_' + materialization['reason'])
+    return reasons
+
+
 def select_major(sources):
-    def score(event):
-        rec = event.get('reconciliation', {})
-        value = rec.get('information_value')
-        value = value if value is not None else event['salience'] * 10
-        strong = bool(event['linked_task_ids'] or isinstance(event.get('outcome'), dict))
-        if rec.get('routine_logistics') and not strong:
-            value = min(value, 25)
-        reason = (rec.get('materialization') or {}).get('reason')
-        consequential = reason in ('explicit_decision', 'explicit_plan', 'explicit_result',
-                                   'schedule_change', 'significant_activity')
-        policy_bonus = 20 if consequential and not rec.get('routine_logistics') and not strong else 0
-        return value + policy_bonus + (100 if event['linked_task_ids'] else 0) + (30 if isinstance(event.get('outcome'), dict) else 0) + (200 if event.get('manual_fixed') else 0)
     major = [e for e in sources if e.get('manual_fixed') or
-             (e.get('summary_visibility') == 'major' and score(e) >= 35)]
-    ranked = sorted(major, key=lambda e: (-score(e), e['start_at']))
-    high = [e for e in ranked if e.get('importance') == 'HIGH' or e.get('manual_fixed')]
-    selected = high + [e for e in ranked if e not in high][:max(0, 8-len(high))]
-    return sorted(selected, key=lambda e: (-score(e), e['start_at']))
+             (e.get('summary_visibility') == 'major' and _major_score(e) >= 35)]
+
+    def order(event):
+        reasons = major_priority_reasons(event)
+        bucket = 0 if 'manual_fixed' in reasons else 1 if reasons else 2
+        return (bucket, -{'HIGH': 2, 'MEDIUM': 1, 'LOW': 0}.get(event.get('importance'), 0),
+                -_major_score(event), event['start_at'], event['event_id'])
+
+    ranked = sorted(major, key=order)
+    # First-screen priority must not discard a strong MEDIUM merely because
+    # eight HIGH discussions exist. Continue retaining every HIGH/manual item.
+    selected = ranked[:8] + [e for e in ranked[8:]
+                            if e.get('importance') == 'HIGH' or e.get('manual_fixed')]
+    return selected
 
 
 def structured_summary(events, tasks: tuple[dict, ...], day: str, *, synthesis=None) -> dict:

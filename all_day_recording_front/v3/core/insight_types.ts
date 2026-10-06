@@ -49,6 +49,11 @@ export interface DailyEvent {
   title: string
   summary?: string
   summary_visibility?: string
+  outcome?: string | null | {
+    kind: 'decision' | 'commitment' | 'completion'
+    quote: string
+    evidence_utterance_ids: string[]
+  }
   start_at: string
   end_at: string
   linked_task_ids: string[]
