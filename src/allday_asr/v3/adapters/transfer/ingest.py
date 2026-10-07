@@ -389,8 +389,10 @@ class V3UploadIngestAdapter:
         previous = json.loads(latest["entries_json"] if latest else original["entries_json"])
         previous_revision = int(latest["input_revision"]) if latest else 1
         old_chunks = previous["chunks"]
-        if any(previous.get(key) != manifest[key] for key in
-               ("sessionKey", "sessionStartedAt", "device", "timezone", "audio")):
+        if (any(previous.get(key) != manifest[key] for key in
+                ("sessionKey", "sessionStartedAt", "device", "audio"))
+                or _timezone_identity(previous.get("timezone")) !=
+                _timezone_identity(manifest["timezone"])):
             raise UploadConflictError("清单身份或音频格式改变，不能追加到原会话")
         if manifest["chunks"][:len(old_chunks)] != old_chunks:
             raise UploadConflictError("旧分片的位置或长度改变，不能追加到原会话")
@@ -533,6 +535,12 @@ class V3UploadIngestAdapter:
         return {"status": "ingested", "session_id": existing.session_id,
                 "asset_count": len(prepared), "input_revision": next_revision,
                 "manifest_sha256": record.sha256}
+
+
+def _timezone_identity(value: object) -> object:
+    # HarmonyOS reports CST for the same local zone represented by
+    # Asia/Singapore in earlier manifests and the V3 workflow.
+    return "Asia/Singapore" if value == "CST" else value
 
 
 def _parse_manifest(payload: object) -> dict[str, Any]:

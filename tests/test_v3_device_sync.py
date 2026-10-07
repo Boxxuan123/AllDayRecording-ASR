@@ -627,12 +627,15 @@ class V3DeviceSyncTests(unittest.TestCase):
                     "SELECT entries_json FROM session_manifests WHERE session_id=?",
                     (admitted["session_id"],)).fetchone()[0])
                 self.assertNotIn("completion", stored)
-            stop = {**unknown, "completion": {"source": "watch_stop",
+            stop = {**unknown, "timezone": "CST",
+                    "completion": {"source": "watch_stop",
                     "completedSegments": 1, "totalSamples": 100,
                     "confirmedAt": 1767225601000}}
             confirmed = submit(stop)
             self.assertTrue(confirmed["input_unchanged"])
             self.assertEqual(confirmed["input_revision"], 1)
+            with self.assertRaisesRegex(UploadConflictError, "清单身份"):
+                submit({**stop, "timezone": "UTC"})
             second_name = "segment_1_first_100.wav"
             upload(second_name, self._short_wav(), "recording")
             tail = {**unknown,
