@@ -133,6 +133,10 @@ class DailyHistoryInventory:
                 json_extract(d.objective_json,'$.source_event_revisions') AS event_revisions,
                 json_extract(d.provenance_json,'$.overview_synthesis.model') AS model,
                 json_extract(d.provenance_json,'$.overview_synthesis.prompt_version') AS overview_prompt,
+                json_type(d.objective_json,'$.major_events') AS major_events_type,
+                json_array_length(d.objective_json,'$.major_events') AS major_count,
+                json_extract(d.provenance_json,'$.overview_synthesis.provider') AS overview_provider,
+                json_type(d.provenance_json,'$.overview_synthesis.remote') AS overview_remote_type,
                 json_extract(d.objective_json,'$.statistics.event_count') AS final_count,
                 EXISTS(SELECT 1 FROM invalidation_events i WHERE i.target_type='daily_summary'
                   AND i.target_id=d.summary_id AND i.target_revision=d.revision
@@ -250,6 +254,14 @@ class DailyHistoryInventory:
                 and summary.get("semantic_status") == "complete"
                 and (
                     not summary.get("final_count")
+                    # The approved writer skips model overview when no major
+                    # events exist, even when secondary Final events remain.
+                    or (
+                        summary.get("major_events_type") == "array"
+                        and summary.get("major_count") == 0
+                        and summary.get("overview_provider") == "local"
+                        and summary.get("overview_remote_type") == "false"
+                    )
                     or (
                         summary.get("model") == self.model
                         and summary.get("overview_prompt")
