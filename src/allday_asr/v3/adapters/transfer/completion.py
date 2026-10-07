@@ -35,7 +35,7 @@ def record_completion_confirmation(
         {"input_revision": input_revision, "alias_session_id": alias_session_id,
          "previous_manifest_sha256": previous_sha256,
          "manifest_sha256": record.sha256, "storage_ref": stored.storage_key,
-         "completion": manifest["completion"],
+         "completion": manifest.get("completion"),
          "verified_segments": len(manifest["chunks"])},
     )
     uow.idempotency.complete(key, response)

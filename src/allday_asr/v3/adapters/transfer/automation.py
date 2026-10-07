@@ -106,8 +106,12 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
         with self._lock:
             input_revision = self._input_revision(session_id)
             previous = self.status(session_id)
-            if (previous is not None and previous.get("status") == "completed"
-                    and int(previous.get("input_revision") or 1) == input_revision):
+            if (previous is not None
+                    and int(previous.get("input_revision") or 1) == input_revision
+                    and previous.get("status") in {
+                        "completed", "queued", "running", "retry_scheduled",
+                        "needs_attention", "retry_requested",
+                    }):
                 return previous
             if session_id in self._active:
                 if input_revision > int((previous or {}).get("target_input_revision") or

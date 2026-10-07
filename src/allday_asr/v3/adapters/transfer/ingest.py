@@ -72,8 +72,8 @@ class V3UploadIngestAdapter:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise UploadStoreError("V3 会话清单不是有效的 UTF-8 JSON") from exc
         if isinstance(payload, dict) and payload.get("format") == _LEGACY_MANIFEST_FORMAT:
-            # Already admitted V1 sessions remain replayable, but V1 can no
-            # longer admit new audio without an explicit finalization record.
+            # Already admitted V1 sessions remain replayable. New input uses
+            # V2, whose absent completion means integrity is still unknown.
             old_key = payload.get("sessionKey")
             if isinstance(old_key, str) and old_key:
                 old_ref = (
@@ -84,7 +84,7 @@ class V3UploadIngestAdapter:
                     saved = uow.idempotency.response(f"phone-manifest:{old_id}")
                     if saved is not None and saved.get("manifest_sha256") == record.sha256:
                         return saved
-            raise UploadStoreError("旧版清单缺少录音结束证明；请在手机明确确认旧录音完整")
+            raise UploadStoreError("旧版清单不能入库；请手机重新提交当前音频清单")
         manifest = _parse_manifest(payload)
         device_id = self.trust.domain_device_id(key_id)
         session_ref = (
@@ -547,9 +547,8 @@ def _parse_manifest(payload: object) -> dict[str, Any]:
         "completedSegments",
         "totalSamples",
         "continuityValid",
-        "completion",
     }
-    if not isinstance(payload, dict) or set(payload) != required:
+    if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - required - {"completion"}:
         raise UploadStoreError("V3 会话清单字段不符合协议")
     if payload["format"] != _MANIFEST_FORMAT:
         raise UploadStoreError("V3 会话清单版本不受支持")
@@ -563,22 +562,23 @@ def _parse_manifest(payload: object) -> dict[str, Any]:
         raise UploadStoreError("V3 会话时间和样本总数必须为正数")
     if not isinstance(payload["continuityValid"], bool):
         raise UploadStoreError("V3 continuityValid 必须是布尔值")
-    completion = payload["completion"]
-    if not isinstance(completion, dict) or set(completion) != {
+    completion = payload.get("completion")
+    if "completion" in payload and (not isinstance(completion, dict) or set(completion) != {
         "source", "completedSegments", "totalSamples", "confirmedAt"
-    }:
-        raise UploadStoreError("V3 会话清单缺少明确的结束证明")
-    if not isinstance(completion["source"], str) or completion["source"] not in {
-        "watch_stop", "legacy_user_confirmed"
-    }:
-        raise UploadStoreError("V3 结束证明来源无效")
-    for key in ("completedSegments", "totalSamples", "confirmedAt"):
-        _nonnegative_int(completion[key], f"completion.{key}")
-    if completion["confirmedAt"] <= 0 or (
-        completion["completedSegments"] != payload["completedSegments"]
-        or completion["totalSamples"] != payload["totalSamples"]
-    ):
-        raise UploadStoreError("V3 结束证明与最终清单不一致")
+    }):
+        raise UploadStoreError("V3 结束证明格式无效")
+    if completion is not None:
+        if not isinstance(completion["source"], str) or completion["source"] not in {
+            "watch_stop", "legacy_user_confirmed"
+        }:
+            raise UploadStoreError("V3 结束证明来源无效")
+        for key in ("completedSegments", "totalSamples", "confirmedAt"):
+            _nonnegative_int(completion[key], f"completion.{key}")
+        if completion["confirmedAt"] <= 0 or (
+            completion["completedSegments"] != payload["completedSegments"]
+            or completion["totalSamples"] != payload["totalSamples"]
+        ):
+            raise UploadStoreError("V3 结束证明与当前音频清单不一致")
     audio = payload["audio"]
     if not isinstance(audio, dict) or set(audio) != {
         "sampleRate",

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import queue
 import shutil
 import threading
 import unittest
+import wave
 from unittest.mock import MagicMock, patch
 import urllib.error
 import urllib.request
@@ -146,6 +148,16 @@ class _ReceiptMatrixOperationHandler:
 
 
 class V3DeviceSyncTests(unittest.TestCase):
+    @staticmethod
+    def _short_wav(sample_count: int = 100) -> bytes:
+        output = io.BytesIO()
+        with wave.open(output, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\0\0" * sample_count)
+        return output.getvalue()
+
     def test_automatic_workflow_retry_request_is_cross_process_durable(self) -> None:
         with _workspace_directory() as root:
             store = AutomaticWorkflowStateStore(root / "automation")
@@ -557,14 +569,107 @@ class V3DeviceSyncTests(unittest.TestCase):
         self.assertTrue(_parse_manifest(complete)["continuityValid"])
         missing_completion = dict(complete)
         del missing_completion["completion"]
-        with self.assertRaisesRegex(UploadStoreError, "字段不符合协议"):
-            _parse_manifest(missing_completion)
+        self.assertNotIn("completion", _parse_manifest(missing_completion))
         wrong_count = dict(complete)
         wrong_count["completion"] = {**complete["completion"], "completedSegments": 1}
-        with self.assertRaisesRegex(UploadStoreError, "结束证明与最终清单不一致"):
+        with self.assertRaisesRegex(UploadStoreError, "结束证明与当前音频清单不一致"):
             _parse_manifest(wrong_count)
         with self.assertRaises(UploadStoreError):
             _parse_manifest(manifest)
+
+    def test_unknown_integrity_admits_current_audio_then_accepts_late_stop_and_tail(self) -> None:
+        with _workspace_directory() as root:
+            database, _, device, trust, _, sync = self._environment(root)
+            store = UploadStore(root / "inbox")
+            ingest = V3UploadIngestAdapter(
+                trust, lambda: SqliteUnitOfWork(database),
+                ContentAddressedStore(root / "audio"),
+                ContentAddressedStore(root / "artifacts"),
+            )
+            directory = "pcm_session_1767225600000"
+
+            def upload(name: str, content: bytes, kind: str) -> UploadRecord:
+                started, _ = store.create_upload(
+                    relative_path=f"{directory}/{name}", size=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(), kind=kind,
+                )
+                return store.append_chunk(started.upload_id, offset=0, data=content)
+
+            first_name = "segment_0_first_0.wav"
+            upload(first_name, self._short_wav(), "recording")
+            chunk = {"index": 0, "fileName": first_name,
+                     "firstSample": 0, "sampleCount": 100}
+            unknown = {
+                "format": "AllDayRecording session manifest v2",
+                "sessionKey": "watch-session:1767225600000",
+                "sessionStartedAt": 1767225600000,
+                "device": "HUAWEI WATCH 5", "timezone": "Asia/Singapore",
+                "audio": {"sampleRate": 16000, "channels": 1, "bitsPerSample": 16},
+                "chunks": [chunk], "completedSegments": 1,
+                "totalSamples": 100, "continuityValid": True,
+            }
+
+            def submit(manifest: dict) -> dict:
+                content = json.dumps(manifest).encode()
+                started, _ = store.create_upload(
+                    relative_path=f"{directory}/session_summary.json",
+                    size=len(content), sha256=hashlib.sha256(content).hexdigest(),
+                    kind="manifest",
+                )
+                record = (started if started.status == "completed" else
+                          store.append_chunk(started.upload_id, offset=0, data=content))
+                return ingest.ingest_completed(device.device_id, record, store)
+
+            admitted = submit(unknown)
+            self.assertEqual(admitted["input_revision"], 1)
+            with database.read() as connection:
+                stored = json.loads(connection.execute(
+                    "SELECT entries_json FROM session_manifests WHERE session_id=?",
+                    (admitted["session_id"],)).fetchone()[0])
+                self.assertNotIn("completion", stored)
+            stop = {**unknown, "completion": {"source": "watch_stop",
+                    "completedSegments": 1, "totalSamples": 100,
+                    "confirmedAt": 1767225601000}}
+            confirmed = submit(stop)
+            self.assertTrue(confirmed["input_unchanged"])
+            self.assertEqual(confirmed["input_revision"], 1)
+            second_name = "segment_1_first_100.wav"
+            upload(second_name, self._short_wav(), "recording")
+            tail = {**unknown,
+                    "chunks": [chunk, {"index": 1, "fileName": second_name,
+                                       "firstSample": 100, "sampleCount": 100}],
+                    "completedSegments": 2, "totalSamples": 200}
+            appended = submit(tail)
+            self.assertEqual(appended["input_revision"], 2)
+            self.assertEqual(appended["session_id"], admitted["session_id"])
+            self.assertEqual(submit(tail)["input_revision"], 2)
+            with database.read() as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT count(*) FROM session_manifest_revisions WHERE session_id=?",
+                    (admitted["session_id"],)).fetchone()[0], 1)
+
+    def test_unchanged_input_only_queues_when_workflow_is_absent(self) -> None:
+        runner = object.__new__(V3AutomaticWorkflowRunner)
+        runner._lock = threading.RLock()
+        runner._active = set()
+        runner._queue = queue.Queue()
+        runner._input_revision = lambda _session_id: 1
+        runner._write = lambda _session_id, value: states.append(dict(value))
+        runner.status = lambda _session_id: states[-1] if states else None
+        runner.max_auto_retries = 3
+        record = SimpleNamespace(upload_id="manifest-upload")
+        result = {"session_id": "session-1", "input_revision": 1,
+                  "input_unchanged": True}
+        states: list[dict] = []
+        self.assertEqual(runner.submit(record, result)["status"], "queued")
+        self.assertEqual(runner._queue.qsize(), 1)
+        self.assertEqual(runner.submit(record, result)["status"], "queued")
+        self.assertEqual(runner._queue.qsize(), 1)
+        for status in ("running", "completed", "retry_scheduled", "needs_attention"):
+            states[-1] = {**states[-1], "status": status, "auto_retry_count": 2}
+            self.assertEqual(runner.submit(record, result)["status"], status)
+            self.assertEqual(states[-1]["auto_retry_count"], 2)
+            self.assertEqual(runner._queue.qsize(), 1)
 
     def test_completed_manifest_admits_audio_and_is_idempotent(self) -> None:
         with _workspace_directory() as root:
@@ -779,7 +884,7 @@ class V3DeviceSyncTests(unittest.TestCase):
                 self.assertEqual(json.loads(repaired[0])["session_key"], manifest["sessionKey"])
 
 
-    def test_legacy_completion_confirms_identical_audio_without_reprocessing(self) -> None:
+    def test_legacy_completion_schedules_unprocessed_identical_audio(self) -> None:
         for duplicate, tamper in ((False, False), (False, True), (True, False), (True, True)):
             with self.subTest(duplicate=duplicate, tamper=tamper), _workspace_directory() as root:
                 database, _, device, trust, _, sync = self._environment(root)
@@ -864,12 +969,13 @@ class V3DeviceSyncTests(unittest.TestCase):
                 self.assertEqual(confirmed["input_revision"], 1)
                 self.assertTrue(confirmed["input_unchanged"])
                 self.assertEqual(confirmed["session_id"], initial["session_id"])
-                workflow.assert_not_called()
+                workflow.assert_called_once()
                 restarted = V3UploadIngestAdapter(
                     active_trust, lambda database=database: SqliteUnitOfWork(database),
                     ContentAddressedStore(root / "audio"), artifacts,
                 )
-                self.assertEqual(restarted.ingest_completed(device.device_id, initial_record, store), confirmed)
+                self.assertEqual(restarted.ingest_completed(device.device_id, initial_record, store),
+                                 {key: value for key, value in confirmed.items() if key != "automation"})
                 with database.read() as connection:
                     self.assertEqual(connection.execute("SELECT sha256 FROM session_manifests").fetchone()[0], legacy_record.sha256)
                     self.assertEqual(connection.execute("SELECT count(*) FROM session_manifest_revisions").fetchone()[0], 0)
