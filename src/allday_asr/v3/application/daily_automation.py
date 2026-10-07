@@ -4,13 +4,10 @@ import logging
 import threading
 import json
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from allday_asr.v3.adapters.sqlite.daily_generation_queue import (
-    DailyGenerationQueue,
-    day_worker_lock,
-)
-from .daily_inventory import DailyHistoryInventory
+from .file_lock import day_worker_lock
 
 
 class DailyGenerationCoordinator:
@@ -23,10 +20,8 @@ class DailyGenerationCoordinator:
             version,
         )
         self.now = now or (lambda: datetime.now(timezone.utc))
-        self.inventory = DailyHistoryInventory(
-            database, version, model=model, now=self.now
-        )
-        self.queue = DailyGenerationQueue(database, self.now)
+        self.inventory = database.daily_inventory(version, model=model, now=self.now)
+        self.queue = database.daily_generation_queue(self.now)
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread = None
@@ -35,10 +30,30 @@ class DailyGenerationCoordinator:
         self.last_error = None
 
     def catch_up(self, trigger="startup", *, origin="RECENT_DAILY"):
-        items = self.inventory.scan(include_today=True)
+        rows = self.database.daily_dirty_ranges()
+        dates = set(self._recent_dates())
+        consumed = []
+        for dirty_id, first_text, last_text in rows:
+            first = datetime.fromisoformat(first_text).date()
+            last = datetime.fromisoformat(last_text).date()
+            stop = min(last, first + timedelta(days=13))
+            dates.update((first + timedelta(days=offset)).isoformat()
+                         for offset in range((stop - first).days + 1))
+            next_first = (stop + timedelta(days=1)).isoformat() if stop < last else None
+            consumed.append((dirty_id, first_text, next_first))
+        items = self.inventory.scan(include_today=True, only_dates=dates)
         created = self.queue.observe(items, origin=origin)
+        self.database.acknowledge_daily_dirty_ranges(tuple(consumed))
         self.last_trigger = trigger
         return {"trigger": trigger, "created_job_ids": created, "items": items}
+
+    def _recent_dates(self):
+        today = self.now().astimezone(ZoneInfo(self.inventory.timezone)).date()
+        return ((today - timedelta(days=1)).isoformat(), today.isoformat())
+
+    def full_reconcile(self, *, include_today=False):
+        """Explicit read-only repair/diagnostic inventory, never the worker default."""
+        return self.inventory.scan(include_today=include_today)
 
     def notify(self, trigger="receiver_sync"):
         # HTTP threads only wake a coalescing worker; never wait for inference.
@@ -86,7 +101,11 @@ class DailyGenerationCoordinator:
             if not acquired:
                 return None
             self.queue.recover_abandoned()
-            items = self.inventory.scan(include_today=True)
+            dates = allowed_dates if allowed_dates is not None else (
+                *self._recent_dates(), *self.queue.pending_dates())
+            if not dates:
+                return None
+            items = self.inventory.scan(include_today=True, only_dates=dates)
             self.queue.observe(
                 items, origin="HISTORICAL" if backfill else "RECENT_DAILY"
             )
@@ -126,12 +145,10 @@ class DailyGenerationCoordinator:
                 )
                 if heartbeat_errors:
                     raise heartbeat_errors[0]
-                after = next(
-                    i
-                    for i in self.inventory.scan(include_today=True)
-                    if i["date"] == job["local_date"]
-                )
-                if after["source_fingerprint"] != job["source_fingerprint"]:
+                after = next((i for i in self.inventory.scan(
+                    include_today=True, only_dates=(job["local_date"],))
+                    if i["date"] == job["local_date"]), None)
+                if after is None or after["source_fingerprint"] != job["source_fingerprint"]:
                     success = False
                     result = {"error": "daily_sources_changed"}
                 status = self.queue.finish(

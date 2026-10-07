@@ -17,7 +17,7 @@ from allday_asr.v3.adapters.sqlite.dataset_reservations import now, settings
 from allday_asr.v3.ports.speaker_embeddings import SpeakerClipInput, SpeakerTrackInput
 from allday_asr.v3.adapters.sqlite.blind_report import build_report, markdown
 from allday_asr.v3.application.blind_scoring import components, digest, encoded, score, unit
-from allday_asr.v3.application.query_purity import probe, query_features
+from allday_asr.v3.adapters.query_purity import probe, query_features
 
 LOG = logging.getLogger(__name__)
 

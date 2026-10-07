@@ -33,13 +33,13 @@ from allday_asr.v3.adapters.sqlite.speaker_purity_repository import (  # noqa: E
     propose_recrop,
     register_candidates,
 )
-from allday_asr.v3.application.purity_shadow import build_shadow, unit  # noqa: E402
-from allday_asr.v3.application.query_purity import (  # noqa: E402
+from allday_asr.v3.adapters.purity_shadow import build_shadow, unit  # noqa: E402
+from allday_asr.v3.adapters.query_purity import (  # noqa: E402
     fit_clean_thresholds,
     grouped_validation,
     query_features,
 )
-from allday_asr.v3.application.speaker_profile_purity import digest, source_key  # noqa: E402
+from allday_asr.v3.adapters.sqlite.speaker_profile_purity import digest, source_key  # noqa: E402
 from allday_asr.v3.domain.people import RepresentativeClip, SpeakerEmbedding  # noqa: E402
 from allday_asr.v3.domain.speaker_purity import source_ineligibility  # noqa: E402
 from allday_asr.v3.ports.speaker_embeddings import SpeakerClipInput, SpeakerTrackInput  # noqa: E402

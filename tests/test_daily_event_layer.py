@@ -113,6 +113,83 @@ def revise(source, text=None, identity=None):
                             source_revision=1, reason='test_correction', now=source[0].now)
 
 
+def test_user_accepted_task_keeps_its_intent_after_evidence_change(source):
+    receipt = source[0].knowledge.submit_generation(_event_submission())
+    task_id = source[0].knowledge.accept_proposal(
+        receipt['proposals'][0]['proposal_id'], 'reviewer'
+    ).resource_id
+    with source[2]().reading() as uow:
+        before = uow.knowledge.get_event(task_id)
+    revise(source, text='更正后的转写')
+    with source[2]().reading() as uow:
+        task = uow.knowledge.get_event(task_id)
+        assert task is not None and task.derivation_status == 'active'
+        assert task.status == before.status
+        assert task.revision == before.revision and task.payload == before.payload
+    with source[0].database.read() as c:
+        assert c.execute(
+            "SELECT COUNT(*) FROM recompute_requests WHERE target_type='event' AND target_id=?",
+            (task_id,),
+        ).fetchone()[0] == 0
+        assert c.execute(
+            """SELECT d.input_revision, u.revision FROM derivation_dependencies d
+            JOIN utterances u ON u.utterance_id=d.input_id
+            WHERE d.dependent_type='event' AND d.dependent_id=?
+              AND d.input_type='utterance'""",
+            (task_id,),
+        ).fetchone()[:] == (1, 2)
+    with source[2]() as uow:
+        cascade_derivations(uow, source_type='utterance', source_id=UTTERANCE_ID,
+                            source_revision=1, reason='test_correction', now=source[0].now)
+    daily = refresh(source)
+    assert daily['events'] and all(event['event_id'] != task_id for event in daily['events'])
+    with source[2]().reading() as uow:
+        task = uow.knowledge.get_event(task_id)
+        assert task.derivation_status == 'active'
+        assert task.revision == before.revision and task.payload == before.payload
+
+
+def test_automatic_event_becomes_stale_once_and_is_queued_for_recompute(source):
+    receipt = source[0].knowledge.submit_generation(_event_submission())
+    event_id = source[0].knowledge.accept_proposal(
+        receipt['proposals'][0]['proposal_id'], 'semantic-event-policy'
+    ).resource_id
+    revise(source, text='自动事件来源更正')
+    with source[2]() as uow:
+        cascade_derivations(uow, source_type='utterance', source_id=UTTERANCE_ID,
+                            source_revision=1, reason='test_correction', now=source[0].now)
+    with source[2]().reading() as uow:
+        assert uow.knowledge.get_event(event_id).derivation_status == 'stale'
+    with source[0].database.read() as c:
+        assert c.execute(
+            "SELECT COUNT(*) FROM invalidation_events WHERE target_type='event' AND target_id=?",
+            (event_id,),
+        ).fetchone()[0] == 1
+        assert c.execute(
+            "SELECT COUNT(*) FROM recompute_requests WHERE target_type='event' AND target_id=?",
+            (event_id,),
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize('actor', ['semantic-event-policy', 'reminder-policy'])
+def test_automatic_recomputation_cannot_overwrite_confirmed_task(source, actor):
+    receipt = source[0].knowledge.submit_generation(_event_submission())
+    task_id = source[0].knowledge.accept_proposal(
+        receipt['proposals'][0]['proposal_id'], 'reviewer'
+    ).resource_id
+    revise(source, text='来源已变化')
+    before = source[0].knowledge.list_events(seed_module.SESSION_ID)[0]
+    rerun = source[0].knowledge.submit_generation(_event_submission(
+        operation='update', expected_revision=1, event_id=task_id,
+        patch={'title': '自动覆盖标题'}))
+    with pytest.raises(ValueError, match='confirmed task requires a user decision'):
+        source[0].knowledge.accept_proposal(rerun['proposals'][0]['proposal_id'], actor)
+    after = source[0].knowledge.list_events(seed_module.SESSION_ID)[0]
+    assert after['revision'] == before['revision']
+    assert after['payload'] == before['payload']
+    assert after['derivation_status'] == 'active'
+
+
 def test_identity_correction_targeted(source):
     add(source, 240, '买东西')
     before = refresh(source)['events']
@@ -123,14 +200,19 @@ def test_identity_correction_targeted(source):
     assert after[0]['revision'] == 2 and after[1]['revision'] == 1
 
 
-def test_revision_stale_and_recompute(source):
+def test_revision_uses_daily_generation_without_double_invalidation(source):
     first = refresh(source)['events'][0]
     revise(source, text='修正后的项目材料')
     with source[2]().reading() as uow:
-        assert uow.knowledge.get_event(first['event_id']).derivation_status == 'stale'
+        assert uow.knowledge.get_event(first['event_id']).derivation_status == 'active'
     event = refresh(source)['events'][0]
     assert event['revision'] == 2
     assert event['evidence_snapshots'][0]['text'] == '修正后的项目材料'
+    with source[0].database.read() as c:
+        assert c.execute(
+            "SELECT COUNT(*) FROM invalidation_events WHERE target_type='event' AND target_id=?",
+            (first['event_id'],),
+        ).fetchone()[0] == 0
 
 
 def test_late_arrival_yesterday_updates_same_ids(source):

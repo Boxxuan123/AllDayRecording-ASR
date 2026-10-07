@@ -326,6 +326,18 @@ class PeoplePrototypeMixin:
     def _refresh_maturity(
         self, person_id: str, actor: str
     ) -> dict[str, Any]:
+        # A maturity calculation runs outside the write transaction. Recompute
+        # if any policy revision changed meanwhile, so a worker cannot restore
+        # a user's auto-match switch or thresholds from an old snapshot.
+        for _ in range(3):
+            refreshed = self._refresh_maturity_once(person_id, actor)
+            if refreshed is not None:
+                return refreshed
+        raise RuntimeError("identity policy changed during maturity refresh")
+
+    def _refresh_maturity_once(
+        self, person_id: str, actor: str
+    ) -> dict[str, Any] | None:
         with self._uow_factory().reading() as uow:
             current = uow.people.identity_policy(person_id)
             examples = uow.people.prototype_review_examples(person_id)
@@ -429,16 +441,21 @@ class PeoplePrototypeMixin:
             and bool(current["auto_match_enabled"]) == auto_match_enabled
             and current["calibration"] == calibration
         ):
-            return current
+            with self._uow_factory().reading() as uow:
+                latest = uow.people.identity_policy(person_id)
+            return latest if int(latest["revision"]) == int(current["revision"]) else None
         with self._uow_factory() as uow:
+            latest = uow.people.identity_policy(person_id)
+            if int(latest["revision"]) != int(current["revision"]):
+                return None
             return uow.people.add_identity_policy_revision(
                 person_id,
                 maturity_status=maturity.value,
                 auto_match_enabled=auto_match_enabled,
-                suggest_threshold=float(current["suggest_threshold"]),
-                auto_accept_threshold=float(current["auto_accept_threshold"]),
-                minimum_margin=float(current["minimum_margin"]),
-                minimum_quality=float(current["minimum_quality"]),
+                suggest_threshold=float(latest["suggest_threshold"]),
+                auto_accept_threshold=float(latest["auto_accept_threshold"]),
+                minimum_margin=float(latest["minimum_margin"]),
+                minimum_quality=float(latest["minimum_quality"]),
                 calibration=calibration,
                 actor=actor,
                 created_at=_datetime(self._now()),

@@ -25,7 +25,7 @@ from allday_asr.v3.adapters.speaker_embeddings.funasr import (  # noqa: E402
     FunASRSpeakerEmbeddingProvider,
 )
 from allday_asr.v3.adapters.sqlite.migration_runner import V3MigrationRunner  # noqa: E402
-from allday_asr.v3.application.speaker_profile_purity import (  # noqa: E402
+from allday_asr.v3.adapters.sqlite.speaker_profile_purity import (  # noqa: E402
     AUDIT_VERSION, digest, fact_provenance, profile_provenance, source_key,
 )
 from allday_asr.v3.ports.speaker_embeddings import (  # noqa: E402

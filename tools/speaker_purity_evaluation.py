@@ -25,7 +25,7 @@ from analyze_speaker_profile_purity import (
     score_rows,
     metrics,
 )
-from allday_asr.v3.application.query_purity import probe
+from allday_asr.v3.adapters.query_purity import probe
 
 
 def identity_metrics(rows, known, self_id):

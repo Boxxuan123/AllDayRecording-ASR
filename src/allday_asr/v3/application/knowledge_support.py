@@ -67,6 +67,16 @@ def cascade_derivations(
     ):
         if preserve_events and target_type == "event":
             continue
+        if source_type == "utterance" and target_type == "event":
+            current_event = uow.knowledge.get_event(target_id)
+            if current_event is not None and "daily_event_version" in current_event.payload:
+                # Daily generation retires/replaces its own revisions by date.
+                continue
+        if target_type == "event" and uow.reminders.is_user_confirmed_task(target_id):
+            # User intent remains active. The immutable dependency still points
+            # to the old source revision, so source review can be derived from
+            # that provenance without invalidating or recomputing the task.
+            continue
         event = InvalidationEvent(
             invalidation_id=new_ulid(),
             target_type=target_type,

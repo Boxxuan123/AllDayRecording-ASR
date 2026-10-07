@@ -24,9 +24,9 @@ from allday_asr.v3.adapters.sqlite.speaker_purity_repository import (
     register_candidates,
 )
 from allday_asr.v3.adapters.sqlite.annotation_sample_plan import SamplePlan
-from allday_asr.v3.application.speaker_profile_purity import append_review, source_key
-from allday_asr.v3.application.purity_shadow import build_shadow
-from allday_asr.v3.application.query_purity import (
+from allday_asr.v3.adapters.sqlite.speaker_profile_purity import append_review, source_key
+from allday_asr.v3.adapters.purity_shadow import build_shadow
+from allday_asr.v3.adapters.query_purity import (
     fit_clean_thresholds,
     grouped_validation,
     probe,

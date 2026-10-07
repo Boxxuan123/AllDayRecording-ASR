@@ -7,8 +7,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from openai_codex import ApprovalMode, Codex, Sandbox
-from openai_codex.types import ReasoningEffort
+from openai_codex import Codex
 
 from allday_asr.v3.domain.insights import DAILY_NARRATIVE_SECTIONS
 from allday_asr.v3.ports.insight_generation import (
@@ -18,6 +17,7 @@ from allday_asr.v3.ports.insight_generation import (
     RelationshipInsightModelRequest,
     RelationshipInsightModelResult,
 )
+from .model_execution_runner import ModelExecutionRunner
 
 
 PROMPT_VERSION = "v3.6-codex-insight-prompt.1"
@@ -117,7 +117,10 @@ class CodexInsightGenerator:
         self._workdir = workdir
         self._model = model
         self._codex_factory = codex_factory or Codex
+        self._custom_codex_factory = codex_factory is not None
         self._codex: Any | None = None
+        receipts = workdir.parent / (f"{workdir.name}.receipts" if codex_factory else "model-execution-receipts")
+        self._runner = ModelExecutionRunner(receipts)
         self._lock = RLock()
         self.model_label = model or "codex-configured-default"
         self.producer_version = version("openai-codex")
@@ -128,7 +131,8 @@ class CodexInsightGenerator:
         self, request: DailyInsightModelRequest, effort: InsightReasoningEffort
     ) -> DailyInsightModelResult:
         result = self._run(
-            _daily_prompt(request), effort, CODEX_DAILY_INSIGHT_OUTPUT_SCHEMA
+            _daily_prompt(request), effort, CODEX_DAILY_INSIGHT_OUTPUT_SCHEMA,
+            batch_id=f"daily:{request.summary_date}",
         )
         payload = _decode_object(result.final_response, set(DAILY_NARRATIVE_SECTIONS))
         narrative: dict[str, tuple[dict[str, Any], ...]] = {}
@@ -155,6 +159,7 @@ class CodexInsightGenerator:
             _relationship_prompt(request),
             effort,
             CODEX_RELATIONSHIP_INSIGHT_OUTPUT_SCHEMA,
+            batch_id=f"relationship:{request.person.get('person_id', 'unknown')}:{request.end_date}",
         )
         payload = _decode_object(result.final_response, {"observations"})
         values = payload["observations"]
@@ -178,32 +183,21 @@ class CodexInsightGenerator:
                 self._codex = None
 
     def _run(
-        self, prompt: str, effort: InsightReasoningEffort, schema: dict[str, Any]
+        self, prompt: str, effort: InsightReasoningEffort, schema: dict[str, Any],
+        *, batch_id: str,
     ) -> Any:
         with self._lock:
             workdir = self._prepare_workdir()
-            client = self._client()
             try:
-                thread = client.thread_start(
-                    approval_mode=ApprovalMode.deny_all,
-                    cwd=str(workdir),
-                    developer_instructions=_DEVELOPER_INSTRUCTIONS,
-                    ephemeral=True,
-                    model=self._model,
-                    sandbox=Sandbox.read_only,
-                )
-                result = thread.run(
-                    prompt,
-                    approval_mode=ApprovalMode.deny_all,
-                    cwd=str(workdir),
-                    effort=ReasoningEffort(effort.value),
-                    model=self._model,
-                    output_schema=schema,
-                    sandbox=Sandbox.read_only,
+                result = self._runner.run(
+                    task="insight", batch_id=batch_id, prompt=prompt,
+                    instructions=_DEVELOPER_INSTRUCTIONS, schema=schema,
+                    model=self._model, effort=effort.value, workdir=workdir,
+                    fake_client=self._client() if self._custom_codex_factory else None,
                 )
             except Exception as exc:
                 raise CodexInsightGenerationError(
-                    "Codex insight generation failed"
+                    f"Codex insight generation failed: {exc}"
                 ) from exc
             if any(workdir.iterdir()):
                 raise CodexInsightGenerationError("Codex workdir is no longer empty")
@@ -306,6 +300,8 @@ def _decode_object(value: str | None, keys: set[str]) -> dict[str, Any]:
 def _usage(value: Any | None) -> dict[str, Any]:
     if value is None:
         return {}
+    if isinstance(value, dict):
+        return value
     if hasattr(value, "model_dump"):
         dumped = value.model_dump(by_alias=True, mode="json", exclude_none=True)
         return dumped if isinstance(dumped, dict) else {}

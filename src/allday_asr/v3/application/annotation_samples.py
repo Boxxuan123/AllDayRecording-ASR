@@ -5,8 +5,7 @@ import threading
 import time
 
 from allday_asr.v3.domain.ids import new_ulid
-from allday_asr.v3.adapters.sqlite.annotation_sample_plan import compute_plans
-from allday_asr.v3.adapters.sqlite.annotation_sample_snapshot import load_snapshot
+from allday_asr.v3.domain.annotation_sample_planning import compute_plans
 
 LOG = logging.getLogger(__name__)
 
@@ -71,7 +70,7 @@ class AnnotationSampleWorker:
             started = time.perf_counter()
             try:
                 with service._uow_factory().reading() as uow:
-                    snapshot = load_snapshot(uow.people.connection, session_id)
+                    snapshot = uow.people.annotation_sample_snapshot(session_id)
                 loaded = time.perf_counter()
                 plans, reasons = compute_plans(snapshot, model, version)
                 planned = time.perf_counter()
@@ -134,9 +133,7 @@ class AnnotationSampleWorker:
                 status, reason = "retryable", str(exc)
             publish_started = time.perf_counter()
             with service._uow_factory() as uow:
-                revision = uow.people.connection.execute(
-                    "SELECT revision FROM annotation_input_revision WHERE singleton=1"
-                ).fetchone()[0]
+                revision = uow.people.annotation_input_revision()
                 lease = uow.people.sample_job(session_id)
                 valid = (
                     lease.get("token") == token
@@ -149,16 +146,10 @@ class AnnotationSampleWorker:
                 if not valid:
                     status, reason = "retryable", "source_or_model_changed"
                 else:
-                    from allday_asr.v3.adapters.sqlite.speaker_purity_repository import (
-                        register_candidates,
-                    )
-
                     for plan in plans:
                         # A person fact proposes enrollment; it never grants purity.
                         # This shadow queue cannot authorize legacy prototypes.
-                        register_candidates(
-                            uow.people.connection, plan, service._now().isoformat()
-                        )
+                        uow.people.register_sample_candidates(plan, service._now().isoformat())
                         if (
                             not uow.people.sample_set_exists(plan.key)
                             and plan.key in computed

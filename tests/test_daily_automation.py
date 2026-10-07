@@ -8,7 +8,7 @@ from allday_asr.v3.adapters.sqlite.daily_generation_queue import (
     DailyGenerationQueue,
     day_worker_lock,
 )
-from allday_asr.v3.application.daily_inventory import (
+from allday_asr.v3.adapters.sqlite.daily_inventory import (
     classify_day,
     DailyHistoryInventory,
 )

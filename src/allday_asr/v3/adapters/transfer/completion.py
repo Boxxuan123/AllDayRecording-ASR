@@ -5,22 +5,20 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.domain.models import RecordingSession, RecordingSessionState
 from allday_asr.v3.interfaces.transfer.store import UploadConflictError, UploadRecord
 from allday_asr.v3.ports.repositories import UnitOfWork
+from allday_asr.v3.ports.stores import StoredContent
 
 
 def record_completion_confirmation(
     uow: UnitOfWork, session: RecordingSession, alias_session_id: str,
-    manifest: Mapping[str, Any], record: UploadRecord, manifest_path: Path,
-    artifact_store: ContentAddressedStore, device_id: str,
+    manifest: Mapping[str, Any], record: UploadRecord,
+    stored: StoredContent, device_id: str,
     input_revision: int, previous_sha256: str,
 ) -> dict[str, Any]:
-    stored = artifact_store.put_file(manifest_path, expected_sha256=record.sha256)
     response = {
         "status": "already_ingested", "session_id": session.session_id,
         "asset_count": len(manifest["chunks"]), "input_revision": input_revision,
@@ -45,7 +43,7 @@ def record_completion_confirmation(
 def confirm_duplicate_completion(
     uow: UnitOfWork, alias: RecordingSession, manifest: Mapping[str, Any],
     prepared: list[tuple[Mapping[str, Any], UploadRecord]], record: UploadRecord,
-    manifest_path: Path, artifact_store: ContentAddressedStore, device_id: str,
+    stored: StoredContent, device_id: str,
 ) -> dict[str, Any]:
     reason = alias.blocking_reason or ""
     if alias.state != RecordingSessionState.QUARANTINED or not reason.startswith("duplicate_manifest:"):
@@ -95,7 +93,7 @@ def confirm_duplicate_completion(
     ):
         raise UploadConflictError("重复录音的分片哈希或采样位置与正式记录不一致")
     return record_completion_confirmation(
-        uow, canonical, alias.session_id, manifest, record, manifest_path,
-        artifact_store, device_id, int(latest["input_revision"]) if latest else 1,
+        uow, canonical, alias.session_id, manifest, record, stored,
+        device_id, int(latest["input_revision"]) if latest else 1,
         (latest or original)["sha256"],
     )

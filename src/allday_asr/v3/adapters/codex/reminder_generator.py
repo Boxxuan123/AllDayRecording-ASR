@@ -7,14 +7,14 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from openai_codex import ApprovalMode, Codex, Sandbox
-from openai_codex.types import ReasoningEffort
+from openai_codex import Codex
 
 from allday_asr.v3.ports.reminder_generation import (
     ReminderModelRequest,
     ReminderModelResult,
     ReminderReasoningEffort,
 )
+from .model_execution_runner import ModelExecutionRunner
 
 
 PROMPT_VERSION = "v3.3-codex-reminder-prompt.2"
@@ -134,7 +134,10 @@ class CodexReminderGenerator:
         self._workdir = workdir
         self._model = model
         self._codex_factory = codex_factory or Codex
+        self._custom_codex_factory = codex_factory is not None
         self._codex: Any | None = None
+        receipts = workdir.parent / (f"{workdir.name}.receipts" if codex_factory else "model-execution-receipts")
+        self._runner = ModelExecutionRunner(receipts)
         self._lock = RLock()
         self.model_label = model or "codex-configured-default"
         self.producer_version = version("openai-codex")
@@ -148,28 +151,17 @@ class CodexReminderGenerator:
     ) -> ReminderModelResult:
         with self._lock:
             workdir = self._prepare_workdir()
-            client = self._client()
             try:
-                thread = client.thread_start(
-                    approval_mode=ApprovalMode.deny_all,
-                    cwd=str(workdir),
-                    developer_instructions=_DEVELOPER_INSTRUCTIONS,
-                    ephemeral=True,
-                    model=self._model,
-                    sandbox=Sandbox.read_only,
-                )
-                result = thread.run(
-                    _prompt(request),
-                    approval_mode=ApprovalMode.deny_all,
-                    cwd=str(workdir),
-                    effort=ReasoningEffort(effort.value),
-                    model=self._model,
-                    output_schema=CODEX_REMINDER_OUTPUT_SCHEMA,
-                    sandbox=Sandbox.read_only,
+                result = self._runner.run(
+                    task="reminder", batch_id=request.session_id,
+                    prompt=_prompt(request), instructions=_DEVELOPER_INSTRUCTIONS,
+                    schema=CODEX_REMINDER_OUTPUT_SCHEMA, model=self._model,
+                    effort=effort.value, workdir=workdir,
+                    fake_client=self._client() if self._custom_codex_factory else None,
                 )
             except Exception as exc:
                 raise CodexReminderGenerationError(
-                    "Codex reminder extraction failed"
+                    f"Codex reminder extraction failed: {exc}"
                 ) from exc
             if any(workdir.iterdir()):
                 raise CodexReminderGenerationError(
@@ -271,6 +263,8 @@ def _decode_response(value: str | None) -> dict[str, Any]:
 def _usage(value: Any | None) -> dict[str, Any]:
     if value is None:
         return {}
+    if isinstance(value, dict):
+        return value
     if hasattr(value, "model_dump"):
         dumped = value.model_dump(by_alias=True, mode="json", exclude_none=True)
         return dumped if isinstance(dumped, dict) else {}

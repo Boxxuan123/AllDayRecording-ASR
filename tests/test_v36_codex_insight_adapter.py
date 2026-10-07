@@ -30,6 +30,9 @@ class V36CodexInsightAdapterTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         shutil.rmtree(self.workdir, ignore_errors=True)
+        receipts = self.workdir.with_name(f"{self.workdir.name}.receipts").resolve()
+        if receipts.parent == TEST_ROOT.resolve():
+            shutil.rmtree(receipts, ignore_errors=True)
 
     def test_daily_synthesis_is_empty_read_only_ephemeral_and_structured(self) -> None:
         response = {section: [] for section in DAILY_NARRATIVE_SECTIONS}

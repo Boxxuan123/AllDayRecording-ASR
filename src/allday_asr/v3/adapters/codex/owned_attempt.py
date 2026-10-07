@@ -3,6 +3,7 @@
 import ctypes
 import os
 import subprocess
+import time
 from ctypes import wintypes as W
 
 K = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -136,13 +137,23 @@ class OwnedAttempt:
         checked(K.TerminateJobObject(self.job, 124))
         self.identity["termination"] = "EXCLUSIVE_ASSIGNED_JOB_HANDLE_ONLY"
 
-    def wait(self, timeout):
+    def wait(self, timeout, cancel_event=None):
+        deadline = time.monotonic() + timeout
         try:
-            return self.proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            self.stop()
-            self.proc.wait(timeout=0.5)
-            return 124
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    self.stop()
+                    self.proc.wait(timeout=0.5)
+                    return 125
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.stop()
+                    self.proc.wait(timeout=0.5)
+                    return 124
+                try:
+                    return self.proc.wait(timeout=min(0.25, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
         finally:
             self.close()
 

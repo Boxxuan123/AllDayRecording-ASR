@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 from allday_asr.v3.domain.hashing import canonical_json_sha256
-from allday_asr.v3.application.speaker_profile_purity import (
+from allday_asr.v3.adapters.sqlite.speaker_profile_purity import (
     append_review as append_purity_review,
     list_phone_tasks as list_purity_phone_tasks,
 )

@@ -1,51 +1,30 @@
 """Durable day attempts, atomic claims and cross-process single-day exclusion."""
 
 import json
-import os
-from contextlib import contextmanager
 from datetime import timedelta
-from pathlib import Path
 from uuid import uuid4
 
 from allday_asr.v3.domain.hashing import canonical_json_sha256
 
 
-@contextmanager
-def day_worker_lock(database_path):
-    path = Path(database_path).with_suffix(".daily-generation.lock")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a+b")
-    if handle.tell() == 0:
-        handle.write(b"0")
-        handle.flush()
-    handle.seek(0)
-    acquired = False
-    try:
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except (OSError, BlockingIOError):
-            pass
-        yield acquired
-    finally:
-        if acquired:
-            if os.name == "nt":
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
+from allday_asr.v3.application.file_lock import day_worker_lock as day_worker_lock
 
 
 class DailyGenerationQueue:
     def __init__(self, database, now):
         self.database, self.now = database, now
+
+    def pending_dates(self, limit: int = 64) -> tuple[str, ...]:
+        with self.database.read() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT local_date FROM daily_generation_jobs
+                WHERE status IN ('PENDING','FAILED_RETRYABLE')
+                  AND attempts<attempt_limit AND automatic_retry_blocked=0
+                  AND julianday(available_at)<=julianday(?)
+                ORDER BY local_date DESC LIMIT ?""",
+                (self.now().isoformat(), limit),
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows)
 
     def observe(self, items, *, origin="RECENT_DAILY"):
         now = self.now().isoformat()

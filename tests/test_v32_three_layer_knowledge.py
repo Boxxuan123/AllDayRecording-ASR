@@ -121,7 +121,7 @@ class V32ThreeLayerKnowledgeTests(unittest.TestCase):
     ) -> None:
         event_receipt = self.knowledge.submit_generation(_event_submission())
         event_resolution = self.knowledge.accept_proposal(
-            event_receipt["proposals"][0]["proposal_id"], "reviewer"
+            event_receipt["proposals"][0]["proposal_id"], "semantic-event-policy"
         )
         event_id = event_resolution.resource_id
         assert event_id is not None

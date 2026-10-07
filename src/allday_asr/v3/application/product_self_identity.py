@@ -1,6 +1,5 @@
 """Infer self on a non-learning recording without creating voice samples."""
 
-import json
 import logging
 from dataclasses import asdict
 
@@ -82,12 +81,12 @@ def infer_product_self(service, session_id):
             trace["final_pc_projection"] = uow.evidence.get_utterance(utterance.utterance_id).identity.value
             trace["manual_identity_preserved"] = manual
         now = _datetime(service._now())
-        uow.people.connection.execute("""INSERT INTO speaker_cluster_runs
-          (cluster_run_id,session_id,producer,model,model_version,policy_json,status,track_count,created_at,completed_at)
-          VALUES (?,?,'product-self-inference',?,?,?,'succeeded',?,?,?)""",
-          (run_id,session_id,service._provider.model,service._provider.model_version,
-           json.dumps({"purpose": "product_inference_only", "self_enrollment": status,
-                       "profile_learning": False, "traces": traces}), len(tracks),now,now))
+        uow.people.record_product_self_run(
+            run_id, session_id, service._provider.model,
+            service._provider.model_version,
+            {"purpose": "product_inference_only", "self_enrollment": status,
+             "profile_learning": False, "traces": traces}, len(tracks), now,
+        )
     return {"product_identity_run_id": run_id, "product_inference_executed": True,
             "product_inference_degraded": degraded,
             "product_self_updated_utterance_count": updated,

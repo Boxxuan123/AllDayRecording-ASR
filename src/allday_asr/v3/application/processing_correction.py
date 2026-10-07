@@ -9,11 +9,8 @@ from allday_asr.v3.domain.models import (
     ChangeOperation,
     CorrectionOperation,
 )
-from allday_asr.v3.domain.processing import (
-    ArtifactInvalidation,
-)
 from allday_asr.v3.ports.repositories import UnitOfWork
-from allday_asr.v3.application.knowledge import cascade_derivations
+from allday_asr.v3.application.evidence_replacement import invalidate_replaced_evidence
 
 from .durable_processing_types import (
     CorrectUtteranceCommand,
@@ -180,33 +177,19 @@ def apply_utterance_correction(
     original_speaker_label = uow.evidence.speaker_label(
         updated.original_speaker_track_id
     )
-    for artifact_id in uow.artifacts.dependent_ids("utterance", command.utterance_id):
-        uow.artifacts.invalidate(
-            ArtifactInvalidation(
-                status_event_id=new_ulid(),
-                artifact_id=artifact_id,
-                status="stale",
-                reason="utterance_revision_changed",
-                source_type="utterance",
-                source_id=updated.utterance_id,
-                source_revision=updated.revision,
-                created_at=now,
-            )
-        )
     same_task_meaning = (before.text == updated.text
         and before.identity == updated.identity
         and before.evidence.get("person_annotation", {}).get("person_id", before.speaker_track_id)
             == updated.evidence.get("person_annotation", {}).get("person_id", updated.speaker_track_id)
         and sound_uses(before.evidence)["content_usable"] == sound_uses(updated.evidence)["content_usable"])
-    if not same_task_meaning:
-        uow.reminders.invalidate_source_candidates(updated.utterance_id, now.isoformat())
-    cascade_derivations(uow, source_type="utterance", source_id=updated.utterance_id,
-        source_revision=updated.revision, reason="utterance_revision_changed",
-        preserve_events=same_task_meaning, now=now)
+    invalidate_replaced_evidence(
+        uow, old_utterance_id=updated.utterance_id,
+        replacement_revision=updated.revision, now=now,
+        preserve_event_meaning=same_task_meaning,
+    )
     for uid in affected:
         if uid == updated.utterance_id:
             continue
-        uow.reminders.invalidate_source_candidates(uid, now.isoformat())
         historical = uow.evidence.get_utterance(uid)
         projection = uow.evidence.annotation_projection_evidence(historical)
         if projection != historical.evidence:
@@ -215,8 +198,11 @@ def apply_utterance_correction(
             uow.changes.append("utterance", uid, historical.revision, "upsert",
                 utterance_dto(historical, speaker_label=uow.evidence.speaker_label(historical.speaker_track_id),
                     original_speaker_label=uow.evidence.speaker_label(historical.original_speaker_track_id)))
-        cascade_derivations(uow, source_type="utterance", source_id=uid,
-            source_revision=historical.revision, reason="human_audio_fact_superseded", now=now)
+        invalidate_replaced_evidence(
+            uow, old_utterance_id=uid,
+            replacement_revision=historical.revision, now=now,
+            reason="human_audio_fact_superseded",
+        )
     dto = utterance_dto(
         updated,
         speaker_label=speaker_label,

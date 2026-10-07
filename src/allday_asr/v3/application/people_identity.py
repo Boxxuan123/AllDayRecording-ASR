@@ -24,29 +24,27 @@ from .people_support import (
 class PeopleIdentityMixin:
     def analyze(self, session_id: str, *, annotation_only: bool = False) -> dict[str, Any]:
         with self._uow_factory().reading() as uow:
-            role = uow.people.connection.execute(
-                'SELECT dataset_role FROM session_dataset_roles WHERE session_id=?', (session_id,)
-            ).fetchone()
+            role = uow.people.session_dataset_role(session_id)
         if role is None:
             raise ValueError('session dataset role is unassigned')
         reservation = None
         if not annotation_only:
             with self._uow_factory() as uow:
                 reservation = uow.people.begin_identity_prediction(session_id)
-        if role[0] != 'learning':
+        if role != 'learning':
             from .product_self_identity import infer_product_self
             product = (infer_product_self(self, session_id) if not annotation_only else
                        {"product_inference_executed": False, "product_skip_reason": "annotation_only"})
             shadow = getattr(self, 'blind_validation', None)
-            if role[0] == 'blind' and shadow is not None:
+            if role == 'blind' and shadow is not None:
                 try:
                     shadow.enqueue(session_id)
                     shadow.start()
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception('Shadow enqueue will retry independently')
-            return {'session_id': session_id, 'status': 'succeeded', 'dataset_role': role[0],
-                    'learning_excluded': True, 'research_reservation': reservation, 'shadow_status': 'queued' if role[0] == 'blind' else 'frozen_holdout', **product}
+            return {'session_id': session_id, 'status': 'succeeded', 'dataset_role': role,
+                    'learning_excluded': True, 'research_reservation': reservation, 'shadow_status': 'queued' if role == 'blind' else 'frozen_holdout', **product}
         if annotation_only:
             with self._uow_factory() as uow:
                 uow.people.enqueue_samples(session_id)

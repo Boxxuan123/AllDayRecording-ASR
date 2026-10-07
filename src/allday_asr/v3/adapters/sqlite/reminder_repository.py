@@ -244,9 +244,17 @@ class SqliteReminderRepository(ReminderSourceMixin):
         rows = self.connection.execute(
             f"""
             SELECT schedule.*, state.status AS event_status,
-              EXISTS(SELECT 1 FROM recompute_requests request WHERE request.target_type='event'
+              (EXISTS(SELECT 1 FROM recompute_requests request WHERE request.target_type='event'
                 AND request.target_id=schedule.event_id AND request.target_revision=schedule.event_revision
-                AND request.status IN ('queued','running')) AS source_review_required,
+                AND request.status IN ('queued','running'))
+               OR EXISTS(SELECT 1 FROM derivation_dependencies dependency
+                 LEFT JOIN utterances source ON source.utterance_id=dependency.input_id
+                 WHERE dependency.dependent_type='event'
+                   AND dependency.dependent_id=schedule.event_id
+                   AND dependency.dependent_revision=schedule.event_revision
+                   AND dependency.input_type='utterance'
+                   AND (source.utterance_id IS NULL OR source.status!='active'
+                        OR source.revision!=dependency.input_revision))) AS source_review_required,
               state.payload_json AS event_payload_json
             FROM reminder_schedules schedule
             JOIN event_current_states state ON state.event_id = schedule.event_id
@@ -289,6 +297,29 @@ class SqliteReminderRepository(ReminderSourceMixin):
             (updated_at, event_id, event_revision),
         )
         return cursor.rowcount == 1
+
+    def is_user_confirmed_task(self, event_id: str) -> bool:
+        row = self.connection.execute(
+            """SELECT 1 FROM reminder_candidates c
+            WHERE c.matched_event_id=? AND (c.status IN ('confirmed','modified')
+              OR EXISTS (SELECT 1 FROM reminder_feedback f
+                WHERE f.candidate_id=c.candidate_id AND f.action IN ('confirm','modify')))
+            LIMIT 1""",
+            (event_id,),
+        ).fetchone()
+        if row is not None:
+            return True
+        row = self.connection.execute(
+            """SELECT 1 FROM event_current_states e
+            JOIN event_operations o ON o.event_id=e.event_id
+            WHERE e.event_id=? AND e.event_kind IN
+              ('task','request','commitment','appointment')
+              AND o.actor NOT LIKE 'system:%'
+              AND o.actor NOT IN ('semantic-event-policy','reminder-policy','local:daily')
+            LIMIT 1""",
+            (event_id,),
+        ).fetchone()
+        return row is not None
 
     def add_feedback(self, feedback: ReminderFeedback) -> bool:
         cursor = self.connection.execute(

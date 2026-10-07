@@ -148,6 +148,145 @@ class _ReceiptMatrixOperationHandler:
 
 
 class V3DeviceSyncTests(unittest.TestCase):
+    def test_manifest_publish_detects_session_change_during_staging(self) -> None:
+        with _workspace_directory() as root:
+            database, _, device, trust, _, _ = self._environment(root)
+            store = UploadStore(root / "inbox")
+            directory = "pcm_session_1767225600000"
+
+            def upload(name: str, content: bytes, kind: str) -> UploadRecord:
+                started, _ = store.create_upload(
+                    relative_path=f"{directory}/{name}", size=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(), kind=kind,
+                )
+                return store.append_chunk(started.upload_id, offset=0, data=content)
+
+            name = "segment_0_first_0.wav"
+            upload(name, self._short_wav(), "recording")
+            manifest = {
+                "format": "AllDayRecording session manifest v2",
+                "sessionKey": "watch-session:1767225600000",
+                "sessionStartedAt": 1767225600000,
+                "device": "HUAWEI WATCH 5", "timezone": "Asia/Singapore",
+                "audio": {"sampleRate": 16000, "channels": 1, "bitsPerSample": 16},
+                "chunks": [{"index": 0, "fileName": name,
+                            "firstSample": 0, "sampleCount": 100}],
+                "completedSegments": 1, "totalSamples": 100,
+                "continuityValid": True,
+            }
+            record = upload("session_summary.json", json.dumps(manifest).encode(), "manifest")
+            session_ref = (
+                f"phone-upload:{trust.receiver_id}:{device.device_id}:"
+                f"{manifest['sessionKey']}"
+            )
+            changed = False
+
+            class ChangingStore(ContentAddressedStore):
+                def put_file(self, source, *, expected_sha256=None):
+                    nonlocal changed
+                    if not changed:
+                        changed = True
+                        with database.transaction() as connection:
+                            connection.execute(
+                                "INSERT INTO recording_sessions ("
+                                "session_id, captured_start, timezone, state, revision, "
+                                "status_code, progress, legacy_ref, created_at, updated_at) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                (stable_ulid(session_ref), "2026-01-01T00:00:00+00:00",
+                                 "Asia/Singapore", "admission_pending", 1,
+                                 "backup_required", 0.0, session_ref,
+                                 "2026-01-01T00:00:00+00:00",
+                                 "2026-01-01T00:00:00+00:00"),
+                            )
+                    return super().put_file(source, expected_sha256=expected_sha256)
+
+            ingest = V3UploadIngestAdapter(
+                trust, lambda: SqliteUnitOfWork(database),
+                ChangingStore(root / "audio"), ChangingStore(root / "artifacts"),
+            )
+            with self.assertRaises(UploadConflictError):
+                ingest.ingest_completed(device.device_id, record, store)
+            self.assertTrue(changed)
+            with database.transaction() as connection:
+                self.assertEqual(connection.execute(
+                    "SELECT COUNT(*) FROM session_manifest_revisions WHERE session_id = ?",
+                    (stable_ulid(session_ref),),
+                ).fetchone()[0], 0)
+
+    def test_audio_staging_does_not_hold_sqlite_writer_lock(self) -> None:
+        with _workspace_directory() as root:
+            database, _, device, trust, _, _ = self._environment(root)
+            store = UploadStore(root / "inbox")
+            directory = "pcm_session_1767225600000"
+
+            def upload(name: str, content: bytes, kind: str) -> UploadRecord:
+                started, _ = store.create_upload(
+                    relative_path=f"{directory}/{name}", size=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(), kind=kind,
+                )
+                return store.append_chunk(started.upload_id, offset=0, data=content)
+
+            name = "segment_0_first_0.wav"
+            upload(name, self._short_wav(), "recording")
+            manifest = {
+                "format": "AllDayRecording session manifest v2",
+                "sessionKey": "watch-session:1767225600000",
+                "sessionStartedAt": 1767225600000,
+                "device": "HUAWEI WATCH 5", "timezone": "Asia/Singapore",
+                "audio": {"sampleRate": 16000, "channels": 1, "bitsPerSample": 16},
+                "chunks": [{"index": 0, "fileName": name,
+                            "firstSample": 0, "sampleCount": 100}],
+                "completedSegments": 1, "totalSamples": 100,
+                "continuityValid": True,
+            }
+            record = upload("session_summary.json", json.dumps(manifest).encode(), "manifest")
+            staging = threading.Event()
+            release = threading.Event()
+            writer_done = threading.Event()
+            failures = []
+
+            class SlowStore(ContentAddressedStore):
+                def put_file(self, source, *, expected_sha256=None):
+                    staging.set()
+                    if not release.wait(5):
+                        raise TimeoutError("staging test timed out")
+                    return super().put_file(source, expected_sha256=expected_sha256)
+
+            ingest = V3UploadIngestAdapter(
+                trust, lambda: SqliteUnitOfWork(database),
+                SlowStore(root / "audio"), ContentAddressedStore(root / "artifacts"),
+            )
+
+            def receive() -> None:
+                try:
+                    ingest.ingest_completed(device.device_id, record, store)
+                except Exception as error:
+                    failures.append(error)
+
+            def write_metadata() -> None:
+                try:
+                    with database.transaction() as connection:
+                        connection.execute("CREATE TABLE IF NOT EXISTS concurrent_ingest_probe (value INTEGER)")
+                        connection.execute("INSERT INTO concurrent_ingest_probe VALUES (1)")
+                    writer_done.set()
+                except Exception as error:
+                    failures.append(error)
+
+            receiver = threading.Thread(target=receive)
+            writer = threading.Thread(target=write_metadata)
+            receiver.start()
+            try:
+                self.assertTrue(staging.wait(5))
+                writer.start()
+                self.assertTrue(writer_done.wait(1), "slow file staging blocked metadata writer")
+            finally:
+                release.set()
+                receiver.join(5)
+                if writer.ident is not None:
+                    writer.join(5)
+            self.assertFalse(receiver.is_alive())
+            self.assertEqual(failures, [])
+
     @staticmethod
     def _short_wav(sample_count: int = 100) -> bytes:
         output = io.BytesIO()
@@ -963,8 +1102,12 @@ class V3DeviceSyncTests(unittest.TestCase):
                         ContentAddressedStore(root / "audio"), artifacts,
                     )
                 if tamper:
-                    with patch.object(store, "list_uploads", return_value=[replace(audio_record, sha256="f" * 64)]), self.assertRaisesRegex(UploadConflictError, "分片哈希"):
+                    with patch.object(store, "list_uploads", return_value=[replace(audio_record, sha256="f" * 64)]), self.assertRaisesRegex(UploadConflictError, "上传记录不是当前已完成版本|分片哈希"):
                         ingest.ingest_completed(device.device_id, initial_record, store)
+                    with database.read() as connection:
+                        self.assertEqual(connection.execute(
+                            "SELECT COUNT(*) FROM session_manifest_revisions"
+                        ).fetchone()[0], 0)
                     continue
                 workflow = MagicMock()
                 gateway = DeviceGateway(active_trust, sync, ingest, workflow)

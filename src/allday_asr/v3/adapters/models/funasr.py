@@ -218,24 +218,18 @@ def _extract_language(text: str) -> str | None:
 
 
 def _cached_model_or_id(model_id: str, *, model_dir: Path | None = None) -> str:
-    """Use an already downloaded ModelScope snapshot without a network check."""
+    """Resolve a stable cached snapshot or an explicitly enabled remote model."""
+    from .asr_model_cache import _select_snapshot
+
     cache_id = MODEL_CACHE_IDS.get(model_id, model_id)
     cache_root = model_dir or DEFAULT_MODEL_PATHS.model_dir
     model_root = (
         cache_root / "modelscope" / "models" / cache_id.replace("/", "--") / "snapshots"
     )
-    preferred = model_root / "master"
-    if _is_model_snapshot(preferred):
-        return str(preferred)
-    if model_root.is_dir():
-        snapshots = sorted(
-            (path for path in model_root.iterdir() if _is_model_snapshot(path)),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        if snapshots:
-            return str(snapshots[0])
-    return model_id
+    selected = _select_snapshot(cache_id, model_root)
+    if selected != cache_id and not _is_model_snapshot(Path(selected)):
+        raise ValueError(f"cached model snapshot is incomplete: {cache_id}")
+    return selected
 
 
 def _is_model_snapshot(path: Path) -> bool:

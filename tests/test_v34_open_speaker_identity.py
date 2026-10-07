@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import threading
 import unittest
 import wave
 from dataclasses import replace
@@ -799,6 +800,50 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
         )
         self.assertEqual(cluster["person_id"], person["person_id"])
         self.assertEqual(cluster["link_source"], "automatic")
+
+        # Pause machine calibration after it reads r2, then commit user-owned
+        # fields at r3. The worker must retry against r3 before publishing.
+        from allday_asr.v3.application import people_prototypes
+
+        entered = threading.Event()
+        resume = threading.Event()
+        original_similarity = people_prototypes.cosine_similarity
+        results = []
+        errors = []
+
+        def pause_once(left, right):
+            if not entered.is_set():
+                entered.set()
+                if not resume.wait(5):
+                    raise TimeoutError("maturity test interleave timed out")
+            return original_similarity(left, right)
+
+        def refresh():
+            try:
+                results.append(self.core.people._refresh_maturity(person["person_id"], "system:test"))
+            except Exception as error:
+                errors.append(error)
+
+        with patch.object(people_prototypes, "cosine_similarity", pause_once):
+            worker = threading.Thread(target=refresh)
+            worker.start()
+            self.assertTrue(entered.wait(5))
+            with SqliteUnitOfWork(self.core.database) as uow:
+                current = uow.people.identity_policy(person["person_id"])
+                uow.people.add_identity_policy_revision(
+                    person["person_id"], maturity_status=current["maturity_status"],
+                    auto_match_enabled=False, suggest_threshold=0.77,
+                    auto_accept_threshold=0.91, minimum_margin=current["minimum_margin"],
+                    minimum_quality=current["minimum_quality"],
+                    calibration=current["calibration"], actor="desktop-user",
+                    created_at=NOW_TEXT)
+            resume.set()
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertFalse(results[0]["auto_match_enabled"])
+        self.assertEqual(results[0]["suggest_threshold"], 0.77)
+        self.assertEqual(results[0]["auto_accept_threshold"], 0.91)
 
     def test_calibrated_self_match_stays_out_of_ambiguous_anonymous_cluster(self) -> None:
         self.core.close()

@@ -69,11 +69,7 @@ class DurableProcessingService:
         config_digest = canonical_json_sha256(effective_config)
         now = self._now()
         with self._uow_factory() as uow:
-            current_input = uow.catalog.connection.execute(
-                "SELECT COALESCE(MAX(input_revision), 1) FROM session_manifest_revisions "
-                "WHERE session_id = ?", (command.session_id,),
-            ).fetchone()
-            if command.input_revision != int(current_input[0]):
+            if command.input_revision != uow.catalog.current_manifest_input_revision(command.session_id):
                 raise ValueError("processing input revision does not match current manifest")
             admitted, reason = uow.admission.evaluate(command.session_id)
             if not admitted:
@@ -420,11 +416,7 @@ class DurableProcessingService:
     def retry(self, job_id: str) -> ProcessingSnapshot:
         with self._uow_factory() as uow:
             current = uow.processing.get_snapshot(job_id)
-            latest = uow.catalog.connection.execute(
-                "SELECT COALESCE(MAX(input_revision), 1) FROM session_manifest_revisions "
-                "WHERE session_id = ?", (current.run.session_id,),
-            ).fetchone()
-            if current.run.input_revision != int(latest[0]):
+            if current.run.input_revision != uow.catalog.current_manifest_input_revision(current.run.session_id):
                 raise ValueError("processing input revision has been superseded")
             snapshot = uow.processing.retry(job_id)
             _publish_processing(uow, snapshot)

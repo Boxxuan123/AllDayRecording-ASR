@@ -23,6 +23,13 @@ class SqliteRecordingCatalogRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
 
+    def current_manifest_input_revision(self, session_id: str) -> int:
+        row = self.connection.execute(
+            "SELECT COALESCE(MAX(input_revision), 1) FROM session_manifest_revisions "
+            "WHERE session_id = ?", (session_id,),
+        ).fetchone()
+        return int(row[0])
+
     def add_session(self, session: RecordingSession) -> bool:
         cursor = self.connection.execute(
             """

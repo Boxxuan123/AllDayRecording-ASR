@@ -15,6 +15,50 @@ class SqliteEvidenceProjectionRepository(AnnotationFactMixin):
         self.connection = connection
         self.now = now
 
+    def supersede_previous_utterances(
+        self, session_id: str, run_id: str, input_revision: int, updated_at: str
+    ) -> tuple[dict, ...]:
+        previous = self.connection.execute(
+            "SELECT u.utterance_id, u.revision, u.start_ms, u.end_ms, u.text, "
+            "p.run_id FROM utterances u JOIN processing_runs p ON p.run_id=u.run_id "
+            "WHERE u.session_id=? AND u.run_id!=? AND u.status='active' "
+            "AND p.input_revision<? ORDER BY u.start_ms,u.utterance_id",
+            (session_id, run_id, input_revision),
+        ).fetchall()
+        if not previous:
+            return ()
+        current = self.connection.execute(
+            "SELECT utterance_id,start_ms,end_ms,text FROM utterances "
+            "WHERE run_id=? AND status='active' ORDER BY start_ms,utterance_id",
+            (run_id,),
+        ).fetchall()
+        if not current:
+            return ()
+        links = []
+        for old in previous:
+            candidates = [new for new in current if
+                          min(old["end_ms"], new["end_ms"]) > max(old["start_ms"], new["start_ms"])]
+            best = max(candidates, key=lambda new:
+                       min(old["end_ms"], new["end_ms"]) -
+                       max(old["start_ms"], new["start_ms"])) if candidates else None
+            overlap = (min(old["end_ms"], best["end_ms"]) -
+                       max(old["start_ms"], best["start_ms"])) if best else 0
+            confirmed = bool(best and overlap >= 0.8 * (old["end_ms"] - old["start_ms"])
+                             and old["text"] == best["text"])
+            cursor = self.connection.execute(
+                "UPDATE utterances SET status='stale',revision=revision+1,updated_at=? "
+                "WHERE utterance_id=? AND status='active'",
+                (updated_at, old["utterance_id"]),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("concurrent evidence replacement")
+            links.append({"old_utterance_id": old["utterance_id"],
+                          "old_revision": int(old["revision"]),
+                          "old_run_id": old["run_id"],
+                          "new_utterance_id": best["utterance_id"] if best else None,
+                          "match": "confirmed" if confirmed else "needs_review"})
+        return tuple(links)
+
     def add_speaker_track(self, track: SpeakerTrack) -> bool:
         cursor = self.connection.execute(
             """

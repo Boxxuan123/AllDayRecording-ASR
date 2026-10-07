@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from allday_asr.v3.domain.hashing import canonical_json_sha256
-from allday_asr.v3.adapters.sqlite.daily_generation_queue import day_worker_lock
+from .file_lock import day_worker_lock
 
 
 def atomic_json(path, value):

@@ -306,6 +306,9 @@ class V32CodexSemanticEventAdapterTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         shutil.rmtree(self.workdir, ignore_errors=True)
+        receipts = self.workdir.with_name(f"{self.workdir.name}.receipts").resolve()
+        if receipts.parent == TEST_ROOT.resolve():
+            shutil.rmtree(receipts, ignore_errors=True)
 
     def test_codex_event_extraction_is_ephemeral_read_only_and_tool_free(self) -> None:
         fake = _FakeCodex({"events": []})

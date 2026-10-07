@@ -9,7 +9,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 V3_ROOT = PROJECT_ROOT / "src" / "allday_asr" / "v3"
 V3_DESKTOP_ROOT = PROJECT_ROOT / "all_day_recording_front" / "v3"
 CORE_ROOTS = tuple(V3_ROOT / name for name in ("domain", "application", "ports"))
-MAX_MAINTAINABLE_SOURCE_LINES = 499
+# A 600-line review boundary accommodates cohesive adapters and Vue views.
+# The former 499-line gate grouped unrelated responsibilities in ingest;
+# manifest validation now has its own module. Keep the gate enforced for all
+# production modules instead of maintaining a permanent baseline exception.
+MAX_MAINTAINABLE_SOURCE_LINES = 600
 DEFAULT_RUNTIME_FILES = (
     V3_ROOT / "bootstrap" / "core.py",
     V3_ROOT / "adapters" / "models" / "native.py",

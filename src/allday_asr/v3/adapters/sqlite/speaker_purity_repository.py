@@ -7,7 +7,7 @@ only supersede earlier answers within the SAME task, never across tasks.
 import json
 from collections import Counter, defaultdict
 
-from allday_asr.v3.application.speaker_profile_purity import digest, source_key
+from allday_asr.v3.adapters.sqlite.speaker_profile_purity import digest, source_key
 from allday_asr.v3.domain.speaker_purity import (
     PurityVerdict,
     SourcePurityEvidence,

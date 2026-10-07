@@ -9,7 +9,7 @@ import pytest
 from allday_asr.v3.adapters.sqlite.daily_generation_queue import DailyGenerationQueue
 from allday_asr.v3.adapters.sqlite.insight_repository import SqliteInsightRepository
 from allday_asr.v3.application.daily_automation import DailyGenerationCoordinator
-from allday_asr.v3.application.daily_inventory import DailyHistoryInventory
+from allday_asr.v3.adapters.sqlite.daily_inventory import DailyHistoryInventory
 from allday_asr.v3.domain.daily_semantics import SEMANTIC_VERSION
 from allday_asr.v3.domain.hashing import canonical_json_sha256
 from tests.test_v32_three_layer_knowledge import (

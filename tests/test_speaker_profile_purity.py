@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from allday_asr.v3.adapters.sqlite.migrations.v021_speaker_profile_purity import SQL
-from allday_asr.v3.application.speaker_profile_purity import (
+from allday_asr.v3.adapters.sqlite.speaker_profile_purity import (
     append_review,
     latest_reviews,
     list_phone_tasks,

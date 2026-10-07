@@ -38,6 +38,9 @@ class V33CodexAdapterTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         shutil.rmtree(self.workdir, ignore_errors=True)
+        receipts = self.workdir.with_name(f"{self.workdir.name}.receipts").resolve()
+        if receipts.parent == TEST_ROOT.resolve():
+            shutil.rmtree(receipts, ignore_errors=True)
 
     def test_codex_runs_in_empty_read_only_ephemeral_thread_with_no_approvals(
         self,

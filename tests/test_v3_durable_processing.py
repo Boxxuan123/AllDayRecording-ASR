@@ -9,7 +9,7 @@ from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from allday_asr.v3.adapters.files import ContentAddressedStore
@@ -45,6 +45,7 @@ from allday_asr.v3.domain import (
     SessionManifest,
     stable_ulid,
 )
+from allday_asr.v3.domain.knowledge import DerivationDependency
 from allday_asr.v3.ports.processing import (
     ArtifactDependencyOutput,
     SpeakerProjectionOutput,
@@ -349,6 +350,90 @@ class V3DurableProcessingTests(unittest.TestCase):
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) FROM utterances WHERE run_id = ?", (new.run.run_id,),
             ).fetchone()[0], 1)
+
+    def test_successful_transcript_replacement_invalidates_derived_event(self) -> None:
+        old = self.service.submit(self._command())
+        worker = DurableProcessingWorker(
+            self.service, _SuccessfulAdapter(), worker_id="worker-evidence-old"
+        )
+        for _ in range(9):
+            self.assertTrue(worker.run_once())
+        old_id = stable_ulid("utterance", old.run.run_id, 0)
+        event_id = stable_ulid("derived-event", old_id)
+        with self.uow_factory() as uow:
+            uow.derivations.add_dependency(DerivationDependency(
+                dependent_type="event", dependent_id=event_id,
+                dependent_revision=1, input_type="utterance",
+                input_id=old_id, input_revision=1, created_at=self.clock.now(),
+            ))
+        manifest_sha256 = self._append_test_revision()
+        self._admit_test_revision(manifest_sha256)
+        new = self.service.submit(SubmitProcessingCommand(
+            session_id=SESSION_ID, pipeline_version="v3-native.1",
+            input_revision=2, config={"profile": "fixture"},
+        ))
+        for _ in range(9):
+            self.assertTrue(worker.run_once())
+        self.assertEqual(self.service.get(new.job.job_id).job.status, "succeeded")
+        with self.database.read() as connection:
+            old_row = connection.execute(
+                "SELECT status,revision FROM utterances WHERE utterance_id=?", (old_id,)
+            ).fetchone()
+            self.assertEqual((old_row["status"], old_row["revision"]), ("stale", 2))
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM invalidation_events WHERE target_type='event' "
+                "AND target_id=? AND reason='transcript_replaced'", (event_id,)
+            ).fetchone()[0], 1)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM recompute_requests WHERE target_type='event' "
+                "AND target_id=? AND status='queued'", (event_id,)
+            ).fetchone()[0], 1)
+        from allday_asr.v3.application.durable_processing_support import publish_superseded_utterances
+        with self.uow_factory() as uow:
+            self.assertEqual(publish_superseded_utterances(uow, self.service.get(new.job.job_id)), 0)
+
+    def test_replacement_failure_rolls_back_old_evidence_and_invalidation(self) -> None:
+        old = self.service.submit(self._command())
+        worker = DurableProcessingWorker(
+            self.service, _SuccessfulAdapter(), worker_id="worker-rollback"
+        )
+        for _ in range(9):
+            self.assertTrue(worker.run_once())
+        old_id = stable_ulid("utterance", old.run.run_id, 0)
+        event_id = stable_ulid("derived-event", old_id)
+        with self.uow_factory() as uow:
+            uow.derivations.add_dependency(DerivationDependency(
+                dependent_type="event", dependent_id=event_id,
+                dependent_revision=1, input_type="utterance",
+                input_id=old_id, input_revision=1, created_at=self.clock.now(),
+            ))
+        manifest_sha256 = self._append_test_revision()
+        self._admit_test_revision(manifest_sha256)
+        new = self.service.submit(SubmitProcessingCommand(
+            session_id=SESSION_ID, pipeline_version="v3-native.1",
+            input_revision=2, config={"profile": "fixture"},
+        ))
+        with patch(
+            "allday_asr.v3.adapters.sqlite.knowledge_repositories."
+            "SqliteDerivationRepository.add_invalidation",
+            side_effect=RuntimeError("injected replacement failure"),
+        ):
+            for _ in range(9):
+                self.assertTrue(worker.run_once())
+                if self.service.get(new.job.job_id).job.status == "failed_retryable":
+                    break
+        with self.database.read() as connection:
+            row = connection.execute(
+                "SELECT status,revision FROM utterances WHERE utterance_id=?", (old_id,)
+            ).fetchone()
+            self.assertEqual((row["status"], row["revision"]), ("active", 1))
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM invalidation_events WHERE target_id=?", (event_id,)
+            ).fetchone()[0], 0)
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM change_events WHERE resource_type='utterance' "
+                "AND resource_id=? AND operation='tombstone'", (old_id,)
+            ).fetchone()[0], 0)
 
     def test_inflight_old_claim_cannot_commit_after_append(self) -> None:
         old = self.service.submit(self._command())

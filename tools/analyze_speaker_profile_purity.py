@@ -17,7 +17,7 @@ from allday_asr.v3.adapters.files import ContentAddressedStore  # noqa: E402
 from allday_asr.v3.adapters.speaker_embeddings.funasr import (  # noqa: E402
     FunASRSpeakerEmbeddingProvider,
 )
-from allday_asr.v3.application.speaker_profile_purity import (  # noqa: E402
+from allday_asr.v3.adapters.sqlite.speaker_profile_purity import (  # noqa: E402
     digest, latest_reviews,
 )
 from allday_asr.v3.ports.speaker_embeddings import (  # noqa: E402

@@ -40,6 +40,11 @@ class KnowledgeResolutionMixin:
         expected_revision = int(payload["expected_revision"])
         event_id = str(payload.get("event_id") or new_ulid())
         current = uow.knowledge.get_event(event_id)
+        if current is not None and uow.reminders.is_user_confirmed_task(event_id) and (
+            actor.startswith("system:")
+            or actor in {"semantic-event-policy", "reminder-policy", "local:daily"}
+        ):
+            raise ValueError("confirmed task requires a user decision")
         if operation_kind is EventOperationKind.CREATE:
             if current is not None or expected_revision != 0:
                 raise ValueError("event create revision conflict")

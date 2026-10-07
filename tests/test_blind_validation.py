@@ -12,7 +12,7 @@ from allday_asr.v3.adapters.sqlite.dataset_reservations import configure, open_h
 from allday_asr.v3.adapters.sqlite.blind_admission import admission, CAPTURE_TIME_BLOCK
 from allday_asr.v3.adapters.sqlite.blind_queries import automatic_queries, latest_run
 from allday_asr.v3.application.blind_scoring import components, digest
-from allday_asr.v3.application.purity_shadow import build_shadow
+from allday_asr.v3.adapters.purity_shadow import build_shadow
 from tests.test_enrollment_purity_gate import enrollment_source
 from allday_asr.v3.domain.people import PersonKind, RepresentativeClip, SpeakerEmbedding
 

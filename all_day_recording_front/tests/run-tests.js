@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { matchV3Route } from '../v3/core/routeMatch.js'
+import './daily-outcome.test.mjs'
+import './interaction-behavior.test.mjs'
 
 const cases = []
 
@@ -27,6 +29,17 @@ test('restores nested recording routes and selected tabs', () => {
   })
   assert.equal(matchV3Route('/reminders').name, 'reminders')
   assert.equal(matchV3Route('/people').name, 'people')
+  const sequence = [
+    matchV3Route('/recordings'),
+    matchV3Route('/recordings/session%2Fone', '?tab=transcript'),
+    matchV3Route('/recordings/session%2Fone', '?tab=evidence'),
+    matchV3Route('/recordings'),
+  ]
+  assert.deepEqual(sequence.map((route) => route.name),
+    ['recordings', 'session', 'session', 'recordings'])
+  assert.equal(sequence[1].sessionId, sequence[2].sessionId)
+  assert.equal(sequence[1].tab, 'transcript')
+  assert.equal(sequence[2].tab, 'evidence')
 })
 
 test('keeps the V3 frontend on one shared audio controller', () => {

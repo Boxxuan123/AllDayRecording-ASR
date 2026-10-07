@@ -176,7 +176,8 @@ def test_migration_keeps_all_historical_table_rows_and_never_retags_old_sessions
     tables = [
         r[0]
         for r in c.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name!='schema_migrations'"
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT IN ('schema_migrations','sqlite_sequence')"
         )
     ]
     before = {t: list(c.execute("SELECT * FROM " + t)) for t in tables}

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from allday_asr.v3.adapters.sqlite.people_sample_eligibility import usable_voice_sample
+from .people_sample_eligibility import usable_voice_sample
 
 AUDIT_VERSION = "speaker-profile-purity-v1"
 PURITIES = {"clean_single", "mixed_overlap", "boundary_cross", "uncertain"}

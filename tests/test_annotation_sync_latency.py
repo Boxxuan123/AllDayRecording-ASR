@@ -186,7 +186,7 @@ def test_projection_parsed_once_and_person_queries_are_targeted(people):
         snap = load_snapshot(db, sid)
     assert len([s for s in statements if s.startswith("SELECT")]) == 6
     with patch(
-        "allday_asr.v3.adapters.sqlite.annotation_sample_snapshot.json.loads",
+        "allday_asr.v3.domain.annotation_sample_planning.json.loads",
         wraps=__import__("json").loads,
     ) as loads:
         compute_plans(snap, "fixed", "1")

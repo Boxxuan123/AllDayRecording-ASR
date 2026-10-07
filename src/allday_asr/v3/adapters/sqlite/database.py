@@ -29,6 +29,39 @@ class V3Database:
     def schema_version(self) -> int:
         return self.migrations.schema_version()
 
+    def daily_inventory(self, version: str, *, model: str, now):
+        from .daily_inventory import DailyHistoryInventory
+        return DailyHistoryInventory(self, version, model=model, now=now)
+
+    def daily_generation_queue(self, now):
+        from .daily_generation_queue import DailyGenerationQueue
+        return DailyGenerationQueue(self, now)
+
+    def daily_dirty_ranges(self, limit: int = 64) -> tuple[tuple[int, str, str], ...]:
+        with self.read() as connection:
+            rows = connection.execute(
+                "SELECT dirty_id,first_date,last_date FROM daily_dirty_ranges "
+                "ORDER BY dirty_id LIMIT ?", (limit,),
+            ).fetchall()
+        return tuple((int(r[0]), str(r[1]), str(r[2])) for r in rows)
+
+    def acknowledge_daily_dirty_ranges(
+        self, consumed: tuple[tuple[int, str, str | None], ...]
+    ) -> None:
+        with self.transaction() as connection:
+            for dirty_id, expected_first, next_first in consumed:
+                if next_first is None:
+                    connection.execute(
+                        "DELETE FROM daily_dirty_ranges WHERE dirty_id=? AND first_date=?",
+                        (dirty_id, expected_first),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE daily_dirty_ranges SET first_date=? "
+                        "WHERE dirty_id=? AND first_date=?",
+                        (next_first, dirty_id, expected_first),
+                    )
+
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         connection = self._connect()
