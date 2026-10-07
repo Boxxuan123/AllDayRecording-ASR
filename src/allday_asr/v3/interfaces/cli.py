@@ -24,6 +24,7 @@ from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core, start_empty_ru
 from allday_asr.v3.config import V3ConfigurationError, V3Settings
 from allday_asr.v3.interfaces.desktop_server import serve_v3_desktop
 from .self_backfill_cli import register as register_self_backfill
+from .daily_automation_cli import register as register_daily_automation
 
 
 app = typer.Typer(
@@ -32,6 +33,7 @@ app = typer.Typer(
 )
 
 register_self_backfill(app)
+register_daily_automation(app)
 
 
 @app.command(name="status")

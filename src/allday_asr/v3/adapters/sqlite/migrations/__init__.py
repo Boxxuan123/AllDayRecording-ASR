@@ -10,6 +10,7 @@ from .v024_blind_turn_truth import SQL as V024_SQL
 from .v025_speaker_research_reservation import SQL as V025_SQL
 from .v026_historical_self_backfill import SQL as V026_SQL
 from .v027_daily_projection import SQL as V027_SQL
+from .v028_daily_generation_queue import SQL as V028_SQL
 from .v015_annotation_receipts import SQL as V015_SQL
 from .v013_annotation_facts import SQL as V013_SQL
 from .v014_annotation_samples import SQL as V014_SQL
@@ -74,6 +75,8 @@ MIGRATIONS = (
     V3Migration(version=26, name="historical_self_identity_review", sql=V026_SQL,
                 contract_visible=False),
     V3Migration(version=27, name="daily_projection_cursor", sql=V027_SQL),
+    V3Migration(version=28, name="durable_daily_generation", sql=V028_SQL,
+                contract_visible=False),
 )
 
 __all__ = ["MIGRATIONS"]

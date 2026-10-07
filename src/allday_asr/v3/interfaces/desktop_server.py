@@ -452,6 +452,8 @@ def serve_v3_desktop(
     if open_browser:
         webbrowser.open(url)
     try:
+        if server.application.core.daily_automation is not None:
+            server.application.core.daily_automation.start()
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
         pass

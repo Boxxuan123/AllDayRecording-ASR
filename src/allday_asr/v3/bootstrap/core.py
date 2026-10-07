@@ -39,6 +39,8 @@ from allday_asr.v3.ports.event_generation import SemanticEventModelGenerator
 from allday_asr.v3.ports.speaker_embeddings import SpeakerEmbeddingProvider
 from allday_asr.v3.ports.self_identity_matching import SelfIdentityMatcher
 from allday_asr.v3.adapters.blind_validation import BlindValidationService
+from allday_asr.v3.application.daily_automation import DailyGenerationCoordinator
+from allday_asr.v3.application.daily_inventory import generation_version
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,7 @@ class V3Core:
     insights: DailyInsightService
     blind_validation: BlindValidationService
     review_audio_cache: ReviewAudioCacheOwner = field(default_factory=ReviewAudioCacheOwner)
+    daily_automation: DailyGenerationCoordinator | None = None
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -101,6 +104,8 @@ class V3Core:
         return version
 
     def close(self) -> None:
+        if self.daily_automation is not None:
+            self.daily_automation.close()
         self.blind_validation.close()
         self.review_audio_cache.close()
         self.people.sample_worker.close()
@@ -204,7 +209,20 @@ def compose_v3_core(
             model=os.environ.get('ALLDAY_V3_DAILY_MODEL') or 'gpt-5.6-luna')
             if selected_codex.enabled else None),
     )
-    mobile_sync.daily_refresh = insights.refresh_daily_cache
+    daily_automation = None
+    if selected_codex.enabled:
+        def daily_service(day):
+            analyzer = CodexDailySemanticAnalyzer(selected_codex.workdir,
+                model=os.environ.get('ALLDAY_V3_DAILY_MODEL') or 'gpt-5.6-luna',
+                receipt_dir=selected.state_dir / 'daily-generation-receipts' / day)
+            return DailyInsightService(lambda: SqliteUnitOfWork(database),None,daily_analyzer=analyzer)
+        daily_automation = DailyGenerationCoordinator(database,daily_service,
+            generation_version(insights._daily_analyzer),model=insights._daily_analyzer.model_label)
+    def daily_refresh(force=False):
+        insights.refresh_daily_cache(force)
+        if daily_automation is not None:
+            daily_automation.notify('receiver_sync')
+    mobile_sync.daily_refresh = daily_refresh
     return V3Core(
         paths=selected,
         database=database,
@@ -222,6 +240,7 @@ def compose_v3_core(
         people=people,
         person_memory=person_memory,
         insights=insights,
+        daily_automation=daily_automation,
         blind_validation=blind_validation,
     )
 

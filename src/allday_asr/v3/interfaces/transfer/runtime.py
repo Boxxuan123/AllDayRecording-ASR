@@ -249,6 +249,8 @@ def serve_transfer(
         print("警告：已显式启用明文 HTTP，仅允许本机协议调试，不能传真实录音。")
     print("按 Ctrl+C 停止；停止后未完成文件可继续断点续传。")
     try:
+        if v3_core.daily_automation is not None:
+            v3_core.daily_automation.start()
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
         pass
@@ -261,6 +263,8 @@ def serve_transfer(
         if automatic_runner is not None:
             print("正在等待已经排队的自动 V3 工作流安全结束……")
             automatic_runner.close()
+        if v3_core.daily_automation is not None:
+            v3_core.daily_automation.close()
 
 
 def _automatic_workflow_startup_message(*, shadow: bool) -> str:

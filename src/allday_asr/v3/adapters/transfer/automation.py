@@ -338,17 +338,11 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 reasoning_effort=self.reasoning_effort,
             )
         if active_utterances and settings["insights"]["codex_enabled"]:
-            self._require_input_revision(session_id, input_revision)
-            self._progress(session_id, "running", "daily_insight", "正在生成带证据引用的当日洞察")
-            session = detail["session"]
-            timezone_name = _timezone_name(str(session["timezone"]))
-            captured = datetime.fromisoformat(str(session["captured_start"]).replace("Z", "+00:00"))
-            summary_date = captured.astimezone(ZoneInfo(timezone_name)).date().isoformat()
-            daily_result = self.core.insights.generate_daily(
-                summary_date,
-                timezone_name,
-                reasoning_effort=self.reasoning_effort,
-            )
+            # Session arrival wakes completed-day catch-up. The current day is
+            # never regenerated for every utterance/session completion.
+            coordinator = getattr(self.core, 'daily_automation', None)
+            if coordinator is not None:
+                coordinator.notify('transcript_completed')
         self._require_input_revision(session_id, input_revision)
         memory_results = [
             self.core.person_memory.refresh(
