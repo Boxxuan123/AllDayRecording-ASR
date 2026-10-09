@@ -1,3 +1,4 @@
+from .v030_sample_queue_age import SQL as V030_SQL
 from .v016_sample_input_revision import SQL as V016_SQL
 from .v017_coalesced_sample_queue import SQL as V017_SQL
 from .v018_manifest_revisions import SQL as V018_SQL
@@ -80,6 +81,7 @@ MIGRATIONS = (
                 contract_visible=False),
     V3Migration(version=29, name="incremental_daily_inventory", sql=V029_SQL,
                 contract_visible=False),
+    V3Migration(version=30, name="sample_queue_age", sql=V030_SQL, contract_visible=False),
 )
 
 __all__ = ["MIGRATIONS"]

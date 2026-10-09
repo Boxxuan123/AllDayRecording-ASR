@@ -314,3 +314,25 @@ def test_actual_signed_diagnostic_report_is_bound_once_and_accepts_unequal_relea
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_reused_existing_migration30_reads_schema29_copy(tmp_path):
+    import sqlite3
+    from allday_asr.v3.adapters.sqlite.migrations import MIGRATIONS
+    from allday_asr.v3.adapters.sqlite.migration_runner import V3MigrationRunner
+    old = tmp_path/"old29.sqlite3"
+    V3MigrationRunner(old, migrations=[m for m in MIGRATIONS if m.version <= 29]).initialize()
+    with sqlite3.connect(old) as c:
+        c.execute("INSERT INTO audit_entries(audit_id,action,actor,target_type,target_id,details_json,created_at) "
+                  "VALUES ('old-row','fixture','test','fixture','one','{}','2026-09-01')")
+    copied = tmp_path/"copy.sqlite3"
+    with sqlite3.connect(old) as source, sqlite3.connect(copied) as target:
+        source.backup(target)
+    runner = V3MigrationRunner(copied)
+    assert runner.initialize() == 30
+    assert runner.initialize() == 30
+    with sqlite3.connect(copied) as c:
+        assert c.execute("SELECT action FROM audit_entries WHERE audit_id='old-row'").fetchone()[0] == "fixture"
+        assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    with sqlite3.connect(old) as c:
+        assert c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 29

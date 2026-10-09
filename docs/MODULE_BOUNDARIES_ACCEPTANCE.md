@@ -1,11 +1,11 @@
 # 模块边界、版本与有限验收（2026-10-09）
 
-保持现有单进程、共享 SQLite、部署及仓库；没有模块 SemVer。未训练模型、改阈值/两窗口、人工真值、生产画像或冻结评估集。原工作区未提交整改保留并合并验证，不混入本轮提交。
+保持现有单进程、共享 SQLite、部署及仓库；没有模块 SemVer。未训练模型、改阈值/两窗口、人工真值、生产画像或冻结评估集。原工作区未提交整改保留并合并验证；只有现用数据库兼容所必需的既有迁移30与校验器随本轮提交，其他整改不混入。
 
 ## 现状与复用
 
 Phone 与实际手表 entry@watch 同属 AllDayRecording，common HAR 随 AppScope 绑定发布，版本 1.0.2 / 1000002 / build 3（原1.0.1）。PC 前端随 Python 包共用 0.6.1（原0.6.0）；npm 0.0.0 为私有脚手架字段，不承担发布版本。
-协议保持 Watch 1、PC transfer 2、V3 contract 3.8.0 / projection 5；契约 core 27 不等于运行库迁移号。已提交库迁移29，Phone投影库19，本轮没有新迁移。原工作区已有迁移30保留，不冒充本轮新增。
+协议保持 Watch 1、PC transfer 2、V3 contract 3.8.0 / projection 5；契约 core 27 不等于运行库迁移号。现用库迁移30，Phone投影库19。只读核对证实现用库已到30，因此复用原工作区既有迁移30与迁移器并发校验（SQL/校验和不变），作为本轮发布必要依赖；没有另造迁移。生产库未写入。
 复用 digest/manifest/可靠接收幂等、备份准入、持久 job/stage/attempt、输入revision、CAS、proposal/operation、Daily队列和有限SDK子进程。自动处理没有增加整场人工确认；Calendar Kit闭环未改造。
 
 ## 六类职责与状态归属
@@ -47,7 +47,7 @@ Git/发布身份不参与语义缓存失效。Daily自动入口跳过仅生产�
 
 | 检查 | 命令/方式 | 期限与结果 |
 |---|---|---|
-| 同步/恢复/幂等、禁学、局部重算、来源/旧行、迁移和模块边界 | python tools/verify_module_boundaries.py --output outputs/module-acceptance-r5 | pytest180s/ruff60s；245条通过，另1条真实HTTP签名诊断上报通过；修改Python Ruff通过 |
+| 同步/恢复/幂等、禁学、局部重算、来源/旧行、迁移和模块边界 | python tools/verify_module_boundaries.py --output outputs/module-acceptance-schema30-final | pytest180s/ruff60s；247条通过（含真实HTTP签名诊断上报与29→30副本读取）；修改Python Ruff通过 |
 | 最新未提交实现合并兼容 | 临时integration副本定向测试 | 单批120–180s；131条来源/任务、77条升级/队列通过；首次其余工程定向回归257条通过 |
 | 人物补充 | v34/self_identity/module_boundaries固定样本 | 49条通过 |
 | 前端 | npm test；npm run build | 每条120s；测试、类型检查、Vite通过 |
@@ -58,4 +58,4 @@ Git/发布身份不参与语义缓存失效。Daily自动入口跳过仅生产�
 
 Linter不宣称全绿：8处await-thenable报告，原提交已有相同语句，SDK标为disabled；本轮无新增。构建保留既有SDK弃用/设备API警告；新增剪贴板调用另有SDK异常检查警告，调用方处理Promise拒绝。
 未验证：实机安装、Wear Engine实际链路、系统剪贴板UI；HDC无设备。没有调用真实生产AI或全量历史回放。临时迁移副本旧数据可读；未迁移生产库。
-最终提交、远端一致性和提交后包内核对见忽略的outputs/delivery/acceptance.json及交付回复。原工作区已有整改保留为未提交。
+最终提交、远端一致性和提交后包内核对见忽略的outputs/delivery/acceptance.json及交付回复。原工作区未被改写；回写合并与更新原master被自动审批拒绝，等待批准。原提交的工作树HEAD仍落后，交付工作树HEAD已与远端一致。

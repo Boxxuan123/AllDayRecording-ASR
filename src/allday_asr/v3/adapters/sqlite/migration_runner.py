@@ -28,7 +28,7 @@ def _default_migrations() -> tuple[V3Migration, ...]:
     return MIGRATIONS
 
 
-LATEST_V3_SCHEMA_VERSION = 29
+LATEST_V3_SCHEMA_VERSION = 30
 
 
 class V3MigrationRunner:
@@ -109,6 +109,22 @@ class V3MigrationRunner:
     def _apply(self, connection: sqlite3.Connection, migration: V3Migration) -> None:
         connection.execute("BEGIN IMMEDIATE")
         try:
+            # Another service may have migrated while we waited for the writer
+            # lock. Recheck under that lock before executing any schema SQL.
+            applied = self._applied(connection)
+            if applied and max(applied) > self.latest_version:
+                raise RuntimeError(
+                    f"V3 database schema {max(applied)} is newer than supported "
+                    f"version {self.latest_version}"
+                )
+            recorded = applied.get(migration.version)
+            if recorded is not None:
+                if recorded != (migration.name, migration.sha256):
+                    raise RuntimeError(
+                        f"V3 migration {migration.version} checksum/name mismatch"
+                    )
+                connection.execute("COMMIT")
+                return
             for statement in _statements(migration.sql):
                 connection.execute(statement)
             if migration.name == "versioned_audio_annotations":
