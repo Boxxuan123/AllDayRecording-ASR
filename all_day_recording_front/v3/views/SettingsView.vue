@@ -44,22 +44,22 @@ async function copyDiagnostics() {
       <div v-if="query.data.value" class="settings-grid">
         <section class="panel setting-card">
           <p class="section-kicker">PROCESSING</p><h2>持久处理</h2>
-          <label><span>所有长任务先落库</span><input type="checkbox" :checked="query.data.value.processing.durable_jobs" disabled /></label>
-          <label><span>处理前强制备份准入</span><input type="checkbox" :checked="query.data.value.processing.backup_admission_required" disabled /></label>
-          <label><span>完成后自动删除原音</span><input type="checkbox" :checked="query.data.value.processing.automatic_source_deletion" disabled /></label>
+          <label><span>处理任务可恢复</span><input type="checkbox" :checked="query.data.value.processing.durable_jobs" disabled /></label>
+          <label><span>处理前完成独立备份</span><input type="checkbox" :checked="query.data.value.processing.backup_admission_required" disabled /></label>
+          <label><span>处理后自动删除原录音</span><input type="checkbox" :checked="query.data.value.processing.automatic_source_deletion" disabled /></label>
         </section>
         <section class="panel setting-card">
           <p class="section-kicker">PRIVACY</p><h2>本地优先</h2>
-          <label><span>Desktop API 仅监听 loopback</span><input type="checkbox" :checked="query.data.value.privacy.network_boundary === 'loopback'" disabled /></label>
-          <label><span>默认上传原音到云端</span><input type="checkbox" :checked="query.data.value.privacy.audio_cloud_upload" disabled /></label>
-          <label><span>允许云端处理文字</span><input type="checkbox" :checked="query.data.value.privacy.transcript_cloud_processing" disabled /></label>
+          <label><span>仅允许本机访问后台</span><input type="checkbox" :checked="query.data.value.privacy.network_boundary === 'loopback'" disabled /></label>
+          <label><span>原始录音上传到云端</span><input type="checkbox" :checked="query.data.value.privacy.audio_cloud_upload" disabled /></label>
+          <label><span>文字可由云端模型处理</span><input type="checkbox" :checked="query.data.value.privacy.transcript_cloud_processing" disabled /></label>
         </section>
         <section class="panel setting-card">
           <p class="section-kicker">CODEX</p><h2>提醒与洞察</h2>
-          <label><span>Codex 提醒生成</span><input type="checkbox" :checked="query.data.value.reminders.codex_enabled" disabled /></label>
-          <label><span>Codex 洞察生成</span><input type="checkbox" :checked="query.data.value.insights.codex_enabled" disabled /></label>
-          <label><span>洞察保留版本化修正</span><input type="checkbox" :checked="query.data.value.insights.versioned_corrections" disabled /></label>
-          <p>工作区：{{ query.data.value.insights.codex_workspace }}；来源层：{{ query.data.value.insights.source_layer }}；关系窗口：{{ query.data.value.insights.relationship_windows_days.join(' / ') }} 天。</p>
+          <label><span>AI 提醒建议</span><input type="checkbox" :checked="query.data.value.reminders.codex_enabled" disabled /></label>
+          <label><span>AI 总结与洞察</span><input type="checkbox" :checked="query.data.value.insights.codex_enabled" disabled /></label>
+          <label><span>保留修改记录</span><input type="checkbox" :checked="query.data.value.insights.versioned_corrections" disabled /></label>
+          <p>总结使用事件证据。关系回顾范围：{{ query.data.value.insights.relationship_windows_days.join(' / ') }} 天。</p>
         </section>
       </div>
     </PageState>
@@ -98,6 +98,9 @@ async function copyDiagnostics() {
 </template>
 
 <style scoped>
+.settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; }
+.setting-card label { font-size: 12px; }
+@media (max-width: 1200px) { .settings-grid { grid-template-columns: 1fr; } }
 .about-settings { margin-top: 28px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .about-settings > summary { display: flex; align-items: center; gap: 18px; padding: 22px 4px; cursor: pointer; list-style: none; }
 .about-settings > summary::-webkit-details-marker, .raw-diagnostics > summary::-webkit-details-marker { display: none; }
