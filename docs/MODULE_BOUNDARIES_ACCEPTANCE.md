@@ -23,7 +23,7 @@ Phone 与实际手表 entry@watch 同属 AllDayRecording，common HAR 随 AppSco
 
 ## 版本、诊断和追溯
 
-Hvigor自动产生忽略的GeneratedBuildIdentity.ets，Vite产生build-info.json，setuptools build_py在wheel注入_build_info.json：发布版本、完整Git hash、UTC构建时间、dirty。源码不写自身提交hash；最终提交后再构建，确认包内hash匹配且dirty=false。
+Hvigor自动产生忽略的GeneratedBuildIdentity.ets，Vite在清理输出前固定来源身份并产生build-info.json，setuptools build_py在wheel注入_build_info.json：发布版本、完整Git hash、UTC构建时间、dirty。源码不写自身提交hash；最终提交后再构建，确认包内hash匹配且dirty=false。
 源码运行诚实标记source-checkout、built_at=null、实际dirty；compose时固定身份并记后台日志。旧包无信息unknown。
 查看：PC设置→版本与诊断→复制，GET /api/v3/diagnostics（桌面认证），CLI allday-asr status；Phone更多→版本/诊断；Watch开发者页→版本/复制。
 他端build来自实际Wear Engine消息或已认证PC status。Phone有能力时用既有设备签名上报；body限8192字节，失败不撤销同步。未报告unknown；120秒过期offline_or_stale；不拿本端版本填他端。发布版本不参与协议兼容性拦截。

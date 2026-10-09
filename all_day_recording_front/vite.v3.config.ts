@@ -15,6 +15,9 @@ function buildIdentity() {
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
 
+// Capture source identity before Vite clears/replaces tracked packaged assets.
+const identity = buildIdentity()
+
 export default defineConfig({
   root: resolve(import.meta.dirname, 'v3'),
   plugins: [vue(), {
@@ -22,7 +25,7 @@ export default defineConfig({
     transformIndexHtml(html) { return html.replace(/\r\n?/g, '\n') },
     generateBundle() {
       this.emitFile({ type: 'asset', fileName: 'build-info.json',
-        source: JSON.stringify(buildIdentity(), null, 2) })
+        source: JSON.stringify(identity, null, 2) })
     },
   }],
   server: {
