@@ -248,6 +248,7 @@ class DurableProcessingService:
                         **output.metadata,
                         "stage": claim.stage.stage,
                         "attempt_id": claim.attempt.attempt_id,
+                        "provenance": _stage_provenance(claim, output),
                     },
                     created_at=now,
                 )
@@ -452,3 +453,23 @@ class DurableProcessingService:
             with self._artifact_store.open(artifact.storage_ref) as source:
                 values[artifact.kind] = (artifact, source.read())
         return values
+
+
+def _stage_provenance(claim, output):
+    import json
+    import hashlib
+    from .generation_context import generation_provenance
+    try:
+        document = json.loads(output.payload)
+    except (ValueError, UnicodeDecodeError):
+        document = {}
+    model = document.get("models", document.get("model")) if isinstance(document, dict) else None
+    return {**generation_provenance(
+        inputs={"session_id": claim.run.session_id, "input_revision": claim.run.input_revision,
+                "input_refs": list(output.input_refs)},
+        model=model,
+        rules={"config": claim.job.request.get("config", {}),
+               "producer": output.producer, "producer_version": output.producer_version,
+               "stage_settings": output.metadata}),
+        "run_id": claim.run.run_id, "stage_run_id": claim.stage.stage_run_id,
+        "attempt_id": claim.attempt.attempt_id, "output_sha256": hashlib.sha256(output.payload).hexdigest()}

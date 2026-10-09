@@ -14,6 +14,8 @@ def infer_product_self(service, session_id):
     matcher = service._self_identity_matcher
     degraded = False
     try:
+        if matcher is not None and hasattr(matcher, "freeze"):
+            matcher = matcher.freeze(service._artifact_root)
         status = matcher.status() if matcher is not None else {"auto_identity_enabled": False}
     except Exception:
         logging.getLogger(__name__).exception('Self matcher status unavailable')
@@ -63,6 +65,14 @@ def infer_product_self(service, session_id):
             "cluster_assignment": "SKIPPED:inference does not create profiles or clusters"})
     run_id = new_ulid()
     updated = 0
+    from .generation_context import generation_provenance
+    provenance = generation_provenance(
+        inputs={"session_id": session_id, "utterances": [
+            {"utterance_id": t["utterance_id"], "revision": t["revision"],
+             "query_inputs": t["query_inputs"]} for t in traces]},
+        model={"id": service._provider.model, "revision": service._provider.model_version},
+        rules={"self_enrollment": status, "two_disjoint_windows": True,
+               "profile_learning_allowed": False})
     with service._uow_factory() as uow:
         for trace in traces:
             utterance = uow.evidence.get_utterance(trace["utterance_id"])
@@ -84,7 +94,8 @@ def infer_product_self(service, session_id):
         uow.people.record_product_self_run(
             run_id, session_id, service._provider.model,
             service._provider.model_version,
-            {"purpose": "product_inference_only", "self_enrollment": status,
+            {"provenance": {**provenance, "run_id": run_id},
+             "purpose": "product_inference_only", "self_enrollment": status,
              "profile_learning": False, "traces": traces}, len(tracks), now,
         )
     return {"product_identity_run_id": run_id, "product_inference_executed": True,

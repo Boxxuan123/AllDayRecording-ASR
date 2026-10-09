@@ -1,9 +1,14 @@
 """One SDK attempt, private receipts, and an exclusive 180-second process bound."""
 
+import hashlib
 import json
+import time
 import sys
 from pathlib import Path
 from uuid import uuid4
+
+from allday_asr.build_info import runtime_build
+from allday_asr.v3.application.generation_context import current_generation
 
 
 class RemoteStartLimitReached(RuntimeError):
@@ -43,6 +48,7 @@ def run_attempt(
     request_path.write_text(
         json.dumps(
             {
+                "build": runtime_build(),
                 "request": request,
                 "instructions": instructions,
                 "schema": schema,
@@ -70,7 +76,9 @@ def run_attempt(
         stem.with_suffix(".log"),
         Path.cwd(),
     )
-    status = owned.wait(180)
+    context = current_generation.get()
+    timeout = min(180, max(1, int(context.deadline-time.time()))) if context else 180
+    status = owned.wait(timeout, context.cancelled if context else None)
     stem.with_suffix(".process.json").write_text(
         json.dumps(owned.identity, indent=2), encoding="utf-8"
     )
@@ -86,6 +94,8 @@ def run_attempt(
             encoding="utf-8",
         )
     result = json.loads(result_path.read_text(encoding="utf-8"))
+    if status == 125:
+        raise InterruptedError("bounded daily model call cancelled")
     if status == 124:
         raise TimeoutError("bounded daily model attempt exceeded 180 seconds")
     if result["status"] != "RETURNED":
@@ -93,7 +103,9 @@ def run_attempt(
         if result.get("error_type") in ("ValueError", "JSONDecodeError"):
             raise ValueError(message)
         raise RuntimeError(message)
-    return result["payload"], {**result["provenance"], "receipt_id": stem.name}
+    return result["payload"], {**result["provenance"], "receipt_id": stem.name,
+        "request_ref": str(request_path.resolve()),
+        "request_sha256": hashlib.sha256(request_path.read_bytes()).hexdigest()}
 
 
 def worker(request_path, result_path):

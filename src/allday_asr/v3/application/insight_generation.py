@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .generation_context import generation_provenance
 
 from datetime import date, timedelta
 from typing import Any
@@ -31,6 +32,14 @@ class InsightGenerationMixin:
         *,
         reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
+        from .generation_context import current_generation, generation_provenance, publication_guard
+        context = current_generation.get()
+        key = f"scoped-generation:{context.execution_id}:summary:{summary_date}:{timezone_name}" if context else None
+        if key:
+            with self._uow_factory().reading() as uow:
+                prior = uow.idempotency.response(key)
+            if prior is not None:
+                return prior
         generator = self._require_generator()
         day = _date(summary_date)
         start, end = _period(day, timezone_name)
@@ -66,13 +75,27 @@ class InsightGenerationMixin:
         summary_id = stable_ulid("daily-summary", day.isoformat(), timezone_name)
         now = self._now()
         provenance = _provenance(generator, result, "daily_summary")
+        publication_guard()
         with self._uow_factory() as uow:
+            current_inputs = _daily_inputs(uow.insights.event_sources(), start, end)
+            if canonical_json_sha256(current_inputs) != canonical_json_sha256((objective, source_events, quotes)):
+                raise ValueError("summary generation input snapshot changed")
+            if key:
+                prior = uow.idempotency.response(key)
+                if prior is not None:
+                    return prior
+                if not uow.idempotency.begin(key, "scoped-summary"):
+                    raise ValueError("summary publication is already owned")
             generation = _add_generation(
                 uow,
                 generator,
                 input_sha256,
                 {
                     "kind": "daily_summary",
+                    "provenance": generation_provenance(
+                        inputs=input_document, model=getattr(result, "provenance", None) or generator.model_label,
+                        rules={"prompt_revision": generator.prompt_version, "extractor_revision": generator.extractor_version}),
+                    "input_snapshot": {"version": 1, "kind": "summary-request", "inputs": input_document},
                     "summary_date": day.isoformat(),
                     "timezone": timezone_name,
                 },
@@ -122,7 +145,10 @@ class InsightGenerationMixin:
                 summary_id,
                 {"revision": revision, "input_sha256": input_sha256},
             )
-            return uow.insights.daily(summary_id)
+            published = uow.insights.daily(summary_id)
+            if key:
+                uow.idempotency.complete(key, published)
+            return published
 
     def daily(self, summary_date: str | date, timezone_name: str) -> dict[str, Any]:
         summary_id = stable_ulid(
@@ -215,6 +241,10 @@ class InsightGenerationMixin:
                 input_sha256,
                 {
                     "kind": "relationship_observation",
+                    "provenance": generation_provenance(
+                        inputs=input_document, model=getattr(result, "provenance", None) or generator.model_label,
+                        rules={"prompt_revision": generator.prompt_version,
+                               "extractor_revision": generator.extractor_version}),
                     "person_id": person_id,
                     "window_days": window_days,
                     "end_date": day.isoformat(),

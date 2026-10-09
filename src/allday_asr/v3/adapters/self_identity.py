@@ -39,7 +39,8 @@ class CalibratedSelfIdentityMatcher:
             "auto_identity_enabled": True,
             "reference_count": int(references.shape[0]),
             "policy_version": str(policy["policy_version"]),
-            "policy_sha256": _sha256(self._policy_path),
+            "policy_sha256": getattr(self, "_frozen_policy_sha256", None) or _sha256(self._policy_path),
+            "snapshot_refs": getattr(self, "_snapshot_refs", None),
             "voiceprint_sha256": str(policy["voiceprint_sha256"]),
             "self_threshold": float(policy["self_threshold"]),
             "not_self_threshold": float(policy["not_self_threshold"]),
@@ -47,6 +48,30 @@ class CalibratedSelfIdentityMatcher:
             "false_reject_rate": float(policy["false_reject_rate"]),
             "reason": "accepted_calibrated_voiceprint",
         }
+
+    def freeze(self, artifact_root):
+        from copy import copy
+        from allday_asr.v3.adapters.files import ContentAddressedStore
+        loaded, reason = self._load()
+        frozen = copy(self)
+        frozen._frozen_loaded, frozen._frozen_reason = loaded, reason
+        if loaded is not None:
+            policy = loaded[0]
+            policy_bytes = self._policy_path.read_bytes()
+            raw = Path(policy["voiceprint"]).read_bytes()
+            import hashlib
+            if hashlib.sha256(raw).hexdigest() != policy["voiceprint_sha256"]:
+                raise ValueError("self profile changed during snapshot")
+            if json.loads(policy_bytes) != policy:
+                raise ValueError("self policy changed during snapshot")
+            store = ContentAddressedStore(artifact_root)
+            policy_ref, profile_ref = store.put_bytes(policy_bytes), store.put_bytes(raw)
+            frozen._frozen_policy_sha256 = policy_ref.sha256
+            frozen._snapshot_refs = {
+                "policy": {"storage_ref": policy_ref.storage_key, "sha256": policy_ref.sha256},
+                "voiceprint": {"storage_ref": profile_ref.storage_key, "sha256": profile_ref.sha256},
+            }
+        return frozen
 
     def match(self, embedding: SpeakerEmbedding) -> IdentityDecision:
         loaded, reason = self._load()
@@ -104,6 +129,8 @@ class CalibratedSelfIdentityMatcher:
     def _load(
         self,
     ) -> tuple[tuple[dict[str, Any], np.ndarray, np.ndarray] | None, str]:
+        if hasattr(self, "_frozen_loaded"):
+            return self._frozen_loaded, self._frozen_reason
         if not self._policy_path.is_file():
             return None, "active_self_identity_policy_missing"
         try:

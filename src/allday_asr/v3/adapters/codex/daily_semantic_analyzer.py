@@ -178,6 +178,11 @@ class CodexDailySemanticAnalyzer(CodexSemanticEventGenerator):
     def _run_bounded(
         self, request, instructions, schema, prompt_version, schema_version
     ):
+        from allday_asr.v3.application.generation_context import generation_provenance, publication_guard
+        publication_guard()
+        trace = generation_provenance(inputs=request, model=self.model_label,
+            rules={"instructions": instructions, "schema": schema, "prompt_revision": prompt_version},
+            output_schema=schema_version)
         if self._isolated:
             from .daily_bounded_attempt import run_attempt
             payload, provenance = run_attempt(self, request, instructions, schema,
@@ -191,7 +196,8 @@ class CodexDailySemanticAnalyzer(CodexSemanticEventGenerator):
         if audit:
             self.record_canonicalization(audit)
             provenance = {**provenance, "canonicalization_audit": audit}
-        return canonical, {**provenance, "canonicalization_version": CANONICALIZATION_VERSION}
+        publication_guard()
+        return canonical, {**trace, **provenance, "canonicalization_version": CANONICALIZATION_VERSION}
 
     def _run_direct(self, request, instructions, schema, prompt_version, schema_version):
         with self._lock:

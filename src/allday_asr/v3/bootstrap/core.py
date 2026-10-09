@@ -125,6 +125,9 @@ def compose_v3_core(
     self_identity_matcher: SelfIdentityMatcher | None = None,
 ) -> V3Core:
     """Wire the V3 Core without opening databases or creating directories."""
+    import logging
+    from allday_asr.build_info import runtime_build
+    logging.getLogger(__name__).info("Runtime build: %s", runtime_build())
     selected = paths or V3CorePaths.from_environment()
     selected_codex = codex_settings or CodexReminderSettings.from_environment()
     database = V3Database(selected.database_path)

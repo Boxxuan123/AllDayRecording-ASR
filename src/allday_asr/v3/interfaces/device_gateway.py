@@ -58,6 +58,13 @@ class DeviceGateway:
             "sync_features": ["snapshot-v1", "adaptive-batch-v1"],
         }
 
+    def report_diagnostics(self, key_id, payload):
+        device_id = self.trust.domain_device_id(key_id)
+        from allday_asr.v3.adapters.sqlite.runtime_diagnostics import RuntimeDiagnosticsRepository
+        if self.review_service is None:
+            raise LookupError('runtime reporting unavailable')
+        return RuntimeDiagnosticsRepository(self.review_service.core.database).report(device_id, payload)
+
     def synchronize(
         self, key_id: str, payload: Mapping[str, Any]
     ) -> dict[str, Any]:
@@ -107,9 +114,14 @@ class DeviceGateway:
             return None
         response = dict(result)
         if self.session_ingested is not None:
-            automation = self.session_ingested(record, response)
-            if automation is not None:
-                response["automation"] = dict(automation)
+            try:
+                automation = self.session_ingested(record, response)
+                if automation is not None:
+                    response["automation"] = dict(automation)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Durable ingest succeeded; processing enqueue failed")
+                response["automation"] = {"status": "queue_failed", "retryable": True}
         return response
 
 

@@ -150,6 +150,7 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                     previous.get("input_revision") or 1
                 ) == input_revision:
                     queued["job_id"] = str(previous["job_id"])
+                    queued["stage_results"] = dict(previous.get("stage_results") or {})
                 self._write(
                     session_id,
                     queued,
@@ -307,7 +308,8 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
 
         self._require_input_revision(session_id, input_revision)
         self._progress(session_id, "running", "speaker_identity", "正在分析开放集说话人身份")
-        identity = infer_safely(self.core, session_id)
+        identity = self._post_stage(session_id, input_revision, "speaker_identity",
+            lambda: infer_safely(self.core, session_id))
         self._require_input_revision(session_id, input_revision)
         detail = self.core.desktop.session_detail(session_id)
         active_utterances = [
@@ -330,17 +332,13 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 "semantic_event_generation",
                 "正在生成并落库带证据的原生语义事件",
             )
-            semantic_event_result = self.core.semantic_events.extract(
-                session_id,
-                reasoning_effort=self.reasoning_effort,
-            )
+            semantic_event_result = self._post_stage(session_id, input_revision, "semantic_event_generation",
+                lambda: self.core.semantic_events.extract(session_id, reasoning_effort=self.reasoning_effort))
         if active_utterances:
             self._require_input_revision(session_id, input_revision)
             self._progress(session_id, "running", "reminder_generation", "正在生成待人工审核的提醒")
-            reminder_result = self.core.reminder_extraction.extract_product(
-                session_id,
-                reasoning_effort=self.reasoning_effort,
-            )
+            reminder_result = self._post_stage(session_id, input_revision, "reminder_generation",
+                lambda: self.core.reminder_extraction.extract_product(session_id, reasoning_effort=self.reasoning_effort))
         if active_utterances and settings["insights"]["codex_enabled"]:
             # Session arrival wakes completed-day catch-up. The current day is
             # never regenerated for every utterance/session completion.
@@ -349,9 +347,9 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
                 coordinator.notify('transcript_completed')
         self._require_input_revision(session_id, input_revision)
         memory_results = [
-            self.core.person_memory.refresh(
-                str(person["person_id"]), actor="system:v3-native-workflow"
-            )
+            self._post_stage(session_id, input_revision, "person_memory:" + str(person["person_id"]),
+                lambda person=person: self.core.person_memory.refresh(
+                    str(person["person_id"]), actor="system:v3-native-workflow"))
             for person in self.core.people.list_people()
         ]
         reminders = reminder_result.get("candidates", []) if reminder_result else []
@@ -388,6 +386,40 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
             needs_manual_retry=False,
             error=None,
         )
+
+    def _post_stage(self, session_id, input_revision, stage, action):
+        self._require_input_revision(session_id, input_revision)
+        state = self.status(session_id) or {}
+        saved = dict(state.get("stage_results") or {})
+        source_digest = self._post_stage_source(session_id, stage, input_revision)
+        previous = saved.get(stage)
+        if (previous is not None and previous["input_revision"] == input_revision
+                and previous.get("source_digest") == source_digest):
+            return previous["result"]
+        result = action()
+        self._require_input_revision(session_id, input_revision)
+        current_digest = self._post_stage_source(session_id, stage, input_revision)
+        if not stage.startswith("speaker_identity") and current_digest != source_digest:
+            raise RuntimeError("post-processing source changed before checkpoint")
+        # A degraded optional recognition result is terminal for this workflow,
+        # never a reason to resend audio or repeatedly learn a profile.
+        saved[stage] = {"input_revision": input_revision, "source_digest": current_digest, "result": result}
+        self._progress(session_id, "running", stage, "阶段结果已可靠保存", stage_results=saved)
+        return result
+
+    def _post_stage_source(self, session_id, stage, input_revision):
+        from allday_asr.v3.domain.hashing import canonical_json_sha256
+        core = getattr(self, "core", None)
+        if core is None:
+            return str(input_revision)
+        detail = core.desktop.session_detail(session_id)
+        sources = {"input_revision": input_revision, "utterances": [
+            {key: u.get(key) for key in ("utterance_id", "revision", "text", "identity",
+                                         "speaker_track_id", "status", "evidence")}
+            for u in detail["utterances"] if u.get("status") == "active"]}
+        if stage.startswith("person_memory:"):
+            sources["events"] = list(core.knowledge.list_events(session_id))
+        return canonical_json_sha256(sources)
 
     def _session_is_admitted(self, session_id: str) -> bool:
         return self.core.admission.evaluate(session_id)

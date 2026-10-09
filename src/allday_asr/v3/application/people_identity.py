@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .generation_context import generation_provenance
 
 from typing import Any
 
@@ -27,13 +28,15 @@ class PeopleIdentityMixin:
             role = uow.people.session_dataset_role(session_id)
         if role is None:
             raise ValueError('session dataset role is unassigned')
+        from allday_asr.v3.domain.identity_processing_policy import IdentityProcessingPolicy
+        permission = IdentityProcessingPolicy.for_session(role, annotation_only=annotation_only)
         reservation = None
-        if not annotation_only:
+        if permission.recognition_enabled:
             with self._uow_factory() as uow:
                 reservation = uow.people.begin_identity_prediction(session_id)
-        if role != 'learning':
+        if not permission.profile_learning_allowed:
             from .product_self_identity import infer_product_self
-            product = (infer_product_self(self, session_id) if not annotation_only else
+            product = (infer_product_self(self, session_id) if permission.recognition_enabled else
                        {"product_inference_executed": False, "product_skip_reason": "annotation_only"})
             shadow = getattr(self, 'blind_validation', None)
             if role == 'blind' and shadow is not None:
@@ -44,11 +47,17 @@ class PeopleIdentityMixin:
                     import logging
                     logging.getLogger(__name__).exception('Shadow enqueue will retry independently')
             return {'session_id': session_id, 'status': 'succeeded', 'dataset_role': role,
-                    'learning_excluded': True, 'research_reservation': reservation, 'shadow_status': 'queued' if role == 'blind' else 'frozen_holdout', **product}
+                    'learning_excluded': True, 'recognition_enabled': permission.recognition_enabled,
+                    'profile_learning_allowed': False, 'research_reservation': reservation, 'shadow_status': 'queued' if role == 'blind' else 'frozen_holdout', **product}
         if annotation_only:
             with self._uow_factory() as uow:
                 uow.people.enqueue_samples(session_id)
             return {"session_id": session_id, "status": "queued"}
+        matcher = self._self_identity_matcher
+        matcher_snapshot = None
+        if matcher is not None and hasattr(matcher, "freeze"):
+            matcher = matcher.freeze(self._artifact_root)
+            matcher_snapshot = matcher.status()
         with self._uow_factory() as uow:
             tracks = uow.people.analysis_inputs(session_id)
             uow.people.enqueue_samples(session_id)
@@ -59,7 +68,14 @@ class PeopleIdentityMixin:
                 session_id,
                 self._provider.model,
                 self._provider.model_version,
-                self._policy_dict(),
+                {**self._policy_dict(), "provenance": generation_provenance(
+                    inputs={"session_id": session_id, "track_ids": [t.speaker_track_id for t in tracks]},
+                    model={"id": self._provider.model, "revision": self._provider.model_version},
+                    rules={"policy": self._policy_dict(), "profile_learning_allowed": True,
+                           "self_matcher_snapshot": matcher_snapshot,
+                           "identity_policies": uow.people.identity_policies(),
+                           "person_vectors": uow.people.person_vectors(self._provider.model, self._provider.model_version),
+                           "cluster_vectors": uow.people.cluster_vectors(self._provider.model, self._provider.model_version)})},
                 len(tracks),
                 started_at,
             )
@@ -72,6 +88,7 @@ class PeopleIdentityMixin:
             )
             created = 0
             matched = 0
+            match_inputs = []
             with self._uow_factory() as uow:
                 self_person_id = uow.people.self_person_id()
                 for index, embedding in enumerate(embeddings, start=1):
@@ -87,9 +104,9 @@ class PeopleIdentityMixin:
                             created_at=_datetime(self._now()), reuse_membership=True)
                         continue
                     self_match = (
-                        self._self_identity_matcher.match(embedding)
+                        matcher.match(embedding)
                         if self_person_id is not None
-                        and self._self_identity_matcher is not None
+                        and matcher is not None
                         else None
                     )
                     # A calibrated self match must not be absorbed into an anonymous
@@ -107,6 +124,9 @@ class PeopleIdentityMixin:
                             ),
                         )
                     )
+                    match_inputs.append({"speaker_track_id": embedding.speaker_track_id,
+                        "anonymous_profiles": anonymous,
+                        "self_match": self_match.evidence if self_match is not None else None})
                     anonymous_match = conservative_match(
                         embedding.vector,
                         anonymous,
@@ -146,6 +166,11 @@ class PeopleIdentityMixin:
                         ),
                         created_at=_datetime(self._now()),
                     )
+                uow.audit.append("identity.match.snapshot", "system:initial-speaker-match",
+                    "identity_match_snapshot", run_id, {"provenance": generation_provenance(
+                        inputs={"run_id": run_id, "session_id": session_id, "matches": match_inputs},
+                        model={"id": self._provider.model, "revision": self._provider.model_version},
+                        rules={"policy": self._policy_dict(), "self_matcher_snapshot": matcher_snapshot})})
                 uow.people.finish_run(
                     run_id, "succeeded", _datetime(self._now()), None
                 )
@@ -154,6 +179,8 @@ class PeopleIdentityMixin:
                 session_id, trigger="initial_analysis"
             )
             return {
+                "recognition_enabled": True,
+                "profile_learning_allowed": True,
                 "cluster_run_id": run_id,
                 "session_id": session_id,
                 "status": "succeeded",
@@ -239,7 +266,7 @@ class PeopleIdentityMixin:
         session_id: str | None = None,
         *,
         trigger: str = "historical_rematch",
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         """Re-evaluate anonymous prototypes without promoting any of them."""
 
         if trigger not in {
@@ -269,6 +296,13 @@ class PeopleIdentityMixin:
         with self._uow_factory() as uow:
             if inputs(uow) != snapshot:
                 raise ValueError("speaker matching inputs changed; retry with a fresh snapshot")
+            snapshot_id = new_ulid()
+            uow.audit.append("identity.match.snapshot", "system:known-person-match",
+                "identity_match_snapshot", snapshot_id, {"provenance": generation_provenance(
+                    inputs={"session_id": session_id, "candidates": candidates},
+                    model={"id": self._provider.model, "revision": self._provider.model_version},
+                    rules={"trigger": trigger, "strategy": _KNOWN_PERSON_POLICY_VERSION,
+                           "identity_policies": raw_policies, "person_vectors": people})})
             grouped: dict[str, list[LayeredMatchDecision]] = {}
             created_at = _datetime(self._now())
             for candidate, decision in evaluated:
@@ -343,6 +377,7 @@ class PeopleIdentityMixin:
             linked += 1
             updated += int(result["updated_utterance_count"])
         return {
+            "match_snapshot_id": snapshot_id,
             "rematched_prototype_count": len(candidates),
             "suggested_cluster_count": suggestion_count,
             "auto_identified_known_cluster_count": linked,

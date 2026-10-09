@@ -279,7 +279,16 @@ class DailyHistoryInventory:
                     for j in jobs
                 )
             changed = changed or not consistent or bool(summary.get("invalidated"))
+            # A configuration upgrade describes a new producer; it is not new evidence.
+            same_sources = any(j["source_fingerprint"] == digest for j in prior_versions)
+            published_without_queue = bool(
+                summary and not prior_versions and summary.get("semantic_status") == "complete"
+                and not any(instant(r["updated_at"]) > instant(summary["created_at"]) for r in rows))
+            config_only = bool(
+                not complete and not changed and not matched and
+                (same_sources or published_without_queue))
             item = {
+                "automatic_recompute_blocked": config_only,
                 "date": day,
                 "timezone": self.timezone,
                 "session_count": len(ss),

@@ -42,7 +42,8 @@ class DailyGenerationCoordinator:
             next_first = (stop + timedelta(days=1)).isoformat() if stop < last else None
             consumed.append((dirty_id, first_text, next_first))
         items = self.inventory.scan(include_today=True, only_dates=dates)
-        created = self.queue.observe(items, origin=origin)
+        created = self.queue.observe(
+            [i for i in items if not i.get("automatic_recompute_blocked")], origin=origin)
         self.database.acknowledge_daily_dirty_ranges(tuple(consumed))
         self.last_trigger = trigger
         return {"trigger": trigger, "created_job_ids": created, "items": items}
@@ -106,6 +107,8 @@ class DailyGenerationCoordinator:
             if not dates:
                 return None
             items = self.inventory.scan(include_today=True, only_dates=dates)
+            if not backfill:
+                items = [i for i in items if not i.get("automatic_recompute_blocked")]
             self.queue.observe(
                 items, origin="HISTORICAL" if backfill else "RECENT_DAILY"
             )

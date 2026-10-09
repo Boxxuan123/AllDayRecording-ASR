@@ -149,6 +149,9 @@ def persist_summary(uow, events, tasks, day: str, timezone: str, start, end, now
         return previous
     generation = local_generation(uow, KnowledgeLayer.MEMORY, digest,
                                   {'day': day, 'source_event_ids': objective['source_event_ids'],
+                                   'source_event_snapshots': [
+                                       {'event_id': s.event_id, 'revision': s.revision, 'payload': s.payload} for s in events],
+                                   'task_snapshots': tasks, 'overview_provenance': objective['overview_provenance'],
                                    'rule_version':SEMANTIC_VERSION,
                                    'provider': 'local', 'remote_input_characters': 0}, now)
     revision = uow.insights.next_daily_revision(sid)

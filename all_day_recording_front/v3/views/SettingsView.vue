@@ -1,9 +1,21 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import PageState from '../components/PageState.vue'
 import { desktopApi } from '../core/api'
 import { useQuery } from '../core/query'
 
 const query = useQuery('settings', desktopApi.settings)
+const diagnostics = useQuery('diagnostics', desktopApi.diagnostics)
+const copyStatus = ref('')
+async function copyDiagnostics() {
+  if (!diagnostics.data.value) return
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(diagnostics.data.value, null, 2))
+    copyStatus.value = '已复制'
+  } catch {
+    copyStatus.value = '复制失败，可选中下方诊断文本复制'
+  }
+}
 </script>
 
 <template>
@@ -17,6 +29,16 @@ const query = useQuery('settings', desktopApi.settings)
     </header>
     <PageState :loading="query.loading.value" :error="query.error.value" :has-content="query.data.value !== null" @retry="query.refresh(true)">
       <div v-if="query.data.value" class="settings-grid">
+        <section class="panel setting-card">
+          <p class="section-kicker">BUILD</p><h2>版本与诊断</h2>
+          <template v-if="diagnostics.data.value">
+            <p>PC / 后台 {{ diagnostics.data.value.build.release_version }}</p>
+            <p>协议 {{ diagnostics.data.value.contract_version }} · 数据库 {{ diagnostics.data.value.database_schema_version }}</p>
+            <button @click="copyDiagnostics">复制诊断信息</button> <span>{{ copyStatus }}</span>
+            <pre style="white-space: pre-wrap; overflow-wrap: anywhere">{{ JSON.stringify(diagnostics.data.value, null, 2) }}</pre>
+          </template>
+          <p v-else>诊断信息尚未读取 · <button @click="diagnostics.refresh(true)">重试</button></p>
+        </section>
         <section class="panel setting-card">
           <p class="section-kicker">PROCESSING</p><h2>持久处理</h2>
           <label><span>所有长任务先落库</span><input type="checkbox" :checked="query.data.value.processing.durable_jobs" disabled /></label>

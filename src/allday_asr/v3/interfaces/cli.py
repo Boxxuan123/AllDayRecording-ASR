@@ -1,4 +1,5 @@
 from __future__ import annotations
+from allday_asr.build_info import runtime_build
 
 import json
 import os
@@ -25,6 +26,7 @@ from allday_asr.v3.config import V3ConfigurationError, V3Settings
 from allday_asr.v3.interfaces.desktop_server import serve_v3_desktop
 from .self_backfill_cli import register as register_self_backfill
 from .daily_automation_cli import register as register_daily_automation
+from .scoped_recompute_cli import register as register_scoped_recompute
 
 
 app = typer.Typer(
@@ -34,6 +36,7 @@ app = typer.Typer(
 
 register_self_backfill(app)
 register_daily_automation(app)
+register_scoped_recompute(app)
 
 
 @app.command(name="status")
@@ -42,6 +45,7 @@ def status_command() -> None:
     typer.echo(
         json.dumps(
             {
+                "build": runtime_build(),
                 "enabled": settings.enabled,
                 "deployment_mode": settings.deployment_mode.value,
                 "state": "disabled" if not settings.enabled else "startable",

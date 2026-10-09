@@ -38,6 +38,7 @@ class DailyInsightModelResult:
     turn_id: str
     reasoning_effort: InsightReasoningEffort
     usage: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class RelationshipInsightModelResult:
     turn_id: str
     reasoning_effort: InsightReasoningEffort
     usage: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] | None = None
 
 
 class InsightModelGenerator(Protocol):

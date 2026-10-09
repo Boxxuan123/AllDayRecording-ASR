@@ -11,6 +11,10 @@ htmlcov/
 # Private runtime data
 state/
 outputs/
+build/
+dist/
+src/allday_asr/_build_info.json
+src/allday_asr/v3/web_assets/build-info.json
 models/
 !src/allday_asr/v3/adapters/models/
 !src/allday_asr/v3/adapters/models/*.py

@@ -1,6 +1,8 @@
 from __future__ import annotations
 from allday_asr.v3.domain.sound_kind import is_usable_speech
 
+from dataclasses import asdict
+from .generation_context import generation_provenance
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -126,6 +128,11 @@ class ReminderExtractionService:
                 extractor_version=self._generator.extractor_version,
                 input_scope={
                     "session_id": request.session_id,
+                    "provenance": generation_provenance(inputs=asdict(request),
+                        model=getattr(generated, "provenance", None) or self._generator.model_label,
+                        rules={"prompt_revision": self._generator.prompt_version,
+                               "extractor_revision": self._generator.extractor_version}),
+                    "model_receipt": getattr(generated, "provenance", None),
                     "utterance_ids": [
                         item["utterance_id"] for item in request.utterances
                     ],
@@ -180,10 +187,15 @@ class ReminderExtractionService:
                 title=title, scheduled_at=due, confidence=1.0, needs_confirmation=True,
                 evidence_utterance_ids=(utterance["utterance_id"],), reason="explicit_self_future_task",
             )
+            import inspect
+            from allday_asr.v3.domain import reminder_time
+            trace = generation_provenance(
+                inputs={"utterance": utterance, "source": source}, model="bounded-rule",
+                rules={"revision": VERSION, "source": inspect.getsource(reminder_time)})
             result = self._reminders.submit_generation(ReminderGenerationSubmission(
                 producer="product-reminder", producer_version=VERSION, model="bounded-rule",
                 prompt_version=VERSION, extractor_version=VERSION,
-                input_scope={**source, "product_source_key": key,
+                input_scope={**source, "product_source_key": key, "provenance": trace,
                     "utterance_ids": [utterance["utterance_id"]],
                     "source_text": utterance["text"], "speaker_identity": "self",
                     "recorded_at": utterance["start_at"], "timezone": request.captured_timezone,

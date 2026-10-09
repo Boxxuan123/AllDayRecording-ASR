@@ -181,7 +181,7 @@ class TransferDeviceTrustAdapter:
 
 
 def _required_scopes(binding: RequestBinding) -> tuple[DeviceScope, ...]:
-    if binding.path == "/device/v3/status":
+    if binding.path in {"/device/v3/status", "/device/v3/diagnostics"}:
         return (DeviceScope.DEVICE_STATUS,)
     if binding.path == "/device/v3/sync":
         return (DeviceScope.DATA_SYNC_READ, DeviceScope.DATA_SYNC_WRITE)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .generation_context import generation_provenance
 
 from collections.abc import Iterable
 from datetime import datetime
@@ -137,7 +138,8 @@ def _add_generation(
         model=generator.model_label,
         prompt_version=generator.prompt_version,
         extractor_version=generator.extractor_version,
-        input_scope=input_scope,
+        input_scope={**input_scope, "provenance": input_scope.get("provenance") or generation_provenance(model=generator.model_label,
+            rules={"prompt_revision": generator.prompt_version, "extractor_revision": generator.extractor_version})},
         input_sha256=input_sha256,
         generation_number=number,
         status=GenerationStatus.SUCCEEDED,

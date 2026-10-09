@@ -62,7 +62,7 @@ def _result_data(result: Any) -> dict[str, Any]:
 
 def _restore_result(data: dict[str, Any]) -> Any:
     return SimpleNamespace(
-        id=data["id"], final_response=data["final_response"],
+        id=data["id"], provenance=data.get("provenance"), final_response=data["final_response"],
         usage=data.get("usage"),
         items=[SimpleNamespace(type=kind) for kind in data["items"]],
     )
@@ -102,8 +102,20 @@ class ModelExecutionRunner:
             instructions: str, schema: dict, model: str | None,
             effort: str, workdir: Path, fake_client: Any | None = None,
             cancel_event: Event | None = None) -> Any:
+        from allday_asr.v3.application.generation_context import current_generation
+        from allday_asr.build_info import runtime_build
+        context = current_generation.get()
+        if context is not None:
+            context.check()
+            batch_id = "explicit:" + context.execution_id
+            cancel_event = context.cancelled
+        model = _configured_model(model)
+        if context is not None:
+            prompt = self._freeze_scoped_request(context.execution_id, task, prompt, instructions, schema, model, effort)
         identity = {"task": task, "prompt": prompt, "instructions": instructions,
                     "schema": schema, "model": model, "effort": effort}
+        if context is not None:
+            identity["execution_id"] = context.execution_id
         if len(json.dumps(identity, ensure_ascii=False).encode("utf-8")) > self.max_prompt_bytes:
             raise ModelExecutionTerminal("model request budget exceeded")
         job_id = hashlib.sha256(json.dumps(identity, ensure_ascii=False,
@@ -117,6 +129,15 @@ class ModelExecutionRunner:
                 "job_id": job_id, "task": task, "attempts": 0,
                 "max_attempts": self.max_attempts, "status": "pending",
             }
+            request_snapshot = self.receipt_dir / f"{job_id}.request.snapshot.json"
+            if not request_snapshot.exists():
+                _atomic_json(request_snapshot, {"version": 1, "request": identity,
+                    "build": dict(runtime_build()), "model_resolution": "resolved" if model else "unknown"})
+            source = {"job_id": job_id, "request_ref": str(request_snapshot.resolve()),
+                      "request_sha256": hashlib.sha256(request_snapshot.read_bytes()).hexdigest(),
+                      "model": model or "unknown"}
+            if context is not None:
+                context.receipts.append(source)
             if state["status"] == "started":
                 # The per-job lock is now ours, so the prior owner died. The
                 # owned child was terminated with it; close the orphan receipt
@@ -168,9 +189,12 @@ class ModelExecutionRunner:
             _atomic_json(state_path, state)
             receipt_path = self.receipt_dir / f"{job_id}.{attempt}.receipt.json"
             receipt = {"job_id": job_id, "attempt": attempt, "status": "started",
-                       "started_at": state["started_at"], "usage": None}
+                       "started_at": state["started_at"], "usage": None, "provenance": source}
             _atomic_json(receipt_path, receipt)
             try:
+                if context is not None:
+                    context.check()
+                    batch_remaining = min(batch_remaining, max(1, int(context.deadline-time.time())))
                 if cancel_event is not None and cancel_event.is_set():
                     raise ModelExecutionCancelled("model call cancelled")
                 if fake_client is not None:
@@ -180,6 +204,9 @@ class ModelExecutionRunner:
                 else:
                     data = self._owned_call(identity, workdir, job_id, attempt,
                                             cancel_event, min(self.timeout_seconds, batch_remaining))
+                if context is not None:
+                    context.check()
+                data["provenance"] = source
                 receipt["usage"] = data.get("usage")
                 state["used_tokens"] = state.get("used_tokens", 0) + _reported_tokens(data.get("usage"))
                 if state["used_tokens"] > min(self.max_job_tokens, state["max_job_tokens"]):
@@ -203,6 +230,30 @@ class ModelExecutionRunner:
                 _atomic_json(receipt_path, receipt)
                 _atomic_json(state_path, state)
                 raise
+
+    def _freeze_scoped_request(self, execution_id, task, prompt, instructions, schema, model, effort):
+        # Existing prompts include wall-clock now_utc. The first execution owns it.
+        prefix, separator, body = prompt.partition("\n")
+        try:
+            payload = json.loads(body if separator else prompt)
+            payload.pop("now_utc", None)
+            normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except (ValueError, AttributeError):
+            normalized = prompt
+        identity = {"task": task, "inputs": normalized, "instructions": instructions,
+                    "schema": schema, "model": model, "effort": effort}
+        # Distinct targets in a finite pass have distinct payload identities.
+        digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        stem = hashlib.sha256((execution_id + ":" + task + ":" + digest).encode()).hexdigest()
+        path = self.receipt_dir / f"scope-{stem}.request.json"
+        self.receipt_dir.mkdir(parents=True, exist_ok=True)
+        with day_worker_lock(path) as acquired:
+            if not acquired:
+                raise RuntimeError("scoped request is already owned")
+            if path.exists():
+                return json.loads(path.read_text("utf-8"))["prompt"]
+            _atomic_json(path, {"execution_id": execution_id, "identity": identity, "prompt": prompt})
+            return prompt
 
     def _owned_call(self, identity: dict, workdir: Path, job_id: str,
                     attempt: int, cancel_event: Event | None,
@@ -271,3 +322,18 @@ def worker(request_path: Path, result_path: Path) -> None:
 
 if __name__ == "__main__":
     worker(Path(sys.argv[1]), Path(sys.argv[2]))
+
+
+def _configured_model(explicit):
+    """Read only selection fields, then pin the effective model for this request."""
+    if explicit:
+        return explicit
+    import os
+    import tomllib
+    config_root = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    try:
+        config = tomllib.loads((config_root / "config.toml").read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    profile = config.get("profiles", {}).get(config.get("profile"), {})
+    return profile.get("model", config.get("model"))

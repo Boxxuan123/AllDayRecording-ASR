@@ -174,6 +174,7 @@ class CodexReminderGenerator:
                 turn_id=str(result.id),
                 reasoning_effort=effort,
                 usage=_usage(result.usage),
+                provenance=getattr(result, "provenance", None),
             )
 
     def close(self) -> None:

@@ -14,6 +14,16 @@ def local_generation(uow, layer: KnowledgeLayer, digest: str, scope: dict, now):
     version = scope.get('rule_version', 'daily-semantic-v1.1')
     number = uow.knowledge.next_generation_number(layer.value, producer, version,
                                                 'local-rules', version, version, digest)
+    from .generation_context import generation_provenance
+    import inspect
+    from allday_asr.v3.domain import daily_events, daily_semantics
+    from . import daily_structured_summary
+    scope = {**scope, "provenance": generation_provenance(
+        inputs=scope, model="local-rules",
+        rules={"revision": version, "sources": {
+            "daily_events": inspect.getsource(daily_events),
+            "daily_semantics": inspect.getsource(daily_semantics),
+            "daily_structured_summary": inspect.getsource(daily_structured_summary)}})}
     generation = GenerationRecord(new_ulid(), layer, producer, version, 'local-rules',
                                   version, version, scope, digest, number,
                                   GenerationStatus.SUCCEEDED, now, now)
@@ -30,7 +40,7 @@ def persist_event(uow, identifier: str, payload: dict, current, now, *, retire=F
     evidence = payload['evidence_snapshots']
     digest = canonical_json_sha256(payload)
     generation = local_generation(uow, KnowledgeLayer.EVENT, digest,
-                                  {'event_id': identifier, 'source_count': len(evidence),
+                                  {'event_id': identifier, 'evidence_snapshots': evidence, 'source_count': len(evidence),
                                    'input_characters': sum(len(r['text']) for r in evidence),
                                    'provider': 'local-reconciliation', 'remote_input_characters': 0,
                                    'rule_version':payload['daily_event_version'],

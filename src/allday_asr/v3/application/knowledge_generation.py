@@ -68,8 +68,14 @@ class KnowledgeGenerationMixin:
                     return prior
                 if not uow.idempotency.begin(idempotency_key, "reminder-source"):
                     raise ValueError("reminder source operation is incomplete")
+            from .generation_context import publication_guard, generation_provenance
+            from .generation_snapshot import validate_generation_snapshot
+            publication_guard()
+            validate_generation_snapshot(uow, submission.input_scope)
             normalized_scope = self._resolve_inputs(uow, submission)
-            input_sha256 = canonical_json_sha256(normalized_scope)
+            provenance = normalized_scope.pop("provenance", None)
+            source_scope = {k: v for k, v in normalized_scope.items() if k != "model_receipt"}
+            input_sha256 = canonical_json_sha256(source_scope)
             generation_number = uow.knowledge.next_generation_number(
                 submission.layer.value,
                 submission.producer,
@@ -79,6 +85,12 @@ class KnowledgeGenerationMixin:
                 submission.extractor_version,
                 input_sha256,
             )
+            # Diagnostic build identity is not part of the semantic input/cache key.
+            # Manual edits retain their strict command/source scope; they are not AI outputs.
+            if submission.model != "manual-edit":
+                normalized_scope["provenance"] = provenance or generation_provenance(
+                    inputs=source_scope, model=submission.model, rules={"prompt_revision": submission.prompt_version,
+                                                   "extractor_revision": submission.extractor_version})
             generation = GenerationRecord(
                 generation_id=new_ulid(),
                 layer=submission.layer,
@@ -164,6 +176,8 @@ class KnowledgeGenerationMixin:
             if proposal.status is not ProposalStatus.PENDING:
                 raise ValueError("proposal is no longer pending")
             generation = uow.knowledge.get_generation(proposal.generation_id)
+            from .generation_snapshot import validate_generation_snapshot
+            validate_generation_snapshot(uow, generation.input_scope)
             if generation.status is not GenerationStatus.SUCCEEDED:
                 raise ValueError("proposal generation is not usable")
             if proposal.kind is ProposalKind.EVENT_OPERATION:

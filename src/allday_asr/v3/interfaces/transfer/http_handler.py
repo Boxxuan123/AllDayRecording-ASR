@@ -1,4 +1,5 @@
 from __future__ import annotations
+from allday_asr.build_info import runtime_build
 
 import json
 import gzip
@@ -214,6 +215,8 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 HTTPStatus.OK,
                 {
+                    "build": runtime_build(),
+                    "diagnostic_features": ["runtime-build-report"] if self.server.v3_gateway is not None else [],
                     "protocol": PROTOCOL_NAME,
                     "version": PROTOCOL_VERSION,
                     "status": "ready",
@@ -325,6 +328,9 @@ class TransferRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.passkeys.start_authentication(binding),
             )
+            return
+        from .diagnostic_routes import dispatch_diagnostic_post
+        if dispatch_diagnostic_post(self, path):
             return
         if path == _V3_SYNC_PATH:
             if self.server.v3_gateway is None:

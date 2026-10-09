@@ -124,6 +124,7 @@ class RequestBinding:
                     "/device/v3/reviews/action",
                     "/device/v3/reviews/audio",
                     "/device/v3/annotations",
+                    "/device/v3/diagnostics",
                 }
             )
             or (self.method == "PUT" and upload_path)

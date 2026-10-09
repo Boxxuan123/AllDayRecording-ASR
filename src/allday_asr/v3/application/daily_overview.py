@@ -111,6 +111,12 @@ def prepare_overview(service, major, tasks, day, *, allow_model):
     if len(json.dumps(request, ensure_ascii=False)) > 12000:
         raise ValueError("bounded day overview exceeds its high-level input budget")
     digest = request_fingerprint(analyzer, request, {"major_sources": [e for e in major if e["event_id"] in ids], "task_sources": tasks}, analyzer.overview_prompt_version, analyzer.overview_schema_version)
+    from .generation_context import current_generation
+    from allday_asr.v3.domain.hashing import canonical_json_sha256
+    context = current_generation.get()
+    if context is not None:
+        # Explicit passes get their own checkpoint; retries of the same pass reuse it.
+        digest = canonical_json_sha256({"request_digest": digest, "execution_id": context.execution_id})
     with service._uow_factory().reading() as uow:
         cached = uow.insights.daily_semantic_cache(digest, PRODUCER)
     if cached and not checkpoint_valid(cached, digest, "result"):

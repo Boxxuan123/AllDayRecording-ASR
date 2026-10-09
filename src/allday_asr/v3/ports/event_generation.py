@@ -25,6 +25,7 @@ class SemanticEventModelResult:
     turn_id: str
     reasoning_effort: SemanticEventReasoningEffort
     usage: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] | None = None
 
 
 class SemanticEventModelGenerator(Protocol):

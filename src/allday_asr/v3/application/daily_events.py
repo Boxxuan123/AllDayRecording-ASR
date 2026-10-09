@@ -20,6 +20,10 @@ from allday_asr.v3.domain.hashing import canonical_json_sha256
 
 
 class DailyEventMixin:
+    def recompute_summary(self, summary_date, timezone_name="Asia/Singapore"):
+        from .daily_summary_recompute import recompute_summary
+        return recompute_summary(self, summary_date, timezone_name)
+
     def refresh_daily_cache(self, force: bool = False) -> None:
         # Serialize refreshes and rate-limit repeat sync pages. Explicit day refresh is immediate.
         with self._daily_refresh_lock:

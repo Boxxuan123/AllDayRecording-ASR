@@ -2,7 +2,7 @@ from __future__ import annotations
 from allday_asr.v3.domain.sound_kind import is_usable_speech
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Any
 
 from allday_asr.v3.domain.ids import stable_ulid
@@ -68,7 +68,7 @@ class _EventDraft:
     reason: str
 
     def proposal(
-        self, session_id: str
+        self, session_id: str, current=None
     ) -> tuple[ProposalKind, dict[str, Any], tuple[str, ...]]:
         patch: dict[str, Any] = {
             "title": self.title,
@@ -84,10 +84,10 @@ class _EventDraft:
             ProposalKind.EVENT_OPERATION,
             {
                 "event_id": self.event_id,
-                "operation": EventOperationKind.CREATE.value,
+                "operation": EventOperationKind.UPDATE.value if current is not None else EventOperationKind.CREATE.value,
                 "session_id": session_id,
                 "event_kind": self.event_kind.value,
-                "expected_revision": 0,
+                "expected_revision": current.revision if current is not None else 0,
                 "patch": patch,
             },
             self.evidence_utterance_ids,
@@ -123,11 +123,22 @@ class SemanticEventExtractionService:
         session_id: str,
         *,
         reasoning_effort: str | None = None,
+        recompute: bool = False,
     ) -> dict[str, Any]:
         if self._generator is None:
             raise SemanticEventGenerationUnavailable(
                 "Codex semantic event generation is disabled"
             )
+        from .generation_context import current_generation, generation_provenance, publication_guard
+        context = current_generation.get()
+        if recompute and context is None:
+            raise ValueError("event recompute requires an explicit bounded execution")
+        key = f"scoped-generation:{context.execution_id}:events:{session_id}" if context else None
+        if key:
+            with self._uow_factory().reading() as uow:
+                prior = uow.idempotency.response(key)
+            if prior is not None:
+                return prior
         request = self._request(session_id)
         effort = select_semantic_event_reasoning_effort(
             request,
@@ -147,8 +158,16 @@ class SemanticEventExtractionService:
                 "Codex returned semantic events that failed validation"
             ) from exc
 
+        publication_guard()
         known_ids = self._known_event_ids(session_id)
-        selected = tuple(value for value in drafts if value.event_id not in known_ids)
+        with self._uow_factory().reading() as uow:
+            current_events = {d.event_id: uow.knowledge.get_event(d.event_id) for d in drafts}
+            protected = {d.event_id for d in drafts
+                if current_events[d.event_id] is not None and any(
+                    h["actor"] != "semantic-event-policy" for h in uow.knowledge.event_history(d.event_id))}
+        selected = tuple(value for value in drafts if value.event_id not in known_ids
+                         or (recompute and value.event_id not in protected
+                             and current_events[value.event_id] is not None))
         receipt = self._knowledge.submit_generation(
             GenerationSubmission(
                 layer=KnowledgeLayer.EVENT,
@@ -159,6 +178,12 @@ class SemanticEventExtractionService:
                 extractor_version=self._generator.extractor_version,
                 input_scope={
                     "session_id": request.session_id,
+                    "input_snapshot": {"version": 1, "kind": "event-request", "inputs": asdict(request)},
+                    "provenance": generation_provenance(
+                        inputs=asdict(request), model=getattr(generated, "provenance", None) or self._generator.model_label,
+                        rules={"prompt_revision": self._generator.prompt_version,
+                               "extractor_revision": self._generator.extractor_version}),
+                    "model_receipt": getattr(generated, "provenance", None),
                     "utterance_ids": [
                         item["utterance_id"] for item in request.utterances
                     ],
@@ -166,9 +191,10 @@ class SemanticEventExtractionService:
                     "reasoning_effort": generated.reasoning_effort.value,
                     "usage": generated.usage,
                 },
-                proposals=tuple(value.proposal(session_id) for value in selected),
+                proposals=tuple(value.proposal(session_id, current_events.get(value.event_id)) for value in selected),
             ),
             allow_empty=True,
+            idempotency_key=key + ":submission" if key else None,
         )
 
         events: list[dict[str, Any]] = []
@@ -176,12 +202,15 @@ class SemanticEventExtractionService:
             status = "pending_review"
             revision: int | None = None
             if self._auto_accept_allowed(draft):
-                resolution = self._knowledge.accept_proposal(
-                    str(proposal["proposal_id"]),
-                    "semantic-event-policy",
-                )
-                status = "accepted"
-                revision = resolution.resource_revision
+                with self._uow_factory().reading() as uow:
+                    stored_proposal = uow.knowledge.get_proposal(str(proposal["proposal_id"]))
+                    existing_event = uow.knowledge.get_event(draft.event_id)
+                if stored_proposal.status.value == "accepted":
+                    status, revision = "accepted", existing_event.revision
+                elif stored_proposal.status.value == "pending":
+                    resolution = self._knowledge.accept_proposal(
+                        str(proposal["proposal_id"]), "semantic-event-policy")
+                    status, revision = "accepted", resolution.resource_revision
             events.append(
                 {
                     "event_id": draft.event_id,
@@ -208,6 +237,11 @@ class SemanticEventExtractionService:
             "reasoning_effort": generated.reasoning_effort.value,
             "usage": generated.usage,
         }
+        if key:
+            with self._uow_factory() as uow:
+                if uow.idempotency.response(key) is None:
+                    uow.idempotency.begin(key, "scoped-events")
+                    uow.idempotency.complete(key, receipt)
         return receipt
 
     def close(self) -> None:
@@ -217,29 +251,7 @@ class SemanticEventExtractionService:
     def _request(self, session_id: str) -> SemanticEventModelRequest:
         with self._uow_factory().reading() as uow:
             detail = uow.desktop.session_detail(session_id)
-        speaker_references = {
-            str(value["speaker_track_id"]): value for value in detail["speaker_tracks"]
-        }
-        utterances = tuple(
-            _utterance(
-                value,
-                speaker_references.get(str(value.get("speaker_track_id"))),
-            )
-            for value in detail["utterances"]
-            if value.get("status") == "active" and str(value.get("text", "")).strip()
-            and is_usable_speech(value.get("evidence", {}))
-        )
-        if not utterances:
-            raise ValueError("recording session has no active utterances")
-        if sum(len(str(value["text"])) for value in utterances) > 200_000:
-            raise ValueError(
-                "recording session transcript exceeds Codex extraction limit"
-            )
-        return SemanticEventModelRequest(
-            session_id=session_id,
-            captured_timezone=str(detail["session"].get("timezone") or "UTC"),
-            utterances=utterances,
-        )
+        return semantic_request_from_detail(session_id, detail)
 
     def _known_event_ids(self, session_id: str) -> set[str]:
         event_ids = {
@@ -400,3 +412,29 @@ __all__ = [
     "SemanticEventGenerationUnavailable",
     "select_semantic_event_reasoning_effort",
 ]
+
+
+def semantic_request_from_detail(session_id, detail):
+    speaker_references = {
+        str(value["speaker_track_id"]): value for value in detail["speaker_tracks"]
+    }
+    utterances = tuple(
+        _utterance(
+            value,
+            speaker_references.get(str(value.get("speaker_track_id"))),
+        )
+        for value in detail["utterances"]
+        if value.get("status") == "active" and str(value.get("text", "")).strip()
+        and is_usable_speech(value.get("evidence", {}))
+    )
+    if not utterances:
+        raise ValueError("recording session has no active utterances")
+    if sum(len(str(value["text"])) for value in utterances) > 200_000:
+        raise ValueError(
+            "recording session transcript exceeds Codex extraction limit"
+        )
+    return SemanticEventModelRequest(
+        session_id=session_id,
+        captured_timezone=str(detail["session"].get("timezone") or "UTC"),
+        utterances=utterances,
+    )

@@ -53,6 +53,17 @@ class DesktopGetRoutesMixin:
         if path == '/api/v3/blind/report':
             self._send_json(HTTPStatus.OK, self.application.core.blind_validation.report())
             return
+        if path == "/api/v3/diagnostics":
+            from allday_asr.v3.adapters.sqlite.runtime_diagnostics import RuntimeDiagnosticsRepository
+            self._send_json(HTTPStatus.OK, RuntimeDiagnosticsRepository(self.application.core.database).snapshot())
+            return
+        if path.startswith("/api/v3/provenance/"):
+            from allday_asr.v3.adapters.sqlite.result_provenance import ResultProvenanceRepository
+            parts = path.removeprefix("/api/v3/provenance/").split("/")
+            if len(parts) != 2:
+                raise ValueError("provenance path requires kind and identifier")
+            self._send_json(HTTPStatus.OK, ResultProvenanceRepository(self.application.core.database).get(*parts))
+            return
         if path == "/api/v3/status":
             self._send_json(HTTPStatus.OK, self.application.core.desktop.status())
             return
