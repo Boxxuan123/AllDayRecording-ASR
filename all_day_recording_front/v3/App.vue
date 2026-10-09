@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ChatView from './views/ChatView.vue'
 import AppShell from './components/AppShell.vue'
 import { route } from './core/router'
 import DataView from './views/DataView.vue'
@@ -18,6 +19,7 @@ import SettingsView from './views/SettingsView.vue'
 <template>
   <AppShell>
     <OverviewView v-if="route.name === 'overview'" />
+    <ChatView v-else-if="route.name === 'chat'" />
     <RecordingsView v-else-if="route.name === 'recordings'" />
     <SessionDetailView v-else-if="route.name === 'session'" :key="route.sessionId ?? ''" />
     <ReviewsView v-else-if="route.name === 'reviews'" />

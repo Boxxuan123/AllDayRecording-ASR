@@ -32,6 +32,7 @@ from .desktop_http_contract import (
     _location_without_token,
     _parse_range,
 )
+from .desktop_chat_routes import DesktopChatRoutesMixin
 from .desktop_routes_get import DesktopGetRoutesMixin
 from .desktop_routes_post import DesktopPostRoutesMixin
 
@@ -40,6 +41,8 @@ from .desktop_routes_post import DesktopPostRoutesMixin
 class V3DesktopApplication:
     def __init__(self, core: V3Core, *, token: str | None = None) -> None:
         self.core = core
+        from allday_asr.v3.bootstrap.chat import compose_chat_queries
+        self.chat = compose_chat_queries(core.paths.state_dir / "chat")
         self.core.people.sample_worker.start()
         self.core.blind_validation.start()
         self.automatic_workflows = AutomaticWorkflowStateStore(
@@ -55,6 +58,7 @@ class V3DesktopApplication:
         return f"http://{self.host}:{self.port}"
 
     def close(self) -> None:
+        self.chat.close()
         self.core.close()
 
     def list_reviews(self, limit: int) -> tuple[dict[str, Any], ...]:
@@ -64,7 +68,7 @@ class V3DesktopApplication:
 
 
 class V3DesktopRequestHandler(
-    DesktopGetRoutesMixin, DesktopPostRoutesMixin, BaseHTTPRequestHandler
+    DesktopChatRoutesMixin, DesktopGetRoutesMixin, DesktopPostRoutesMixin, BaseHTTPRequestHandler
 ):
     asset_root = ASSET_ROOT
     server: "V3DesktopHTTPServer"

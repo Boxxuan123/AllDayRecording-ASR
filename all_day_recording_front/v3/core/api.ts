@@ -73,11 +73,11 @@ function recoverDesktopSession(): Promise<boolean> {
   return sessionRecovery
 }
 
-async function request<T>(path: string, init?: RequestInit, recovered = false): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit, recovered = false): Promise<T> {
   if (mock) return mockRequest<T>(path, init)
   // Generated reports and other writes can take longer; bound ordinary reads.
   const signal = (init?.method ?? 'GET') === 'GET'
-    ? AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(15_000)])
+    ? AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(path.startsWith('/api/v3/chat/') ? 55_000 : 15_000)])
     : init?.signal
   const response = await fetch(path, {
     credentials: 'same-origin',

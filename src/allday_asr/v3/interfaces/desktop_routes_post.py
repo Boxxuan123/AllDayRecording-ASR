@@ -69,6 +69,8 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
         if not self._authorized_mutation():
             return
         body = self._read_json()
+        if self._dispatch_chat_post(path, body):
+            return
         if self._dispatch_annotation_post(path, body):
             return
         if match := _AUTOMATIC_WORKFLOW_RETRY_ROUTE.fullmatch(path):

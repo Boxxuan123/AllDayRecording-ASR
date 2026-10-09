@@ -1,5 +1,6 @@
 const ROUTE_NAMES = {
   '/': 'overview',
+  '/chat': 'chat',
   '/recordings': 'recordings',
   '/reviews': 'reviews',
   '/reminders': 'reminders',

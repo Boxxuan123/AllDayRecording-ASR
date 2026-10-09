@@ -3,6 +3,7 @@ import { readonly, ref } from 'vue'
 import { matchV3Route } from './routeMatch.js'
 
 export type RouteName =
+  | 'chat'
   | 'overview'
   | 'recordings'
   | 'session'

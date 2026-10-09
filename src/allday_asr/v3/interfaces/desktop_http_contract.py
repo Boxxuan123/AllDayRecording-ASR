@@ -111,6 +111,7 @@ _FRONTEND_ROUTES = {
     "/devices",
     "/data",
     "/settings",
+    "/chat",
     "/lab",
 }
 _SESSION_RECOVERY_ROUTE = "/api/v3/desktop-session"
