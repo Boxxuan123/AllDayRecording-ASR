@@ -18,6 +18,32 @@ MESSAGES = {
 
 
 class DesktopChatRoutesMixin:
+    def _log_chat_request(self, args):
+        # A scope/cursor/record ID can expose private chat metadata in access logs.
+        path = getattr(self, "path", "").split("?", 1)[0]
+        if not path.startswith("/api/v3/chat/"):
+            return False
+        route = path.removeprefix("/api/v3/chat/")
+        if route not in {
+            "status",
+            "accounts",
+            "conversations",
+            "messages",
+            "context",
+            "connection",
+            "sync",
+            "control",
+            "answer",
+            "cancel",
+            "jobs",
+        }:
+            route = "unknown"
+        status = str(args[1]) if len(args) > 1 and str(args[1]).isdigit() else "event"
+        print(
+            f"[v3-desktop] {self.address_string()} {self.command} /api/v3/chat/{route} {status}"
+        )
+        return True
+
     def _chat_call(self, call):
         try:
             self._send_json(200, call())

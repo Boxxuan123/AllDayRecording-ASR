@@ -1,4 +1,10 @@
-# Mac 查询性能待修项
+# Mac 查询性能修复跟踪
+
+**2026-10-10：已修复并在 Windows 原确切范围重验通过。实际 service 1.0.1；用户提供修复 commit `b668bc48c3320c80f2ccbefbc8e90989618973de`（FROM_HANDOFF）。最新详细结果见 [Windows 复验报告](CHAT_QUERY_V1_RETEST_20261010.md)。**
+
+Mac 交接确认原查询选账号/seq路径导致稀疏末页扫描；已增加会话/时间覆盖索引并先读候选seq再回读正文。这是 Mac 提供的实现说明，Windows 未读取其源码/EXPLAIN；Windows 独立实测证实原超时窗口已完整返回。
+
+## 2026-10-09 首次待修记录（保留）
 
 2026-10-09 的 Windows 真实跨机联调已鉴权成功：CHAT_DATA_CONTRACT_V1、service 1.0.0、schema 1。消息按 ID 和上下文可读且原文一致，问题集中在有范围的查询分页。
 

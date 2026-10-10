@@ -127,8 +127,10 @@ def main():
                 result["batch_statuses"] = [item["status"] for item in batch["items"]]
         result["note"] = "Smoke checks alone do not establish CHAT_QUERY_V1_READY."
     except ChatDataError as exc:
+        result["status"] = "BLOCKED"
         result["error"] = exc.code
     except (OSError, ValueError, KeyError, AssertionError):
+        result["status"] = "BLOCKED"
         result["error"] = "LIVE_CHECK_FAILED"
     result["elapsed_seconds"] = round(time.monotonic() - started, 2)
     out = args.state_dir / "chat/live-acceptance.json"

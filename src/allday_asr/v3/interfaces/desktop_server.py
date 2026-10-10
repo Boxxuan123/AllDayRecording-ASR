@@ -405,6 +405,8 @@ class V3DesktopRequestHandler(
         )
 
     def log_message(self, format: str, *args) -> None:
+        if self._log_chat_request(args):
+            return
         print(f"[v3-desktop] {self.address_string()} {format % args}")
 
 

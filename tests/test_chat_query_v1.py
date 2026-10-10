@@ -666,8 +666,7 @@ def test_real_runner_error_categories_without_model_call(
 
 def test_answer_candidate_cap_does_not_claim_complete_scope(service):
     service.source.records = [
-        record(i, "报名讨论", conversation=f"conversation-{i}")
-        for i in range(1, 12)
+        record(i, "报名讨论", conversation=f"conversation-{i}") for i in range(1, 12)
     ]
 
     def model(payload, cancel):
@@ -677,5 +676,38 @@ def test_answer_candidate_cap_does_not_claim_complete_scope(service):
         return {"claims": [], "unknown": ["第 11 个会话未覆盖，无法确定全部安排。"]}
 
     service.model = model
-    answer = service.answer("全部报名安排", {"sent_from": 0, "keyword": "报名"}, Event())
+    answer = service.answer(
+        "全部报名安排", {"sent_from": 0, "keyword": "报名"}, Event()
+    )
     assert not answer["evidence_complete"] and answer["known_gaps"]
+
+
+@pytest.mark.parametrize(
+    "wrapper", ["{}", "“{}”", '"{}"', "原话：“{}”", "原文：\n「{}」"]
+)
+def test_quote_presentation_wrappers_preserve_literal_original(service, wrapper):
+    original = "杭电 报名 会议提议周五 10:00"
+    service.model = lambda *_: {
+        "claims": [
+            {
+                "text": wrapper.format(original),
+                "kind": "quote",
+                "citations": ["rec:fixture-1"],
+            }
+        ],
+        "unknown": [],
+    }
+    answer = service.answer("原话是什么", {"sent_from": 0, "keyword": "杭电"}, Event())
+    assert answer["claims"][0]["text"] == original
+    assert answer["prompt_version"] == "chat-answer-v2"
+    assert answer["normalized_quote_wrappers"] == (wrapper != "{}")
+
+
+@pytest.mark.parametrize("bad", ["原话：“编造的安排”", "他说：“杭电 报名”", "原话：“”"])
+def test_quote_wrappers_never_authorize_rewriting_or_unknown_labels(service, bad):
+    service.model = lambda *_: {
+        "claims": [{"text": bad, "kind": "quote", "citations": ["rec:fixture-1"]}],
+        "unknown": [],
+    }
+    with pytest.raises(ChatDataError, match="INVALID_MODEL_QUOTE"):
+        service.answer("原话是什么", {"sent_from": 0, "keyword": "杭电"}, Event())

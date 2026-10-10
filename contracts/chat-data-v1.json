@@ -1,7 +1,7 @@
 {
   "api_contract_version": "CHAT_DATA_CONTRACT_V1",
   "schema_version": 1,
-  "service_version": "1.0.0",
+  "service_version": "1.0.1",
   "authentication": "Authorization: Bearer <local secret>",
   "routes": {
     "GET /v1/status": "Service version and capture readiness",
