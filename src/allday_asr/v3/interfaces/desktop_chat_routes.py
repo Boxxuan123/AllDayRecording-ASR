@@ -4,6 +4,7 @@ import json
 from urllib.parse import unquote
 
 from allday_asr.v3.ports.chat_data import ChatDataError
+from .desktop_followup_routes import DesktopFollowupRoutesMixin
 
 MESSAGES = {
     "CHAT_NOT_CONFIGURED": "请在本机配置 Mac 服务地址和凭据后重启工作台。",
@@ -17,7 +18,7 @@ MESSAGES = {
 }
 
 
-class DesktopChatRoutesMixin:
+class DesktopChatRoutesMixin(DesktopFollowupRoutesMixin):
     def _log_chat_request(self, args):
         # A scope/cursor/record ID can expose private chat metadata in access logs.
         path = getattr(self, "path", "").split("?", 1)[0]
@@ -55,6 +56,8 @@ class DesktopChatRoutesMixin:
             )
 
     def _dispatch_chat_get(self, path, query):
+        if self._followup_get(path, query):
+            return True
         if not path.startswith("/api/v3/chat/"):
             return False
 
@@ -95,6 +98,8 @@ class DesktopChatRoutesMixin:
         return True
 
     def _dispatch_chat_post(self, path, body):
+        if self._followup_post(path, body):
+            return True
         if not path.startswith("/api/v3/chat/"):
             return False
 

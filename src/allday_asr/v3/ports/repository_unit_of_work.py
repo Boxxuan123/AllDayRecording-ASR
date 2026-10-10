@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from .chat_followups import ChatFollowupRepository
 from types import TracebackType
 from typing import Protocol, Self
 
@@ -51,6 +53,7 @@ class UnitOfWork(Protocol):
     idempotency: IdempotencyRepository
     tombstones: TombstoneRepository
     desktop: DesktopReadRepository
+    followups: "ChatFollowupRepository"
     knowledge: KnowledgeRepository
     derivations: DerivationRepository
     reminders: ReminderRepository

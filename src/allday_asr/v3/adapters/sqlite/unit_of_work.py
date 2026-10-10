@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .chat_followup_repository import SqliteChatFollowupRepository
+
 import sqlite3
 from types import TracebackType
 
@@ -76,6 +78,7 @@ class SqliteUnitOfWork:
         self.tombstones = SqliteTombstoneRepository(connection, now=self.now)
         self.desktop = SqliteDesktopReadRepository(connection)
         self.knowledge = SqliteKnowledgeRepository(connection)
+        self.followups = SqliteChatFollowupRepository(connection)
         self.derivations = SqliteDerivationRepository(connection)
         self.reminders = SqliteReminderRepository(connection)
         self.people = SqlitePeopleRepository(connection)

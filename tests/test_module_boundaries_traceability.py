@@ -329,8 +329,9 @@ def test_reused_existing_migration30_reads_schema29_copy(tmp_path):
     with sqlite3.connect(old) as source, sqlite3.connect(copied) as target:
         source.backup(target)
     runner = V3MigrationRunner(copied)
-    assert runner.initialize() == 30
-    assert runner.initialize() == 30
+    from allday_asr.v3.adapters.sqlite.migration_runner import LATEST_V3_SCHEMA_VERSION
+    assert runner.initialize() == LATEST_V3_SCHEMA_VERSION
+    assert runner.initialize() == LATEST_V3_SCHEMA_VERSION
     with sqlite3.connect(copied) as c:
         assert c.execute("SELECT action FROM audit_entries WHERE audit_id='old-row'").fetchone()[0] == "fixture"
         assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

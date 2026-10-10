@@ -43,6 +43,8 @@ class V3DesktopApplication:
         self.core = core
         from allday_asr.v3.bootstrap.chat import compose_chat_queries
         self.chat = compose_chat_queries(core.paths.state_dir / "chat")
+        from allday_asr.v3.bootstrap.chat_followups import FollowupJobs
+        self.followups = FollowupJobs(core, self.chat)
         self.core.people.sample_worker.start()
         self.core.blind_validation.start()
         self.automatic_workflows = AutomaticWorkflowStateStore(
@@ -58,6 +60,7 @@ class V3DesktopApplication:
         return f"http://{self.host}:{self.port}"
 
     def close(self) -> None:
+        self.followups.close()
         self.chat.close()
         self.core.close()
 

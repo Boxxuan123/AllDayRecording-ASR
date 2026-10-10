@@ -28,7 +28,7 @@ def _default_migrations() -> tuple[V3Migration, ...]:
     return MIGRATIONS
 
 
-LATEST_V3_SCHEMA_VERSION = 30
+LATEST_V3_SCHEMA_VERSION = 31
 
 
 class V3MigrationRunner:
@@ -107,6 +107,9 @@ class V3MigrationRunner:
         }
 
     def _apply(self, connection: sqlite3.Connection, migration: V3Migration) -> None:
+        generalized = migration.name == "chat_followup_provenance"
+        if generalized:
+            connection.execute("PRAGMA foreign_keys = OFF")
         connection.execute("BEGIN IMMEDIATE")
         try:
             # Another service may have migrated while we waited for the writer
@@ -125,6 +128,9 @@ class V3MigrationRunner:
                     )
                 connection.execute("COMMIT")
                 return
+            if generalized:
+                from .migrations.v031_chat_followups import generalize_event_sessions
+                generalize_event_sessions(connection)
             for statement in _statements(migration.sql):
                 connection.execute(statement)
             if migration.name == "versioned_audio_annotations":
@@ -135,10 +141,15 @@ class V3MigrationRunner:
                 "(version, name, sha256, applied_at) VALUES (?, ?, ?, ?)",
                 (migration.version, migration.name, migration.sha256, self.now()),
             )
+            if generalized and connection.execute("PRAGMA foreign_key_check").fetchone():
+                raise RuntimeError("chat event migration foreign key check failed")
             connection.execute("COMMIT")
         except Exception:
             connection.execute("ROLLBACK")
             raise
+        finally:
+            if generalized:
+                connection.execute("PRAGMA foreign_keys = ON")
 
 
 def _connect(path: Path) -> sqlite3.Connection:

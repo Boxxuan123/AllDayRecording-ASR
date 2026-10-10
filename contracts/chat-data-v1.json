@@ -1,50 +1,24 @@
 {
   "api_contract_version": "CHAT_DATA_CONTRACT_V1",
-  "schema_version": 1,
-  "service_version": "1.0.1",
+  "attachments": {
+    "availability": [
+      "available",
+      "not_acquired",
+      "lost",
+      "decode_failed",
+      "integrity_failed"
+    ],
+    "metadata": "Live acquired-resource state, separate from frozen record_revision",
+    "range": "bytes=start-end; at most 8 MiB; pin ETag with If-Match and verify final sha256",
+    "sources": "QQ archived assets BLOB; WeChat acquired media files only"
+  },
   "authentication": "Authorization: Bearer <local secret>",
-  "routes": {
-    "GET /v1/status": "Service version and capture readiness",
-    "GET /v1/coverage": "Source coverage and known gaps",
-    "GET /v1/accounts": "Paged source and sender directory",
-    "GET /v1/conversations": "Paged conversation directory",
-    "GET /v1/messages": "Scoped literal substring and historical query",
-    "GET /v1/changes": "Scoped insert revisions after a change cursor",
-    "POST /v1/snapshots": "Create a stable captured-data snapshot and change boundary",
-    "POST /v1/records": "Read up to 100 IDs with per-item revision status",
-    "POST /v1/context": "Read at most 25 preceding and 25 following conversation messages",
-    "GET /v1/contract": "Actual executable contract metadata"
-  },
-  "limits": {
-    "page": 100,
-    "batch": 100,
-    "context_each_side": 25,
-    "keyword_characters": 200,
-    "request_bytes": 65536,
-    "response_bytes": 8388608,
-    "sql_seconds": 10,
-    "socket_seconds": 10,
-    "concurrent_connections": 8
-  },
-  "time": {
-    "sent_at": "Unix seconds UTC; null when unavailable",
-    "ingested_at": "Original archive ingestion timestamp; null for WeChat",
-    "captured_at": "Service observation time in ISO 8601 UTC",
-    "last_successful_collection_at": "QQ ISO 8601 UTC; WeChat Unix seconds encoded as string"
-  },
-  "search": "Case-sensitive literal Unicode substring; %, _, quotes and SQL syntax remain literal",
-  "order": {
-    "messages": "Immutable change_seq ascending, fixed boundary",
-    "changes": "change_seq ascending",
-    "context": "sent_at ascending (null first), change_seq as tiebreaker",
-    "directories": "immutable directory insertion order"
-  },
+  "coverage": "Earliest/latest timestamps do not establish historical completeness; subsequent upstream revisions/media updates are unsupported",
   "cursor_retention": {
+    "changes": "No pruning in V1; valid while dataset and signing key persist",
     "query_seconds": 3600,
-    "snapshot_seconds": 86400,
-    "changes": "No pruning in V1; valid while dataset and signing key persist"
+    "snapshot_seconds": 86400
   },
-  "revision": "Frozen first-observed record_revision=1; inserts only; body is exactly the captured revision",
   "errors": {
     "400": [
       "INVALID_REQUEST",
@@ -55,35 +29,90 @@
       "INVALID_BATCH",
       "INVALID_REVISION",
       "INVALID_RECORD_ID",
-      "CHANGE_CURSOR_REQUIRED"
+      "CHANGE_CURSOR_REQUIRED",
+      "INVALID_ATTACHMENT_ID"
     ],
     "401": [
       "UNAUTHORIZED"
     ],
     "404": [
       "NOT_FOUND",
-      "RECORD_NOT_FOUND"
+      "RECORD_NOT_FOUND",
+      "ATTACHMENT_NOT_FOUND"
     ],
     "409": [
       "DATASET_MISMATCH",
       "SCOPE_MISMATCH",
       "CURSOR_KIND_MISMATCH",
       "SNAPSHOT_MISMATCH",
-      "SOURCE_CHANGED"
+      "SOURCE_CHANGED",
+      "CURSOR_AHEAD_OF_DATASET",
+      "ATTACHMENT_UNAVAILABLE",
+      "ATTACHMENT_CHANGED"
     ],
     "410": [
       "CURSOR_EXPIRED"
     ],
     "413": [
       "REQUEST_TOO_LARGE",
-      "RESPONSE_TOO_LARGE"
+      "RESPONSE_TOO_LARGE",
+      "ATTACHMENT_RANGE_REQUIRED",
+      "ATTACHMENT_RANGE_TOO_LARGE"
+    ],
+    "416": [
+      "INVALID_RANGE"
     ],
     "503": [
       "INITIALIZING",
       "SOURCE_UNAVAILABLE",
       "SERVICE_BUSY",
-      "QUERY_TIMEOUT"
+      "QUERY_TIMEOUT",
+      "ATTACHMENT_INDEXING",
+      "VOLUME_UNAVAILABLE",
+      "STORAGE_LOW"
     ]
   },
-  "coverage": "Earliest/latest timestamps do not establish historical completeness; subsequent upstream revisions/media updates are unsupported"
+  "limits": {
+    "attachment_chunk_bytes": 8388608,
+    "batch": 100,
+    "concurrent_connections": 8,
+    "context_each_side": 25,
+    "keyword_characters": 200,
+    "page": 100,
+    "request_bytes": 65536,
+    "response_bytes": 8388608,
+    "socket_seconds": 10,
+    "sql_seconds": 10
+  },
+  "order": {
+    "changes": "change_seq ascending",
+    "context": "sent_at ascending (null first), change_seq as tiebreaker",
+    "directories": "immutable directory insertion order",
+    "messages": "Immutable change_seq ascending, fixed boundary"
+  },
+  "revision": "Frozen first-observed record_revision=1; inserts only; body is exactly the captured revision",
+  "routes": {
+    "GET /v1/accounts": "Paged source and sender directory",
+    "GET /v1/attachments": "Current acquired attachments for a captured record_id",
+    "GET /v1/attachments/{attachment_id}": "Current acquired attachment metadata and availability",
+    "GET /v1/attachments/{attachment_id}/content": "Authenticated bytes; single bounded Range for large resources",
+    "GET /v1/changes": "Scoped insert revisions after a change cursor",
+    "GET /v1/contract": "Actual executable contract metadata",
+    "GET /v1/conversations": "Paged conversation directory",
+    "GET /v1/coverage": "Source coverage and known gaps",
+    "GET /v1/messages": "Scoped literal substring and historical query",
+    "GET /v1/status": "Service version and capture readiness",
+    "POST /v1/context": "Read at most 25 preceding and 25 following conversation messages",
+    "POST /v1/records": "Read up to 100 IDs with per-item revision status",
+    "POST /v1/snapshots": "Create a stable captured-data snapshot and change boundary"
+  },
+  "schema_version": 1,
+  "search": "Case-sensitive literal Unicode substring; %, _, quotes and SQL syntax remain literal",
+  "service_version": "1.1.0",
+  "time": {
+    "captured_at": "Service observation time in ISO 8601 UTC",
+    "ingested_at": "Original archive ingestion timestamp; null for WeChat",
+    "last_successful_collection_at": "QQ ISO 8601 UTC; WeChat Unix seconds encoded as string",
+    "sent_at": "Unix seconds UTC; null when unavailable"
+  }
 }

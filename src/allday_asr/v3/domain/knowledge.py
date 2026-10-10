@@ -148,7 +148,7 @@ class StructuredProposal:
 class EventOperation:
     operation_id: str
     event_id: str
-    session_id: str
+    session_id: str | None
     event_kind: EventKind
     operation: EventOperationKind
     event_revision: int
@@ -168,7 +168,7 @@ class EventOperation:
 @dataclass(frozen=True)
 class EventCurrentState:
     event_id: str
-    session_id: str
+    session_id: str | None
     event_kind: EventKind
     status: EventStatus
     revision: int
