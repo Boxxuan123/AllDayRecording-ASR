@@ -1,3 +1,4 @@
+from .v032_chat_admission import SQL as V032_SQL
 from .v031_chat_followups import SQL as V031_SQL
 from .v030_sample_queue_age import SQL as V030_SQL
 from .v016_sample_input_revision import SQL as V016_SQL
@@ -84,6 +85,7 @@ MIGRATIONS = (
                 contract_visible=False),
     V3Migration(version=30, name="sample_queue_age", sql=V030_SQL, contract_visible=False),
     V3Migration(31, "chat_followup_provenance", V031_SQL, contract_visible=False),
+    V3Migration(32, "chat_personal_admission", V032_SQL, contract_visible=False),
 )
 
 __all__ = ["MIGRATIONS"]

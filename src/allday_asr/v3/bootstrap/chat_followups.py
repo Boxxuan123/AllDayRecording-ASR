@@ -12,10 +12,11 @@ from allday_asr.v3.application.chat_followups import ChatFollowups
 from allday_asr.v3.adapters.sqlite.unit_of_work import SqliteUnitOfWork
 from allday_asr.v3.adapters.chat_data.followup_model import (
     FollowupModel,
-    INPUT_TOKEN_UPPER_BOUND,
-    token_upper_bound,
+    VISIBLE_INPUT_BYTE_LIMIT,
+    visible_input_bytes,
 )
 from allday_asr.v3.domain.chat_data import packed, scope_key
+from allday_asr.v3.domain.chat_projection import semantic_value
 from allday_asr.v3.domain.chat_followups import conversation_key, VERSION
 from allday_asr.v3.ports.chat_data import ChatDataError
 
@@ -125,7 +126,7 @@ class FollowupJobs:
                 "calls": 12,
                 "seconds": 900,
                 "unique_messages": 1000,
-                "input_token_upper_bound": INPUT_TOKEN_UPPER_BOUND,
+                "input_visible_input_bytes": VISIBLE_INPUT_BYTE_LIMIT,
             },
             "calendar": "关联已有录音任务后沿用原提醒；纯聊天事项不自动创建手机提醒",
         }
@@ -334,33 +335,35 @@ class FollowupJobs:
             for x in self.service.list(100)["items"]
             if x["conversation_key"] == conv and x["dataset"] == value["dataset"]
         ]
-        return {
-            "version": VERSION,
-            "timezone": value["timezone"],
-            "now_utc": value.get("as_of"),
-            "self_account_links": value["self_account_links"],
-            "records": [
-                {
-                    k: r.get(k)
-                    for k in (
-                        "record_id",
-                        "record_revision",
-                        "sender_account_id",
-                        "sent_at",
-                        "text",
-                        "reply",
-                        "quote",
-                        "forward",
-                    )
-                }
-                for r in records
-            ],
-            "source_namespace": conv,
-            "existing_items": existing[:15],
-            "existing_items_truncated": max(0, len(existing) - 15),
-            "coverage_complete": False,
-            "source_limitations": "首次修订；修订/删除未传播，历史完整性未知",
-        }
+        return semantic_value(
+            {
+                "version": VERSION,
+                "timezone": value["timezone"],
+                "now_utc": value.get("as_of"),
+                "self_account_links": value["self_account_links"],
+                "records": [
+                    {
+                        k: r.get(k)
+                        for k in (
+                            "record_id",
+                            "record_revision",
+                            "sender_account_id",
+                            "sent_at",
+                            "text",
+                            "reply",
+                            "quote",
+                            "forward",
+                        )
+                    }
+                    for r in records
+                ],
+                "source_namespace": conv,
+                "existing_items": existing[:15],
+                "existing_items_truncated": max(0, len(existing) - 15),
+                "coverage_complete": False,
+                "source_limitations": "首次修订；修订/删除未传播，历史完整性未知",
+            }
+        )
 
     def _batch(self, value):
         by_conv = {}
@@ -373,18 +376,18 @@ class FollowupJobs:
             batch = []
             for record in records:
                 if (
-                    token_upper_bound(self._payload(batch + [record], value))
-                    > INPUT_TOKEN_UPPER_BOUND - 20000
+                    visible_input_bytes(self._payload(batch + [record], value))
+                    > VISIBLE_INPUT_BYTE_LIMIT - 20000
                 ):
                     if not batch:
-                        raise ChatDataError("FOLLOWUP_INPUT_TOKEN_BUDGET", 429)
+                        raise ChatDataError("FOLLOWUP_VISIBLE_INPUT_BYTES", 429)
                     batches.append(batch)
                     batch = [record]
                     if (
-                        token_upper_bound(self._payload(batch, value))
-                        > INPUT_TOKEN_UPPER_BOUND
+                        visible_input_bytes(self._payload(batch, value))
+                        > VISIBLE_INPUT_BYTE_LIMIT
                     ):
-                        raise ChatDataError("FOLLOWUP_INPUT_TOKEN_BUDGET", 429)
+                        raise ChatDataError("FOLLOWUP_VISIBLE_INPUT_BYTES", 429)
                 else:
                     batch.append(record)
             if batch:
@@ -422,8 +425,8 @@ class FollowupJobs:
                 else:
                     if value["calls"] >= 12 or time.time() >= value["deadline_at"]:
                         raise ChatDataError("FOLLOWUP_BUDGET_EXHAUSTED", 429)
-                    if token_upper_bound(payload) > INPUT_TOKEN_UPPER_BOUND:
-                        raise ChatDataError("FOLLOWUP_INPUT_TOKEN_BUDGET", 429)
+                    if visible_input_bytes(payload) > VISIBLE_INPUT_BYTE_LIMIT:
+                        raise ChatDataError("FOLLOWUP_VISIBLE_INPUT_BYTES", 429)
                     value["calls"] += 1
                     self.service.save_job(job_id, "running", value)
                     response = self.model(

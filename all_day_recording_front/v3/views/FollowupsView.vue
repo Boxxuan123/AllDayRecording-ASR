@@ -12,7 +12,7 @@ const history=ref<{event_revision:number;operation_kind:string;created_at:string
 const editing = ref<Item | null>(null), title = ref(''), date = ref(''), at = ref(''), link = ref('')
 const choices = ref<{key:string;label:string;platform:string;source:string;account:string}[]>([]), chosen=ref('')
 const platform = ref('qq'), source = ref(''), account = ref(''), timezone = ref('')
-const labels: Record<string,string> = {self:'需要我处理',waiting:'等对方',pending:'尚待确认',ended:'已结束'}
+const labels: Record<string,string> = {self:'需要我处理',waiting:'等对方',pending:'已相关 / 待明确',ended:'已结束',cared:'关心的近况'}
 const get = <T>(path: string) => request<T>('/api/v3/chat/followups/'+path)
 const post = <T>(path: string, body: unknown) => request<T>('/api/v3/chat/followups/'+path,{method:'POST',body:JSON.stringify(body)})
 let timer: ReturnType<typeof setInterval> | undefined
@@ -49,13 +49,13 @@ onUnmounted(()=>{if(timer)clearInterval(timer)})
 
 <template>
   <section class="followups">
-    <header><p>CHAT / FOLLOW UP</p><h1>跟进事项</h1><p>原话、当前进展和你的决定放在同一处。</p></header>
+    <header><p>CHAT / FOLLOW UP</p><h1>跟进事项</h1><p>只收录有个人关联证据的事项。未知或无关群聊仍可在聊天查询中检索。</p></header>
     <p v-if="error" role="alert" class="error">{{error}}</p>
     <div class="toolbar"><button :disabled="busy" @click="run('start')">刷新最近 7 天</button><button :disabled="busy" @click="run('stop')">停止分析</button><button @click="load(true)">重载列表</button></div>
     <p v-if="status">已选 {{status.scope_count}} 个会话 · 本人映射 {{status.self_mapping_count}} 个 · 时区 {{status.timezone ?? '未知'}}</p>
-    <p v-if="status?.local_handoff?.acceptance">本地验收工作集：{{status.local_handoff.acceptance.unique_messages}} 条消息（历史 {{status.local_handoff.acceptance.historical_messages}} / 近期 {{status.local_handoff.acceptance.recent_messages}}），已完成 {{status.local_handoff.acceptance.calls}} 次有限推理；{{status.local_handoff.acceptance.coverage_complete?'固定工作集覆盖已完成':'近期范围仍有未分析内容'}}。装入候选不追加推理。</p>
+    <p v-if="status?.local_handoff?.acceptance">本地验收工作集：{{status.local_handoff.acceptance.unique_messages}} 条消息（历史 {{status.local_handoff.acceptance.historical_messages}} / 近期 {{status.local_handoff.acceptance.recent_messages}}），已完成 {{status.local_handoff.acceptance.calls}} 次有限推理；{{status.local_handoff.acceptance.coverage_complete?'固定工作集覆盖已完成':'近期范围仍有未分析内容'}}。离线应用不追加推理；无关或相关性未知的候选不进入个人列表。</p>
     <p v-if="status?.local_handoff?.state==='pending'" role="alert">本地候选等待恢复：{{status.local_handoff.error}}</p>
-    <p>每次有界刷新最多 12 次推理、15 分钟、1,000 条去重消息。历史事项保留“进展未知”，不会自动激活提醒。</p>
+    <p>每次有界刷新最多 12 次推理、15 分钟、1,000 条去重消息。历史相关事项保留“进展未知”，不会自动激活提醒。本人发言、同群或认识发言者都不单独构成任务。</p>
     <details><summary>范围与本人身份</summary><p>默认沿用本地固定范围；更改时可采用聊天查询中已启用的最多三个会话。只在明确知道账号属于你时保存本人映射。</p><input v-model="timezone" placeholder="明确来源时区，如 Asia/Shanghai" aria-label="来源时区"/><button @click="useSelection">采用已启用会话</button><br/><button @click="accounts">从已选会话加载发送者</button><select v-model="chosen" aria-label="选择本人发送者"><option value="">请选择你本人的发送者</option><option v-for="c in choices" :key="c.key" :value="c.key">{{c.label}}</option></select><button :disabled="!chosen" @click="saveChosen">这是我本人</button><details><summary>手工填写稳定账号</summary><select v-model="platform" aria-label="平台"><option value="qq">QQ</option><option value="wechat">微信</option></select><input v-model="source" placeholder="采集账号 ID" aria-label="采集账号 ID"/><input v-model="account" placeholder="本人发送账号 ID" aria-label="本人发送账号 ID"/><button @click="run('account',{platform,source,account,person:'self'})">保存本人映射</button></details></details>
     <div v-for="j in status?.jobs.slice(0,3)" :key="j.id" class="progress">{{j.state}} · {{j.position}} 批处理完 · {{j.calls}} 次推理 · {{j.unique_messages??0}} 条消息 · {{j.applied}} 次状态写入 · 连续完成水位 {{j.processing_watermark??j.position}} · 校验失败 {{j.failed_candidates}}<p v-if="j.error">{{j.error}}</p><p v-for="(c,i) in j.coverage" :key="i">收到 {{c.received??0}} 条 · {{c.complete?'此查询范围已取完':'覆盖未完成'}} {{c.reason}}</p><button v-if="['failed','paused','interrupted','partial'].includes(j.state)" @click="run('start',{resume_id:j.id})">按原预算恢复</button></div>
     <nav aria-label="事项分类"><button v-for="(label,key) in labels" :key="key" :aria-pressed="filter===key" @click="filter=String(key)">{{label}}</button><button @click="filter='all'">全部</button></nav>

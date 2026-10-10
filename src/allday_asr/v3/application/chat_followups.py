@@ -8,6 +8,9 @@ from hashlib import sha256
 import json
 
 from allday_asr.v3.domain.chat_data import packed
+from allday_asr.v3.domain.chat_projection import semantic_value
+from allday_asr.v3.domain.chat_admission import POLICY, decide
+from .chat_followup_admission import ChatRelevanceAdmission
 from allday_asr.v3.domain.chat_followups import VERSION, validate_candidate
 from allday_asr.v3.domain.ids import new_ulid
 from allday_asr.v3.domain.knowledge import (
@@ -26,7 +29,7 @@ from allday_asr.v3.domain.knowledge import (
 from allday_asr.v3.ports.chat_data import ChatDataError
 
 
-class ChatFollowups:
+class ChatFollowups(ChatRelevanceAdmission):
     def __init__(self, uow_factory, *, now=None, reminders=None):
         self.uow_factory = uow_factory
         self.now = now or (lambda: datetime.now(timezone.utc))
@@ -45,6 +48,7 @@ class ChatFollowups:
 
     @staticmethod
     def _view(row):
+        row = semantic_value(row)
         payload = row["payload"]
         chat = payload.get("chat_followup", {})
         category = (
@@ -52,7 +56,7 @@ class ChatFollowups:
             if row["status"] != "active" or row["ignored"]
             else chat.get("category", "pending")
         )
-        if category != "ended" and chat.get("historical"):
+        if category in {"self", "waiting", "pending"} and chat.get("historical"):
             category = "pending"
         return {**row, "category": category, "chat": chat}
 
@@ -76,6 +80,7 @@ class ChatFollowups:
             packed(
                 [
                     VERSION,
+                    POLICY,
                     value["interpretation_key"],
                     value["action"],
                     value.get("target_event_id"),
@@ -88,6 +93,27 @@ class ChatFollowups:
         ).hexdigest()
         with self.uow_factory() as uow:
             source = uow.followups.source(key)
+            if source and (
+                source["dataset"] != dataset
+                or source["conversation_key"] != value["conversation_key"]
+            ):
+                return {"effect": "source_changed", "source_key": key}
+            admission = uow.followups.admission(key, dataset)
+            decision, reason = decide(value, links, admission)
+            if decision in {"text_only", "conditional"}:
+                if admission is None:
+                    uow.followups.save_admission(
+                        self._admission(value, decision, "rule", POLICY)
+                    )
+                return self._exclude(uow, source, value, reason)
+            value["personal_scope"] = True
+            value["admission"] = {
+                "decision": decision,
+                "reason": reason,
+                "policy": POLICY,
+            }
+            if decision == "cared":
+                value["category"] = "cared"
             target = value.get("target_event_id")
             sources = uow.followups.for_event(target) if target else []
             existing = next(
@@ -195,6 +221,7 @@ class ChatFollowups:
             }
 
     def _append(self, uow, current, patch, kind, actor):
+        patch = semantic_value(patch)
         now = self.now()
         event_id = current.event_id if current else new_ulid()
         revision = current.revision + 1 if current else 1
@@ -205,7 +232,13 @@ class ChatFollowups:
             "operation": kind.value,
             "expected_revision": revision - 1,
             "session_id": current.session_id if current else None,
-            "event_kind": current.event_kind.value if current else "task",
+            "event_kind": current.event_kind.value
+            if current
+            else (
+                "important_experience"
+                if patch.get("chat_followup", {}).get("category") == "cared"
+                else "task"
+            ),
         }
         digest = sha256(packed(body).encode()).hexdigest()
         generation = GenerationRecord(
@@ -255,7 +288,13 @@ class ChatFollowups:
             operation_id,
             event_id,
             current.session_id if current else None,
-            current.event_kind if current else EventKind.TASK,
+            current.event_kind
+            if current
+            else (
+                EventKind.IMPORTANT_EXPERIENCE
+                if patch.get("chat_followup", {}).get("category") == "cared"
+                else EventKind.TASK
+            ),
             kind,
             revision,
             patch,

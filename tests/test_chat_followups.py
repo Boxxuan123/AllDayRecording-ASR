@@ -8,7 +8,12 @@ from tests.chat_fixture import record, NOW
 from allday_asr.v3.adapters.sqlite import V3Database, SqliteUnitOfWork
 from allday_asr.v3.adapters.sqlite.chat_cache import ChatCache
 from allday_asr.v3.application.chat_followups import ChatFollowups
-from allday_asr.v3.domain.chat_followups import actor_key, resolve_time
+from allday_asr.v3.domain.chat_followups import (
+    actor_key,
+    resolve_time,
+    validate_candidate,
+)
+from allday_asr.v3.domain.chat_admission import evidence_digest
 from allday_asr.v3.domain.chat_data import packed
 from allday_asr.v3.ports.chat_data import ChatDataError
 from allday_asr.v3.bootstrap.chat_followups import FollowupJobs
@@ -51,8 +56,27 @@ def candidate(r, **changes):
     }
 
 
+def selected(service, c, records, links):
+    # Explicit synthetic user relevance is a PRECONDITION for downstream state tests.
+    v = validate_candidate(c, records, "dataset", links, NOW + 86400)
+    binding = {k: v[k] for k in ("source_key", "dataset", "conversation_key")}
+    binding["evidence_digest"] = evidence_digest(v)
+    service.review_relevance(
+        c,
+        records,
+        "dataset",
+        links,
+        binding=binding,
+        decision="task",
+        origin="human_selection",
+        review_ref="synthetic-user-selection",
+    )
+
+
 def add(env, r, **kw):
-    return env.service.apply(candidate(r, **kw), [r], "dataset", env.links)
+    c = candidate(r, **kw)
+    selected(env.service, c, [r], env.links)
+    return env.service.apply(c, [r], "dataset", env.links)
 
 
 def item(env):
@@ -70,7 +94,7 @@ def test_f01_self_other_and_unknown_identity(env):
     assert rows[0]["event_id"] != rows[1]["event_id"]
     s = ChatFollowups(env.factory, now=env.service.now)
     s.apply(candidate(c), [c], "dataset", {})
-    assert item(env)["category"] == "pending"
+    assert len(s.list()["items"]) == 2
 
 
 @pytest.mark.parametrize(
@@ -260,7 +284,7 @@ def test_f11_budget_failure_no_automatic_new_batch(env):
     j = controller.start(records=[huge], dataset="dataset")
     wait(controller)
     result = controller.service.job(j["id"])
-    assert result["calls"] == 0 and result["error"] == "FOLLOWUP_INPUT_TOKEN_BUDGET"
+    assert result["calls"] == 0 and result["error"] == "FOLLOWUP_VISIBLE_INPUT_BYTES"
     with pytest.raises(ChatDataError):
         controller.start(resume_id=j["id"]) if result.get("deadline_at") else (
             _ for _ in ()
@@ -297,7 +321,7 @@ def test_resume_replays_saved_real_response_without_extra_model_call(env):
     controller.service.save_job(j["id"], "interrupted", value)
     controller.start(resume_id=j["id"])
     wait(controller)
-    assert len(count) == 1 and len(controller.service.list()["items"]) == 1
+    assert len(count) == 1 and len(controller.service.list()["items"]) == 0
 
 
 def test_f12_existing_recording_task_link_calendar_identity_and_migration(tmp_path):
@@ -345,7 +369,7 @@ def test_f12_existing_recording_task_link_calendar_identity_and_migration(tmp_pa
                 "SELECT name,sql FROM sqlite_master WHERE tbl_name IN ('event_operations','event_current_states') AND type IN ('index','trigger')"
             )
         }
-    assert old.database.initialize() == 31
+    assert old.database.initialize() == 32
     with old.database.read() as db:
         assert before == {
             t: [tuple(r) for r in db.execute("SELECT * FROM " + t)] for t in before
@@ -359,6 +383,7 @@ def test_f12_existing_recording_task_link_calendar_identity_and_migration(tmp_pa
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
     service = ChatFollowups(factory, now=lambda: old.current_time, reminders=reminders)
     r = record(150, "录音中的资料我来发送", sent=int(old.current_time.timestamp()))
+    selected(service, candidate(r), [r], {actor_key(r, "alice"): "self"})
     service.apply(candidate(r), [r], "dataset", {actor_key(r, "alice"): "self"})
     row = service.list()["items"][0]
     linked = service.act(
@@ -460,13 +485,11 @@ def test_restore_same_canonical_record_retains_manual_identity(env):
 
 def test_changed_self_mapping_rebuilds_derived_category_but_not_user_override(env):
     r = record(163, "我处理资料")
-    env.service.apply(candidate(r), [r], "dataset", {})
-    initial = item(env)
-    assert initial["category"] == "pending"
+    result = env.service.apply(candidate(r), [r], "dataset", {})
+    assert result["effect"] == "excluded" and env.service.list()["items"] == []
+    selected(env.service, candidate(r), [r], env.links)
     env.service.apply(candidate(r), [r], "dataset", env.links)
-    assert (
-        item(env)["event_id"] == initial["event_id"] and item(env)["category"] == "self"
-    )
+    assert item(env)["category"] == "self"
     row = item(env)
     env.service.act(row["source_key"], "ignore", {}, row["revision"])
     env.service.apply(candidate(r), [r], "dataset", {})
@@ -556,12 +579,9 @@ def test_local_handoff_import_is_bounded_idempotent_and_respects_manual_state(en
         ),
         encoding="utf8",
     )
-    assert import_handoff(ctl)["applied"] == 1
-    row = ctl.service.list()["items"][0]
-    assert row["category"] == "pending" and row["chat"]["historical"]
-    ctl.service.act(row["source_key"], "ignore", {}, row["revision"])
-    assert import_handoff(ctl)["duplicate"] == 1
-    assert ctl.service.list()["items"][0]["ignored"]
+    assert import_handoff(ctl)["excluded"] == 1
+    assert ctl.service.list()["items"] == []
+    assert import_handoff(ctl)["excluded"] == 1
     with env.db.read() as db:
         assert db.execute("SELECT count(*) FROM reminder_schedules").fetchone()[0] == 0
 
@@ -591,11 +611,10 @@ def test_saved_handoff_reclassifies_on_explicit_self_mapping_without_model(env):
         encoding="utf8",
     )
     ctl.configure(ctl.scopes()[0], None)
-    before = ctl.service.list()["items"][0]
-    assert before["category"] == "pending"
+    assert ctl.service.list()["items"] == []
     ctl.link_account("qq", "source-qq", "alice", "self")
     after = ctl.service.list()["items"][0]
-    assert after["category"] == "self" and after["event_id"] == before["event_id"]
+    assert after["category"] == "self"
     assert ctl.status()["local_handoff"]["acceptance"]["coverage_complete"] is False
     ctl.service.act(after["source_key"], "complete", {}, after["revision"])
     ctl.link_account("qq", "source-qq", "bob", "self")

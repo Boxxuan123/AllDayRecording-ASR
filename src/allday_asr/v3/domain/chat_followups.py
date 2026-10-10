@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from .chat_data import packed
 from .reminder_time import number
+from .chat_projection import semantic_record, semantic_text, semantic_value
 from allday_asr.v3.ports.chat_data import ChatDataError
 
 VERSION = "chat-followup-v1"
@@ -189,13 +190,18 @@ def validate_candidate(value, records, dataset, links, now_seconds, timezone_nam
         if (
             not isinstance(quote, str)
             or not quote.strip()
-            or quote not in (r.get("text") or "")
+            or (
+                quote not in (r.get("text") or "")
+                and quote not in semantic_text(r.get("text") or "")
+            )
         ):
             raise ChatDataError("INVALID_FOLLOWUP_QUOTE", 422)
         evidence.append(
             {
-                **r,
-                "quote": quote,
+                **semantic_record(r),
+                "quote": semantic_text(quote),
+                "source_quote": semantic_value(r.get("quote")),
+                "raw_text_sha256": sha256((r.get("text") or "").encode()).hexdigest(),
                 "dataset": dataset,
                 "evidence_key": evidence_key(dataset, r),
             }
@@ -209,14 +215,23 @@ def validate_candidate(value, records, dataset, links, now_seconds, timezone_nam
     if (
         not isinstance(issue_quote, str)
         or not issue_quote.strip()
-        or issue_quote not in (anchor.get("text") or "")
+        or (
+            issue_quote not in (anchor.get("text") or "")
+            and issue_quote not in semantic_text(anchor.get("text") or "")
+        )
     ):
         raise ChatDataError("INVALID_FOLLOWUP_ISSUE", 422)
     source_key = sha256(
         (
             packed([conversation_key(anchor), anchor["record_id"]])
             + ":"
-            + str(anchor["text"].index(issue_quote))
+            + str(
+                (
+                    anchor["text"]
+                    if issue_quote in anchor["text"]
+                    else semantic_text(anchor["text"])
+                ).index(issue_quote)
+            )
             + ":"
             + issue_quote
         ).encode()
@@ -278,7 +293,8 @@ def validate_candidate(value, records, dataset, links, now_seconds, timezone_nam
     return {
         **value,
         "interpretation_key": interpretation_key,
-        "title": title.strip(),
+        "title": semantic_text(title.strip()),
+        "issue_quote": semantic_text(issue_quote),
         "category": category,
         "historical": historical,
         "progress_unknown": historical,

@@ -8,6 +8,7 @@ import os
 import time
 
 from allday_asr.v3.domain.chat_data import packed
+from allday_asr.v3.domain.chat_projection import semantic_record, semantic_value
 from allday_asr.v3.ports.chat_data import ChatDataError
 
 PROMPT_VERSION = "chat-answer-v2"
@@ -162,7 +163,8 @@ def evidence_answer(service, question, scope, cancel, origin="mac"):
         else:
             complete = False
             missing.append("会话分页仍有后续消息，最终状态不能确定")
-    records = list(evidence.values())
+    records = [semantic_record(r) for r in evidence.values()]
+    contexts = semantic_value(contexts)
     # Large raw text stays in the source viewer; never silently clip model evidence.
     if len(packed(records).encode()) > 150000 or len(records) > 1000:
         raise ChatDataError("EVIDENCE_SIZE_BUDGET_REACHED")

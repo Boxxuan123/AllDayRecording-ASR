@@ -9,6 +9,35 @@ class SqliteChatFollowupRepository:
     def __init__(self, connection):
         self.connection = connection
 
+    def admission(self, key, dataset):
+        row = self.connection.execute(
+            "SELECT * FROM chat_followup_admissions WHERE source_key=? AND dataset=?",
+            (key, dataset),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def save_admission(self, value):
+        self.connection.execute(
+            "INSERT INTO chat_followup_admissions VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(source_key,dataset) DO UPDATE SET "
+            "conversation_key=excluded.conversation_key,evidence_digest=excluded.evidence_digest,"
+            "decision=excluded.decision,origin=excluded.origin,review_ref=excluded.review_ref,"
+            "value_json=excluded.value_json",
+            tuple(
+                value[k]
+                for k in (
+                    "source_key",
+                    "dataset",
+                    "conversation_key",
+                    "evidence_digest",
+                    "decision",
+                    "origin",
+                    "review_ref",
+                    "value_json",
+                )
+            ),
+        )
+
     def source(self, key):
         row = self.connection.execute(
             "SELECT * FROM chat_followup_sources WHERE source_key=?", (key,)
@@ -46,6 +75,7 @@ class SqliteChatFollowupRepository:
             """SELECT e.*, s.source_key,s.dataset,s.conversation_key,
         s.latest_sent_at,s.human_override,s.ignored,s.conflict_json FROM chat_followup_sources s
         JOIN event_current_states e ON e.event_id=s.event_id
+        WHERE COALESCE(json_extract(e.payload_json, '$.chat_followup.personal_scope'), 1) != 0
         ORDER BY s.ignored ASC, CASE WHEN e.status='active' THEN 0 ELSE 1 END,
           s.latest_sent_at DESC,s.source_key LIMIT ? OFFSET ?""",
             (limit, offset),
