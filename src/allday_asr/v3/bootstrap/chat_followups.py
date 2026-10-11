@@ -15,7 +15,7 @@ from allday_asr.v3.adapters.chat_data.followup_model import (
     VISIBLE_INPUT_BYTE_LIMIT,
     visible_input_bytes,
 )
-from allday_asr.v3.domain.chat_data import packed, scope_key
+from allday_asr.v3.domain.chat_data import packed
 from allday_asr.v3.domain.chat_projection import semantic_value
 from allday_asr.v3.domain.chat_followups import conversation_key, VERSION
 from allday_asr.v3.ports.chat_data import ChatDataError
@@ -132,13 +132,29 @@ class FollowupJobs:
             "limits": {
                 "calls": 12,
                 "seconds": 900,
-                "unique_messages": 1000,
+                "unique_messages": None,
                 "input_visible_input_bytes": VISIBLE_INPUT_BYTE_LIMIT,
             },
             "calendar": "关联已有录音任务后沿用原提醒；纯聊天事项不自动创建手机提醒",
         }
 
-    def start(self, *, resume_id=None, records=None, dataset=None, coverage=None):
+    def start(
+        self,
+        *,
+        resume_id=None,
+        records=None,
+        dataset=None,
+        coverage=None,
+        renew_model_window=False,
+        additional_calls=12,
+    ):
+        if (
+            type(renew_model_window) is not bool
+            or type(additional_calls) is not int
+            or not 1 <= additional_calls <= 12
+            or (renew_model_window and not resume_id)
+        ):
+            raise ChatDataError("INVALID_FOLLOWUP_BUDGET", 400)
         if not self._lock.acquire(blocking=False):
             raise ChatDataError("FOLLOWUP_JOB_RUNNING", 409)
         self._lease = day_worker_lock(self.root / "worker.lock")
@@ -153,19 +169,31 @@ class FollowupJobs:
                 job = self.service.job(resume_id)
                 if job["state"] not in {"interrupted", "failed", "paused", "partial"}:
                     raise ChatDataError("FOLLOWUP_JOB_NOT_RESUMABLE", 409)
-                local_response = self.root / (
-                    resume_id
-                    + "-"
-                    + str(min(job.get("failed_batches") or [job["position"]]))
-                    + ".response.json"
-                )
-                if (
-                    (job["deadline_at"] and time.time() >= job["deadline_at"])
-                    or job["calls"] >= 12
-                ) and not local_response.exists():
-                    raise ChatDataError("FOLLOWUP_BUDGET_EXHAUSTED", 429)
+                # Allow collecting remaining pages and replaying saved responses
+                # even when the model budget is exhausted. _run still enforces it
+                # immediately before any new model request.
                 job_id = resume_id
                 value = {k: v for k, v in job.items() if k not in {"id", "state"}}
+                if renew_model_window:
+                    # Explicit user action authorizes a fresh finite time window;
+                    # cumulative calls and the original total 12-call cap stay intact.
+                    if value["calls"] >= 12:
+                        raise ChatDataError("FOLLOWUP_BUDGET_EXHAUSTED", 429)
+                    value.setdefault("model_window_history", []).append(
+                        {
+                            "deadline_at": value["deadline_at"],
+                            "call_limit": value.get("model_call_limit", 12),
+                            "calls_used": value["calls"],
+                        }
+                    )
+                    value["deadline_at"] = time.time() + 900
+                    value["model_call_limit"] = min(
+                        12, value["calls"] + additional_calls
+                    )
+                    value["model_batch_id"] = (
+                        job_id + ":window:" + str(len(value["model_window_history"]))
+                    )
+                    value["error"] = None
                 if value.get("failed_batches"):
                     value.setdefault("failure_history", []).append(
                         {
@@ -213,118 +241,10 @@ class FollowupJobs:
             self._lock.release()
             raise
 
-    def _collect(self, value):
-        scopes, tz = self.scopes()
-        if not scopes:
-            raise ChatDataError("FOLLOWUP_SCOPE_REQUIRED", 400)
-        now = int(time.time())
-        records = {}
-        dataset = self.chat.discover(force=True)["dataset_id"]
-        selected = {
-            packed(
-                [s.get(k) for k in ("platform", "source_account_id", "conversation_id")]
-            )
-            for s in scopes
-        }
-        existing_page = self.service.list(100)
-        value["coverage"].append(
-            {
-                "kind": "existing_open_context",
-                "complete": not existing_page["has_more"],
-                "reason": "既有事项超过单批上下文上限"
-                if existing_page["has_more"]
-                else None,
-            }
-        )
-        for item in existing_page["items"]:
-            if (
-                item["dataset"] == dataset
-                and item["status"] == "active"
-                and item["conversation_key"] in selected
-            ):
-                for r in item["chat"].get("evidence", []):
-                    records[r["record_id"]] = r
-        if len(records) > 1000:
-            raise ChatDataError("FOLLOWUP_WORKSET_BUDGET", 429)
-        for raw in scopes:
-            if self._cancel.is_set():
-                raise ChatDataError("CANCELLED", 409)
-            scope = {
-                k: raw[k] for k in ("platform", "source_account_id", "conversation_id")
-            }
-            scope.update(sent_from=now - 7 * 86400, sent_to=now)
-            scope_id = scope_key({"dataset": dataset, "scope": scope})
-            prior = self.chat.cache.scope(scope_id)
-            if prior:
-                snapshot = {
-                    "snapshot_id": prior["snapshot"],
-                    "boundary_cursor": prior["boundary"],
-                }
-            else:
-                snapshot = self.chat.source.request("/v1/snapshots", {"scope": scope})
-                scope_id = self.chat.cache.create_scope(dataset, scope, snapshot)
-                self.chat.cache.enable_scope(scope_id, False)
-            cursor = None
-            received = 0
-            complete = False
-            for _ in range(100):
-                page = self.chat.source.request(
-                    "/v1/messages",
-                    scope=scope,
-                    cursor=cursor,
-                    limit=100,
-                    snapshot_id=snapshot["snapshot_id"],
-                )
-                self.chat._page(page)
-                done = not page["has_more"]
-                # Entire captured page and its durable receive/index cursor commit together.
-                self.chat.cache.receive(
-                    dataset,
-                    page["items"],
-                    scope_id=scope_id,
-                    progress={
-                        "page_cursor": page["next_cursor"],
-                        "receive_cursor": snapshot["boundary_cursor"] if done else None,
-                        "phase": "changes" if done else "snapshot",
-                    },
-                )
-                accepted = 0
-                for r in page["items"]:
-                    if r["record_id"] not in records and len(records) >= 1000:
-                        break
-                    records[r["record_id"]] = r
-                    received += 1
-                    accepted += 1
-                complete = not page["has_more"] and accepted == len(page["items"])
-                if complete or len(records) >= 1000:
-                    break
-                cursor = page["next_cursor"]
-            value["coverage"].append(
-                {
-                    "scope": scope,
-                    "snapshot_id": snapshot["snapshot_id"],
-                    "boundary_cursor": snapshot["boundary_cursor"],
-                    "receipt_scope_id": scope_id,
-                    "received": received,
-                    "complete": complete,
-                    "next_cursor": None if complete else cursor,
-                    "reason": None if complete else "工作集达到上限，后续范围未分析",
-                }
-            )
-            if len(records) >= 1000:
-                break
-        if sum("scope" in c for c in value["coverage"]) < len(scopes):
-            value["coverage"].append(
-                {
-                    "complete": False,
-                    "reason": "后续会话未取完",
-                    "unvisited_scopes": len(scopes)
-                    - sum("scope" in c for c in value["coverage"]),
-                }
-            )
-        value["records"] = list(records.values())
-        value["dataset"] = dataset
-        value["timezone"] = tz
+    def _collect(self, value, job_id=None):
+        from .chat_followup_collection import collect
+
+        collect(self, value, job_id)
 
     def _payload(self, records, value):
         conv = conversation_key(records[0]) if records else None
@@ -405,11 +325,12 @@ class FollowupJobs:
 
     def _run(self, job_id, value):
         try:
-            if value["records"] is None:
+            if value["records"] is None or any(
+                ("scope" in c or "unvisited_scopes" in c) and not c.get("complete")
+                for c in value["coverage"]
+            ):
                 self.service.save_job(job_id, "collecting", value)
-                self._collect(value)
-            if len({r["record_id"] for r in value["records"]}) > 1000:
-                raise ChatDataError("FOLLOWUP_WORKSET_BUDGET", 429)
+                self._collect(value, job_id)
             value["error"] = None
             value.setdefault("failed_batches", [])
             value.setdefault("processing_watermark", value["position"])
@@ -417,6 +338,22 @@ class FollowupJobs:
             value["unique_messages"] = len({r["record_id"] for r in value["records"]})
             if value["batches"] is None:
                 value["batches"] = self._batch(value)
+            else:
+                batched = {
+                    (r["record_id"], r["record_revision"])
+                    for batch in value["batches"]
+                    for r in batch
+                }
+                remaining = [
+                    r
+                    for r in value["records"]
+                    if (r["record_id"], r["record_revision"]) not in batched
+                ]
+                if remaining:
+                    value["batches"].extend(
+                        self._batch({**value, "records": remaining})
+                    )
+            value["batch_count"] = len(value["batches"])
             if value["deadline_at"] is None:
                 value["deadline_at"] = time.time() + 900
             while value["position"] < len(value["batches"]):
@@ -432,7 +369,10 @@ class FollowupJobs:
                     response = saved["response"]
                     batch = saved.get("source_records", saved["payload"]["records"])
                 else:
-                    if value["calls"] >= 12 or time.time() >= value["deadline_at"]:
+                    if (
+                        value["calls"] >= min(12, value.get("model_call_limit", 12))
+                        or time.time() >= value["deadline_at"]
+                    ):
                         raise ChatDataError("FOLLOWUP_BUDGET_EXHAUSTED", 429)
                     if visible_input_bytes(payload) > VISIBLE_INPUT_BYTE_LIMIT:
                         raise ChatDataError("FOLLOWUP_VISIBLE_INPUT_BYTES", 429)
@@ -441,7 +381,7 @@ class FollowupJobs:
                     response = self.model(
                         payload,
                         self._cancel,
-                        job_id,
+                        value.get("model_batch_id", job_id),
                         value["deadline_at"] - time.time(),
                     )
                     path.write_text(

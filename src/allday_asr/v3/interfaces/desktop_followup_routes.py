@@ -34,8 +34,16 @@ class DesktopFollowupRoutesMixin:
 
         def run():
             service = self.application.followups
-            if path == "/api/v3/chat/followups/start" and set(body) <= {"resume_id"}:
-                return service.start(resume_id=body.get("resume_id"))
+            if path == "/api/v3/chat/followups/start" and set(body) <= {
+                "resume_id",
+                "renew_model_window",
+                "additional_calls",
+            }:
+                return service.start(
+                    resume_id=body.get("resume_id"),
+                    renew_model_window=body.get("renew_model_window", False),
+                    additional_calls=body.get("additional_calls", 12),
+                )
             if path == "/api/v3/chat/followups/stop" and not body:
                 return service.stop()
             if path == "/api/v3/chat/followups/config" and set(body) == {
