@@ -14,7 +14,8 @@ def test_crlf_repair_is_idempotent_and_checks_exact_bytes(tmp_path):
     fixture.write_text("const CORE_FIXTURE_SHA256: string = '" + '0'*64 + "';\nconst FORWARD_FIXTURE_SHA256: string = '" + '0'*64 + "';\n")
     snapshot = phone / 'phone/src/main/ets/v3/contracts/V3ContractModels.ets'
     snapshot.parent.mkdir(parents=True)
-    snapshot.write_text('export const V3_CORE_SCHEMA_VERSION: number = 0;\n'
+    snapshot.write_text("export const V3_CONTRACT_VERSION: string = '0.0.0';\n"
+                        'export const V3_CORE_SCHEMA_VERSION: number = 0;\n'
                         'export const V3_PHONE_PROJECTION_SCHEMA_VERSION: number = 0;\n')
     receipt = phone / 'contracts/v3/source.json'
     receipt.parent.mkdir(parents=True)
@@ -31,6 +32,14 @@ def test_crlf_repair_is_idempotent_and_checks_exact_bytes(tmp_path):
     def read_phone(name):
         return (phone/name).read_bytes()
     verify(read_pc, read_phone)
+    import json
+    broken = json.loads(receipt.read_text())
+    broken['contract_version'] = '0.0.0'
+    receipt.write_text(json.dumps(broken))
+    with pytest.raises(ValueError, match='version receipt'):
+        verify(read_pc, read_phone)
+    generate(desktop, phone)
+    assert all(p.read_bytes() == data for p, data in before.items())
     contract.write_bytes(contract.read_bytes().replace(b'\n', b'\r\n'))
     with pytest.raises(ValueError, match='noncanonical'):
         verify(read_pc, read_phone)

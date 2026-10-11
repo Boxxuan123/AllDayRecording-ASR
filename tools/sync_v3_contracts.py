@@ -48,7 +48,11 @@ def verify(read_desktop, read_phone):
     for name in ('release_version', 'core_schema_version', 'phone_projection_schema_version'):
         if receipt['release_lock'][name] != release[name]:
             raise ValueError('Harmony release lock mismatch: ' + name)
+    if receipt.get('contract_version') != manifest['contract_version'] or receipt.get('projection_version') != manifest['projection_version']:
+        raise ValueError('Harmony contract version receipt mismatch')
     snapshot = read_phone(receipt['consumer_snapshot']).decode('utf-8')
+    if f"export const V3_CONTRACT_VERSION: string = '{manifest['contract_version']}';" not in snapshot:
+        raise ValueError('Harmony consumer contract version mismatch')
     for name, value in (
         ('V3_CORE_SCHEMA_VERSION', release['core_schema_version']),
         ('V3_PHONE_PROJECTION_SCHEMA_VERSION', release['phone_projection_schema_version']),
@@ -75,6 +79,8 @@ def generate(desktop, phone):
     path = phone / 'contracts/v3/source.json'
     receipt = json.loads(path.read_bytes())
     receipt['canonical_manifest_sha256'] = digest(manifest_path.read_bytes())
+    receipt['contract_version'] = manifest['contract_version']
+    receipt['projection_version'] = manifest['projection_version']
     release = json.loads((root / 'release-lock.json').read_bytes())
     for name in ('release_version', 'core_schema_version', 'phone_projection_schema_version'):
         receipt['release_lock'][name] = release[name]
@@ -90,6 +96,10 @@ def generate(desktop, phone):
         )
         if count != 1:
             raise ValueError('expected one consumer version: ' + name)
+    snapshot, count = re.subn(r"(export const V3_CONTRACT_VERSION: string = ')[^']+(';)",
+        lambda match: match[1]+manifest['contract_version']+match[2], snapshot)
+    if count != 1:
+        raise ValueError('expected one consumer contract version')
     snapshot_path.write_bytes(snapshot.encode('utf-8'))
     fixture_path = phone / 'phone/src/test/V3ContractFixture.test.ets'
     fixture = canonical(fixture_path.read_bytes()).decode('utf-8')
