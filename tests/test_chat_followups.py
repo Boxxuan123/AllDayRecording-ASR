@@ -620,3 +620,40 @@ def test_saved_handoff_reclassifies_on_explicit_self_mapping_without_model(env):
     ctl.service.act(after["source_key"], "complete", {}, after["revision"])
     ctl.link_account("qq", "source-qq", "bob", "self")
     assert ctl.service.list()["items"][0]["status"] == "completed"
+
+
+def test_payload_keeps_scoped_identity_semantics_without_repeated_proof_receipts(env):
+    from allday_asr.v3.domain.chat_data import packed
+
+    ctl = jobs(env, lambda *args: {"items": [], "unknown": []})
+    r = record(901, "本人明确消息")
+    r["is_from_self"] = True
+    key = packed([r["platform"], r["source_account_id"], r["sender_account_id"]])
+    evidence = [
+        {"record_id": "proof-" + str(i), "basis": "real-direction"} for i in range(5000)
+    ]
+    link = {
+        "person_id": "self",
+        "origin": "manual",
+        "evidence_count": 5000,
+        "evidence": evidence,
+    }
+    value = {
+        "dataset": "dataset",
+        "timezone": None,
+        "self_account_links": {
+            key: link,
+            packed(["wechat", "other-source", "alice"]): {
+                "person_id": "self",
+                "origin": "automatic",
+                "evidence": evidence,
+            },
+        },
+    }
+    payload = ctl._payload([r], value)
+    assert payload["self_account_links"] == {
+        key: {"person_id": "self", "origin": "manual", "evidence_count": 5000}
+    }
+    assert payload["records"][0]["is_from_self"] is True
+    assert len(value["self_account_links"][key]["evidence"]) == 5000
+    ctl.close()

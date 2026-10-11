@@ -303,12 +303,26 @@ class FollowupJobs:
             for x in self.service.list(100)["items"]
             if x["conversation_key"] == conv and x["dataset"] == value["dataset"]
         ]
+        # Full identity proof receipts remain local. Only sender links relevant
+        # to this batch are needed by the model; do not repeat unrelated proofs.
+        link_keys = {
+            packed([r["platform"], r["source_account_id"], r["sender_account_id"]])
+            for r in records
+            if r.get("sender_account_id")
+        }
+        model_links = {
+            key: {k: v for k, v in link.items() if k != "evidence"}
+            if isinstance(link, dict)
+            else link
+            for key, link in value["self_account_links"].items()
+            if key in link_keys
+        }
         return semantic_value(
             {
                 "version": VERSION,
                 "timezone": value["timezone"],
                 "now_utc": value.get("as_of"),
-                "self_account_links": value["self_account_links"],
+                "self_account_links": model_links,
                 "records": [
                     {
                         k: r.get(k)
