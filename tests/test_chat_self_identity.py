@@ -403,3 +403,50 @@ def test_same_revision_receive_refreshes_context_and_invalidates_answer(tmp_path
     assert c.get("context:dataset:record")["has_before"] is True
     assert c.job("old-answer")["value"]["self_identity_stale"] is True
     assert c.job("old-answer")["value"]["claims"] == [{"text": "旧归纳"}]
+
+
+def test_stronger_real_style_evidence_replaces_partial_rule_audit(env, tmp_path):
+    request = identity(record(201, "请你处理这件事", sender="bob"), False)
+    brief = identity(record(202, "好", sender="alice"), True)
+    promise = identity(record(203, "我负责处理这件事", sender="alice"), True)
+    records = [request, brief, promise]
+    c = cache(tmp_path, records)
+    partial = candidate(
+        request,
+        actor_account_id="alice",
+        evidence=[
+            {"record_id": request["record_id"], "quote": request["text"]},
+            {"record_id": brief["record_id"], "quote": brief["text"]},
+        ],
+    )
+    assert (
+        env.service.apply(partial, records, "dataset", c.identity_links()["links"])[
+            "effect"
+        ]
+        == "excluded"
+    )
+    supported = {
+        **partial,
+        "evidence": partial["evidence"]
+        + [
+            {"record_id": promise["record_id"], "quote": promise["text"]},
+        ],
+    }
+    assert (
+        env.service.apply(supported, records, "dataset", c.identity_links()["links"])[
+            "effect"
+        ]
+        == "applied"
+    )
+    before = item(env)
+    result = rebuild_identity(env.service, c)
+    after = item(env)
+    assert result["effects"] == {"duplicate": 1}
+    assert (
+        after["event_id"] == before["event_id"]
+        and after["revision"] == before["revision"]
+    )
+    assert after["status"] == "active" and after["chat"]["actor_is_from_self"] is True
+    with env.factory().reading() as uow:
+        audit = uow.followups.admission(before["source_key"], "dataset")
+    assert audit["decision"] == "task" and audit["origin"] == "rule"

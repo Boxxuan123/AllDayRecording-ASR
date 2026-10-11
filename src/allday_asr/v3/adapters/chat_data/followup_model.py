@@ -29,6 +29,11 @@ Separate self commitments, others' promises to user, proposals, conditionals,
 negations and reported/quoted promises. Greetings, ads and unrelated announcements
 can yield zero. '好/行/收到/好了' need concrete linking context, otherwise unclear.
 Every item MUST quote exact nonempty literal substrings of supplied records.
+For a self responsibility item, evidence must include the self message stating
+that responsibility, even when an earlier request establishes anchor_id. A short
+numeric or acknowledgement reply alone is insufficient; include any subsequent
+explicit acceptance present in the supplied context. Quote its complete literal
+responsibility clause and retain the earliest stable anchor. Never invent evidence.
 issue_quote must be a stable exact substring of anchor_id establishing this specific
 issue, not its generic title. Reuse supplied existing issue_quote across reruns.
 anchor_id is the first message establishing this specific issue (stable across

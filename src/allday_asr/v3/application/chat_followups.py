@@ -209,6 +209,12 @@ class ChatFollowups(ChatRelevanceAdmission):
                 }
             source["latest_sent_at"] = value["latest_sent_at"]
             uow.followups.save_source(source.get("source_key", key), source)
+            # Publish accepted rule evidence only after the event update succeeds.
+            # A previous partial rule exclusion must not be replayed over newer proof.
+            if admission is None or admission["origin"] == "rule":
+                uow.followups.save_admission(
+                    self._admission(value, decision, "rule", POLICY)
+                )
             uow.followups.effect(
                 effect,
                 state.event_id,
