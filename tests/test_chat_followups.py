@@ -86,6 +86,7 @@ def item(env):
 def test_f01_self_other_and_unknown_identity(env):
     a = record(30, "我明天发资料")
     b = record(31, "我给你发回执", sender="bob")
+    b.update(is_from_self=False, self_identity_basis="qq.direction")
     c = record(32, "我来处理", sender="same-name")
     add(env, a)
     add(env, b)

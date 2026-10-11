@@ -124,6 +124,7 @@ def test_unknown_default_can_be_reinterpreted_after_explicit_self_mapping(env):
 def test_verified_reply_to_self_distinguishes_waiting(env):
     own = record(808, "请你负责寄材料")
     promise = record(809, "我给你寄材料", sender="bob")
+    promise.update(is_from_self=False, self_identity_basis="qq.direction")
     promise["reply"] = {"record_id": own["record_id"]}
     c = candidate(
         promise,

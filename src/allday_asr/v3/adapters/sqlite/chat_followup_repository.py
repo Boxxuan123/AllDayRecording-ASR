@@ -9,6 +9,40 @@ class SqliteChatFollowupRepository:
     def __init__(self, connection):
         self.connection = connection
 
+    def identity_candidates(self, dataset, limit=5001):
+        from allday_asr.v3.domain.chat_admission import evidence_digest
+
+        result = [
+            dict(r)
+            for r in self.connection.execute(
+                "SELECT * FROM chat_followup_admissions WHERE dataset=? ORDER BY source_key LIMIT ?",
+                (dataset, limit),
+            )
+        ]
+        keys = {r["source_key"] for r in result}
+        for r in self.connection.execute(
+            "SELECT s.source_key,s.dataset,s.conversation_key,e.payload_json FROM chat_followup_sources s JOIN event_current_states e ON e.event_id=s.event_id WHERE s.dataset=? ORDER BY s.source_key LIMIT ?",
+            (dataset, limit),
+        ):
+            if r["source_key"] in keys:
+                continue
+            chat = json.loads(r["payload_json"]).get("chat_followup", {})
+            if not chat.get("evidence"):
+                continue
+            result.append(
+                {
+                    "source_key": r["source_key"],
+                    "dataset": dataset,
+                    "conversation_key": r["conversation_key"],
+                    "evidence_digest": evidence_digest(chat),
+                    "decision": chat.get("admission", {}).get("decision", "task"),
+                    "origin": "rule",
+                    "review_ref": "legacy-event-identity-rebuild",
+                    "value_json": packed(chat),
+                }
+            )
+        return result[:limit]
+
     def admission(self, key, dataset):
         row = self.connection.execute(
             "SELECT * FROM chat_followup_admissions WHERE source_key=? AND dataset=?",

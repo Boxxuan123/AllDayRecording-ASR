@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { chatApi, type ChatRecord, type ChatPage, type ChatContext, type ChatScope, type ChatStatus, type ChatJob } from '../core/chat'
+import { identityLabel, chatApi, type ChatRecord, type ChatPage, type ChatContext, type ChatScope, type ChatStatus, type ChatJob } from '../core/chat'
 
 const connectionUrl = ref(''), connectionToken = ref(''), savingConnection = ref(false)
 const platform = ref(''), source = ref(''), conversation = ref(''), sender = ref(''), keyword = ref('')
@@ -142,12 +142,12 @@ onUnmounted(() => { active = false; clearInterval(timer); if (job.value && ['pen
       <p class="chat-scope">{{ page.origin === 'mac' ? 'Mac 已捕获原文' : '本地缓存局部结果' }} · {{ page.items.length }} 条 · 从 {{ date(frozen.sent_from) }} 至 {{ frozen.sent_to ? date(frozen.sent_to) : '当前' }}{{ frozen.keyword ? ` · 关键词：${frozen.keyword}` : '' }}<span v-if="page.source_error"> · {{ page.source_error }}</span></p>
       <div class="chat-layout">
         <section class="panel chat-results"><p v-if="!page.items.length" class="chat-empty">当前范围未找到记录。来源缺口和所有历史是否存在仍未知。</p>
-          <button v-for="r in page.items" :key="r.record_id" class="chat-message" @click="open(r)"><small>{{ r.platform }} · {{ r.conversation_display_name || r.conversation_id }} · {{ r.sender_display_name || r.sender_account_id || '发送者未知' }} · {{ date(r.sent_at) }}</small><p>{{ excerpt(r) }}</p><small>修订 {{ r.record_revision }} · {{ r.message_type }}</small></button>
+          <button v-for="r in page.items" :key="r.record_id" class="chat-message" @click="open(r)"><small>{{ r.platform }} · {{ r.conversation_display_name || r.conversation_id }} · {{ identityLabel(r) }} · {{ r.sender_display_name || r.sender_account_id || '发送者未知' }} · {{ date(r.sent_at) }}</small><p>{{ excerpt(r) }}</p><small>修订 {{ r.record_revision }} · {{ r.message_type }}</small></button>
           <button v-if="page.has_more" :disabled="busy" @click="search(true)">加载下一页</button>
         </section>
         <section class="panel chat-context" v-if="selected"><div class="chat-actions"><strong>原文与上下文</strong><button @click="selected = null; context = null">返回结果</button></div><p v-if="contextBusy">读取上下文…</p>
           <template v-if="context"><p>{{ context.origin === 'cache' ? '离线缓存，前后文可能有缺口' : '同会话上下文' }} · 引用状态 {{ context.reference_status }}</p><p v-if="context.truncated_before || context.truncated_after">前后仍有记录，当前仅展示有限上下文。</p><button :disabled="expanded >= 25 || contextBusy" @click="expand">扩展到前后各 25 条</button>
-            <article v-for="r in context.items" :key="r.record_id" class="chat-turn" :class="{ anchor: r.record_id === selected.record_id }"><small>{{ r.sender_display_name || r.sender_account_id || '发送者未知' }} · {{ date(r.sent_at) }}</small><p>{{ r.text ?? '正文不可用' }}</p><details><summary>来源、附件与引用元数据</summary><pre>{{ JSON.stringify({ source: r.source_locator, revision: r.record_revision, attachments: r.attachments, reply: r.reply, quote: r.quote, forward: r.forward }, null, 2) }}</pre></details></article>
+            <article v-for="r in context.items" :key="r.record_id" class="chat-turn" :class="{ anchor: r.record_id === selected.record_id }"><small>{{ identityLabel(r) }} · {{ r.sender_display_name || r.sender_account_id || '发送者未知' }} · {{ date(r.sent_at) }}</small><p>{{ r.text ?? '正文不可用' }}</p><details><summary>来源、附件与引用元数据</summary><pre>{{ JSON.stringify({ identity: {is_from_self:r.is_from_self ?? null,basis:r.self_identity_basis ?? "unknown"}, source: r.source_locator, revision: r.record_revision, attachments: r.attachments, reply: r.reply, quote: r.quote, forward: r.forward }, null, 2) }}</pre></details></article>
             <details v-if="context.references?.length"><summary>引用链（保留引用自身的来源和会话）</summary><pre>{{ JSON.stringify(context.references, null, 2) }}</pre><button v-for="reference in context.references" :key="String(reference.record_id)" v-show="reference.record_id" @click="open(reference as unknown as ChatRecord)">打开引用原文 {{ reference.record_id }}</button></details>
           </template>
         </section>

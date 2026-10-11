@@ -3,7 +3,7 @@
 from hashlib import sha256
 import re
 from .chat_data import packed
-from .chat_followups import actor_key
+from .chat_identity import message_self, link_person
 from .chat_projection import semantic_text
 
 POLICY = "chat-personal-admission-v2"
@@ -42,7 +42,7 @@ def decide(value, links, saved=None):
             # A cared-person selection is issue-specific and still needs a witnessed person link.
             if (
                 saved["decision"] == "cared"
-                and value["actor_person_id"] in links.values()
+                and value["actor_person_id"] in [link_person(v) for v in links.values()]
                 and value["actor_person_id"] != "self"
             ):
                 return "cared", "human_selection"
@@ -54,6 +54,8 @@ def decide(value, links, saved=None):
     # is admitted by these local rules; no claim of complete semantic recall.
     if value["commitment"] != "explicit" or value["relationship"] != "explicit":
         return "text_only", "commitment_not_established"
+    if value.get("identity_conflict"):
+        return "text_only", "actor_identity_conflict"
     actor = value.get("actor_account_id")
     for r in value["evidence"]:
         quote = r["quote"]
@@ -80,7 +82,7 @@ def decide(value, links, saved=None):
             or r.get("source_quote")
         ):
             continue
-        if links.get(actor_key(r, actor)) == "self" and re.search(
+        if message_self(r, links) is True and re.search(
             r"我(?:来负责|负责|答应|承诺|会给你|来处理|给你处理)|交给我", quote
         ):
             return "task", "witnessed_self_responsibility"
@@ -91,8 +93,7 @@ def decide(value, links, saved=None):
         )
         if (
             recipient
-            and links.get(actor_key(recipient, recipient.get("sender_account_id")))
-            == "self"
+            and message_self(recipient, links) is True
             and recipient.get("sender_account_id")
             in value.get("recipient_account_ids", [])
             and re.search(

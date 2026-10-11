@@ -27,7 +27,9 @@ class FollowupJobs:
         self.root.mkdir(parents=True, exist_ok=True)
         self.chat = chat
         self.service = ChatFollowups(
-            lambda: SqliteUnitOfWork(core.database), reminders=core.reminders
+            lambda: SqliteUnitOfWork(core.database),
+            reminders=core.reminders,
+            identity_cache=chat.cache,
         )
         self.model = model or FollowupModel(self.root)
         self._cancel = Event()
@@ -45,6 +47,9 @@ class FollowupJobs:
                         )
 
         self._handoff = import_handoff(self)
+        from allday_asr.v3.application.chat_followup_identity import rebuild_identity
+
+        self._identity_rebuild = rebuild_identity(self.service, self.chat.cache)
 
     def scopes(self):
         path = self.root / "config.json"
@@ -90,20 +95,12 @@ class FollowupJobs:
             for v in (source, account, person)
         ):
             raise ChatDataError("INVALID_FOLLOWUP_ACTOR", 400)
-        with self.chat.cache.connect() as db:
-            db.execute(
-                "INSERT INTO user_account_links VALUES(?,?,?,?) ON CONFLICT(platform,source,account) DO UPDATE SET person_id=excluded.person_id",
-                (platform, source, account, person),
-            )
+        self.chat.cache.save_manual_identity(platform, source, account, person)
         self._handoff = import_handoff(self)
         return {"saved": True}
 
     def links(self):
-        with self.chat.cache.connect() as db:
-            return {
-                packed([r["platform"], r["source"], r["account"]]): r["person_id"]
-                for r in db.execute("SELECT * FROM user_account_links")
-            }
+        return self.chat.cache.identity_links()["links"]
 
     @staticmethod
     def public(job):
@@ -121,7 +118,17 @@ class FollowupJobs:
             "local_handoff": self._handoff,
             "timezone": tz,
             "jobs": [self.public(j) for j in self.service.jobs()],
-            "self_mapping_count": sum(v == "self" for v in self.links().values()),
+            "self_mapping_count": len(
+                {x["key"] for x in self.chat.cache.identity_links()["automatic"]}
+                | {
+                    k
+                    for k, v in self.chat.cache.identity_links()["manual"].items()
+                    if v == "self"
+                }
+            ),
+            "self_identity": self.chat.cache.identity_links(),
+            "identity_rebuild": self._identity_rebuild,
+            "identity_refresh": self.chat.cache.identity_refresh_status(),
             "limits": {
                 "calls": 12,
                 "seconds": 900,
@@ -347,6 +354,8 @@ class FollowupJobs:
                         for k in (
                             "record_id",
                             "record_revision",
+                            "is_from_self",
+                            "self_identity_basis",
                             "sender_account_id",
                             "sent_at",
                             "text",

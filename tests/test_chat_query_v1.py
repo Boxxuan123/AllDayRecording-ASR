@@ -608,7 +608,9 @@ def test_authenticated_desktop_routes_and_chat_deep_link(tmp_path):
         thread.join(5)
 
 
-def test_private_connection_configuration_never_returns_token(tmp_path):
+def test_private_connection_configuration_never_returns_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("CHAT_DATA_TOKEN", raising=False)
+    monkeypatch.delenv("CHAT_DATA_BASE_URL", raising=False)
     path = tmp_path / "connection.json"
     client = MacChatData(config_path=path)
     with pytest.raises(ChatDataError, match="INVALID_CHAT_BASE_URL"):

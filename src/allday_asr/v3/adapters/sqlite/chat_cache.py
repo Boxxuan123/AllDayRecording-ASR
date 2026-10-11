@@ -12,7 +12,15 @@ from allday_asr.v3.domain.chat_data import packed, scope_key
 from allday_asr.v3.ports.chat_data import ChatDataError
 
 
-class ChatCache:
+from .chat_identity_cache import ChatIdentityCache, SCHEMA as IDENTITY_SCHEMA
+from allday_asr.v3.domain.chat_identity import (
+    checked_identity,
+    frozen_record,
+    merge_live_identity,
+)
+
+
+class ChatCache(ChatIdentityCache):
     def __init__(self, path: Path):
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,6 +59,13 @@ class ChatCache:
                     PRIMARY KEY(platform,source,account));
                 PRAGMA user_version=1;
             """)
+            db.executescript(IDENTITY_SCHEMA)
+            for observed in db.execute(
+                "SELECT dataset,body FROM records WHERE deleted=0"
+            ).fetchall():
+                self.observe_identity(
+                    db, observed["dataset"], json.loads(observed["body"])
+                )
             db.execute(
                 "UPDATE answer_jobs SET state='interrupted', error='RESTARTED' WHERE state IN ('pending','running')"
             )
@@ -107,6 +122,7 @@ class ChatCache:
 
     @staticmethod
     def _record(record):
+        checked_identity(record)
         keys = {
             "record_id",
             "record_revision",
@@ -127,6 +143,10 @@ class ChatCache:
             or record["platform"] not in {"qq", "wechat"}
             or not isinstance(record["source_account_id"], str)
             or not isinstance(record["conversation_id"], str)
+            or (
+                record["sender_account_id"] is not None
+                and not isinstance(record["sender_account_id"], str)
+            )
             or (record["text"] is not None and not isinstance(record["text"], str))
             or (record["sent_at"] is not None and type(record["sent_at"]) is not int)
         ):
@@ -165,9 +185,30 @@ class ChatCache:
                 if (
                     old
                     and revision == old["revision"]
-                    and (old["body"] != body or old["deleted"] != deleted)
+                    and (
+                        frozen_record(json.loads(old["body"])) != frozen_record(record)
+                        or old["deleted"] != deleted
+                    )
                 ):
                     raise ChatDataError("IMMUTABLE_REVISION_CHANGED", 502)
+                if old and revision == old["revision"]:
+                    previous = json.loads(old["body"])
+                    if "is_from_self" in record:
+                        previous = merge_live_identity(previous, record)
+                        self.refresh_identity_projections(
+                            db, dataset, record, checked_identity(record)
+                        )
+                        body = packed(previous)
+                        db.execute(
+                            "UPDATE records SET body=? WHERE dataset=? AND id=?",
+                            (body, dataset, rid),
+                        )
+                        db.execute(
+                            "UPDATE search_index SET body=? WHERE dataset=? AND id=?",
+                            (body, dataset, rid),
+                        )
+                    else:
+                        record = previous
                 if not old or revision > old["revision"]:
                     db.execute(
                         "INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(dataset,id) DO UPDATE SET revision=excluded.revision,deleted=excluded.deleted,body=excluded.body",
@@ -183,6 +224,8 @@ class ChatCache:
                         (dataset, rid),
                     )
                     mutated = True
+                if not deleted and (not old or revision >= old["revision"]):
+                    self.observe_identity(db, dataset, record)
                 if scope_id:
                     db.execute(
                         "INSERT OR IGNORE INTO scope_records VALUES(?,?)",

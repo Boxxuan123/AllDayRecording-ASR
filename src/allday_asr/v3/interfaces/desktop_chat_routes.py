@@ -76,7 +76,10 @@ class DesktopChatRoutesMixin(DesktopFollowupRoutesMixin):
                 value = job.get("value")
                 job["stale"] = bool(
                     value
-                    and value.get("generation") != service.cache.get("generation", 0)
+                    and (
+                        value.get("generation") != service.cache.get("generation", 0)
+                        or value.get("self_identity_stale")
+                    )
                 )
                 return job
             try:

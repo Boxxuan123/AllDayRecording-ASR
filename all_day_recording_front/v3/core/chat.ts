@@ -3,6 +3,7 @@ import { request } from './api'
 export interface ChatRecord {
   record_id: string; record_revision: number; platform: string
   source_account_id: string; conversation_id: string; sender_account_id: string | null
+  is_from_self?: boolean | null; self_identity_basis?: string
   sent_at: number | null; text: string | null; text_status?: string; message_type?: string
   sender_display_name?: string | null; conversation_display_name?: string | null
   attachments?: Record<string, unknown>[]; source_locator: Record<string, unknown>
@@ -50,4 +51,8 @@ export const chatApi = {
   answer: (question: string, scope: ChatScope, origin = 'mac') => post<ChatJob>('answer', { question, scope, origin }),
   job: (id: string) => get<ChatJob>('jobs', { id }),
   cancel: (id: string) => post('cancel', { id }),
+}
+
+export function identityLabel(record: {is_from_self?: boolean | null}) {
+  return record.is_from_self === true ? "我本人" : record.is_from_self === false ? "非本人" : "本人身份未知"
 }

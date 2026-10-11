@@ -123,6 +123,8 @@ def semantic_record(record):
         "conversation_type",
         "record_id",
         "record_revision",
+        "is_from_self",
+        "self_identity_basis",
         "sender_account_id",
         "sender_display_name",
         "sender_name",

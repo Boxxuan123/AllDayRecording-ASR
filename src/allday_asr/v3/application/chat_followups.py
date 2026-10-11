@@ -30,10 +30,11 @@ from allday_asr.v3.ports.chat_data import ChatDataError
 
 
 class ChatFollowups(ChatRelevanceAdmission):
-    def __init__(self, uow_factory, *, now=None, reminders=None):
+    def __init__(self, uow_factory, *, now=None, reminders=None, identity_cache=None):
         self.uow_factory = uow_factory
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.reminders = reminders
+        self.identity_cache = identity_cache
 
     def list(self, limit=15, offset=0):
         if not 1 <= limit <= 100 or offset < 0:
@@ -46,11 +47,14 @@ class ChatFollowups(ChatRelevanceAdmission):
                 "offset": offset,
             }
 
-    @staticmethod
-    def _view(row):
+    def _view(self, row):
         row = semantic_value(row)
         payload = row["payload"]
         chat = payload.get("chat_followup", {})
+        if self.identity_cache is not None:
+            from .chat_followup_identity import hydrate_identity
+
+            hydrate_identity(chat, self.identity_cache)
         category = (
             "ended"
             if row["status"] != "active" or row["ignored"]

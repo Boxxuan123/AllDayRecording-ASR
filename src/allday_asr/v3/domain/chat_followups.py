@@ -7,6 +7,7 @@ import re
 from zoneinfo import ZoneInfo
 
 from .chat_data import packed
+from .chat_identity import actor_identity, link_person
 from .reminder_time import number
 from .chat_projection import semantic_record, semantic_text, semantic_value
 from allday_asr.v3.ports.chat_data import ChatDataError
@@ -237,23 +238,23 @@ def validate_candidate(value, records, dataset, links, now_seconds, timezone_nam
         ).encode()
     ).hexdigest()
     actor = value.get("actor_account_id")
-    identities = {r.get("sender_account_id") for r in evidence}
-    # Actor must be witnessed as a sender, never inferred from source-account or nickname.
-    known = actor is not None and actor in identities
-    person = links.get(actor_key(anchor, actor)) if known else None
+    known, person, self_flag, identity_conflict = actor_identity(
+        anchor, actor, evidence, links
+    )
     ambiguous = (
         value["commitment"] != "explicit"
         or value.get("relationship") != "explicit"
         or not known
+        or identity_conflict
     )
     self_known = any(
-        v == "self"
+        link_person(v) == "self"
         and json.loads(k)[:2] == [anchor["platform"], anchor["source_account_id"]]
         for k, v in links.items()
-    )
+    ) or any(r.get("is_from_self") is True for r in evidence)
     category = (
         "pending"
-        if ambiguous or (person is None and not self_known)
+        if ambiguous or (person is None and (self_flag is None or not self_known))
         else ("self" if person == "self" else "waiting")
     )
     if value["commitment"] in {"negated", "reported"}:
@@ -287,8 +288,29 @@ def validate_candidate(value, records, dataset, links, now_seconds, timezone_nam
         not isinstance(x, str) for x in recipients
     ):
         raise ChatDataError("INVALID_FOLLOWUP_ACTOR", 422)
+    link_decisions = {
+        k: {
+            "person_id": link_person(v),
+            "origin": v.get("origin") if isinstance(v, dict) else "manual",
+        }
+        for k, v in links.items()
+    }
     interpretation_key = sha256(
-        packed([VERSION, links, timezone_name]).encode()
+        packed(
+            [
+                VERSION,
+                link_decisions,
+                timezone_name,
+                [
+                    [
+                        r["record_id"],
+                        r.get("is_from_self"),
+                        r.get("self_identity_basis"),
+                    ]
+                    for r in evidence
+                ],
+            ]
+        ).encode()
     ).hexdigest()
     return {
         **value,
@@ -298,6 +320,8 @@ def validate_candidate(value, records, dataset, links, now_seconds, timezone_nam
         "category": category,
         "historical": historical,
         "progress_unknown": historical,
+        "actor_is_from_self": self_flag,
+        "identity_conflict": identity_conflict,
         "actor_person_id": person or actor_key(anchor, actor if known else None),
         "source_key": source_key,
         "conversation_key": conversation_key(anchor),

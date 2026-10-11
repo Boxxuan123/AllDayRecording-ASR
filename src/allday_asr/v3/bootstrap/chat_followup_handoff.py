@@ -3,6 +3,7 @@
 import json
 from allday_asr.v3.domain.chat_followups import conversation_key
 from allday_asr.v3.domain.chat_data import packed
+from allday_asr.v3.domain.chat_identity import frozen_record, IDENTITY_FIELDS
 from allday_asr.v3.ports.chat_data import ChatDataError
 
 
@@ -58,9 +59,12 @@ def import_handoff(controller):
                 if old and (
                     old["deleted"]
                     or old["revision"] != r["record_revision"]
-                    or old["body"] != packed(r)
+                    or frozen_record(json.loads(old["body"])) != frozen_record(r)
                 ):
                     raise ChatDataError("FOLLOWUP_EVIDENCE_CHANGED", 409)
+                if old:
+                    cached = json.loads(old["body"])
+                    r.update({k: cached[k] for k in IDENTITY_FIELDS if k in cached})
         from allday_asr.v3.domain.chat_followups import validate_candidate
         from allday_asr.v3.domain.chat_admission import evidence_digest
 
