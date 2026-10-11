@@ -193,7 +193,11 @@ def test_f08_manual_override_old_replay_new_conflict_and_new_promise(env, action
         add(env, u, action="update", target_event_id=before["event_id"])["effect"]
         == "human_conflict"
     )
-    assert item(env)["revision"] == before["revision"] and item(env)["conflict"]
+    assert item(env)["revision"] == before["revision"] + 1 and item(env)["conflict"]
+    assert (
+        item(env)["status"] == before["status"]
+        and item(env)["payload"]["title"] == before["payload"]["title"]
+    )
     n = record(92, "新一轮资料我再发一次", sent=NOW + 200)
     add(env, n)
     assert len(env.service.list()["items"]) == 2
@@ -257,7 +261,9 @@ def jobs(env, model):
 
 
 def wait(job):
-    job._thread.join(timeout=8)
+    # Large synthetic SQLite batches need a bounded wait on Windows.
+    # This does not change any production model/job time budget.
+    job._thread.join(timeout=30)
     assert not job._thread.is_alive()
 
 
@@ -370,7 +376,7 @@ def test_f12_existing_recording_task_link_calendar_identity_and_migration(tmp_pa
                 "SELECT name,sql FROM sqlite_master WHERE tbl_name IN ('event_operations','event_current_states') AND type IN ('index','trigger')"
             )
         }
-    assert old.database.initialize() == 32
+    assert old.database.initialize() == 33
     with old.database.read() as db:
         assert before == {
             t: [tuple(r) for r in db.execute("SELECT * FROM " + t)] for t in before

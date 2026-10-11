@@ -183,9 +183,7 @@ class V3MigrationTests(unittest.TestCase):
 
         with sqlite3.connect(path) as migrated:
             payload = json.loads(
-                migrated.execute(
-                    "SELECT payload_json FROM change_events"
-                ).fetchone()[0]
+                migrated.execute("SELECT payload_json FROM change_events").fetchone()[0]
             )
         self.assertEqual(payload["session_id"], "session-1")
         self.assertEqual(payload["status_code"], "ready")
@@ -369,7 +367,7 @@ class V3MigrationTests(unittest.TestCase):
         self.assertEqual(utterance["original_text"], "模型文本")
         self.assertEqual(utterance["start_at"], "2026-08-31T02:00:00.125Z")
         self.assertEqual(utterance["end_at"], "2026-08-31T02:00:00.900Z")
-        self.assertEqual(tuple(cursor), (5, 0))
+        self.assertEqual(tuple(cursor), (6, 0))
         self.assertEqual(utterance["identity"], "unknown")
         self.assertEqual(utterance["original_identity"], "unknown")
         self.assertEqual(

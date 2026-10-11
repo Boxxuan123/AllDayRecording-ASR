@@ -79,6 +79,15 @@ class SqliteChangeLogRepository:
         self.connection = connection
         self.now = now
 
+    def has_resource(self, resource_type, resource_id, revision):
+        return (
+            self.connection.execute(
+                "SELECT 1 FROM change_events WHERE resource_type=? AND resource_id=? AND revision>=? LIMIT 1",
+                (resource_type, resource_id, revision),
+            ).fetchone()
+            is not None
+        )
+
     def append(
         self,
         resource_type: str,
@@ -87,7 +96,11 @@ class SqliteChangeLogRepository:
         operation: str,
         payload: dict[str, Any] | None,
     ) -> int:
-        if resource_type == "recording_session" and operation == "upsert" and payload is not None:
+        if (
+            resource_type == "recording_session"
+            and operation == "upsert"
+            and payload is not None
+        ):
             manifest = self.connection.execute(
                 "SELECT json_extract(entries_json, '$.sessionKey') AS session_key "
                 "FROM session_manifests WHERE session_id = ?",
@@ -104,10 +117,13 @@ class SqliteChangeLogRepository:
                 (resource_id,),
             ).fetchone()
             if latest is not None:
-                payload = {**payload, "input_revision": int(latest["input_revision"]),
-                           "manifest_sha256": str(latest["sha256"]),
-                           "total_samples": int(latest["total_samples"]),
-                           "segment_count": int(latest["segment_count"])}
+                payload = {
+                    **payload,
+                    "input_revision": int(latest["input_revision"]),
+                    "manifest_sha256": str(latest["sha256"]),
+                    "total_samples": int(latest["total_samples"]),
+                    "segment_count": int(latest["segment_count"]),
+                }
         cursor = self.connection.execute(
             """
             INSERT INTO change_events (
@@ -153,18 +169,27 @@ class SqliteChangeLogRepository:
         return _change_event(row) if row is not None else None
 
     def high_water(self) -> int:
-        return int(self.connection.execute("SELECT COALESCE(MAX(sequence),0) FROM change_events").fetchone()[0])
+        return int(
+            self.connection.execute(
+                "SELECT COALESCE(MAX(sequence),0) FROM change_events"
+            ).fetchone()[0]
+        )
 
-    def snapshot_after(self, high_water: int, sequence: int, limit: int) -> tuple[ChangeEvent, ...]:
+    def snapshot_after(
+        self, high_water: int, sequence: int, limit: int
+    ) -> tuple[ChangeEvent, ...]:
         # The log is immutable. A numeric watermark therefore survives process
         # restarts and concurrent edits without holding a transaction across pages.
         if not 0 <= sequence <= high_water or not 1 <= limit <= 501:
             raise ValueError("invalid snapshot range")
-        rows = self.connection.execute("""SELECT e.* FROM change_events e
+        rows = self.connection.execute(
+            """SELECT e.* FROM change_events e
             WHERE e.sequence>? AND e.sequence<=? AND NOT EXISTS (
               SELECT 1 FROM change_events newer WHERE newer.resource_type=e.resource_type
                 AND newer.resource_id=e.resource_id AND newer.sequence>e.sequence AND newer.sequence<=?)
-            ORDER BY e.sequence LIMIT ?""", (sequence, high_water, high_water, limit))
+            ORDER BY e.sequence LIMIT ?""",
+            (sequence, high_water, high_water, limit),
+        )
         return tuple(_change_event(row) for row in rows)
 
 

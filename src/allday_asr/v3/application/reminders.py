@@ -6,6 +6,7 @@ from datetime import datetime
 from allday_asr.v3.application.knowledge import KnowledgeArchitectureService
 from allday_asr.v3.ports.repositories import UnitOfWork
 
+from .reminder_chat import ChatReminderMixin
 from .reminder_apply import ReminderApplyMixin
 from .reminder_commands import ReminderCommandMixin
 from .reminder_queries import ReminderQueryMixin
@@ -16,7 +17,7 @@ DateTimeClock = Callable[[], datetime]
 
 
 class IntelligentReminderService(
-    ReminderCommandMixin, ReminderQueryMixin, ReminderApplyMixin
+    ChatReminderMixin, ReminderCommandMixin, ReminderQueryMixin, ReminderApplyMixin
 ):
     """V3.3 reminder policy layered on V3.2 proposals and event operations."""
 

@@ -51,6 +51,25 @@ class FollowupJobs:
 
         self._identity_rebuild = rebuild_identity(self.service, self.chat.cache)
 
+        from allday_asr.v3.application.chat_followup_projection import publish
+
+        offset = 0
+        while True:
+            page = self.service.list(100, offset)
+            with self.service.uow_factory() as uow:
+                for item in page["items"]:
+                    if not uow.changes.has_resource(
+                        "chat_followup", item["event_id"], item["revision"]
+                    ):
+                        publish(
+                            uow,
+                            uow.knowledge.get_event(item["event_id"]),
+                            uow.followups.source(item["source_key"]),
+                        )
+            if not page["has_more"]:
+                break
+            offset += 100
+
     def scopes(self):
         path = self.root / "config.json"
         if path.exists():
@@ -141,7 +160,7 @@ class FollowupJobs:
                 "unique_messages": None,
                 "input_visible_input_bytes": VISIBLE_INPUT_BYTE_LIMIT,
             },
-            "calendar": "关联已有录音任务后沿用原提醒；纯聊天事项不自动创建手机提醒",
+            "calendar": "接纳事项同步到手机任务页；本人确认当前仍需执行并明确时间后，可主动启用提醒",
         }
 
     def start(
@@ -289,20 +308,9 @@ class FollowupJobs:
 
     def _payload(self, records, value):
         conv = conversation_key(records[0]) if records else None
-        existing = [
-            {
-                "event_id": x["event_id"],
-                "title": x["payload"].get("title"),
-                "status": x["status"],
-                "latest_sent_at": x["latest_sent_at"],
-                "human_override": bool(x["human_override"]),
-                "anchor_id": x["chat"].get("anchor_id"),
-                "issue_quote": x["chat"].get("issue_quote"),
-                "time": x["chat"].get("time"),
-            }
-            for x in self.service.list(100)["items"]
-            if x["conversation_key"] == conv and x["dataset"] == value["dataset"]
-        ]
+        from .chat_followup_context import augment
+
+        records, existing, unavailable = augment(self, records, value)
         # Full identity proof receipts remain local. Only sender links relevant
         # to this batch are needed by the model; do not repeat unrelated proofs.
         link_keys = {
@@ -343,7 +351,7 @@ class FollowupJobs:
                 ],
                 "source_namespace": conv,
                 "existing_items": existing[:15],
-                "existing_items_truncated": max(0, len(existing) - 15),
+                "existing_context_unavailable": unavailable,
                 "coverage_complete": False,
                 "source_limitations": "首次修订；修订/删除未传播，历史完整性未知",
             }
@@ -444,6 +452,9 @@ class FollowupJobs:
                         raise ChatDataError("FOLLOWUP_VISIBLE_INPUT_BYTES", 429)
                     value["calls"] += 1
                     self.service.save_job(job_id, "running", value)
+                    from .chat_followup_context import augment
+
+                    batch, _, _ = augment(self, batch, value)
                     response = self.model(
                         payload,
                         self._cancel,
@@ -460,6 +471,12 @@ class FollowupJobs:
                         ),
                         encoding="utf8",
                     )
+                from .chat_followup_context import augment
+
+                batch, _, _ = augment(self, batch, value)
+                from .chat_followup_context import verify_records
+
+                verify_records(self, batch)
                 batch_failed = False
                 if self.chat.cache.get("dataset") != value["dataset"]:
                     raise ChatDataError("FOLLOWUP_SOURCE_CHANGED", 409)
@@ -477,6 +494,14 @@ class FollowupJobs:
                         )
                         value["duplicate"] += result["effect"] == "duplicate"
                         value["applied"] += result["effect"] == "applied"
+                        if result["effect"] in {
+                            "human_conflict",
+                            "ended_conflict",
+                            "evidence_conflict",
+                        }:
+                            value["pending_changes"] = (
+                                value.get("pending_changes", 0) + 1
+                            )
                     except ChatDataError as exc:
                         batch_failed = True
                         value["failed_candidates"] += 1

@@ -32,9 +32,9 @@ _STATUSES = {"scheduled", "delivered", "completed", "cancelled", "stale"}
 
 class ReminderDto(TypedDict):
     event_id: str
-    session_id: str
+    session_id: str | None
     event_revision: int
-    source_candidate_id: str
+    source_candidate_id: str | None
     title: str
     actor_person_id: str
     commitment_direction: str
@@ -47,10 +47,24 @@ class ReminderDto(TypedDict):
 
 def validate_reminder_dto(payload: Mapping[str, Any]) -> ReminderDto:
     value = dict(payload)
-    if set(value) != _FIELDS:
+    source_type = value.get("source_type", "recording")
+    if source_type not in {"recording", "chat_record"}:
+        raise ValueError("invalid reminder source type")
+    if source_type == "chat_record" and (
+        value.get("session_id") is not None
+        or value.get("source_candidate_id") is not None
+    ):
+        raise ValueError("chat reminders cannot contain recording identities")
+    if set(value) - {"source_type"} != _FIELDS:
         raise ValueError("reminder DTO fields do not match schema")
     for field in ("event_id", "session_id", "source_candidate_id"):
         item = value[field]
+        if (
+            source_type == "chat_record"
+            and field in {"session_id", "source_candidate_id"}
+            and item is None
+        ):
+            continue
         if not isinstance(item, str) or _STABLE_ID.fullmatch(item) is None:
             raise ValueError(f"reminder DTO {field} violates schema")
     revision = value["event_revision"]

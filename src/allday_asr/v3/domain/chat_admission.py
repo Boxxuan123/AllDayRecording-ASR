@@ -28,6 +28,32 @@ def evidence_digest(value):
     ).hexdigest()
 
 
+def evidence_relation(previous, value):
+    """Preserve original evidence while permitting new progress."""
+    if any(
+        previous.get(k) != value.get(k)
+        for k in ("dataset", "conversation_key", "source_key")
+    ):
+        return "replaced"
+
+    def signatures(v):
+        return {
+            r["record_id"]: (
+                r["evidence_key"],
+                r.get("raw_text_sha256")
+                or sha256((r.get("text") or "").encode()).hexdigest(),
+                r.get("sender_account_id"),
+                r.get("sent_at"),
+            )
+            for r in v.get("evidence", [])
+        }
+
+    before, after = signatures(previous), signatures(value)
+    if not before or any(after.get(k) != v for k, v in before.items()):
+        return "replaced"
+    return "same" if before == after else "added"
+
+
 def decide(value, links, saved=None):
     digest = evidence_digest(value)
     if saved and saved["origin"] != "rule":
@@ -35,7 +61,17 @@ def decide(value, links, saved=None):
             saved["evidence_digest"] != digest
             or saved["conversation_key"] != value["conversation_key"]
         ):
-            return "text_only", "review_evidence_changed"
+            import json
+
+            original = json.loads(saved["value_json"])
+            if not (
+                saved["origin"] == "human_selection"
+                and saved["decision"] in {"task", "cared"}
+                and value["action"] != "create"
+                and value.get("target_event_id")
+                and evidence_relation(original, value) == "added"
+            ):
+                return "text_only", "review_evidence_changed"
         if saved["decision"] in {"text_only", "conditional"}:
             return saved["decision"], saved["origin"]
         if saved["origin"] == "human_selection":

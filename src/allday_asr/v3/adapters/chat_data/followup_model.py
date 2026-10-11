@@ -43,7 +43,7 @@ links the same issue. Include linking message evidence. Title similarity alone
 is never sufficient. If linking is uncertain use relationship=unclear and keep
 candidate pending. Late old messages cannot supersede newer decisions. Keep human
 completion/ignore/corrections: conflicts are proposals, never overwrite.
-Relative time uses supplied sent_at and explicit timezone, never import or now.
+Relative time uses time_record_id of the evidence message actually saying the time expression. Stable anchor_id still identifies the original issue. Use explicit timezone, never import or now.
 Preserve day precision: due_at=null without an explicit hour; due_date=null if
 unclear. Do not invent a concrete time. Historical promises are historical unknown
 progress, never current overdue reminders. No observed completion != not done.
@@ -71,6 +71,7 @@ FIELDS = {
     },
     "relationship": {"type": "string", "enum": ["explicit", "unclear"]},
     "time_expression": {"type": "string"},
+    "time_record_id": {"type": ["string", "null"]},
     "timezone": {"type": ["string", "null"]},
     "due_date": {"type": ["string", "null"]},
     "due_at": {"type": ["string", "null"]},

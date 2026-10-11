@@ -6,8 +6,8 @@ from tests.chat_fixture import record
 from allday_asr.v3.ports.chat_data import ChatDataError
 
 
-def review_job(env):
-    r = record(910, "我来买一本资料")
+def review_job(env, text="我来买一本资料"):
+    r = record(910, text)
     r.update(is_from_self=True, self_identity_basis="fixture.direction")
     calls = []
     c = candidate(r, uncertainty=["购买是否完成未知"])
@@ -21,9 +21,12 @@ def review_job(env):
     ctl.chat.cache.receive("dataset", [r])
     ctl.start(records=[r], dataset="dataset", coverage=[{"complete": True}])
     wait(ctl)
-    assert not ctl.service.list()["items"]
+    if text == "我来买一本资料":
+        assert not ctl.service.list()["items"]
     review = ctl.review_candidates()["items"][0]
-    assert not review["accepted"] and review["actor_is_from_self"] is True
+    assert review["actor_is_from_self"] is True
+    if text == "我来买一本资料":
+        assert not review["accepted"]
     return ctl, review, calls
 
 

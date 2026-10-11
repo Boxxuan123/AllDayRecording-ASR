@@ -50,9 +50,7 @@ KNOWN_ENUMS: dict[str, frozenset[str]] = {
             "stale",
         }
     ),
-    "receipt_status": frozenset(
-        {"pending", "applied", "conflict", "rejected"}
-    ),
+    "receipt_status": frozenset({"pending", "applied", "conflict", "rejected"}),
     "resource_type": frozenset(
         {
             "recording_session",
@@ -63,6 +61,7 @@ KNOWN_ENUMS: dict[str, frozenset[str]] = {
             "reminder",
             "daily_event",
             "daily_summary",
+            "chat_followup",
         }
     ),
     "sync_operation": frozenset({"upsert", "tombstone"}),
@@ -95,15 +94,11 @@ def decode_contract_fixture(payload: Mapping[str, Any]) -> dict[str, Any]:
         "processing_status": normalize_enum(
             processing_run.get("status"), "processing_status"
         ),
-        "receipt_status": normalize_enum(
-            receipt.get("status"), "receipt_status"
-        ),
+        "receipt_status": normalize_enum(receipt.get("status"), "receipt_status"),
         "change_resource_type": normalize_enum(
             change.get("resource_type"), "resource_type"
         ),
-        "change_operation": normalize_enum(
-            change.get("operation"), "sync_operation"
-        ),
+        "change_operation": normalize_enum(change.get("operation"), "sync_operation"),
         "next_cursor": next_cursor if isinstance(next_cursor, str) else None,
     }
 

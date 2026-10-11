@@ -269,13 +269,23 @@ def validate_candidate(value, records, dataset, links, now_seconds, timezone_nam
         "proposed_timezone": value.get("timezone"),
         "timezone": timezone_name,
     }
+    expression = value.get("time_expression") or ""
+    time_refs = [r for r in evidence if expression and expression in r["quote"]]
+    if value.get("time_record_id"):
+        time_refs = [r for r in time_refs if r["record_id"] == value["time_record_id"]]
+        if len(time_refs) != 1:
+            raise ChatDataError("INVALID_FOLLOWUP_TIME_SOURCE", 422)
+    time_anchor = time_refs[0] if len(time_refs) == 1 else {}
     time_info = resolve_time(
-        value.get("time_expression") or "",
-        anchor,
+        expression,
+        time_anchor,
         value.get("timezone"),
         value.get("due_date"),
         value.get("due_at"),
     )
+    time_info["record_id"] = time_anchor.get("record_id")
+    if expression and not time_anchor:
+        time_info["uncertainty"] = "时间表达来源无法唯一确定"
     newest = max(
         (r["sent_at"] for r in evidence if r.get("sent_at") is not None), default=None
     )

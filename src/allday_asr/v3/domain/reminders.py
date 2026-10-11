@@ -77,15 +77,12 @@ class ReminderIntent:
             not value.strip() for value in self.evidence_utterance_ids
         ):
             raise ValueError("reminder evidence is required")
-        if len(set(self.evidence_utterance_ids)) != len(
-            self.evidence_utterance_ids
-        ):
+        if len(set(self.evidence_utterance_ids)) != len(self.evidence_utterance_ids):
             raise ValueError("reminder evidence ids must be unique")
         if len(set(self.related_person_ids)) != len(self.related_person_ids):
             raise ValueError("related person ids must be unique")
         if self.scheduled_at is not None and (
-            self.scheduled_at.tzinfo is None
-            or self.scheduled_at.utcoffset() is None
+            self.scheduled_at.tzinfo is None or self.scheduled_at.utcoffset() is None
         ):
             raise ValueError("reminder schedule must be timezone-aware")
         if self.operation in {
@@ -104,7 +101,8 @@ class ReminderIntent:
             if not self.target_event_id or self.expected_revision < 1:
                 raise ValueError("reminder mutation requires event and revision")
             if self.operation is ReminderOperation.UPDATE_EVENT and not any(
-                value is not None for value in (self.title, self.scheduled_at, self.location)
+                value is not None
+                for value in (self.title, self.scheduled_at, self.location)
             ):
                 raise ValueError("reminder update requires an editable field")
         elif self.operation is ReminderOperation.IGNORE:
@@ -154,9 +152,9 @@ class ReminderCandidate:
 @dataclass(frozen=True)
 class ReminderSchedule:
     event_id: str
-    session_id: str
+    session_id: str | None
     event_revision: int
-    source_candidate_id: str
+    source_candidate_id: str | None
     title: str
     actor_person_id: str
     commitment_direction: CommitmentDirection

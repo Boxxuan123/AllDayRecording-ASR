@@ -156,10 +156,12 @@ class SqliteChatFollowupRepository:
             (job_id, state, packed(value), time.time()),
         )
 
-    def jobs(self):
+    def jobs(self, limit=30):
         return [
             self.job(r[0])
             for r in self.connection.execute(
-                "SELECT job_id FROM chat_followup_jobs ORDER BY updated_at DESC LIMIT 30"
+                "SELECT job_id FROM chat_followup_jobs ORDER BY updated_at DESC"
+                + (" LIMIT ?" if limit is not None else ""),
+                (limit,) if limit is not None else (),
             )
         ]

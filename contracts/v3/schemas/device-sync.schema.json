@@ -215,6 +215,29 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "resource_type": {
+                "const": "chat_followup"
+              },
+              "operation": {
+                "const": "upsert"
+              }
+            },
+            "required": [
+              "resource_type",
+              "operation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resource": {
+                "$ref": "chat-followup.schema.json"
+              }
+            }
+          }
         }
       ]
     },
@@ -229,7 +252,7 @@
       ],
       "properties": {
         "projection_version": {
-          "const": 5
+          "const": 6
         },
         "cursor": {
           "type": [
@@ -275,7 +298,7 @@
       ],
       "properties": {
         "projection_version": {
-          "const": 5
+          "const": 6
         },
         "receipts": {
           "type": "array",

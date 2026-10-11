@@ -56,7 +56,7 @@ class V3ContractTests(unittest.TestCase):
             release["core_schema_version"],
             max(item.version for item in MIGRATIONS if item.contract_visible),
         )
-        self.assertEqual(release["phone_projection_schema_version"], 19)
+        self.assertEqual(release["phone_projection_schema_version"], 20)
         self.assertEqual(
             release["default_entries"],
             {"desktop": "v3", "phone": "v3", "legacy": "read_only"},
@@ -88,7 +88,9 @@ class V3ContractTests(unittest.TestCase):
             )
         self.assertRegex(fixture["audio_asset"]["sha256"], r"^[0-9a-f]{64}$")
         self.assertNotIn("path", fixture["audio_asset"])
-        self.assertEqual(validate_reminder_dto(fixture["reminder"]), fixture["reminder"])
+        self.assertEqual(
+            validate_reminder_dto(fixture["reminder"]), fixture["reminder"]
+        )
 
     def test_utterance_dto_is_canonical_and_runtime_validated(self) -> None:
         schema = _read_json(CONTRACT_ROOT / "schemas" / "utterance.schema.json")
@@ -110,7 +112,14 @@ class V3ContractTests(unittest.TestCase):
 
         invalid_values = []
         for name, replacement in (
-            ("missing speaker_label", {key: value for key, value in utterance.items() if key != "speaker_label"}),
+            (
+                "missing speaker_label",
+                {
+                    key: value
+                    for key, value in utterance.items()
+                    if key != "speaker_label"
+                },
+            ),
             ("reversed range", {**utterance, "end_ms": utterance["start_ms"]}),
             ("unknown status", {**utterance, "status": "future"}),
             ("invalid id", {**utterance, "utterance_id": "utterance-1"}),
@@ -121,15 +130,13 @@ class V3ContractTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 validate_utterance_dto(value)
 
-        desktop = _read_json(
-            CONTRACT_ROOT / "openapi" / "desktop-api.openapi.json"
-        )
+        desktop = _read_json(CONTRACT_ROOT / "openapi" / "desktop-api.openapi.json")
         session_utterance = desktop["components"]["schemas"]["SessionDetail"][
             "properties"
         ]["utterances"]["items"]
-        correction = desktop["paths"][
-            "/api/v3/utterances/{utterance_id}/corrections"
-        ]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+        correction = desktop["paths"]["/api/v3/utterances/{utterance_id}/corrections"][
+            "post"
+        ]["responses"]["200"]["content"]["application/json"]["schema"]
         self.assertEqual(
             session_utterance, {"$ref": "../schemas/utterance.schema.json"}
         )
@@ -145,9 +152,9 @@ class V3ContractTests(unittest.TestCase):
             )
 
     def test_generated_python_enum_snapshot_matches_schema(self) -> None:
-        primitives = _read_json(
-            CONTRACT_ROOT / "schemas" / "primitives.schema.json"
-        )["$defs"]
+        primitives = _read_json(CONTRACT_ROOT / "schemas" / "primitives.schema.json")[
+            "$defs"
+        ]
         expected = {
             "recording_session_state": primitives["RecordingSessionState"]["enum"],
             "aggregate_status": primitives["AggregateStatus"]["enum"],
@@ -162,18 +169,12 @@ class V3ContractTests(unittest.TestCase):
         )
 
     def test_desktop_and_device_api_boundaries_are_disjoint(self) -> None:
-        desktop = _read_json(
-            CONTRACT_ROOT / "openapi" / "desktop-api.openapi.json"
-        )
-        device = _read_json(
-            CONTRACT_ROOT / "openapi" / "device-api.openapi.json"
-        )
+        desktop = _read_json(CONTRACT_ROOT / "openapi" / "desktop-api.openapi.json")
+        device = _read_json(CONTRACT_ROOT / "openapi" / "device-api.openapi.json")
         desktop_paths = set(desktop["paths"])
         device_paths = set(device["paths"])
         self.assertTrue(all(path.startswith("/api/v3/") for path in desktop_paths))
-        self.assertTrue(
-            all(path.startswith("/device/v3/") for path in device_paths)
-        )
+        self.assertTrue(all(path.startswith("/device/v3/") for path in device_paths))
         self.assertTrue(desktop_paths.isdisjoint(device_paths))
         self.assertEqual(
             set(desktop["components"]["securitySchemes"]), {"DesktopSession"}
@@ -268,9 +269,9 @@ class V3ContractTests(unittest.TestCase):
         }
         self.assertTrue(insight_paths.issubset(desktop_paths))
         self.assertTrue(insight_paths.isdisjoint(device_paths))
-        knowledge = _read_json(
-            CONTRACT_ROOT / "schemas" / "knowledge.schema.json"
-        )["$defs"]
+        knowledge = _read_json(CONTRACT_ROOT / "schemas" / "knowledge.schema.json")[
+            "$defs"
+        ]
         self.assertTrue(
             {
                 "EvidenceSpan",
@@ -281,9 +282,7 @@ class V3ContractTests(unittest.TestCase):
                 "ProposalResolution",
             }.issubset(knowledge)
         )
-        reminder = _read_json(
-            CONTRACT_ROOT / "schemas" / "reminder.schema.json"
-        )
+        reminder = _read_json(CONTRACT_ROOT / "schemas" / "reminder.schema.json")
         self.assertFalse(reminder["additionalProperties"])
         self.assertEqual(
             reminder["$defs"]["ReminderOperation"]["enum"],
@@ -320,9 +319,7 @@ class V3ContractTests(unittest.TestCase):
         self.assertNotIn("local_path", serialized_memory)
         self.assertIn("confirmation_status", serialized_memory)
         self.assertIn("valid_until", serialized_memory)
-        insight = _read_json(
-            CONTRACT_ROOT / "schemas" / "insight.schema.json"
-        )["$defs"]
+        insight = _read_json(CONTRACT_ROOT / "schemas" / "insight.schema.json")["$defs"]
         self.assertEqual(
             insight["RelationshipObservation"]["properties"]["window_days"]["enum"],
             [7, 30],
@@ -330,9 +327,14 @@ class V3ContractTests(unittest.TestCase):
         self.assertEqual(
             set(insight["DailySummary"]["properties"]["narrative"]["required"]),
             {
-                "what_happened", "decisions", "new_todos", "completed",
-                "unresolved", "important_people_interactions",
-                "memorable_quotes", "tomorrow_attention",
+                "what_happened",
+                "decisions",
+                "new_todos",
+                "completed",
+                "unresolved",
+                "important_people_interactions",
+                "memorable_quotes",
+                "tomorrow_attention",
             },
         )
 
@@ -341,9 +343,7 @@ class V3ContractTests(unittest.TestCase):
         harmony_root = (
             Path(configured)
             if configured
-            else PROJECT_ROOT.parent.parent
-            / "DevEcoStudioProjects"
-            / "AllDayRecording"
+            else PROJECT_ROOT.parent.parent / "DevEcoStudioProjects" / "AllDayRecording"
         )
         receipt_path = harmony_root / "contracts" / "v3" / "source.json"
         if not receipt_path.is_file():

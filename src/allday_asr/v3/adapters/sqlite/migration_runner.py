@@ -28,7 +28,7 @@ def _default_migrations() -> tuple[V3Migration, ...]:
     return MIGRATIONS
 
 
-LATEST_V3_SCHEMA_VERSION = 32
+LATEST_V3_SCHEMA_VERSION = 33
 
 
 class V3MigrationRunner:
@@ -40,8 +40,12 @@ class V3MigrationRunner:
         now: Callable[[], str] | None = None,
     ) -> None:
         self.path = path.resolve()
-        selected = tuple(migrations if migrations is not None else _default_migrations())
-        self.migrations = tuple(sorted(selected, key=lambda migration: migration.version))
+        selected = tuple(
+            migrations if migrations is not None else _default_migrations()
+        )
+        self.migrations = tuple(
+            sorted(selected, key=lambda migration: migration.version)
+        )
         if not self.migrations:
             raise ValueError("at least one V3 migration is required")
         versions = [migration.version for migration in self.migrations]
@@ -130,18 +134,23 @@ class V3MigrationRunner:
                 return
             if generalized:
                 from .migrations.v031_chat_followups import generalize_event_sessions
+
                 generalize_event_sessions(connection)
             for statement in _statements(migration.sql):
                 connection.execute(statement)
             if migration.name == "versioned_audio_annotations":
                 from .annotation_fact_migration import backfill_annotation_facts
+
                 backfill_annotation_facts(connection)
             connection.execute(
                 "INSERT INTO schema_migrations "
                 "(version, name, sha256, applied_at) VALUES (?, ?, ?, ?)",
                 (migration.version, migration.name, migration.sha256, self.now()),
             )
-            if generalized and connection.execute("PRAGMA foreign_key_check").fetchone():
+            if (
+                generalized
+                and connection.execute("PRAGMA foreign_key_check").fetchone()
+            ):
                 raise RuntimeError("chat event migration foreign key check failed")
             connection.execute("COMMIT")
         except Exception:

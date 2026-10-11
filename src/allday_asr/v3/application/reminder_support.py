@@ -111,6 +111,7 @@ def _event_dedup_key(payload: dict[str, Any]) -> str:
 def _schedule_projection(schedule: ReminderSchedule) -> dict[str, Any]:
     return validate_reminder_dto(
         {
+            **({"source_type": "chat_record"} if schedule.session_id is None else {}),
             "event_id": schedule.event_id,
             "session_id": schedule.session_id,
             "event_revision": schedule.event_revision,

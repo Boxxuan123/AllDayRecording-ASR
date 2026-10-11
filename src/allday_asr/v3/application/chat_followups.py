@@ -5,12 +5,12 @@ from dataclasses import replace
 from allday_asr.v3.domain.reminders import ReminderScheduleStatus
 from .reminder_support import _schedule_projection
 from hashlib import sha256
-import json
 
 from allday_asr.v3.domain.chat_data import packed
 from allday_asr.v3.domain.chat_projection import semantic_value
-from allday_asr.v3.domain.chat_admission import POLICY, decide
+from allday_asr.v3.domain.chat_admission import POLICY, decide, evidence_digest
 from .chat_followup_admission import ChatRelevanceAdmission
+from .chat_followup_commands import ChatFollowupCommands
 from allday_asr.v3.domain.chat_followups import VERSION, validate_candidate
 from allday_asr.v3.domain.ids import new_ulid
 from allday_asr.v3.domain.knowledge import (
@@ -29,7 +29,7 @@ from allday_asr.v3.domain.knowledge import (
 from allday_asr.v3.ports.chat_data import ChatDataError
 
 
-class ChatFollowups(ChatRelevanceAdmission):
+class ChatFollowups(ChatFollowupCommands, ChatRelevanceAdmission):
     def __init__(self, uow_factory, *, now=None, reminders=None, identity_cache=None):
         self.uow_factory = uow_factory
         self.now = now or (lambda: datetime.now(timezone.utc))
@@ -102,13 +102,42 @@ class ChatFollowups(ChatRelevanceAdmission):
                 or source["conversation_key"] != value["conversation_key"]
             ):
                 return {"effect": "source_changed", "source_key": key}
+            if uow.followups.effect_exists(effect):
+                return {"effect": "duplicate", "source_key": key}
             admission = uow.followups.admission(key, dataset)
+            if (
+                admission
+                and admission["origin"] == "human_selection"
+                and admission["evidence_digest"] != evidence_digest(value)
+                and value.get("target_event_id")
+                and (not source or source["event_id"] != value["target_event_id"])
+            ):
+                raise ChatDataError("UNVERIFIED_FOLLOWUP_TARGET", 422)
             decision, reason = decide(value, links, admission)
             if decision in {"text_only", "conditional"}:
                 if admission is None:
                     uow.followups.save_admission(
                         self._admission(value, decision, "rule", POLICY)
                     )
+                if source and reason == "review_evidence_changed":
+                    value["change_kind"] = "evidence_replaced"
+                    source["conflict_json"] = packed(value)
+                    uow.followups.save_source(key, source)
+                    self._append(
+                        uow,
+                        uow.knowledge.get_event(source["event_id"]),
+                        {},
+                        EventOperationKind.UPDATE,
+                        "system:chat-conflict",
+                    )
+                    uow.followups.effect(
+                        effect, source["event_id"], {"result": "evidence_conflict"}
+                    )
+                    return {
+                        "effect": "evidence_conflict",
+                        "event_id": source["event_id"],
+                        "source_key": key,
+                    }
                 return self._exclude(uow, source, value, reason)
             value["personal_scope"] = True
             value["admission"] = {
@@ -175,8 +204,12 @@ class ChatFollowups(ChatRelevanceAdmission):
                 or source["ignored"]
                 or uow.reminders.is_user_confirmed_task(current.event_id)
             ):
+                value["change_kind"] = "progress"
                 source["conflict_json"] = packed(value)
                 uow.followups.save_source(source["source_key"], source)
+                self._append(
+                    uow, current, {}, EventOperationKind.UPDATE, "system:chat-conflict"
+                )
                 uow.followups.effect(
                     effect,
                     source["event_id"],
@@ -184,8 +217,12 @@ class ChatFollowups(ChatRelevanceAdmission):
                 )
                 return {"effect": "human_conflict", "event_id": source["event_id"]}
             if current and current.status is not EventStatus.ACTIVE:
+                value["change_kind"] = "progress"
                 source["conflict_json"] = packed(value)
                 uow.followups.save_source(source["source_key"], source)
+                self._append(
+                    uow, current, {}, EventOperationKind.UPDATE, "system:chat-conflict"
+                )
                 uow.followups.effect(
                     effect, current.event_id, {"result": "ended_conflict"}
                 )
@@ -257,7 +294,7 @@ class ChatFollowups(ChatRelevanceAdmission):
             "chat-followup",
             VERSION,
             "manual"
-            if actor == "desktop-user"
+            if actor.startswith(("desktop-user", "phone-user"))
             else patch.get("chat_followup", {})
             .get("provenance", {})
             .get("model", "not_recorded"),
@@ -333,14 +370,21 @@ class ChatFollowups(ChatRelevanceAdmission):
                 "cancelled": ReminderScheduleStatus.CANCELLED,
                 "completed": ReminderScheduleStatus.COMPLETED,
             }.get(status.value, schedule.status)
-            scheduled_at = datetime.fromisoformat(
-                payload["scheduled_time"].replace("Z", "+00:00")
+            exact_time = payload.get("scheduled_time")
+            scheduled_at = (
+                datetime.fromisoformat(exact_time.replace("Z", "+00:00"))
+                if exact_time
+                else schedule.scheduled_at
             )
-            if status is EventStatus.ACTIVE and (
-                kind is EventOperationKind.REOPEN
-                or scheduled_at != schedule.scheduled_at
-            ):
-                schedule_status = ReminderScheduleStatus.SCHEDULED
+            if status is EventStatus.ACTIVE:
+                if not exact_time:
+                    schedule_status = ReminderScheduleStatus.STALE
+                elif (
+                    kind is EventOperationKind.REOPEN
+                    or scheduled_at != schedule.scheduled_at
+                    or schedule.status is ReminderScheduleStatus.STALE
+                ):
+                    schedule_status = ReminderScheduleStatus.SCHEDULED
             revised = replace(
                 schedule,
                 event_revision=revision,
@@ -371,173 +415,12 @@ class ChatFollowups(ChatRelevanceAdmission):
             event_id,
             {"revision": revision, "operation": kind.value},
         )
-        return state
+        from .chat_followup_projection import publish
 
-    def act(self, key, action, changes=None, expected_revision=None):
-        changes = changes or {}
-        if action not in {
-            "confirm",
-            "complete",
-            "cancel",
-            "ignore",
-            "reopen",
-            "edit",
-            "link",
-            "accept_change",
-            "dismiss_change",
-        }:
-            raise ChatDataError("INVALID_FOLLOWUP_ACTION", 400)
-        allowed = {"title", "date", "at", "timezone", "category", "event_id"}
-        if set(changes) - allowed:
-            raise ChatDataError("INVALID_FOLLOWUP_EDIT", 400)
-        with self.uow_factory() as uow:
-            source = uow.followups.source(key)
-            if not source:
-                raise ChatDataError("NOT_FOUND", 404)
-            current = uow.knowledge.get_event(source["event_id"])
-            if expected_revision is None or current.revision != expected_revision:
-                raise ChatDataError("FOLLOWUP_REVISION_CONFLICT", 409)
-            chat = dict(current.payload.get("chat_followup", {}))
-            patch = {}
-            kind = {
-                "complete": "complete",
-                "cancel": "cancel",
-                "ignore": "cancel",
-                "reopen": "reopen",
-            }.get(action, "update")
-            if action == "link":
-                target = uow.knowledge.get_event(changes.get("event_id", ""))
-                if (
-                    not target
-                    or target.session_id is None
-                    or target.event_kind
-                    not in {
-                        EventKind.TASK,
-                        EventKind.REQUEST,
-                        EventKind.COMMITMENT,
-                        EventKind.APPOINTMENT,
-                    }
-                ):
-                    raise ChatDataError("INVALID_RECORDING_TASK_LINK", 422)
-                if target.status is not EventStatus.ACTIVE:
-                    raise ChatDataError("RECORDING_TASK_ENDED", 409)
-                target_chat = target.payload.get("chat_followup", {})
-                if target_chat and target_chat.get("conversation_key") != chat.get(
-                    "conversation_key"
-                ):
-                    raise ChatDataError("FOLLOWUP_CONVERSATION_MISMATCH", 409)
-                # Evidence enrichment never rewrites the recorded task's title/time/owner.
-                merged = {r["evidence_key"]: r for r in target_chat.get("evidence", [])}
-                merged.update({r["evidence_key"]: r for r in chat.get("evidence", [])})
-                chat["evidence"] = list(merged.values())
-                chat["linked_recording_event_id"] = target.event_id
-                self._append(
-                    uow,
-                    target,
-                    {"chat_followup": chat},
-                    EventOperationKind.UPDATE,
-                    "desktop-user",
-                )
-                self._append(
-                    uow,
-                    current,
-                    {"linked_to": target.event_id},
-                    EventOperationKind.CANCEL,
-                    "desktop-user",
-                )
-                source["event_id"] = target.event_id
-                source["human_override"] = 1
-                uow.followups.save_source(key, source)
-                return {"event_id": target.event_id, "effect": "linked"}
-            if action in {"accept_change", "dismiss_change"}:
-                if not source["conflict_json"]:
-                    raise ChatDataError("NO_FOLLOWUP_CONFLICT", 409)
-                if action == "accept_change":
-                    chat = json.loads(source["conflict_json"])
-                    merged = {
-                        r["evidence_key"]: r
-                        for r in current.payload.get("chat_followup", {}).get(
-                            "evidence", []
-                        )
-                    }
-                    merged.update({r["evidence_key"]: r for r in chat["evidence"]})
-                    chat["evidence"] = list(merged.values())
-                    kind = chat["action"] if chat["action"] != "create" else "update"
-                    patch["title"] = chat["title"]
-                    source["latest_sent_at"] = chat["latest_sent_at"]
-                source["conflict_json"] = None
-            if action == "edit":
-                if not changes:
-                    raise ChatDataError("INVALID_FOLLOWUP_EDIT", 400)
-                if "title" in changes:
-                    if (
-                        not isinstance(changes["title"], str)
-                        or not changes["title"].strip()
-                    ):
-                        raise ChatDataError("INVALID_FOLLOWUP_TITLE", 400)
-                    patch["title"] = changes["title"].strip()
-                if any(k in changes for k in ("date", "at", "timezone")):
-                    info = {
-                        **chat.get("time", {}),
-                        **{
-                            k: changes[k]
-                            for k in ("date", "at", "timezone")
-                            if k in changes
-                        },
-                    }
-                    if info.get("date"):
-                        try:
-                            datetime.strptime(info["date"], "%Y-%m-%d")
-                        except (ValueError, TypeError):
-                            raise ChatDataError("INVALID_FOLLOWUP_TIME", 400) from None
-                    if info.get("at"):
-                        try:
-                            parsed = datetime.fromisoformat(
-                                info["at"].replace("Z", "+00:00")
-                            )
-                        except (ValueError, TypeError):
-                            raise ChatDataError("INVALID_FOLLOWUP_TIME", 400) from None
-                        if not parsed.tzinfo:
-                            raise ChatDataError("INVALID_FOLLOWUP_TIME", 400)
-                    info["precision"] = (
-                        "minute"
-                        if info.get("at")
-                        else ("day" if info.get("date") else "unknown")
-                    )
-                    info["manually_edited"] = True
-                    chat["time"] = info
-                    if (
-                        current.session_id is not None
-                        and info.get("at")
-                        and uow.reminders.get_schedule(current.event_id)
-                    ):
-                        patch["scheduled_time"] = info["at"]
-            if action == "confirm":
-                category = changes.get("category", chat.get("category", "pending"))
-                if category not in {"self", "waiting", "pending"}:
-                    raise ChatDataError("INVALID_FOLLOWUP_CATEGORY", 400)
-                chat["category"] = category
-                chat["historical"] = False
-                chat["progress_unknown"] = False
-                chat["user_confirmed"] = True
-            if action == "ignore":
-                source["ignored"] = 1
-            if action == "reopen":
-                source["ignored"] = 0
-            source["human_override"] = 1
-            patch["chat_followup"] = chat
-            if current.status is not EventStatus.ACTIVE and kind == "update":
-                # Metadata edits do not silently reopen a closed item.
-                pass
-            state = self._append(
-                uow, current, patch, EventOperationKind(kind), "desktop-user"
-            )
-            uow.followups.save_source(key, source)
-            return {
-                "event_id": state.event_id,
-                "revision": state.revision,
-                "effect": action,
-            }
+        publish(
+            uow, state, uow.followups.source(payload["chat_followup"]["source_key"])
+        )
+        return state
 
     def save_job(self, job_id, state, value):
         with self.uow_factory() as uow:
@@ -547,6 +430,6 @@ class ChatFollowups(ChatRelevanceAdmission):
         with self.uow_factory().reading() as uow:
             return uow.followups.job(job_id)
 
-    def jobs(self):
+    def jobs(self, limit=30):
         with self.uow_factory().reading() as uow:
-            return uow.followups.jobs()
+            return uow.followups.jobs(limit)

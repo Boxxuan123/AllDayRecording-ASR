@@ -46,3 +46,7 @@ The runtime selects an exact cached snapshot. A single snapshot is unambiguous; 
 ## Current validation and remaining boundaries
 
 The validation matrix is: complete ASR pytest and Ruff, Desktop `npm test` and build, Phone/Watch/common host tests and build, cross-repository contract verification, and synthetic fault/performance checks for 7, 90 and 365 days. Device-only behavior requires separate device evidence and is not inferred from host tests. See `ENGINEERING_REMEDIATION_REPORT.md` for this checkout's actual results and remaining boundaries.
+
+## 2026-10-11 聊天事项手机接入
+
+契约 3.9.0 / 投影 6 / Core 33 / Phone 20。聊天事项使用现有 Event、人工操作、同步 outbox 和回执；chat_record 证据独立于录音身份。首次提醒由用户确认执行时间后进入现有 ReminderSchedule 与 Calendar Kit 专用日历。新进展保存同一 Event 的待审核变化，人工标题／状态受保护。本轮跨 UI、Transport、Storage，既有超 500 行 ViewModel／Repository 复审与验证结果见 [验收记录](docs/CHAT_FOLLOWUP_PHONE_ACCEPTANCE_20261011.md)。代码接入完成；实机 NOT_RUN。
