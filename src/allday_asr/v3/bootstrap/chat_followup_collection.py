@@ -2,7 +2,7 @@
 
 import json
 import time
-from allday_asr.v3.domain.chat_data import packed, scope_key
+from allday_asr.v3.domain.chat_data import scope_key
 from allday_asr.v3.ports.chat_data import ChatDataError
 
 
@@ -28,15 +28,25 @@ def collect(controller, value, job_id=None):
     raw_scopes = value.setdefault("collection_scopes", configured)
     scopes = [
         {
-            **{k: s[k] for k in ("platform", "source_account_id", "conversation_id")},
+            **{
+                k: s[k]
+                for k in ("platform", "source_account_id", "conversation_id")
+                if k in s
+            },
             **window,
         }
         for s in raw_scopes
     ]
-    selected = {
-        packed([s[k] for k in ("platform", "source_account_id", "conversation_id")])
-        for s in scopes
-    }
+
+    def selected(conversation):
+        platform, source, conv = json.loads(conversation)
+        return any(
+            s["platform"] == platform
+            and s["source_account_id"] == source
+            and ("conversation_id" not in s or s["conversation_id"] == conv)
+            for s in scopes
+        )
+
     records = {r["record_id"]: r for r in value.get("records") or []}
     coverage = [{"kind": "existing_open_context", "complete": False}]
     for scope in scopes:
@@ -73,7 +83,7 @@ def collect(controller, value, job_id=None):
             if (
                 item["dataset"] == dataset
                 and item["status"] == "active"
-                and item["conversation_key"] in selected
+                and selected(item["conversation_key"])
             ):
                 for r in item["chat"].get("evidence", []):
                     current = cache.record(r["record_id"])

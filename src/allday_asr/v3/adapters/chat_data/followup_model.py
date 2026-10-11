@@ -128,6 +128,11 @@ class FollowupModel:
             max_prompt_bytes=256000,
         )
 
+    def set_budget(self, calls, seconds):
+        """Apply an explicit finite job grant; request/attempt/payload bounds remain."""
+        self.runner.max_batch_calls = calls
+        self.runner.batch_deadline_seconds = seconds
+
     def __call__(self, payload, cancel, batch_id, remaining_seconds=180):
         payload = semantic_value(payload)
         if visible_input_bytes(payload) > VISIBLE_INPUT_BYTE_LIMIT:

@@ -344,3 +344,73 @@ def test_explicit_time_window_grant_retains_cumulative_call_cap(env, monkeypatch
         ctl.start(resume_id="grant", renew_model_window=True, additional_calls=12)
     assert len(calls) == 1
     ctl.close()
+
+
+def test_account_scope_prepares_all_conversations_without_model_or_other_accounts(
+    env, monkeypatch
+):
+    rows = [
+        record(i, "普通消息", conversation="conversation-" + str(i))
+        for i in range(1, 6)
+    ]
+    rows.append(record(6, "微信消息", platform="wechat", conversation="wx-private"))
+    foreign = record(7, "其他账号", conversation="foreign")
+    foreign["source_account_id"] = "other-source"
+    rows.append(foreign)
+    rows.append(record(8, "窗口前", sent=NOW - 8 * 86400))
+    fixture = FixtureMac(rows)
+    ctl, calls = controller(env, fixture, monkeypatch)
+    ctl.configure(
+        [
+            {"platform": "qq", "source_account_id": "source-qq"},
+            {"platform": "wechat", "source_account_id": "source-wechat"},
+        ],
+        None,
+    )
+    started = ctl.start(prepare_only=True)
+    wait(ctl)
+    job = ctl.service.job(started["id"])
+    assert job["state"] == "paused" and job["error"] == "FOLLOWUP_PREPARED"
+    assert job["unique_messages"] == 6 and job["conversation_count"] == 6
+    assert job["batch_count"] == 6 and job["calls"] == 0 and not calls
+    assert job["deadline_at"] is None and all(c["complete"] for c in job["coverage"])
+    assert ctl.status()["scope_mode"] == "accounts"
+    snapshots = len([x for x in fixture.calls if x[0] == "/v1/snapshots"])
+    ctl.start(resume_id=job["id"])
+    wait(ctl)
+    final = ctl.service.job(job["id"])
+    assert final["state"] == "completed" and final["calls"] == 6
+    assert len([x for x in fixture.calls if x[0] == "/v1/snapshots"]) == snapshots
+    assert len({r["record_id"] for c in calls for r in c["records"]}) == 6
+    ctl.close()
+    ctl.chat.close()
+
+
+def test_explicit_finite_grant_covers_prepared_batches_without_recollecting(
+    env, monkeypatch
+):
+    fixture = FixtureMac(
+        [record(i, "不同会话", conversation="conv-" + str(i)) for i in range(1, 14)]
+    )
+    ctl, calls = controller(env, fixture, monkeypatch)
+    ctl.configure([{"platform": "qq", "source_account_id": "source-qq"}], None)
+    started = ctl.start(prepare_only=True)
+    wait(ctl)
+    key = started["id"]
+    before = ctl.service.job(key)
+    assert before["batch_count"] == 13 and not calls
+    from allday_asr.v3.ports.chat_data import ChatDataError
+
+    with pytest.raises(ChatDataError):
+        ctl.start(resume_id=key, model_budget={"calls": 14, "seconds": 3600})
+    with pytest.raises(ChatDataError):
+        ctl.start(resume_id=key, model_budget={"calls": 13, "seconds": 0})
+    ctl.start(resume_id=key, model_budget={"calls": 13, "seconds": 3600})
+    wait(ctl)
+    after = ctl.service.job(key)
+    assert after["state"] == "completed" and after["calls"] == 13
+    assert after["model_call_limit"] == 13 and len(after["model_budget_grants"]) == 1
+    assert after["collection_window"] == before["collection_window"]
+    assert len([x for x in fixture.calls if x[0] == "/v1/snapshots"]) == 1
+    ctl.close()
+    ctl.chat.close()

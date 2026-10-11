@@ -61,15 +61,18 @@ class FollowupJobs:
     def configure(self, scopes, timezone_name):
         from allday_asr.v3.application.chat_queries import checked_scope
 
-        if not isinstance(scopes, list) or not 1 <= len(scopes) <= 3:
+        if not isinstance(scopes, list) or not scopes:
             raise ChatDataError("FOLLOWUP_SCOPE_REQUIRED", 400)
         result = []
         for scope in scopes:
             scope = checked_scope(scope)
-            required = {"platform", "source_account_id", "conversation_id"}
+            required = {"platform", "source_account_id"}
             if not required <= scope.keys():
                 raise ChatDataError("FOLLOWUP_SCOPE_REQUIRED", 400)
-            result.append({k: scope[k] for k in required})
+            result.append(
+                {k: scope[k] for k in required | {"conversation_id"} if k in scope}
+            )
+        result = list({packed(scope): scope for scope in result}.values())
         if timezone_name:
             try:
                 ZoneInfo(timezone_name)
@@ -114,6 +117,9 @@ class FollowupJobs:
         scopes, tz = self.scopes()
         return {
             "scope_count": len(scopes),
+            "scope_mode": "accounts"
+            if scopes and all("conversation_id" not in s for s in scopes)
+            else "conversations",
             "selected_scopes": scopes,
             "local_handoff": self._handoff,
             "timezone": tz,
@@ -147,12 +153,27 @@ class FollowupJobs:
         coverage=None,
         renew_model_window=False,
         additional_calls=12,
+        prepare_only=False,
+        model_budget=None,
     ):
         if (
-            type(renew_model_window) is not bool
+            type(prepare_only) is not bool
+            or type(renew_model_window) is not bool
             or type(additional_calls) is not int
             or not 1 <= additional_calls <= 12
             or (renew_model_window and not resume_id)
+        ):
+            raise ChatDataError("INVALID_FOLLOWUP_BUDGET", 400)
+        if model_budget is not None and (
+            not resume_id
+            or prepare_only
+            or renew_model_window
+            or not isinstance(model_budget, dict)
+            or set(model_budget) != {"calls", "seconds"}
+            or type(model_budget["calls"]) is not int
+            or not 1 <= model_budget["calls"] <= 10000
+            or type(model_budget["seconds"]) is not int
+            or not 1 <= model_budget["seconds"] <= 86400
         ):
             raise ChatDataError("INVALID_FOLLOWUP_BUDGET", 400)
         if not self._lock.acquire(blocking=False):
@@ -174,6 +195,25 @@ class FollowupJobs:
                 # immediately before any new model request.
                 job_id = resume_id
                 value = {k: v for k, v in job.items() if k not in {"id", "state"}}
+                if model_budget is not None:
+                    remaining = value.get("batch_count", 0) - value["position"]
+                    if (
+                        not value.get("collection_complete")
+                        or not 1 <= model_budget["calls"] <= remaining
+                    ):
+                        raise ChatDataError("INVALID_FOLLOWUP_BUDGET", 400)
+                    grant = {
+                        **model_budget,
+                        "granted_at": time.time(),
+                        "calls_before": value["calls"],
+                    }
+                    value.setdefault("model_budget_grants", []).append(grant)
+                    value["model_call_limit"] = value["calls"] + grant["calls"]
+                    value["deadline_at"] = grant["granted_at"] + grant["seconds"]
+                    value["model_batch_id"] = (
+                        job_id + ":grant:" + str(len(value["model_budget_grants"]))
+                    )
+                    value["error"] = None
                 if renew_model_window:
                     # Explicit user action authorizes a fresh finite time window;
                     # cumulative calls and the original total 12-call cap stay intact.
@@ -225,6 +265,7 @@ class FollowupJobs:
                     "self_account_links": self.links(),
                     "timezone": self.scopes()[1],
                 }
+            value["prepare_only"] = prepare_only
             self.service.save_job(job_id, "pending", value)
             self._thread = Thread(
                 target=self._run,
@@ -331,6 +372,7 @@ class FollowupJobs:
             ):
                 self.service.save_job(job_id, "collecting", value)
                 self._collect(value, job_id)
+            value["self_account_links"] = self.links()
             value["error"] = None
             value.setdefault("failed_batches", [])
             value.setdefault("processing_watermark", value["position"])
@@ -354,8 +396,18 @@ class FollowupJobs:
                         self._batch({**value, "records": remaining})
                     )
             value["batch_count"] = len(value["batches"])
+            value["conversation_count"] = len(
+                {conversation_key(r) for r in value["records"]}
+            )
+            if value.get("prepare_only"):
+                value["error"] = "FOLLOWUP_PREPARED"
+                self.service.save_job(job_id, "paused", value)
+                return
             if value["deadline_at"] is None:
                 value["deadline_at"] = time.time() + 900
+            if hasattr(self.model, "set_budget"):
+                grant = (value.get("model_budget_grants") or [{}])[-1]
+                self.model.set_budget(grant.get("calls", 12), grant.get("seconds", 900))
             while value["position"] < len(value["batches"]):
                 if self._cancel.is_set():
                     raise ChatDataError("CANCELLED", 409)
@@ -370,7 +422,7 @@ class FollowupJobs:
                     batch = saved.get("source_records", saved["payload"]["records"])
                 else:
                     if (
-                        value["calls"] >= min(12, value.get("model_call_limit", 12))
+                        value["calls"] >= value.get("model_call_limit", 12)
                         or time.time() >= value["deadline_at"]
                     ):
                         raise ChatDataError("FOLLOWUP_BUDGET_EXHAUSTED", 429)
