@@ -6,6 +6,8 @@ import { identityLabel, chatApi, type ChatContext } from '../core/chat'
 type Item = { source_key: string; event_id: string; revision: number; category: string; status: string; updated_at: string; ignored: boolean; conflict: unknown; payload: {title?: string}; chat: { actor_is_from_self?: boolean|null; identity_conflict?:boolean; historical?: boolean; progress_unknown?: boolean; actor_account_id?: string; recipient_account_ids?: string[]; uncertainty?: string[]; time?: {expression?: string; date?: string; at?: string; precision?: string; uncertainty?: string}; evidence?: {record_id: string; quote: string; sent_at: number | null; is_from_self?: boolean|null; self_identity_basis?: string; sender_account_id?: string; sender_display_name?: string}[] } }
 type Job = {id: string; state: string; calls: number; position: number; batch_count?: number; unique_messages?: number; applied: number; failed_candidates: number; processing_watermark?: number; error?: string; coverage?: {received?: number; complete: boolean; reason?: string}[]}
 type Status = {identity_refresh?: {state:string;success:number;failed:number;remaining:number;total:number;error?:string}; identity_rebuild?:{reinterpreted:number;evidence_unavailable:number};self_identity?: {automatic:unknown[];manual:Record<string,unknown>;conflicts:{key:string;reason:string}[]};local_handoff?:{state:string;error?:string;acceptance?:{unique_messages:number;historical_messages:number;recent_messages:number;calls:number;coverage_complete:boolean}};scope_count: number; scope_mode?: string; selected_scopes: {platform:string;source_account_id:string;conversation_id?:string}[]; timezone: string | null; self_mapping_count: number; calendar: string; jobs: Job[]}
+type ReviewCandidate = {job_id:string;batch:number;candidate:number;binding:Record<string,string>;title:string;actor_is_from_self:boolean|null;category:string;accepted:boolean;time:{expression?:string;uncertainty?:string};uncertainty:string[];evidence:{record_id:string;quote:string}[]}
+const reviewCandidates=ref<ReviewCandidate[]>([])
 const items = ref<Item[]>([]), status = ref<Status | null>(null), error = ref(''), busy = ref(false)
 const filter = ref('all'), offset = ref(0), more = ref(false), context = ref<ChatContext | null>(null)
 const history=ref<{event_revision:number;operation_kind:string;created_at:string;actor:string}[] | null>(null)
@@ -22,12 +24,14 @@ async function load(reset = false) {
     const page=await get<{items:Item[];has_more:boolean}>(`items?limit=15&offset=${offset.value}`)
     items.value=reset?page.items:[...items.value,...page.items];more.value=page.has_more
     status.value=await get<Status>('status')
+    reviewCandidates.value=(await get<{items:ReviewCandidate[]}>('review-candidates')).items
   } catch(e) {error.value=e instanceof Error?e.message:String(e)}
 }
 async function run(action: string, body: unknown={}) {
   busy.value=true;error.value=''
   try {await post(action,body);await load(true)} catch(e){error.value=e instanceof Error?e.message:String(e)} finally{busy.value=false}
 }
+async function acceptCandidate(c:ReviewCandidate){await run('accept-candidate',{job_id:c.job_id,batch:c.batch,candidate:c.candidate,binding:c.binding})}
 async function act(item: Item, action: string, changes?: unknown) {await run('act',{source_key:item.source_key,action,expected_revision:item.revision,...(changes?{changes}:{})})}
 async function changes(item: Item){try{history.value=(await request<{items:{event_revision:number;operation_kind:string;created_at:string;actor:string}[]}>(`/api/v3/events/${encodeURIComponent(item.event_id)}/operations`)).items}catch(e){error.value=e instanceof Error?e.message:String(e)}}
 async function view(record: string) {try{context.value=await chatApi.context(record)}catch(e){error.value=e instanceof Error?e.message:String(e)}}
@@ -52,6 +56,7 @@ onUnmounted(()=>{if(timer)clearInterval(timer)})
     <header><p>CHAT / FOLLOW UP</p><h1>跟进事项</h1><p>只收录有个人关联证据的事项。未知或无关群聊仍可在聊天查询中检索。</p></header>
     <p v-if="error" role="alert" class="error">{{error}}</p>
     <div class="toolbar"><button :disabled="busy" @click="run('start')">刷新最近 7 天</button><button :disabled="busy" @click="run('stop')">停止分析</button><button @click="load(true)">重载列表</button></div>
+    <section id="followup-candidates" aria-label="本次分析候选"><h2>本次分析候选（{{reviewCandidates.length}}）</h2><p>未被自动规则接纳的候选也显示在这里。核对原话后，可以接纳为个人跟进；不需要录音任务 ID，不追加推理或创建提醒。</p><article v-for="c in reviewCandidates" :key="c.binding.source_key"><h3>{{c.title}}</h3><p>承担者：{{c.actor_is_from_self===true?'我本人':c.actor_is_from_self===false?'非本人':'身份待明确'}} · {{c.accepted?'已接纳到个人跟进':'等待你接纳'}}</p><p>原时间表达：{{c.time.expression||'未明确'}}；{{c.time.uncertainty}}</p><p v-for="u in c.uncertainty" :key="u">{{u}}</p><blockquote v-for="e in c.evidence" :key="e.record_id">{{e.quote}} <button @click="view(e.record_id)">查看原文上下文</button></blockquote><button :disabled="busy||c.accepted" @click="acceptCandidate(c)">{{c.accepted?'已接纳':'接纳到个人跟进'}}</button><button v-if="c.accepted" @click="filter=c.category">查看对应分类</button></article><p v-if="!reviewCandidates.length">本次已完成响应中暂无可接纳候选。</p></section>
     <p v-if="status">{{status.scope_mode==='accounts'?'全部会话 · 已选账号':'指定会话'}} {{status.scope_count}} 个 · 本人映射 {{status.self_mapping_count}} 个 · 时区 {{status.timezone ?? '未知'}}</p>
     <p v-if="status?.self_identity">自动本人映射 {{status.self_identity.automatic.length}} 个 · 人工映射 {{Object.keys(status.self_identity.manual).length}} 个；身份冲突 {{status.self_identity.conflicts.length}} 个。</p>
     <details v-if="status?.self_identity?.conflicts.length"><summary>核对身份冲突（人工选择已保留）</summary><p v-for="c in status.self_identity.conflicts" :key="c.key">{{c.key}} · 消息方向与人工映射或其他消息依据不一致</p></details>

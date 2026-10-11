@@ -511,6 +511,16 @@ class FollowupJobs:
                 self._lease = None
             self._lock.release()
 
+    def review_candidates(self):
+        from .chat_followup_review import candidates
+
+        return candidates(self)
+
+    def accept_candidate(self, job_id, batch, candidate, binding):
+        from .chat_followup_review import accept
+
+        return accept(self, job_id, batch, candidate, binding)
+
     def stop(self):
         self._cancel.set()
         return {"stopping": True}

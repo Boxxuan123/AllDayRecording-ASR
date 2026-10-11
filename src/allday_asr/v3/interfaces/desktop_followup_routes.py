@@ -14,6 +14,8 @@ class DesktopFollowupRoutesMixin:
             service = self.application.followups
             if path == "/api/v3/chat/followups/status":
                 return service.status()
+            if path == "/api/v3/chat/followups/review-candidates" and not query:
+                return service.review_candidates()
             if path == "/api/v3/chat/followups/items":
                 try:
                     limit = int(query.get("limit", ["15"])[0])
@@ -48,6 +50,13 @@ class DesktopFollowupRoutesMixin:
                     prepare_only=body.get("prepare_only", False),
                     model_budget=body.get("model_budget"),
                 )
+            if path == "/api/v3/chat/followups/accept-candidate" and set(body) == {
+                "job_id",
+                "batch",
+                "candidate",
+                "binding",
+            }:
+                return service.accept_candidate(**body)
             if path == "/api/v3/chat/followups/stop" and not body:
                 return service.stop()
             if path == "/api/v3/chat/followups/config" and set(body) == {
