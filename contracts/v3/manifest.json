@@ -1,11 +1,11 @@
 {
-  "contract_version": "3.9.0",
+  "contract_version": "3.9.1",
   "projection_version": 6,
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi_version": "3.1.0",
   "release_lock": {
     "path": "release-lock.json",
-    "sha256": "4e837ca0f2ac796da584e01924f1b3877b76317f33ed68a5b0dd2fb81e443f16"
+    "sha256": "d29ac9b5b8d337f2feba4e41783ec60408ebe71e8078351ecaa63d73b17e0ece"
   },
   "schemas": {
     "primitives": {
@@ -66,31 +66,39 @@
     },
     "daily_summary": {
       "path": "schemas/daily-summary.schema.json",
-      "sha256": "ae287f7844ba948a51153844b1b9423772b02f013e7d71d59850a4fcf4eff010"
+      "sha256": "180fb300ffd41c79f49e188740f38f129afc38930b8f48cb2a172e22e3449dcc"
     },
     "chat_followup": {
       "path": "schemas/chat-followup.schema.json",
       "sha256": "a01d11661a70f1c6273deb5e86d138b77fcac620b3ec2acf217984ec7a06dca4"
+    },
+    "unified_review": {
+      "path": "schemas/unified-review.schema.json",
+      "sha256": "25be87c4e0486ba1002bbd2498987019c66862173e55fe7aa56c63ed12bc7645"
     }
   },
   "apis": {
     "desktop": {
       "path": "openapi/desktop-api.openapi.json",
-      "sha256": "1224bdcd105cf8489e2a63ded714d80c9deea827ea85c5259a72e1066e4a5d2e"
+      "sha256": "b2ff37b5fcea911b41cec2c802fe0f289f9b4cb81947c89957694f10dde3d95a"
     },
     "device": {
       "path": "openapi/device-api.openapi.json",
-      "sha256": "55bbf5ac5bc18293e4d4b1f13eebcecf011f2cd4271f06ee21c9f0831d1bbc85"
+      "sha256": "51dafe85c10d5906c03d7331ef86f105e6af4333aa2c3be63963a1ef7c336ac7"
     }
   },
   "fixtures": {
     "core_resources": {
       "path": "fixtures/core-resources.json",
-      "sha256": "3c843ab30c4e6aa194481bb5e56d15b48f4dc3dc6af0a09fd812dd6a34850c79"
+      "sha256": "ba0de9926a017b827e73c16a23f16f2ac379499959b46442f51f3a023452a1aa"
     },
     "forward_enums": {
       "path": "fixtures/forward-enums.json",
       "sha256": "48b9953a58f50b18400bbff03c120052692e4b477f739bcab0c0c4d6304799c0"
+    },
+    "explicit_times": {
+      "path": "fixtures/explicit-times.json",
+      "sha256": "2207b36b1241e0fa764d25f0cec48b4a04c9dca28b6cf140055d1fc3a48b1947"
     }
   }
 }

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watchEffect } from 'vue'
 
 import PageState from '../components/PageState.vue'
+import UnifiedReviewPanel from '../components/UnifiedReviewPanel.vue'
 import { desktopApi } from '../core/api'
 import { dailyOutcomeText } from '../core/dailyOutcome.js'
 import { playRange, release } from '../core/media'
@@ -9,7 +10,7 @@ import { useQuery } from '../core/query'
 import type { InsightEvidence, RelationshipObservation } from '../core/types'
 
 const timezone = ref('Asia/Singapore')
-const selectedDate = ref(new Date().toISOString().slice(0, 10))
+const selectedDate = ref(new URLSearchParams(window.location.search).get('date') ?? new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Singapore' }).format(new Date()))
 const selectedPersonId = ref('')
 const windowDays = ref<7 | 30>(7)
 const reasoningEffort = ref<'auto' | 'low' | 'medium' | 'high' | 'xhigh'>('auto')
@@ -152,6 +153,7 @@ onBeforeUnmount(release)
       <label><span>推理强度</span><select v-model="reasoningEffort"><option value="auto">按需自动</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">XHigh</option></select></label>
       <button class="primary-action" :disabled="busy !== null" @click="generateDaily">{{ busy === 'daily' ? '正在生成…' : '重建每日总结' }}</button>
     </section>
+    <UnifiedReviewPanel :day="selectedDate" :timezone="timezone" />
     <p v-if="message" class="generation-message">{{ message }}</p>
     <p v-if="actionError" class="reminder-error">{{ actionError }}</p>
 

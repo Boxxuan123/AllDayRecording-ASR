@@ -66,6 +66,12 @@ class V3DesktopApiTests(unittest.TestCase):
         self._stop_server()
         shutil.rmtree(self.root, ignore_errors=True)
 
+    def test_linked_event_detail_is_authenticated_and_reports_missing_event(self):
+        status, _, _ = self._request("/api/v3/events/absent", authenticated=False)
+        self.assertEqual(status, 403)
+        status, _, _ = self._request("/api/v3/events/absent")
+        self.assertEqual(status, 404)
+
     def test_authentication_error_shape_and_static_spa_routes(self) -> None:
         status, payload, headers = self._request("/api/v3/status", authenticated=False)
         self.assertEqual(status, 403)

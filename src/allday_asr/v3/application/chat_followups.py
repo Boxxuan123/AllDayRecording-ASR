@@ -1,6 +1,7 @@
 """Chat evidence enriches the existing Event aggregate and manual history."""
 
 from datetime import datetime, timezone
+from allday_asr.v3.domain.chat_time import proposed_time
 from dataclasses import replace
 from allday_asr.v3.domain.reminders import ReminderScheduleStatus
 from .reminder_support import _schedule_projection
@@ -228,6 +229,8 @@ class ChatFollowups(ChatFollowupCommands, ChatRelevanceAdmission):
                 )
                 return {"effect": "ended_conflict", "event_id": current.event_id}
             old_chat = current.payload.get("chat_followup", {}) if current else {}
+            if current:
+                value["time"] = proposed_time(old_chat.get("time", {}), value, source["latest_sent_at"])
             evidence = {r["evidence_key"]: r for r in old_chat.get("evidence", [])}
             evidence.update({r["evidence_key"]: r for r in value["evidence"]})
             value["evidence"] = list(evidence.values())

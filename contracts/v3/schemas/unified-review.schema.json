@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Chat and recording unified daily review V1",
+  "type": "object",
+  "required": [
+    "date",
+    "timezone",
+    "status",
+    "coverage",
+    "claims",
+    "evidence",
+    "limitations"
+  ],
+  "properties": {
+    "date": {
+      "type": "string",
+      "format": "date"
+    },
+    "timezone": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "failed",
+        "input_changed",
+        "busy"
+      ]
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "input_sha256": {
+      "type": "string"
+    },
+    "coverage": {
+      "type": "object"
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "section",
+          "text",
+          "certainty",
+          "perspective",
+          "evidence",
+          "event_ids"
+        ],
+        "properties": {
+          "section": {
+            "enum": [
+              "activity",
+              "followup",
+              "people"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "certainty": {
+            "enum": [
+              "fact",
+              "uncertain"
+            ]
+          },
+          "perspective": {
+            "enum": [
+              "self",
+              "other",
+              "observed",
+              "unknown"
+            ]
+          },
+          "event_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "primitives.schema.json#/$defs/StableId"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "evidence_id",
+                "quote"
+              ],
+              "properties": {
+                "evidence_id": {
+                  "type": "string"
+                },
+                "quote": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "evidence_id",
+          "source_type",
+          "revision",
+          "text"
+        ],
+        "properties": {
+          "evidence_id": {
+            "type": "string"
+          },
+          "source_type": {
+            "enum": [
+              "chat",
+              "recording"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "source_type": {
+                  "const": "chat"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "record_id",
+                "sent_at",
+                "platform",
+                "context"
+              ],
+              "not": {
+                "required": [
+                  "session_id"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "source_type": {
+                  "const": "recording"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "session_id",
+                "utterance_id",
+                "start_ms",
+                "end_ms",
+                "start_at",
+                "participant"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

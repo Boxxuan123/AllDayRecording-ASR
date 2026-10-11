@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watchEffect } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, watchEffect } from 'vue'
 
 import PageState from '../components/PageState.vue'
-import { desktopApi } from '../core/api'
+import { desktopApi, request } from '../core/api'
 import { formatDate } from '../core/format'
 import { playRange, release } from '../core/media'
 import { invalidateQuery, useQuery } from '../core/query'
@@ -17,6 +17,9 @@ const query = useQuery('reminders', async () => {
   return { candidates: candidates.items, reminders: reminders.items, sessions: sessions.items }
 })
 const focusedCandidateId = new URLSearchParams(window.location.search).get('candidate') ?? ''
+const focusedEventId = new URLSearchParams(window.location.search).get('event') ?? ''
+const focusedEvent = ref<{event_id:string;revision:number;status:string;payload:{title?:string;scheduled_time?:string;scheduled_at?:string}}|null>(null)
+onMounted(async()=>{if(focusedEventId)try {focusedEvent.value=await request(`/api/v3/events/${encodeURIComponent(focusedEventId)}`)}catch(e){actionError.value=e instanceof Error?e.message:String(e)}})
 const filter = ref<'pending' | 'all' | 'resolved'>('pending')
 const filterOptions: { value: 'pending' | 'all' | 'resolved'; label: string }[] = [
   { value: 'pending', label: '待确认' },
@@ -185,6 +188,10 @@ onBeforeUnmount(release)
     </div>
 
     <p v-if="actionError" class="form-error reminder-error">{{ actionError }}</p>
+    <article v-if="focusedEvent" class="panel" aria-label="关联事项详情">
+      <h2>{{ focusedEvent.payload.title??'关联事项' }}</h2><p>状态 {{ focusedEvent.status }} · 修订 {{ focusedEvent.revision }}</p>
+      <p>{{ focusedEvent.payload.scheduled_time??focusedEvent.payload.scheduled_at??'尚未确定提醒时间' }}</p>
+    </article>
     <PageState :loading="query.loading.value" :error="query.error.value" :has-content="query.data.value !== null" :empty="!candidates.length" empty-text="当前筛选下没有候选提醒。" @retry="query.refresh(true)">
       <div class="reminder-layout">
         <section class="reminder-candidate-list">

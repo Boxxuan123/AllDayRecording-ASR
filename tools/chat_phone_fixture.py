@@ -99,13 +99,14 @@ def run(root, request):
             current = uow.knowledge.get_event(metadata["event_id"])
         old = cache.record(current.payload["chat_followup"]["anchor_id"])
         date_only = request["progress"] == "date_only"
-        action = "update" if date_only else request["progress"]
+        ordinary = request["progress"] == "ordinary"
+        action = "update" if date_only or ordinary else request["progress"]
         newer = record(
             991 + current.revision,
             "资料已经发给你了"
             if action == "complete"
             else (
-                "改到2030年10月12日提交" if date_only else "改到2030年10月12日14:00提交"
+                "资料已经整理好，还在等老师确认" if ordinary else "改到2030年10月12日提交" if date_only else "改到2030年10月12日14:00提交"
             ),
             sent=int(datetime.now(timezone.utc).timestamp()) + current.revision,
         )
@@ -123,7 +124,7 @@ def run(root, request):
                 {"record_id": r["record_id"], "quote": r["text"]} for r in records
             ],
         )
-        if action == "update":
+        if action == "update" and not ordinary:
             proposal.update(
                 time_expression="2030年10月12日"
                 if date_only

@@ -37,14 +37,17 @@ from .desktop_routes_get import DesktopGetRoutesMixin
 from .desktop_routes_post import DesktopPostRoutesMixin
 
 
-
 class V3DesktopApplication:
     def __init__(self, core: V3Core, *, token: str | None = None) -> None:
         self.core = core
         from allday_asr.v3.bootstrap.chat import compose_chat_queries
+
         self.chat = compose_chat_queries(core.paths.state_dir / "chat")
         from allday_asr.v3.bootstrap.chat_followups import FollowupJobs
+
         self.followups = FollowupJobs(core, self.chat)
+        self.unified_review = core.unified_review
+
         self.core.people.sample_worker.start()
         self.core.blind_validation.start()
         self.automatic_workflows = AutomaticWorkflowStateStore(
@@ -71,7 +74,10 @@ class V3DesktopApplication:
 
 
 class V3DesktopRequestHandler(
-    DesktopChatRoutesMixin, DesktopGetRoutesMixin, DesktopPostRoutesMixin, BaseHTTPRequestHandler
+    DesktopChatRoutesMixin,
+    DesktopGetRoutesMixin,
+    DesktopPostRoutesMixin,
+    BaseHTTPRequestHandler,
 ):
     asset_root = ASSET_ROOT
     server: "V3DesktopHTTPServer"
@@ -156,8 +162,6 @@ class V3DesktopRequestHandler(
                 request_id=request_id,
             )
 
-
-
     def _consume_token(self, parsed) -> bool:
         token = parse_qs(parsed.query).get("token", [None])[0]
         if token is None:
@@ -218,8 +222,7 @@ class V3DesktopRequestHandler(
         cookie = SimpleCookie(self.headers.get("Cookie", ""))
         session = cookie.get(self.session_cookie_name)
         return bool(
-            session
-            and secrets.compare_digest(session.value, self.application.token)
+            session and secrets.compare_digest(session.value, self.application.token)
         )
 
     def _authorized_mutation(self) -> bool:
@@ -264,7 +267,9 @@ class V3DesktopRequestHandler(
             return
         if path.startswith("/assets/") or path in {"/favicon.svg", "/icons.svg"}:
             filename = unquote(path.lstrip("/"))
-            content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            content_type = (
+                mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            )
             self._send_asset(filename, content_type)
             return
         self._send_error(HTTPStatus.NOT_FOUND, "not_found", "页面不存在。")
@@ -280,10 +285,16 @@ class V3DesktopRequestHandler(
         descriptor = self.application.core.desktop.media(media_id)
         size = int(descriptor["size_bytes"])
         start, end = _parse_range(self.headers.get("Range"), size)
-        with self.application.core.audio_store.open(str(descriptor["storage_key"])) as source:
+        with self.application.core.audio_store.open(
+            str(descriptor["storage_key"])
+        ) as source:
             source.seek(start)
             payload = source.read(end - start + 1)
-        status = HTTPStatus.PARTIAL_CONTENT if start != 0 or end != size - 1 else HTTPStatus.OK
+        status = (
+            HTTPStatus.PARTIAL_CONTENT
+            if start != 0 or end != size - 1
+            else HTTPStatus.OK
+        )
         content_type = {
             "wav": "audio/wav",
             "flac": "audio/flac",
@@ -311,8 +322,7 @@ class V3DesktopRequestHandler(
             for descriptor in descriptors
         )
         output = (
-            self.application.core.paths.state_dir
-            / f".session-audio-{new_ulid()}.wav"
+            self.application.core.paths.state_dir / f".session-audio-{new_ulid()}.wav"
         )
         try:
             assemble_audio_clips(clips, output)
@@ -468,8 +478,6 @@ def serve_v3_desktop(
         pass
     finally:
         server.server_close()
-
-
 
 
 __all__ = [

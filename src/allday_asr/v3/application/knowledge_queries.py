@@ -20,6 +20,22 @@ class KnowledgeQueryMixin:
             uow.catalog.get_session(session_id)
             return uow.knowledge.list_events(session_id)
 
+    def current_event(self, event_id: str) -> dict[str, Any]:
+        with self._uow_factory().reading() as uow:
+            state = uow.knowledge.get_event(event_id)
+            if state is None:
+                raise KeyError("event does not exist")
+            return {
+                "event_id": state.event_id,
+                "revision": state.revision,
+                "status": state.status.value,
+                "event_kind": state.event_kind.value,
+                "session_id": state.session_id,
+                "payload": state.payload,
+                "created_at": state.created_at.isoformat(),
+                "updated_at": state.updated_at.isoformat(),
+            }
+
     def event_history(self, event_id: str) -> tuple[dict[str, Any], ...]:
         with self._uow_factory().reading() as uow:
             return uow.knowledge.event_history(event_id)

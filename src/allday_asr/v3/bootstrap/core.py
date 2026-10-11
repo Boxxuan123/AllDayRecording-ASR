@@ -13,7 +13,9 @@ from allday_asr.v3.adapters.codex import (
     CodexReminderGenerator,
     CodexSemanticEventGenerator,
 )
-from allday_asr.v3.adapters.codex.daily_semantic_analyzer import CodexDailySemanticAnalyzer
+from allday_asr.v3.adapters.codex.daily_semantic_analyzer import (
+    CodexDailySemanticAnalyzer,
+)
 from allday_asr.v3.adapters.speaker_embeddings import FunASRSpeakerEmbeddingProvider
 from allday_asr.v3.adapters.self_identity import CalibratedSelfIdentityMatcher
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
@@ -41,6 +43,9 @@ from allday_asr.v3.ports.self_identity_matching import SelfIdentityMatcher
 from allday_asr.v3.adapters.blind_validation import BlindValidationService
 from allday_asr.v3.application.daily_automation import DailyGenerationCoordinator
 from allday_asr.v3.application.daily_inventory import generation_version
+from allday_asr.v3.application.unified_review import UnifiedReviewService
+from allday_asr.v3.adapters.sqlite.unified_review_sources import UnifiedReviewSources
+from allday_asr.v3.adapters.codex.unified_review_model import UnifiedReviewModel
 
 
 @dataclass(frozen=True)
@@ -93,8 +98,11 @@ class V3Core:
     person_memory: PersonMemoryService
     insights: DailyInsightService
     blind_validation: BlindValidationService
-    review_audio_cache: ReviewAudioCacheOwner = field(default_factory=ReviewAudioCacheOwner)
+    review_audio_cache: ReviewAudioCacheOwner = field(
+        default_factory=ReviewAudioCacheOwner
+    )
     daily_automation: DailyGenerationCoordinator | None = None
+    unified_review: UnifiedReviewService | None = None
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -127,6 +135,7 @@ def compose_v3_core(
     """Wire the V3 Core without opening databases or creating directories."""
     import logging
     from allday_asr.build_info import runtime_build
+
     logging.getLogger(__name__).info("Runtime build: %s", runtime_build())
     selected = paths or V3CorePaths.from_environment()
     selected_codex = codex_settings or CodexReminderSettings.from_environment()
@@ -137,9 +146,7 @@ def compose_v3_core(
     processing = DurableProcessingService(
         lambda: SqliteUnitOfWork(database), artifact_store
     )
-    corrections = CorrectionInvalidationService(
-        lambda: SqliteUnitOfWork(database)
-    )
+    corrections = CorrectionInvalidationService(lambda: SqliteUnitOfWork(database))
     knowledge = KnowledgeArchitectureService(lambda: SqliteUnitOfWork(database))
     speaker_provider = speaker_embedding_provider or FunASRSpeakerEmbeddingProvider(
         audio_store,
@@ -157,8 +164,11 @@ def compose_v3_core(
             else CalibratedSelfIdentityMatcher(selected.state_dir)
         ),
     )
-    blind_validation = BlindValidationService(database, speaker_provider,
-        PROJECT_ROOT / 'outputs' / 'speaker-blind-shadow-validation')
+    blind_validation = BlindValidationService(
+        database,
+        speaker_provider,
+        PROJECT_ROOT / "outputs" / "speaker-blind-shadow-validation",
+    )
     people.blind_validation = blind_validation
     mobile_sync = MobileSyncService(
         lambda: SqliteUnitOfWork(database),
@@ -207,24 +217,56 @@ def compose_v3_core(
         allow_auto_accept=selected_codex.allow_semantic_event_auto_accept,
     )
     insights = DailyInsightService(
-        lambda: SqliteUnitOfWork(database), narrative_generator,
-        daily_analyzer=(CodexDailySemanticAnalyzer(selected_codex.workdir,
-            model=os.environ.get('ALLDAY_V3_DAILY_MODEL') or 'gpt-5.6-luna')
-            if selected_codex.enabled else None),
+        lambda: SqliteUnitOfWork(database),
+        narrative_generator,
+        daily_analyzer=(
+            CodexDailySemanticAnalyzer(
+                selected_codex.workdir,
+                model=os.environ.get("ALLDAY_V3_DAILY_MODEL") or "gpt-5.6-luna",
+            )
+            if selected_codex.enabled
+            else None
+        ),
     )
     daily_automation = None
     if selected_codex.enabled:
+
         def daily_service(day):
-            analyzer = CodexDailySemanticAnalyzer(selected_codex.workdir,
-                model=os.environ.get('ALLDAY_V3_DAILY_MODEL') or 'gpt-5.6-luna',
-                receipt_dir=selected.state_dir / 'daily-generation-receipts' / day)
-            return DailyInsightService(lambda: SqliteUnitOfWork(database),None,daily_analyzer=analyzer)
-        daily_automation = DailyGenerationCoordinator(database,daily_service,
-            generation_version(insights._daily_analyzer),model=insights._daily_analyzer.model_label)
+            analyzer = CodexDailySemanticAnalyzer(
+                selected_codex.workdir,
+                model=os.environ.get("ALLDAY_V3_DAILY_MODEL") or "gpt-5.6-luna",
+                receipt_dir=selected.state_dir / "daily-generation-receipts" / day,
+            )
+            return DailyInsightService(
+                lambda: SqliteUnitOfWork(database), None, daily_analyzer=analyzer
+            )
+
+        daily_automation = DailyGenerationCoordinator(
+            database,
+            daily_service,
+            generation_version(insights._daily_analyzer),
+            model=insights._daily_analyzer.model_label,
+        )
+    review_root = selected.state_dir / "unified-review"
+
+    def review_uow():
+        return SqliteUnitOfWork(database)
+
+    unified_review = UnifiedReviewService(
+        UnifiedReviewSources(
+            database, review_uow, selected.state_dir / "chat/cache.sqlite3"
+        ),
+        review_uow,
+        UnifiedReviewModel(review_root),
+        review_root,
+    )
+
     def daily_refresh(force=False):
         insights.refresh_daily_cache(force)
+        unified_review.refresh_saved()
         if daily_automation is not None:
-            daily_automation.notify('receiver_sync')
+            daily_automation.notify("receiver_sync")
+
     mobile_sync.daily_refresh = daily_refresh
     return V3Core(
         paths=selected,
@@ -244,6 +286,7 @@ def compose_v3_core(
         person_memory=person_memory,
         insights=insights,
         daily_automation=daily_automation,
+        unified_review=unified_review,
         blind_validation=blind_validation,
     )
 

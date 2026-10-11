@@ -1,6 +1,8 @@
 """Human followup decisions on the existing Event aggregate and reminder UOW."""
 
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from allday_asr.v3.domain.chat_time import explicit_time, proposed_time
 import json
 from allday_asr.v3.domain.knowledge import EventKind, EventOperationKind, EventStatus
 from allday_asr.v3.ports.chat_data import ChatDataError
@@ -106,9 +108,10 @@ class ChatFollowupCommands:
                         **chat,
                         **{
                             k: proposed[k]
-                            for k in ("action", "time", "latest_sent_at", "uncertainty")
+                            for k in ("action", "latest_sent_at", "uncertainty")
                             if k in proposed
                         },
+                        "time": proposed_time(previous_time, proposed, source["latest_sent_at"]),
                         "evidence": proposed["evidence"],
                     }
                     merged = {
@@ -152,6 +155,11 @@ class ChatFollowupCommands:
                     }
                     if "date" in changes and "at" not in changes:
                         info["at"] = None
+                    if info.get("timezone"):
+                        try:
+                            ZoneInfo(info["timezone"])
+                        except (ZoneInfoNotFoundError, ValueError, TypeError):
+                            raise ChatDataError("INVALID_FOLLOWUP_TIMEZONE", 400) from None
                     if info.get("date"):
                         try:
                             datetime.strptime(info["date"], "%Y-%m-%d")
@@ -159,9 +167,7 @@ class ChatFollowupCommands:
                             raise ChatDataError("INVALID_FOLLOWUP_TIME", 400) from None
                     if info.get("at"):
                         try:
-                            parsed = datetime.fromisoformat(
-                                info["at"].replace("Z", "+00:00")
-                            )
+                            parsed = explicit_time(info["at"])
                         except (ValueError, TypeError):
                             raise ChatDataError("INVALID_FOLLOWUP_TIME", 400) from None
                         if not parsed.tzinfo:
@@ -189,7 +195,7 @@ class ChatFollowupCommands:
                 ):
                     raise ChatDataError("CONFIRM_CURRENT_SELF_TASK_FIRST", 409)
                 try:
-                    due = datetime.fromisoformat(changes["at"].replace("Z", "+00:00"))
+                    due = explicit_time(changes["at"])
                 except (ValueError, TypeError):
                     raise ChatDataError(
                         "EXPLICIT_FUTURE_REMINDER_TIME_REQUIRED", 422

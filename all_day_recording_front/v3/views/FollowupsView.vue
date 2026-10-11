@@ -22,7 +22,8 @@ let timer: ReturnType<typeof setInterval> | undefined
 async function load(reset = false) {
   try {
     if(reset) offset.value=0
-    const page=await get<{items:Item[];has_more:boolean}>(`items?limit=15&offset=${offset.value}`)
+    const focus=new URLSearchParams(window.location.search).get('event')
+    const page=await get<{items:Item[];has_more:boolean}>(focus?`item?event=${encodeURIComponent(focus)}`:`items?limit=15&offset=${offset.value}`)
     items.value=reset?page.items:[...items.value,...page.items];more.value=page.has_more
     status.value=await get<Status>('status')
     try {reviewCandidates.value=(await get<{items:ReviewCandidate[]}>('review-candidates')).items;candidateError.value='';candidatesLoaded.value=true}

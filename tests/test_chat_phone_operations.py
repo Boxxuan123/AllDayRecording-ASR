@@ -21,6 +21,8 @@ def accepted(env):
     "changes",
     [
         {"at": "2030-10-12", "confirm_current": True},
+        {"at": "2030-02-31T09:00+08:00", "confirm_current": True},
+        {"at": "2030-01-01T09:00+08:60", "confirm_current": True},
         {"at": "2030-10-12T09:00:00+08:00"},
         {"at": "2030-10-12T09:00:00", "confirm_current": True},
     ],

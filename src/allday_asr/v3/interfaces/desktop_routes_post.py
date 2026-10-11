@@ -246,6 +246,12 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
                 self.application.core.person_memory.undo(unquote(match.group(1))),
             )
             return
+        if path == "/api/v3/unified-review/generate":
+            if set(body) != {"date", "timezone"}:
+                raise ValueError("unified review fields are invalid")
+            result = self.application.unified_review.generate(body['date'],body['timezone'])
+            self._send_json(HTTPStatus.OK, result)
+            return
         if path == "/api/v3/daily-summaries/generate":
             required = {"summary_date", "timezone"}
             allowed = required | {"reasoning_effort"}

@@ -187,6 +187,9 @@ class DesktopGetRoutesMixin:
                 },
             )
             return
+        if path.startswith("/api/v3/events/") and path.count("/") == 4 and path != "/api/v3/events/processing":
+            self._send_json(HTTPStatus.OK, self.application.core.knowledge.current_event(unquote(path.rsplit("/", 1)[1])))
+            return
         if path == "/api/v3/memories":
             session_id = query.get("session_id", [None])[0]
             subject_type = query.get("subject_type", [None])[0]
@@ -327,6 +330,10 @@ class DesktopGetRoutesMixin:
                     )
                 },
             )
+            return
+        if path == "/api/v3/unified-review":
+            self._send_json(HTTPStatus.OK, self.application.unified_review.get(
+                _required_query(query, "date"), _required_query(query, "timezone")))
             return
         if path == "/api/v3/daily-summaries":
             limit = _integer(query.get("limit", ["31"])[0], "limit")

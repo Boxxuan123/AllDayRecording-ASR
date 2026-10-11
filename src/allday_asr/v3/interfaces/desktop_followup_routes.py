@@ -1,5 +1,7 @@
 """Same desktop auth and redacted /chat/ access-log boundary."""
 
+import json
+
 from allday_asr.v3.ports.chat_data import ChatDataError
 
 
@@ -16,6 +18,33 @@ class DesktopFollowupRoutesMixin:
                 return service.status()
             if path == "/api/v3/chat/followups/review-candidates" and not query:
                 return service.review_candidates()
+            if path == "/api/v3/chat/followups/item" and set(query) == {"event"}:
+                with service.service.uow_factory().reading() as uow:
+                    current = uow.knowledge.get_event(query["event"][0])
+                    if not current or not current.payload.get("chat_followup"):
+                        raise ChatDataError("NOT_FOUND", 404)
+                    source = uow.followups.source(
+                        current.payload["chat_followup"]["source_key"]
+                    )
+                    return {
+                        "items": [
+                            service.service._view(
+                                {
+                                    **source,
+                                    "payload": current.payload,
+                                    "revision": current.revision,
+                                    "status": current.status.value,
+                                    "conflict": json.loads(
+                                        source["conflict_json"]
+                                    )
+                                    if source["conflict_json"]
+                                    else None,
+                                    "updated_at": current.updated_at.isoformat(),
+                                }
+                            )
+                        ],
+                        "has_more": False,
+                    }
             if path == "/api/v3/chat/followups/items":
                 try:
                     limit = int(query.get("limit", ["15"])[0])

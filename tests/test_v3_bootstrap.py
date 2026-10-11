@@ -9,6 +9,7 @@ from uuid import uuid4
 from typer.testing import CliRunner
 
 from allday_asr.cli import app
+from allday_asr.v3 import CONTRACT_VERSION
 from allday_asr.v3.bootstrap import start_empty_runtime
 from allday_asr.v3.adapters.sqlite.migration_runner import (
     LATEST_V3_SCHEMA_VERSION,
@@ -61,9 +62,7 @@ class V3BootstrapTests(unittest.TestCase):
             "example.com",
             "192.168.1.20",
         ):
-            with self.subTest(rp_id=rp_id), self.assertRaises(
-                V3ConfigurationError
-            ):
+            with self.subTest(rp_id=rp_id), self.assertRaises(V3ConfigurationError):
                 V3Settings(
                     enabled=True,
                     deployment_mode=DeploymentMode.PRODUCTION,
@@ -92,7 +91,10 @@ class V3BootstrapTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         payload = json.loads(result.output)
         self.assertEqual(payload["state"], "empty_ready")
-        self.assertEqual(payload["contract_version"], "3.8.0")
+        self.assertEqual(
+            payload["contract_version"],
+            CONTRACT_VERSION,
+        )
 
     def test_cli_migration_requires_feature_flag_and_uses_v3_only_state(self) -> None:
         directory = Path(__file__).parent / f"v3-migrate-{uuid4().hex}"
@@ -112,9 +114,7 @@ class V3BootstrapTests(unittest.TestCase):
             )
             self.assertEqual(enabled.exit_code, 0, enabled.output)
             payload = json.loads(enabled.output)
-            self.assertEqual(
-                payload["schema_version"], LATEST_V3_SCHEMA_VERSION
-            )
+            self.assertEqual(payload["schema_version"], LATEST_V3_SCHEMA_VERSION)
             self.assertEqual(payload["state"], "ready")
             self.assertTrue((directory / "core.sqlite3").is_file())
         finally:

@@ -2,12 +2,15 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AllDayRecording Desktop API",
-    "version": "3.9.0",
+    "version": "3.9.1",
     "description": "Loopback-only query, media, correction, durable-processing, knowledge, reminder, people, daily-summary, and relationship-observation API for the independent Desktop frontend."
   },
   "servers": [{"url": "http://127.0.0.1:8766"}],
   "security": [{"DesktopSession": []}],
   "paths": {
+    "/api/v3/events/{event_id}": {"parameters": [{"name": "event_id", "in": "path", "required": true, "schema": {"type": "string"}}], "get": {"operationId": "getCurrentLinkedEvent", "description": "Read an existing current event for the reminder/followup detail, without changing task state.", "responses": {"200": {"description": "Current event ID, revision, status, timestamps and payload"}, "default": {"$ref": "#/components/responses/ApiError"}}}},
+    "/api/v3/unified-review": {"get": {"operationId": "getUnifiedDailyReview", "parameters": [{"name": "date", "in": "query", "required": true, "schema": {"type": "string", "format": "date"}}, {"name": "timezone", "in": "query", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Existing stable daily review; absent, ready, input_changed, failed or busy. Previous valid claims remain available on failure."}, "default": {"$ref": "#/components/responses/ApiError"}}}},
+    "/api/v3/unified-review/generate": {"post": {"operationId": "generateUnifiedDailyReview", "description": "One explicitly selected local day, existing cache only. Same input reuses saved result. At most 2 provider requests per granted date batch, 900s elapsed. No task or Calendar writes.", "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["date", "timezone"], "additionalProperties": false, "properties": {"date": {"type": "string", "format": "date"}, "timezone": {"type": "string"}}}}}}, "responses": {"200": {"description": "Existing stable daily review; absent, ready, input_changed, failed or busy. Previous valid claims remain available on failure."}, "default": {"$ref": "#/components/responses/ApiError"}}}},
     "/api/v3/status": {"get": {"operationId": "getDesktopStatus", "responses": {"200": {"description": "V3 runtime status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RuntimeStatus"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
     "/api/v3/overview": {"get": {"operationId": "getDesktopOverview", "responses": {"200": {"description": "Desktop overview projection", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObjectProjection"}}}}, "default": {"$ref": "#/components/responses/ApiError"}}}},
     "/api/v3/recording-sessions": {

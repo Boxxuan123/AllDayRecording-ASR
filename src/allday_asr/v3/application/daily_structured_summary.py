@@ -145,6 +145,12 @@ def persist_summary(uow, events, tasks, day: str, timezone: str, start, end, now
         previous = uow.insights.daily(sid)
     except KeyError:
         previous = None
+    if previous and previous['objective'].get('unified_review'):
+        old_objective = {k:v for k,v in previous['objective'].items() if k != 'unified_review'}
+        if old_objective == objective and previous['derivation_status'] == 'active':
+            return previous
+        objective['unified_review'] = {**previous['objective']['unified_review'], 'status':'input_changed'}
+        digest = canonical_json_sha256(objective)
     if previous and previous['input_sha256'] == digest and previous['derivation_status'] == 'active':
         return previous
     generation = local_generation(uow, KnowledgeLayer.MEMORY, digest,

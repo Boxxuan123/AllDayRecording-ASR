@@ -220,6 +220,9 @@
               }
             }
           }
+        },
+        "unified_review": {
+          "$ref": "unified-review.schema.json"
         }
       },
       "allOf": [

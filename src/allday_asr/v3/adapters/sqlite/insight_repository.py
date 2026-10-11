@@ -144,6 +144,15 @@ class SqliteInsightRepository(DailySourceRepositoryMixin):
             raise KeyError(f"daily summary does not exist: {summary_id}")
         return self._daily_value(row)
 
+    def last_unified_review(self, summary_id: str) -> dict | None:
+        row = self.connection.execute(
+            "SELECT json_extract(objective_json,'$.unified_review') FROM daily_summary_revisions "
+            "WHERE summary_id=? AND json_type(objective_json,'$.unified_review')='object' "
+            "ORDER BY revision DESC LIMIT 1",
+            (summary_id,),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
     def list_daily(self, limit: int) -> tuple[dict[str, Any], ...]:
         rows = self.connection.execute(
             """

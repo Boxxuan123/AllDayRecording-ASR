@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from .chat_data import packed
 from .chat_identity import actor_identity, link_person
 from .reminder_time import number
+from .chat_time import explicit_time
 from .chat_projection import semantic_record, semantic_text, semantic_value
 from allday_asr.v3.ports.chat_data import ChatDataError
 
@@ -144,7 +145,10 @@ def resolve_time(expression, anchor, timezone_name, due_date, due_at):
                 "timezone": timezone_name,
                 "uncertainty": "夏令时切换存在歧义",
             }
-        proposed = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
+        try:
+            proposed = explicit_time(due_at)
+        except ValueError:
+            raise ChatDataError("INVALID_FOLLOWUP_TIME", 422) from None
         if proposed.tzinfo is None or proposed != early:
             raise ChatDataError("INVALID_FOLLOWUP_TIME", 422)
         at = early.isoformat()
