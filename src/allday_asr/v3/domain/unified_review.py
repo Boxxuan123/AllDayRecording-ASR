@@ -1,9 +1,9 @@
 """Grounding checks for read-only review output; references use discriminated sources."""
 
 SECTIONS = {
-    "activity": "今天做了什么、讨论了什么",
+    "people": "今天与重要人物的互动",
+    "activity": "今天涉及的重要事情和讨论",
     "followup": "承诺、进展与待跟进",
-    "people": "值得记住的人物互动",
 }
 
 
@@ -66,6 +66,23 @@ def validate_review(value, inputs):
             e.get("is_from_self") is True for e in refs
         ):
             raise ValueError("self claim needs identified self speech")
+        if claim["perspective"] == "self" and any(
+            e["source_type"] == "recording" and e.get("is_from_self") is not True
+            for e in refs
+        ):
+            raise ValueError("unidentified recording cannot establish self attribution")
+        if claim["section"] == "people" and not any(
+            (
+                e["source_type"] == "chat"
+                and e.get("speaker") not in {None, "身份未确认"}
+            )
+            or (
+                e["source_type"] == "recording"
+                and e.get("participant", {}).get("kind") not in {None, "unknown"}
+            )
+            for e in refs
+        ):
+            raise ValueError("people interaction requires an identified participant")
         if claim["perspective"] == "unknown" and claim["certainty"] != "uncertain":
             raise ValueError("unknown identity must remain uncertain")
         if not isinstance(claim["event_ids"], list) or set(claim["event_ids"]) - events:
@@ -82,13 +99,20 @@ def validate_review(value, inputs):
                     "cross-source merging needs a stable existing association"
                 )
         if claim["section"] == "followup" and claim["perspective"] == "self":
+            if any(
+                tasks[i].get("actor_is_from_self") is not True
+                for i in claim["event_ids"]
+            ):
+                raise ValueError("personal followup requires reliable task ownership")
             if all(
                 e.get("conversation_type") == "group"
                 and e.get("relevance") != "admitted"
                 for e in refs
             ):
                 raise ValueError("group interaction alone is not a personal task")
-    return {**value, "evidence": list(selected.values())}
+    # Stable within each section; personal interactions precede observed topics.
+    claims = sorted(value["claims"], key=lambda c: list(SECTIONS).index(c["section"]))
+    return {**value, "claims": claims, "evidence": list(selected.values())}
 
 
 def admit_review(value, inputs):

@@ -2,6 +2,8 @@
 
 import argparse
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from allday_asr.v3.adapters.sqlite import V3Database, SqliteUnitOfWork
 from allday_asr.v3.adapters.sqlite.unified_review_sources import UnifiedReviewSources
@@ -18,6 +20,15 @@ def main():
         type=Path,
         help="Reuse an existing exact-input provider response; zero model calls",
     )
+    parser.add_argument(
+        "--revision",
+        type=Path,
+        help="Explicit local headline/claims/limitations JSON; zero model calls",
+    )
+    parser.add_argument(
+        "--expected-input-sha256", help="Required unchanged input digest for --revision"
+    )
+    parser.add_argument("--reason", help="Local correction reason for --revision")
     parser.add_argument("--timezone", default="Asia/Singapore")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -28,7 +39,15 @@ def main():
 
     root = args.state / "unified-review"
     sources = UnifiedReviewSources(db, factory, args.state / "chat/cache.sqlite3")
-    model = UnifiedReviewModel(root)
+    if args.revision and args.cached_result:
+        parser.error("--revision and --cached-result are mutually exclusive")
+    if args.revision and (not args.expected_input_sha256 or not args.reason):
+        parser.error("--revision requires --expected-input-sha256 and --reason")
+
+    def forbidden_model(inputs):
+        raise AssertionError("local revision cannot invoke a model")
+
+    model = forbidden_model if args.revision else UnifiedReviewModel(root)
     if args.cached_result:
         result_path = args.cached_result
         request_path = result_path.with_name(
@@ -53,7 +72,16 @@ def main():
 
         model = cached_model
     service = UnifiedReviewService(sources, factory, model, root)
-    result = service.generate(args.date, args.timezone)
+    if args.revision:
+        result = service.revise(
+            args.date,
+            args.timezone,
+            json.loads(args.revision.read_text(encoding="utf-8")),
+            expected_input_sha256=args.expected_input_sha256,
+            reason=args.reason,
+        )
+    else:
+        result = service.generate(args.date, args.timezone)
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "review.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -62,7 +90,9 @@ def main():
         f"# {args.date} 聊天＋录音每日回顾",
         f"时区：{args.timezone}",
         f"状态：{result['status']}；生成时间：{result.get('generated_at', '未生成')}",
+        f"本地修订时间：{result.get('revised_at', '未修订')}",
         "资料覆盖：" + json.dumps(result.get("coverage"), ensure_ascii=False),
+        "聊天选取数／缓存数只表示输入筛选范围，不是召回率；未入选记录不等于没有价值。",
         "",
     ]
     evidence = {e["evidence_id"]: e for e in result.get("evidence", [])}
@@ -73,7 +103,21 @@ def main():
         ]
         for ref in claim["evidence"]:
             e = evidence[ref["evidence_id"]]
+            stamp = e.get("sent_at", e.get("start_at"))
+            occurrence = (
+                datetime.fromtimestamp(stamp, ZoneInfo(args.timezone))
+                if isinstance(stamp, (int, float))
+                else datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(
+                    ZoneInfo(args.timezone)
+                )
+            )
+            speaker = (
+                e.get("speaker")
+                or e.get("participant", {}).get("label")
+                or "身份未确认"
+            )
             lines += [
+                f"- 发送者／说话人：{speaker}；时间：{occurrence.isoformat()}",
                 f"- 原话：{ref['quote']}",
                 "- 来源索引："
                 + json.dumps(
@@ -86,6 +130,10 @@ def main():
         lines += [""]
     lines += ["资料限制：", *result.get("limitations", [])]
     (args.output / "review.md").write_text("\n".join(lines), encoding="utf-8")
+    (args.output / "source-index.json").write_text(
+        json.dumps(result.get("evidence", []), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     print(
         json.dumps(
             {

@@ -172,6 +172,7 @@ def test_no_invented_quote_identity_or_title_merge(source, tmp_path):
         validate_review(bad, inputs)
     bad = deepcopy(value)
     bad["claims"][0]["evidence"] += bad["claims"][1]["evidence"]
+    bad["claims"][0]["perspective"] = "observed"
     with pytest.raises(ValueError, match="association"):
         validate_review(bad, inputs)
     bad = deepcopy(value)
@@ -209,3 +210,116 @@ def test_individual_invalid_conclusion_does_not_discard_valid_facts(source, tmp_
         == "invented or unavailable quotation"
     )
     assert any("剔除" in line for line in grounded["limitations"])
+
+
+def test_local_content_revision_is_idempotent_and_preserves_business_state(
+    source, tmp_path
+):
+    sources, _, seed, factory = prepare(source, tmp_path)
+    service = UnifiedReviewService(
+        sources, factory, lambda i: (response(i), {}), tmp_path / "receipts"
+    )
+    previous = service.generate("2026-09-01", "Asia/Singapore")
+
+    def forbidden(_):
+        raise AssertionError("revision must never invoke inference")
+
+    service.model = forbidden
+    inputs = sources.load("2026-09-01", "Asia/Singapore")
+    value = response(inputs)
+    value["claims"][0]["section"] = "people"
+    value["claims"][0]["text"] = "本人在聊天中表示准备明天交材料；没有报告已提交。"
+
+    def business():
+        with seed.database.read() as c:
+            names = [
+                r[0]
+                for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            ]
+            return {
+                name: [tuple(r) for r in c.execute('SELECT * FROM "' + name + '"')]
+                for name in names
+                if name.startswith(
+                    ("event_", "reminder_", "session", "utterance", "chat_", "speaker")
+                )
+            }
+
+    before = business()
+    revised = service.revise(
+        "2026-09-01",
+        "Asia/Singapore",
+        value,
+        expected_input_sha256=previous["input_sha256"],
+        reason="Synthetic evidence correction",
+    )
+    assert revised["claims"][0]["section"] == "people"
+    assert revised["generated_at"] == previous["generated_at"]
+    assert revised["revised_at"] and revised["coverage"] == previous["coverage"]
+    with factory().reading() as uow:
+        rev = uow.insights.list_daily(2)[0]["revision"]
+    repeated = service.revise(
+        "2026-09-01",
+        "Asia/Singapore",
+        value,
+        expected_input_sha256=previous["input_sha256"],
+        reason="Synthetic evidence correction",
+    )
+    assert repeated["reused"] and repeated["revised_at"] == revised["revised_at"]
+    assert service.generate("2026-09-01", "Asia/Singapore")["reused"]
+    with factory().reading() as uow:
+        summaries = uow.insights.list_daily(2)
+        assert len(summaries) == 1 and summaries[0]["revision"] == rev
+    assert business() == before
+    bad = deepcopy(value)
+    bad["claims"][0]["evidence"][0]["quote"] = "没有出现在原文中的已完成行为"
+    with pytest.raises(ValueError, match="quotation"):
+        service.revise(
+            "2026-09-01",
+            "Asia/Singapore",
+            bad,
+            expected_input_sha256=previous["input_sha256"],
+            reason="invalid",
+        )
+    with pytest.raises(ValueError, match="input changed"):
+        service.revise(
+            "2026-09-01",
+            "Asia/Singapore",
+            value,
+            expected_input_sha256="superseded",
+            reason="invalid",
+        )
+    assert service.get("2026-09-01", "Asia/Singapore") == revised
+    assert business() == before
+
+
+def test_mixed_self_claim_cannot_borrow_unknown_recording_identity(source, tmp_path):
+    sources, *_ = prepare(source, tmp_path)
+    inputs = sources.load("2026-09-01", "Asia/Singapore")
+    value = response(inputs)
+    chat = next(e for e in inputs["evidence"] if e["source_type"] == "chat")
+    rec = next(e for e in inputs["evidence"] if e["source_type"] == "recording")
+    value["claims"][0]["evidence"].append(
+        {"evidence_id": rec["evidence_id"], "quote": rec["text"]}
+    )
+    # Even stable event association would not identify the recording speaker.
+    chat["event_ids"] = rec["event_ids"] = ["stable-association"]
+    with pytest.raises(ValueError, match="unidentified recording"):
+        validate_review(value, inputs)
+    value = response(inputs)
+    value["claims"][1]["section"] = "people"
+    with pytest.raises(ValueError, match="identified participant"):
+        validate_review(value, inputs)
+
+
+def test_other_person_task_is_not_a_personal_followup(source, tmp_path):
+    sources, *_ = prepare(source, tmp_path)
+    inputs = sources.load("2026-09-01", "Asia/Singapore")
+    chat = next(e for e in inputs["evidence"] if e["source_type"] == "chat")
+    chat["event_ids"] = ["other-task"]
+    inputs["followups"] = [
+        {"event_id": "other-task", "actor_is_from_self": False, "status": "confirmed"}
+    ]
+    value = response(inputs)
+    value["claims"][0]["event_ids"] = ["other-task"]
+    with pytest.raises(ValueError, match="reliable task ownership"):
+        validate_review(value, inputs)

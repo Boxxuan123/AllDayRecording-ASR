@@ -6,7 +6,7 @@ from threading import Lock
 from allday_asr.v3.domain.hashing import canonical_json_sha256
 from allday_asr.v3.domain.ids import stable_ulid, new_ulid
 from allday_asr.v3.domain.knowledge import KnowledgeLayer
-from allday_asr.v3.domain.unified_review import admit_review
+from allday_asr.v3.domain.unified_review import admit_review, validate_review
 from allday_asr.v3.application.daily_event_persistence import local_generation
 from allday_asr.v3.application.insight_projections import _date, _period
 import json
@@ -74,6 +74,56 @@ class UnifiedReviewService:
             if not acquired:
                 return {**self.get(day, timezone), "status": "busy"}
             return self._generate(day, timezone, key)
+
+    def revise(self, day, timezone, value, *, expected_input_sha256, reason):
+        """Explicit evidence-based local correction; never invokes the model or tasks."""
+        _period(_date(day), timezone)
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("revision reason required")
+        key = canonical_json_sha256([day, timezone])
+        self.root.mkdir(parents=True, exist_ok=True)
+        with self.lock, day_worker_lock(self.root / (key + ".lock")) as acquired:
+            if not acquired:
+                raise ValueError("review is busy")
+            inputs = self.sources.load(day, timezone)
+            digest = canonical_json_sha256(inputs)
+            previous = self.get(day, timezone)
+            if (
+                digest != expected_input_sha256
+                or previous.get("input_sha256") != digest
+            ):
+                raise ValueError(
+                    "revision input changed; reload evidence before editing"
+                )
+            if not previous.get("generated_at"):
+                raise ValueError("revision requires an existing generated review")
+            grounded = validate_review(value, inputs)
+            if previous.get("status") == "ready" and all(
+                previous.get(k) == v for k, v in grounded.items()
+            ):
+                self._publish(day, timezone, inputs, previous)
+                return {**previous, "reused": True}
+            result = {
+                **previous,
+                **grounded,
+                "status": "ready",
+                "coverage": inputs["coverage"],
+                "revised_at": self.now().isoformat(),
+                "revision_reason": reason.strip(),
+            }
+            for field in (
+                "reused",
+                "validation_rejections",
+                "error",
+                "attempted_at",
+                "attempted_input_sha256",
+            ):
+                result.pop(field, None)
+            if canonical_json_sha256(self.sources.load(day, timezone)) != digest:
+                raise ValueError("revision input changed; previous review retained")
+            self._publish(day, timezone, inputs, result)
+            _atomic_json(self.root / (key + ".output.json"), result)
+            return result
 
     def _generate(self, day, timezone, key):
         inputs = self.sources.load(day, timezone)

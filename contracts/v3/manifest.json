@@ -74,7 +74,7 @@
     },
     "unified_review": {
       "path": "schemas/unified-review.schema.json",
-      "sha256": "25be87c4e0486ba1002bbd2498987019c66862173e55fe7aa56c63ed12bc7645"
+      "sha256": "c113e9818567e32b558aaf031e86a6918bde10b50bc1610d40986f0555db5019"
     }
   },
   "apis": {

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 
 import { matchV3Route } from '../v3/core/routeMatch.js'
 import './daily-outcome.test.mjs'
+import './unified-review.test.mjs'
 import './interaction-behavior.test.mjs'
 
 const cases = []

@@ -180,6 +180,13 @@
       "items": {
         "type": "string"
       }
+    },
+    "revised_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "revision_reason": {
+      "type": "string"
     }
   }
 }
