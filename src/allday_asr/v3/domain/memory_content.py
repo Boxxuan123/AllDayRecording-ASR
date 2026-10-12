@@ -9,9 +9,25 @@ ENGAGEMENT = re.compile(r"多少钱|价格|询价|报价|想买|购买|买一|�
 PHYSICS = re.compile(r"(?:招|招聘).*物理.*(?:老师|教师)|物理.*(?:教师|老师).*招聘")
 
 
+OPAQUE = "独立账号或访问字符串已省略，请在来源中查看"
+
+
+def opaque(quote):
+    # Standalone identifiers carry no discussion content; preserve the source reference.
+    return bool(re.fullmatch(r"1\d{10}|@(?=[A-Za-z\d_]*[A-Za-z])(?=[A-Za-z\d_]*\d)[A-Za-z\d_]{8,}", quote.strip()))
+
+
 def safe_memory(value):
-    # All derived strings, including names/titles/reasons, share the chat allowlist projection.
-    return semantic_value(value)
+    projected = semantic_value(value)
+    def content_string(value):
+        return "".join(OPAQUE if opaque(part) else part for part in re.split(r"([;；])", value))
+    def clean(item):
+        if isinstance(item, list):
+            return [clean(v) for v in item]
+        if isinstance(item, dict):
+            return {k: content_string(v) if k in {"quote", "text", "title", "summary"} and isinstance(v, str) else clean(v) for k, v in item.items()}
+        return item
+    return clean(projected)
 
 
 def text(row):
@@ -19,7 +35,7 @@ def text(row):
 
 
 def readable(quote):
-    return bool(quote.strip()) and not quote.startswith(("[媒体", "[未解析", IMAGE))
+    return bool(quote.strip()) and not opaque(quote) and not quote.startswith(("[媒体", "[未解析", IMAGE, OPAQUE, "http://", "https://"))
 
 
 def admission(row):
@@ -30,6 +46,11 @@ def admission(row):
         return True, "已有事项引用附件；不推断未解析内容"
     if not meaningful:
         return False, "附件内容未解析，缺少有效文字或相关事项依据"
+    automated = any(re.search(r"签到成功|本次获得.{0,12}积分|当前积分|连续签到.{0,12}(?:天|奖励)|签到奖励", e["quote"]) for e in meaningful if e.get("identity_self") is not True)
+    responses = [e["quote"].strip() for e in meaningful if e.get("identity_self") is True]
+    routine = all(re.fullmatch(r"签到|打卡|点赞(?:\s+\d+)?|谢谢|好的", q) for q in responses)
+    if automated and routine and not row.get("event_id"):
+        return False, "自动签到或积分通知，缺少实际问题、讨论或相关事项依据"
     marketing = any(PROMOTION.search(e["quote"]) for e in meaningful if e.get("identity_self") is not True)
     if marketing:
         responses = [e for e in meaningful if e.get("identity_self") is True]
@@ -72,6 +93,8 @@ def content(row):
         parts.append("这些引用尚未确认是否实际回复。")
         return "物理教师招聘与是否回复", "".join(parts)
     quotes = [e["quote"].strip() for e in row["evidence"] if readable(e["quote"])]
+    useful = [q for q in quotes if len(q) >= 6 and not q.startswith(("http://", "https://", "["))]
+    quotes = useful or quotes
     title = row["title"]
     if "的独立讨论" in title or not title.strip():
         title = (quotes[0][:28] if quotes else "内容尚未解析")

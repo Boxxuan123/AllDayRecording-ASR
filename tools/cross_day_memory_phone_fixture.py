@@ -1,5 +1,6 @@
 """Fictional cross-day sync peer, explicitly restricted to temporary test state."""
 
+from copy import deepcopy
 import json
 import sys
 from pathlib import Path
@@ -29,7 +30,22 @@ def factory():
     return SqliteUnitOfWork(db)
 
 
-sources = Sources()
+class ArrivalSources(Sources):
+    def increment(self, scope):
+        updated = deepcopy(scope)
+        updated["coverage"] = deepcopy(self.scope["coverage"])
+        return updated
+
+sources = ArrivalSources()
+if request.get("arrival"):
+    (root / "arrival").write_text("fictional", encoding="utf-8")
+if (root / "arrival").exists():
+    new = deepcopy(sources.rows[2])
+    new["id"] = stable_ulid("fictional-new-arrival")
+    new["title"] = "新互动：讨论独立的项目交付"
+    new["evidence"][0].update(record_id="new-arrival", reply_record_id=None, quote="新聊天讨论项目交付，尚未确认完成")
+    sources.rows.append(new)
+    sources.scope["coverage"]["incremental"] = {"deferred_discussions": 2, "excluded_discussions": 1, "discussion_limit": 7}
 if request.get("invalidate"):
     sources.rows[0]["evidence_status"] = "source_changed_or_missing"
     sources.rows[0]["evidence"][0]["status"] = "source_changed_or_missing"

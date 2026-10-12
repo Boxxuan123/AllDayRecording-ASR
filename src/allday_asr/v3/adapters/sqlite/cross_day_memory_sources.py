@@ -208,7 +208,11 @@ class CrossDayMemorySources:
             "model_calls": 0,
         })
 
-    def freeze(self, first, last, timezone, selected):
+    def increment(self, scope):
+        return self.freeze(scope["first"], scope["last"], scope["timezone"],
+                           [p["id"] for p in scope["contacts"]], prior_scope=scope)
+
+    def freeze(self, first, last, timezone, selected, prior_scope=None):
         records, contacts, conversations, events, followups, coverage = self._read(
             first, last, timezone
         )
@@ -264,6 +268,7 @@ class CrossDayMemorySources:
                     }
                 )
         # Do not spend bounded slots on opaque attachments/unsolicited marketing.
+        group_count = len(groups)
         groups = [g for g in groups if admission({"event_id": g["event_id"], "evidence": [{"source_type": "chat", "identity_self": r.get("is_from_self"), "quote": semantic_text(r["text"])} for r in g["records"]]})[0]]
         # Fair bounded selection: first discussion per selected contact, then chronological remainder.
         picked = []
@@ -273,7 +278,7 @@ class CrossDayMemorySources:
                 picked.append(g)
         picked.extend(g for g in groups if g not in picked)
         manifest = []
-        for g in picked[: 5 if events else 7]:
+        for g in picked:
             evidence = []
             for r in g["records"]:
                 reply = r.get("reply") or {}
@@ -321,7 +326,41 @@ class CrossDayMemorySources:
                     "pending_change": False,
                 }
             )
-        for event in events[: 7 - len(manifest)]:
+        chat_limit = 5 if events else 7
+        fresh = manifest
+        if prior_scope is None:
+            manifest = fresh[:chat_limit]
+            deferred = len(fresh) - len(manifest)
+        else:
+            # Shared original references identify a discussion; semantic similarity never
+            # merges things. Preserve old evidence revisions and every human decision ID.
+            manifest = json.loads(json.dumps(prior_scope["manifest"]))
+            deferred = 0
+            def refs(row):
+                return {(e.get("dataset"), e.get("record_id")) for e in row["evidence"] if e["source_type"] == "chat"}
+            occupied = set().union(*(refs(row) for row in manifest)) if manifest else set()
+            for candidate in fresh:
+                incoming = refs(candidate)
+                matches = [row for row in manifest if refs(row) & incoming]
+                if not incoming - occupied:
+                    continue
+                if len(matches) == 1:
+                    row = matches[0]
+                    additions = [e for e in candidate["evidence"] if (e.get("dataset"), e.get("record_id")) not in occupied]
+                    if len(row["evidence"]) + len(additions) <= 8 and row.get("event_id") == candidate.get("event_id"):
+                        row["evidence"].extend(additions)
+                        occupied.update(incoming)
+                    else:
+                        deferred += 1
+                elif not matches and len(manifest) < 7:
+                    manifest.append(candidate)
+                    occupied.update(incoming)
+                else:
+                    # Capacity or ambiguous overlap: keep independent inputs pending,
+                    # never evict reviewed history or silently combine two discussions.
+                    deferred += 1
+        coverage["incremental"] = {"excluded_discussions": group_count - len(groups), "deferred_discussions": deferred, "discussion_limit": 7}
+        for event in (events[: max(0, 7 - len(manifest))] if prior_scope is None else []):
             ev = []
             for e in event["evidence"][:8]:
                 ev.append(

@@ -43,6 +43,32 @@
         },
         "model_calls": {
           "const": 0
+        },
+        "coverage": {
+          "type": "object",
+          "properties": {
+            "incremental": {
+              "type": "object",
+              "required": [
+                "excluded_discussions",
+                "deferred_discussions",
+                "discussion_limit"
+              ],
+              "properties": {
+                "excluded_discussions": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "deferred_discussions": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "discussion_limit": {
+                  "const": 7
+                }
+              }
+            }
+          }
         }
       }
     },

@@ -75,6 +75,9 @@ class Sources:
     def freeze(self, *args):
         return deepcopy(self.scope)
 
+    def increment(self, scope):
+        return deepcopy(scope)
+
     def load(self, scope):
         return deepcopy(self.rows)
 

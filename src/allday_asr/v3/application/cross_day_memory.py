@@ -29,7 +29,8 @@ class CrossDayMemoryService:
             scope["timezone"],
             [p["id"] for p in scope["contacts"]],
         ] == [first, last, timezone, contacts]:
-            return self.get()
+            scope = self.sources.increment(scope)
+            return self._publish(scope, self.sources.load(scope), old["revision"])
         scope = self.sources.freeze(first, last, timezone, contacts)
         return self._publish(
             scope, self.sources.load(scope), old["revision"] if old else 0
