@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "memory-index.schema.json",
+  "title": "Bounded cross-day evidence index",
+  "type": "object",
+  "required": [
+    "id",
+    "revision",
+    "status",
+    "scope",
+    "people",
+    "discussions",
+    "things",
+    "topics",
+    "candidates",
+    "updated_at"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "primitives.schema.json#/$defs/stable_id"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "no_data"
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "first",
+        "last",
+        "timezone",
+        "coverage"
+      ],
+      "properties": {
+        "timezone": {
+          "const": "Asia/Singapore"
+        },
+        "model_calls": {
+          "const": 0
+        }
+      }
+    },
+    "people": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "identity_basis",
+          "discussion_ids"
+        ]
+      }
+    },
+    "discussions": {
+      "type": "array",
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "occurred_at",
+          "evidence",
+          "evidence_status",
+          "thing_id",
+          "link_basis"
+        ],
+        "properties": {
+          "evidence": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "required": [
+                "source_type",
+                "quote",
+                "revision",
+                "occurred_at",
+                "assertion",
+                "status"
+              ],
+              "properties": {
+                "quote": {
+                  "type": "string",
+                  "maxLength": 600
+                },
+                "source_type": {
+                  "enum": [
+                    "chat",
+                    "recording"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "valid",
+                    "source_changed_or_missing"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "things": {
+      "type": "array",
+      "maxItems": 7
+    },
+    "topics": {
+      "type": "array",
+      "maxItems": 3
+    },
+    "candidates": {
+      "type": "array",
+      "maxItems": 21
+    },
+    "updated_at": {
+      "type": "string"
+    }
+  }
+}

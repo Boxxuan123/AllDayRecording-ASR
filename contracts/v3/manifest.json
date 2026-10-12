@@ -1,16 +1,16 @@
 {
-  "contract_version": "3.9.1",
-  "projection_version": 6,
+  "contract_version": "3.10.0",
+  "projection_version": 7,
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi_version": "3.1.0",
   "release_lock": {
     "path": "release-lock.json",
-    "sha256": "d29ac9b5b8d337f2feba4e41783ec60408ebe71e8078351ecaa63d73b17e0ece"
+    "sha256": "af1a695479e53560051e3b0043c512456d36cc36920c52b25f9352178ad97c27"
   },
   "schemas": {
     "primitives": {
       "path": "schemas/primitives.schema.json",
-      "sha256": "13d149a0ced972708421058a5aaaa50566bd59cb85702f7d90d92964f4641c91"
+      "sha256": "21b6b8bbbee13f34670d1d3df831af8ccd03e73b669e64a2f122c0056066977b"
     },
     "recording_session": {
       "path": "schemas/recording-session.schema.json",
@@ -30,7 +30,7 @@
     },
     "device_sync": {
       "path": "schemas/device-sync.schema.json",
-      "sha256": "cf2944fff3f152546e27474fe01c0b3759eabb228104e9b0cb74ae4871124064"
+      "sha256": "9859b11a91945025c68db98a206c88cd439e8062b0611f896f625d63535397b9"
     },
     "timeline_quality": {
       "path": "schemas/timeline-quality.schema.json",
@@ -75,26 +75,30 @@
     "unified_review": {
       "path": "schemas/unified-review.schema.json",
       "sha256": "c113e9818567e32b558aaf031e86a6918bde10b50bc1610d40986f0555db5019"
+    },
+    "memory_index": {
+      "path": "schemas/memory-index.schema.json",
+      "sha256": "0fb6287120d0f28a2166c8986b56321b1b9d00b56fe75b0d211b19458f418106"
     }
   },
   "apis": {
     "desktop": {
       "path": "openapi/desktop-api.openapi.json",
-      "sha256": "b2ff37b5fcea911b41cec2c802fe0f289f9b4cb81947c89957694f10dde3d95a"
+      "sha256": "34c161bb7638374c2af257f01a584d2c02d0d8d4d7ed09a3d2d98cc80c21e2a7"
     },
     "device": {
       "path": "openapi/device-api.openapi.json",
-      "sha256": "51dafe85c10d5906c03d7331ef86f105e6af4333aa2c3be63963a1ef7c336ac7"
+      "sha256": "f9587490bd9a88e25592d4ea4a8d1331e11f28b29a3841fce04923b6ae95aa76"
     }
   },
   "fixtures": {
     "core_resources": {
       "path": "fixtures/core-resources.json",
-      "sha256": "ba0de9926a017b827e73c16a23f16f2ac379499959b46442f51f3a023452a1aa"
+      "sha256": "37d91400c3f6b828c85690ed0c644a9f78b3acb8077d35560e1f295abf9e9c7a"
     },
     "forward_enums": {
       "path": "fixtures/forward-enums.json",
-      "sha256": "48b9953a58f50b18400bbff03c120052692e4b477f739bcab0c0c4d6304799c0"
+      "sha256": "f1e52653fd209201e21493d8eaf7093254fb65f33282c9ae09671c0e58744734"
     },
     "explicit_times": {
       "path": "fixtures/explicit-times.json",

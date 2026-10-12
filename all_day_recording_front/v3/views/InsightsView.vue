@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CrossDayMemoryPanel from "../components/CrossDayMemoryPanel.vue"
 import { computed, onBeforeUnmount, ref, watchEffect } from 'vue'
 
 import PageState from '../components/PageState.vue'
@@ -141,6 +142,7 @@ onBeforeUnmount(release)
 </script>
 
 <template>
+  <CrossDayMemoryPanel />
   <section class="page insights-page">
     <header class="page-header">
       <div><p class="overline">GROUNDED INSIGHTS / V3.6</p><h1>总结与<em>关系</em></h1></div>

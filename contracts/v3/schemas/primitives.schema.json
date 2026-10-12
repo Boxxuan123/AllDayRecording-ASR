@@ -152,7 +152,8 @@
         "reminder",
         "daily_event",
         "daily_summary",
-        "chat_followup"
+        "chat_followup",
+        "memory_index"
       ]
     },
     "ApiError": {

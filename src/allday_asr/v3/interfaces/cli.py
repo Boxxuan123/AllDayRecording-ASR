@@ -27,6 +27,7 @@ from allday_asr.v3.interfaces.desktop_server import serve_v3_desktop
 from .self_backfill_cli import register as register_self_backfill
 from .daily_automation_cli import register as register_daily_automation
 from .scoped_recompute_cli import register as register_scoped_recompute
+from .cross_day_memory_cli import register as register_cross_day_memory
 
 
 app = typer.Typer(
@@ -37,6 +38,7 @@ app = typer.Typer(
 register_self_backfill(app)
 register_daily_automation(app)
 register_scoped_recompute(app)
+register_cross_day_memory(app)
 
 
 @app.command(name="status")

@@ -45,6 +45,9 @@ class DeviceReviewService:
         self._cache_until: float = 0.0
 
     def snapshot(self, only_review_id: str | None = None) -> dict[str, Any]:
+        memory = getattr(self.core,"cross_day_memory",None)
+        if memory is not None:
+            memory.refresh_saved()
         candidates = self.core.people.list_review_candidates(None, "pending", 500)
         by_prototype = {
             str(candidate["prototype_id"]): candidate for candidate in candidates
@@ -264,7 +267,12 @@ class DeviceReviewService:
             else:
                 raise ValueError("unsupported reminder review action")
         elif kind == "person_memory":
-            if action == "confirm":
+            if context.get("memory_association"):
+                candidate=context["memory_association"]
+                if action not in {"confirm","reject"}:
+                    raise ValueError("unsupported association review action")
+                result=self.core.cross_day_memory.decide(candidate["source"],candidate["target"],"link" if action=="confirm" else "reject",candidate["revision"],actor=actor,operation_id=operation_id)
+            elif action == "confirm":
                 result = self.core.person_memory.confirm(source_id, actor=actor)
             elif action == "reject":
                 result = self.core.person_memory.retract(source_id, actor=actor)

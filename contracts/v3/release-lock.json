@@ -1,9 +1,9 @@
 {
-  "release_version": "3.9.1",
-  "contract_version": "3.9.1",
-  "projection_version": 6,
-  "core_schema_version": 33,
-  "phone_projection_schema_version": 20,
+  "release_version": "3.10.0",
+  "contract_version": "3.10.0",
+  "projection_version": 7,
+  "core_schema_version": 34,
+  "phone_projection_schema_version": 21,
   "default_entries": {
     "desktop": "v3",
     "phone": "v3",

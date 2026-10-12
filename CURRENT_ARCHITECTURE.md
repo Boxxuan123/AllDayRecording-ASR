@@ -50,3 +50,10 @@ The validation matrix is: complete ASR pytest and Ruff, Desktop `npm test` and b
 ## 2026-10-11 聊天事项手机接入
 
 契约 3.9.0 / 投影 6 / Core 33 / Phone 20。聊天事项使用现有 Event、人工操作、同步 outbox 和回执；chat_record 证据独立于录音身份。首次提醒由用户确认执行时间后进入现有 ReminderSchedule 与 Calendar Kit 专用日历。新进展保存同一 Event 的待审核变化，人工标题／状态受保护。本轮跨 UI、Transport、Storage，既有超 500 行 ViewModel／Repository 复审与验证结果见 [验收记录](docs/CHAT_FOLLOWUP_PHONE_ACCEPTANCE_20261011.md)。代码接入完成；实机 NOT_RUN。
+
+
+## 2026-10-12 跨天记忆 V1
+
+当前契约 3.10.0 / 投影 7 / Core 34 / Phone 21；ASR 0.7.0、Phone 1.0.8。新增有限证据索引及不可变修订，复用来源账号、稳定人物、Event、原文修订、人工纠正、审核和原同步链路。索引不拥有人物画像、任务状态或提醒；未知录音不归入已知人物。固定清单范围刷新只重验来源，不调用模型或新增后台调度。
+
+本轮跨 UI / Transport / Storage，既有大文件 ViewModel 与 Repository 仅接入原 outbox、回执和资源分派；新逻辑拆到 PhoneCrossDayMemory、PhoneCrossDayMemorySection、Python cross_day_memory application/domain 及 SQLite sources/index adapter。复审以实际 SQLite 对端闭环、兼容迁移、旧重放、相关回归及签名构建为依据；实机 NOT_RUN，详见 [验收与运行说明](docs/CROSS_DAY_MEMORY_V1_20261012.md)。

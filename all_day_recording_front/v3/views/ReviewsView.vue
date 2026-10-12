@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import PageState from '../components/PageState.vue'
 import VoiceReviewActions from '../components/VoiceReviewActions.vue'
-import { desktopApi } from '../core/api'
+import { desktopApi, request } from '../core/api'
 import { formatDate } from '../core/format'
 import { playRange } from '../core/media'
 import { invalidateQuery, useQuery } from '../core/query'
@@ -265,7 +265,7 @@ function cardTitle(item: ReviewItem): string {
     if (operation === 'MARK_DONE') return `是否将提醒标记完成：“${item.title}”？`
     return `是否创建提醒：“${item.title}”？`
   }
-  if (item.kind === 'person_memory') return `是否长期记住：“${item.summary}”？`
+  if (item.kind === 'person_memory') return item.context.memory_association ? `是否为同一件事：“${item.summary}”？` : `是否长期记住：“${item.summary}”？`
   if (item.kind === 'knowledge_proposal') {
     return item.context.event_kind === 'person_fact'
       ? `是否将“${item.summary}”作为人物事实？`
@@ -316,6 +316,7 @@ function cardSummary(item: ReviewItem): string {
 function targetFor(item: ReviewItem): string {
   if (item.kind === 'processing_gate' && item.session_id) return `/recordings/${encodeURIComponent(item.session_id)}?tab=runs`
   if (item.kind === 'reminder') return `/reminders?candidate=${encodeURIComponent(item.source_id)}`
+  if (item.context.memory_association) return '/people'
   if (item.kind === 'person_memory' && item.person_id) {
     return `/people?mode=memory&person=${encodeURIComponent(item.person_id)}&memory=${encodeURIComponent(item.source_id)}`
   }
@@ -386,7 +387,12 @@ async function currentMemory(item: ReviewItem): Promise<PersonMemory> {
   return memory
 }
 
+function memoryAssociation(item:ReviewItem,action:string):void {
+  const c=item.context.memory_association as {source:string;target:string;revision:number}
+  void act(item,()=>request('/api/v3/memory/decision',{method:'POST',body:JSON.stringify({source:c.source,target:c.target,action,expected_revision:c.revision})}),'关联决定已保存，原文和人工历史保留。')
+}
 function confirmMemory(item: ReviewItem): void {
+  if(item.context.memory_association){memoryAssociation(item,'link');return}
   void act(item, async () => {
     const memory = await currentMemory(item)
     return desktopApi.revisePersonMemory(memory.memory_id, {
@@ -401,6 +407,7 @@ function confirmMemory(item: ReviewItem): void {
 }
 
 function retractMemory(item: ReviewItem): void {
+  if(item.context.memory_association){memoryAssociation(item,'reject');return}
   void act(item, () => desktopApi.retractPersonMemory(item.source_id), '未采用这条记忆；历史版本和证据仍可审计。')
 }
 
@@ -528,8 +535,8 @@ function unique(values: string[]): string[] {
                   <button type="button" class="review-action primary" :disabled="busyId === item.review_id" @click="confirmReminder(item)">{{ busyId === item.review_id ? '处理中' : '确认执行' }}</button>
                 </template>
                 <template v-else-if="item.kind === 'person_memory'">
-                  <button type="button" class="review-action reject" :disabled="busyId === item.review_id" @click="retractMemory(item)">不记</button>
-                  <button type="button" class="review-action primary" :disabled="busyId === item.review_id" @click="confirmMemory(item)">{{ busyId === item.review_id ? '处理中' : '记住' }}</button>
+                  <button type="button" class="review-action reject" :disabled="busyId === item.review_id" @click="retractMemory(item)">{{ item.context.memory_association ? '不是同一件事' : '不记' }}</button>
+                  <button type="button" class="review-action primary" :disabled="busyId === item.review_id" @click="confirmMemory(item)">{{ busyId === item.review_id ? '处理中' : item.context.memory_association ? '关联到这件事' : '记住' }}</button>
                 </template>
                 <template v-else-if="item.kind === 'knowledge_proposal'">
                   <button type="button" class="review-action reject" :disabled="busyId === item.review_id" @click="rejectProposal(item)">不采用</button>

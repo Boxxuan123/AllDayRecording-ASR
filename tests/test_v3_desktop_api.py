@@ -66,6 +66,39 @@ class V3DesktopApiTests(unittest.TestCase):
         self._stop_server()
         shutil.rmtree(self.root, ignore_errors=True)
 
+    def test_memory_routes_authenticate_and_round_trip_reversible_associations(self):
+        from tests.test_cross_day_memory_v1 import Sources
+
+        sources = Sources()
+        memory = self.server.application.core.cross_day_memory
+        memory.sources = sources
+        status, _, _ = self._request("/api/v3/memory", authenticated=False)
+        self.assertEqual(status, 403)
+        status, value, _ = self._request("/api/v3/memory")
+        self.assertEqual((status, value["status"]), (200, "not_selected"))
+        body = {"first": "2026-10-05", "last": "2026-10-07",
+                "contacts": [sources.scope["contacts"][0]["id"]]}
+        status, value, _ = self._request("/api/v3/memory/update", method="POST", body=body)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(value["people"]), 1)
+        self.assertEqual(len(value["things"]), 2)
+        status, repeated, _ = self._request("/api/v3/memory/update", method="POST", body=body)
+        self.assertEqual((status, repeated), (200, value))
+        source, target = value["discussions"][2]["id"], value["discussions"][0]["id"]
+        decision = {"source": source, "target": target, "action": "link",
+                    "expected_revision": value["revision"]}
+        status, linked, _ = self._request("/api/v3/memory/decision", method="POST", body=decision)
+        self.assertEqual((status, len(linked["things"])), (200, 1))
+        decision.update(action="detach", expected_revision=linked["revision"])
+        status, detached, _ = self._request("/api/v3/memory/decision", method="POST", body=decision)
+        self.assertEqual((status, len(detached["things"])), (200, 2))
+        self.assertEqual(detached["candidates"], [])
+        sources.rows[0]["evidence_status"] = "source_changed_or_missing"
+        sources.rows[0]["evidence"][0]["status"] = "source_changed_or_missing"
+        status, refreshed, _ = self._request("/api/v3/memory")
+        self.assertEqual(status, 200)
+        self.assertEqual(refreshed["discussions"][0]["evidence_status"], "source_changed_or_missing")
+
     def test_linked_event_detail_is_authenticated_and_reports_missing_event(self):
         status, _, _ = self._request("/api/v3/events/absent", authenticated=False)
         self.assertEqual(status, 403)

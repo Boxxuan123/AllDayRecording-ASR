@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CrossDayMemoryPanel from "../components/CrossDayMemoryPanel.vue"
 import VoiceSampleAudition from "../components/VoiceSampleAudition.vue"
 import { computed, nextTick, onBeforeUnmount, ref, watchEffect } from 'vue'
 
@@ -389,6 +390,7 @@ onBeforeUnmount(release)
     <p v-if="errorMessage" class="form-error speaker-message">{{ errorMessage }}</p>
     <p v-if="resultMessage" class="generation-message">{{ resultMessage }}</p>
 
+    <CrossDayMemoryPanel v-if="mode === 'memory'" />
     <PageState v-if="mode === 'memory'" :loading="query.loading.value" :error="query.error.value" :has-content="query.data.value !== null" :empty="!query.data.value?.people.length" empty-text="还没有已确认人物。请先在“未知声纹聚类”中确认人物身份。" @retry="query.refresh(true)">
       <div class="people-layout memory-layout">
         <aside class="panel cluster-list person-list">

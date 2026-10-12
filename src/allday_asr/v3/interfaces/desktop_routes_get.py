@@ -47,6 +47,12 @@ class DesktopGetRoutesMixin:
             )
             return
         query = parse_qs(parsed.query)
+        if path == "/api/v3/memory":
+            self._send_json(200,self.application.core.cross_day_memory.get())
+            return
+        if path == "/api/v3/memory/inventory":
+            self._send_json(200,self.application.core.cross_day_memory.inventory(_required_query(query,"first"),_required_query(query,"last")))
+            return
         if self._dispatch_chat_get(path, query):
             return
         if path == '/api/v3/blind/status':
@@ -158,6 +164,7 @@ class DesktopGetRoutesMixin:
             )
             return
         if path == "/api/v3/reviews":
+            self.application.core.cross_day_memory.refresh_saved()
             limit = _integer(query.get("limit", ["100"])[0], "limit")
             cursor = _integer(query.get("cursor", ["0"])[0], "cursor")
             self._send_json(HTTPStatus.OK,

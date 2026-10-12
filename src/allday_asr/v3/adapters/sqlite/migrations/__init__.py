@@ -52,6 +52,8 @@ from allday_asr.v3.adapters.sqlite.migrations.v011_layered_speaker_identity impo
 )
 
 
+from .v034_cross_day_index import SQL as V034_SQL
+
 MIGRATIONS = (
     V3Migration(version=1, name="v3_core", sql=V001_SQL),
     V3Migration(version=2, name="v3_device_sync", sql=V002_SQL),
@@ -108,6 +110,7 @@ MIGRATIONS = (
     V3Migration(31, "chat_followup_provenance", V031_SQL, contract_visible=False),
     V3Migration(33, "chat_mobile_reminders", V033_SQL),
     V3Migration(32, "chat_personal_admission", V032_SQL, contract_visible=False),
+    V3Migration(34, "cross_day_memory_index", V034_SQL),
 )
 
 __all__ = ["MIGRATIONS"]

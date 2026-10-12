@@ -64,6 +64,9 @@ class UtteranceCorrectionOperationHandler:
         self._now = now or (lambda: datetime.now(timezone.utc))
 
     def apply(self, operation: ClientOperation, uow: UnitOfWork) -> OperationReceipt:
+        if operation.kind == "memory.link":
+            from .cross_day_memory import apply_memory_operation
+            return apply_memory_operation(operation,uow,self._now())
         if operation.kind == "chat.followup":
             from .chat_phone_operations import apply_chat_operation
 
@@ -213,6 +216,7 @@ class MobileSyncService:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._annotation_samples = annotation_samples
         self.daily_refresh = daily_refresh
+        self.memory_refresh = None
 
     def synchronize(self, device_id: str, request: SyncRequest) -> SyncResponse:
         started = time.perf_counter()
@@ -224,6 +228,8 @@ class MobileSyncService:
         cursor_sequence = 0 if snapshot else _decode_cursor(request.cursor)
         if snapshot and position > watermark:
             raise ValueError("invalid snapshot cursor")
+        if self.memory_refresh is not None:
+            self.memory_refresh()
         receipts: list[OperationReceipt] = []
         with self._uow_factory() as uow:
             transaction_started = time.perf_counter()

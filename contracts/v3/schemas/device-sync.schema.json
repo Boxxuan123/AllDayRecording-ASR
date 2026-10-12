@@ -238,6 +238,29 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "resource_type": {
+                "const": "memory_index"
+              },
+              "operation": {
+                "const": "upsert"
+              }
+            },
+            "required": [
+              "resource_type",
+              "operation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resource": {
+                "$ref": "memory-index.schema.json"
+              }
+            }
+          }
         }
       ]
     },
@@ -252,7 +275,7 @@
       ],
       "properties": {
         "projection_version": {
-          "const": 6
+          "const": 7
         },
         "cursor": {
           "type": [
@@ -298,7 +321,7 @@
       ],
       "properties": {
         "projection_version": {
-          "const": 6
+          "const": 7
         },
         "receipts": {
           "type": "array",

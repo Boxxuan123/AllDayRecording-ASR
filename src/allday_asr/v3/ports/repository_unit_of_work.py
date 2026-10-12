@@ -37,7 +37,10 @@ from .repository_ports_people import (
 )
 
 
+from .cross_day_memory import CrossDayIndexRepository
+
 class UnitOfWork(Protocol):
+    cross_day_index: CrossDayIndexRepository
     catalog: RecordingCatalogRepository
     devices: DeviceRepository
     processing_runs: ProcessingRunRepository

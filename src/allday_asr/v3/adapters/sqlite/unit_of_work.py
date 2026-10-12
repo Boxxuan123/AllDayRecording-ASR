@@ -82,6 +82,8 @@ class SqliteUnitOfWork:
         self.desktop = SqliteDesktopReadRepository(connection)
         self.knowledge = SqliteKnowledgeRepository(connection)
         self.followups = SqliteChatFollowupRepository(connection)
+        from .cross_day_index_repository import CrossDayIndexRepository
+        self.cross_day_index = CrossDayIndexRepository(connection)
         self.derivations = SqliteDerivationRepository(connection)
         self.reminders = SqliteReminderRepository(connection)
         self.people = SqlitePeopleRepository(connection)

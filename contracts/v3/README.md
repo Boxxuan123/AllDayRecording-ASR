@@ -6,8 +6,8 @@ generated decoders, but they must not redefine server enums or resource shapes.
 
 ## Versioning
 
-- Contract version: `3.9.0`
-- Mobile projection version: `6`
+- Contract version: `3.10.0`
+- Mobile projection version: `7`
 - JSON Schema dialect: 2020-12
 - OpenAPI version: 3.1
 
@@ -69,3 +69,8 @@ Desktop endpoints live under `/api/v3`, while paired-device endpoints live under
 ## V3.9 chat followups
 
 Projection 6 adds accepted independent chat_followup resources and chat.followup operations on the existing Event revision and sync receipt path. Chat evidence uses source_type=chat_record; recording identifiers remain absent. Only explicitly enabled chat reminders have nullable session_id/source_candidate_id and chat_record source_type; recording schedules retain their original identifiers. Core migration 33 and Phone projection migration 20 preserve acknowledged cursors, queued operations and Calendar bindings. Upgrade the Phone consumer with the server; projection 5 requests are rejected explicitly. Relative-time record_id is optional for saved legacy responses and never changes the stable anchor.
+
+
+## V3.10 bounded cross-day index
+
+Projection 7 adds memory_index and memory.link (link/reject/detach) on the existing change log, immutable correction audit, outbox, resource revision CAS and receipt path. Core 34 / Phone 21 preserve cursor sequence and unrelated state. memory-index.schema.json limits three contacts, seven discussions, three topics, eight necessary references per discussion and 600 characters per quote. No full chat/audio payload is synchronized. Source revision/status, identity basis, UTC evidence time (Singapore display timezone), assertion type and optional learned time remain distinct. Unknown recording candidates cannot become known-person interactions. The index owns no person library, task state or reminder lifecycle. Desktop GET /memory refreshes only a frozen manifest; POST /memory/update selects the bounded manifest and POST /memory/decision records a reversible human association. Existing person-memory resources retain their original scope.

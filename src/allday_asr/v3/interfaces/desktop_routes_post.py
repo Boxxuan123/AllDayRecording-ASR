@@ -69,6 +69,12 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
         if not self._authorized_mutation():
             return
         body = self._read_json()
+        if path == "/api/v3/memory/update":
+            self._send_json(200,self.application.core.cross_day_memory.update(**body))
+            return
+        if path == "/api/v3/memory/decision":
+            self._send_json(200,self.application.core.cross_day_memory.decide(**body))
+            return
         if self._dispatch_chat_post(path, body):
             return
         if self._dispatch_annotation_post(path, body):

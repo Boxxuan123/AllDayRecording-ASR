@@ -39,7 +39,8 @@ class DesktopReviewQueryMixin:
         from . import desktop_repository as compatibility
 
         fetch_limit = limit + offset
-        items: list[dict[str, Any]] = []
+        from .cross_day_index_repository import memory_review_items
+        items: list[dict[str, Any]] = memory_review_items(self.connection)
         mapping_rows = self.connection.execute("""SELECT * FROM utterances
             WHERE status = 'active' AND json_type(evidence_json, '$.annotation_review') = 'object'
             ORDER BY created_at, utterance_id LIMIT ?""", (fetch_limit,)).fetchall()

@@ -103,6 +103,7 @@ class V3Core:
     )
     daily_automation: DailyGenerationCoordinator | None = None
     unified_review: UnifiedReviewService | None = None
+    cross_day_memory: object | None = None
 
     def initialize(self) -> int:
         """Create only V3-owned state and migrate it to the latest schema."""
@@ -261,13 +262,19 @@ def compose_v3_core(
         review_root,
     )
 
+    from allday_asr.v3.application.cross_day_memory import CrossDayMemoryService
+    from allday_asr.v3.adapters.sqlite.cross_day_memory_sources import CrossDayMemorySources
+    cross_day_memory = CrossDayMemoryService(CrossDayMemorySources(database,review_uow,selected.state_dir / "chat/cache.sqlite3"),review_uow)
+
     def daily_refresh(force=False):
+        cross_day_memory.refresh_saved()
         insights.refresh_daily_cache(force)
         unified_review.refresh_saved()
         if daily_automation is not None:
             daily_automation.notify("receiver_sync")
 
     mobile_sync.daily_refresh = daily_refresh
+    mobile_sync.memory_refresh = cross_day_memory.refresh_saved
     return V3Core(
         paths=selected,
         database=database,
@@ -287,6 +294,7 @@ def compose_v3_core(
         insights=insights,
         daily_automation=daily_automation,
         unified_review=unified_review,
+        cross_day_memory=cross_day_memory,
         blind_validation=blind_validation,
     )
 
