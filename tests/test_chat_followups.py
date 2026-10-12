@@ -376,7 +376,8 @@ def test_f12_existing_recording_task_link_calendar_identity_and_migration(tmp_pa
                 "SELECT name,sql FROM sqlite_master WHERE tbl_name IN ('event_operations','event_current_states') AND type IN ('index','trigger')"
             )
         }
-    assert old.database.initialize() == 33
+    from allday_asr.v3.adapters.sqlite.migration_runner import LATEST_V3_SCHEMA_VERSION
+    assert old.database.initialize() == LATEST_V3_SCHEMA_VERSION
     with old.database.read() as db:
         assert before == {
             t: [tuple(r) for r in db.execute("SELECT * FROM " + t)] for t in before

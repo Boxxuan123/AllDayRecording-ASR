@@ -328,7 +328,7 @@ def test_migration_33_preserves_existing_sync_and_decisions(tmp_path):
         ) == (7, 123)
         assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert not c.execute("PRAGMA foreign_key_check").fetchall()
-    assert db.initialize() == 34
+    assert db.initialize() == 35
 
 
 def test_unknown_recording_candidate_person_never_becomes_known_interaction(tmp_path):

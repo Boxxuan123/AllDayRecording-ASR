@@ -64,7 +64,7 @@ class CrossDayMemoryService:
                     "memory sources changed during publication; retry bounded update"
                 )
             value = project(scope, rows, uow.cross_day_index.decisions())
-            value["status"] = "ready" if rows else "no_data"
+            value["status"] = "ready" if value["discussions"] else "no_data"
             if (
                 old
                 and {
@@ -143,6 +143,7 @@ def apply_decision(
         return old
     uow.cross_day_index.decide(source, target, action)
     value = project(scope, list(rows.values()), uow.cross_day_index.decisions())
+    value["excluded"] = old.get("excluded", [])
     value.update(
         status=old["status"], revision=old["revision"] + 1, updated_at=now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     )

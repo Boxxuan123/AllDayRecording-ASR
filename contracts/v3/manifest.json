@@ -78,7 +78,7 @@
     },
     "memory_index": {
       "path": "schemas/memory-index.schema.json",
-      "sha256": "0fb6287120d0f28a2166c8986b56321b1b9d00b56fe75b0d211b19458f418106"
+      "sha256": "52a9cfe0927bdffe26ff3c2242183955f9ebfed8e78a33ebf0121a5f569e6255"
     }
   },
   "apis": {

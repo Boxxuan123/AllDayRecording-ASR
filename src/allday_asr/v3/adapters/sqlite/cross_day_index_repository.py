@@ -1,4 +1,5 @@
 import json
+from allday_asr.v3.domain.memory_content import safe_memory
 
 
 class CrossDayIndexRepository:
@@ -10,7 +11,7 @@ class CrossDayIndexRepository:
             "SELECT * FROM cross_day_index_revisions ORDER BY revision DESC LIMIT 1"
         ).fetchone()
         return (
-            (json.loads(row["scope_json"]), json.loads(row["value_json"]))
+            (safe_memory(json.loads(row["scope_json"])), safe_memory(json.loads(row["value_json"])))
             if row
             else (None, None)
         )
@@ -39,8 +40,8 @@ class CrossDayIndexRepository:
             "INSERT INTO cross_day_index_revisions VALUES(?,?,?,?)",
             (
                 value["revision"],
-                json.dumps(scope, ensure_ascii=False, sort_keys=True),
-                json.dumps(value, ensure_ascii=False, sort_keys=True),
+                json.dumps(safe_memory(scope), ensure_ascii=False, sort_keys=True),
+                json.dumps(safe_memory(value), ensure_ascii=False, sort_keys=True),
                 now,
             ),
         )

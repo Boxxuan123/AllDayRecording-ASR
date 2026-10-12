@@ -4,6 +4,7 @@ import json
 from urllib.parse import unquote
 
 from allday_asr.v3.ports.chat_data import ChatDataError
+from allday_asr.v3.domain.chat_projection import semantic_value
 from .desktop_followup_routes import DesktopFollowupRoutesMixin
 
 MESSAGES = {
@@ -89,9 +90,9 @@ class DesktopChatRoutesMixin(DesktopFollowupRoutesMixin):
             except (ValueError, TypeError):
                 raise ChatDataError("INVALID_REQUEST", 400) from None
             if path == "/api/v3/chat/messages":
-                return service.search(scope, one("cursor"), limit, one("origin", "mac"))
+                return semantic_value(service.search(scope, one("cursor"), limit, one("origin", "mac")))
             if path == "/api/v3/chat/context":
-                return service.context(unquote(one("record_id", "")), before, after)
+                return semantic_value(service.context(unquote(one("record_id", "")), before, after))
             for kind in ("accounts", "conversations"):
                 if path == "/api/v3/chat/" + kind:
                     return service.directory(kind, scope, one("cursor"))

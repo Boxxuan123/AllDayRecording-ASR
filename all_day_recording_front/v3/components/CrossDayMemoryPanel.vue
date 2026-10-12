@@ -6,7 +6,7 @@ import { navigate } from '../core/router'
 import { playSessionRange, release } from '../core/media'
 interface Contact { id:string; label:string; identity_basis:string; person_id?:string; platform:string; discussion_ids?:string[]; last_evidence_at?:string; dates?:string[] }
 interface Evidence { source_type:string; quote:string; revision:number; occurred_at:string; learned_at?:string; assertion:string; status:string; speaker:string; record_id?:string; session_id?:string; start_ms?:number; end_ms?:number; utterance_id?:string }
-interface Discussion { id:string; title:string; contacts:Contact[]; thing_id:string; link_basis:string; occurred_at:string; evidence_status:string; evidence:Evidence[]; event_id?:string; pending_change:boolean }
+interface Discussion { id:string; title:string; summary?:string; contacts:Contact[]; thing_id:string; link_basis:string; occurred_at:string; evidence_status:string; evidence:Evidence[]; event_id?:string; pending_change:boolean }
 interface Thing { id:string; title:string; discussion_ids:string[]; progress:string; last_evidence_at?:string; needs_confirmation:boolean }
 interface Index { id:string; revision:number; status:string; scope?:{first:string;last:string;coverage:{missing_sources:string[]}}; people:Contact[]; discussions:Discussion[]; things:Thing[]; topics:{label:string;discussion_ids:string[]}[]; candidates:{source:string;target:string;reason:string}[] }
 const props=defineProps<{personId?:string}>()
@@ -44,10 +44,11 @@ onMounted(()=>void load());onBeforeUnmount(()=>{generation++;release()})
 <div v-for="p in people.filter(p=>!person||p.id===person)" :key="p.id"><h3>{{ p.label }} · {{ p.platform }}</h3><p>{{ p.identity_basis }} · 最后证据 {{ time(p.last_evidence_at) }}</p><button v-if="p.person_id" @click="navigate('/people?person='+encodeURIComponent(p.person_id))">已有人物详情与身份纠正</button><button v-else @click="navigate('/chat')">来源账号与身份纠正</button></div>
 <h3>具体事情／独立讨论</h3><button v-for="t in visibleThings" :key="t.id" @click="chooseThing(t.id)">{{ t.title }} · {{ t.discussion_ids.length }} 次记录</button>
 <p v-if="thing">{{ value.things.find(t=>t.id===thing)?.progress }} <span v-if="value.things.find(t=>t.id===thing)?.needs_confirmation">· 进展待确认，进入现有跟进审核</span></p>
-<h3>话题下分别发生的讨论</h3><button v-for="t in value.topics" :key="t.label" @click="topic=t.label;thing='';person=''">{{ t.label }} · {{ t.discussion_ids.length }} 次独立讨论</button><p>话题只按原文词语索引，不能据此合并事情或推断兴趣。</p>
+<h3>话题下分别发生的讨论</h3><button v-for="t in value.topics" :key="t.label" @click="topic=t.label;thing='';person=''">{{ t.label }} · {{ t.discussion_ids.length }} 次独立讨论</button><p>话题按有依据的讨论内容分组，不能据此合并事情或推断兴趣。</p>
 <p v-if="!rows.length">所选人物或筛选范围尚无可用互动记录。</p>
 <section v-for="r in rows" :key="r.id">
 <h3><button @click="expanded=expanded===r.id?'':r.id">{{ r.title }} · 查看依据</button></h3><small>{{ time(r.occurred_at) }} · {{ r.link_basis==='existing_event'?'已有稳定事件关联':r.link_basis==='human_confirmed'?'人工关联':r.link_basis==='manually_detached'?'人工恢复独立':'独立讨论，未确认具体事情' }}</small>
+<p v-if="r.summary">{{ r.summary }}</p>
 <p v-if="r.evidence_status!=='valid'">证据已变化或缺失：以下是原修订，不能继续当作已确认事实。</p>
 <div v-if="expanded===r.id"><div v-for="(e,i) in r.evidence" :key="i"><blockquote>{{ e.quote }}</blockquote><small>{{ e.speaker }} · {{ time(e.occurred_at) }} · {{ e.assertion }} · 原文修订 {{ e.revision }} · {{ e.status==='valid'?'原文可用':'原文已失效' }}<span v-if="e.learned_at"> · 获知于 {{ time(e.learned_at) }}</span></small><button v-if="e.source_type==='chat'" @click="openChat(e)">聊天原文与上下文</button><template v-else><button :disabled="e.status!=='valid'" @click="playSessionRange(e.session_id!,e.start_ms!,e.end_ms!)">播放片段</button><button @click="navigate('/recordings/'+e.session_id+'?tab=timeline&utterance='+e.utterance_id)">打开转写与人物纠正</button></template></div>
 <button v-if="r.event_id" @click="navigate((r.evidence[0]?.source_type==='chat'?'/followups':'/reminders')+'?event='+r.event_id)">关联跟进详情</button>

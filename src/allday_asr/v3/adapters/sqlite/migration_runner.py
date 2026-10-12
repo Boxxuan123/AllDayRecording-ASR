@@ -28,7 +28,7 @@ def _default_migrations() -> tuple[V3Migration, ...]:
     return MIGRATIONS
 
 
-LATEST_V3_SCHEMA_VERSION = 34
+LATEST_V3_SCHEMA_VERSION = 35
 
 
 class V3MigrationRunner:
@@ -111,6 +111,10 @@ class V3MigrationRunner:
         }
 
     def _apply(self, connection: sqlite3.Connection, migration: V3Migration) -> None:
+        if migration.name == "memory_safe_projection":
+            import json
+            from allday_asr.v3.domain.memory_content import safe_memory
+            connection.create_function("memory_safe_json", 1, lambda value: json.dumps(safe_memory(json.loads(value)), ensure_ascii=False, sort_keys=True))
         generalized = migration.name == "chat_followup_provenance"
         if generalized:
             connection.execute("PRAGMA foreign_keys = OFF")

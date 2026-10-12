@@ -105,6 +105,10 @@
                 }
               }
             }
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 240
           }
         }
       }

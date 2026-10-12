@@ -10,6 +10,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Protocol
 
+from allday_asr.v3.domain.memory_content import safe_memory
 from .sound_annotation import classify_segments
 from .speaker_annotation import AnnotationValidationError, assign_annotation
 from allday_asr.v3.contracts import validate_reminder_dto, validate_utterance_dto
@@ -283,6 +284,8 @@ class MobileSyncService:
                         else validate_reminder_dto(event.payload)
                         if event.resource_type == "reminder"
                         and event.payload is not None
+                        else safe_memory(event.payload)
+                        if event.resource_type == "memory_index"
                         else event.payload
                     )
                 ),

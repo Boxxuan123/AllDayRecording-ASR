@@ -1,3 +1,4 @@
+from .v035_memory_safe_projection import SQL as V035_SQL
 from .v033_chat_mobile import SQL as V033_SQL
 from .v032_chat_admission import SQL as V032_SQL
 from .v031_chat_followups import SQL as V031_SQL
@@ -111,6 +112,7 @@ MIGRATIONS = (
     V3Migration(33, "chat_mobile_reminders", V033_SQL),
     V3Migration(32, "chat_personal_admission", V032_SQL, contract_visible=False),
     V3Migration(34, "cross_day_memory_index", V034_SQL),
+    V3Migration(35, "memory_safe_projection", V035_SQL, contract_visible=False),
 )
 
 __all__ = ["MIGRATIONS"]

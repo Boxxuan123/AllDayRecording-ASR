@@ -3,6 +3,7 @@
 import html
 import re
 import xml.etree.ElementTree as ET
+from urllib.parse import urlsplit, urlunsplit
 
 _ACCESS = re.compile(
     r"aeskey|encryptkey|authkey|access.?token|password|cdn.*(?:url|key)|media(?:url|uri)|thumburl|fileurl|filekey|attachurl|signature|^token$|^url$|^uri$|local.?path|file.?path|^attachments$|source_locator",
@@ -46,6 +47,7 @@ def semantic_text(value, depth=0):
         decoded = next_value
     if "<!DOCTYPE" in decoded.upper() or "<!ENTITY" in decoded.upper():
         return "[未解析：禁止外部实体或文档声明]"
+    image = bool(re.search(r"<img\b", decoded, re.I))
     if _XML.search(decoded):
         try:
             root = ET.fromstring(decoded)
@@ -54,6 +56,8 @@ def semantic_text(value, depth=0):
                 root = ET.fromstring("<projection>" + decoded + "</projection>")
             except (ET.ParseError, ValueError):
                 prefix = decoded.split("<", 1)[0].strip()
+                if image:
+                    return (semantic_text(prefix, depth + 1) + "\n" if prefix else "") + "收到图片，内容未解析"
                 return (
                     semantic_text(prefix, depth + 1) + "\n" if prefix else ""
                 ) + "[未解析：媒体/引用 XML；原文仅保留在来源缓存]"
@@ -97,11 +101,17 @@ def semantic_text(value, depth=0):
                 parts.append("[引用结束]")
 
         visit(root, 0)
-        return "\n".join(parts) or "[媒体消息：附件访问材料已省略]"
+        return "\n".join(parts) or ("收到图片，内容未解析" if image else "[媒体消息：附件访问材料已省略]")
     # Also cover attachment attributes in otherwise non-XML fragments; never emit values.
-    if re.search(r"(?:aeskey|cdnthumbaeskey)\s*[=：:]", decoded, re.I):
+    if re.search(r"(?:aeskey|cdnthumbaeskey|access.?token|authkey|encryptkey|password|signature)\s*[=：:]", decoded, re.I):
         return "[未解析：包含附件访问材料的片段]"
-    return _MEDIA.sub("[媒体定位已省略]", value)
+    def public_url(match):
+        try:
+            u = urlsplit(match.group(0))
+            return urlunsplit((u.scheme, u.hostname or "", u.path, "", ""))
+        except ValueError:
+            return "[链接访问参数已省略]"
+    return re.sub(r"https?://[^\s<>\"']+", public_url, _MEDIA.sub("[媒体定位已省略]", decoded))
 
 
 def semantic_value(value):

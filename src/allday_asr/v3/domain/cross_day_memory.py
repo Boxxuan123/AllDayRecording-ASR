@@ -1,15 +1,11 @@
 """Evidence-only discussion index. Never owns people, tasks or voice eligibility."""
 
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 from allday_asr.v3.domain.ids import stable_ulid
 
 INDEX_ID = stable_ulid("cross-day-memory-v1", "bounded-index")
-TOPICS = {
-    "招聘与机会": ("招聘", "工作机会", "老师", "婉拒", "简历", "面试"),
-    "约定与安排": ("约定", "见面", "明天", "下周"),
-    "材料与项目": ("材料", "项目", "报告"),
-}
+from .memory_content import safe_memory, admission, content, topics as discussion_topics, latest_evidence, continuation_reason
 
 
 def dates(first, last, timezone):
@@ -26,7 +22,17 @@ def contact_id(platform, source, account):
 
 
 def project(scope, discussions, decisions):
-    rows = deepcopy(discussions)
+    all_rows = safe_memory(deepcopy(discussions))
+    protected = {d[k] for d in decisions if d["action"] in {"link", "detach"} for k in ("source", "target")}
+    excluded = []
+    rows = []
+    for r in all_rows:
+        admitted, reason = admission(r)
+        if not admitted and r["id"] not in protected:
+            excluded.append({"id": r["id"], "reason": reason, "source_refs": [{k: e[k] for k in ("dataset", "record_id", "revision", "source_type") if k in e} for e in r["evidence"]]})
+            continue
+        r["title"], r["summary"] = content(r)
+        rows.append(r)
     by_id = {r["id"]: r for r in rows}
     links = {d["source"]: d for d in decisions if d["action"] in {"link", "detach"}}
     for r in rows:
@@ -37,11 +43,7 @@ def project(scope, discussions, decisions):
         d = links.get(r["id"])
         if d and d["action"] == "detach":
             r["thing_id"], r["link_basis"] = r["id"], "manually_detached"
-        r["topics"] = [
-            name
-            for name, words in TOPICS.items()
-            if any(w in " ".join(e["quote"] for e in r["evidence"]) for w in words)
-        ]
+        r["topics"] = discussion_topics(r)
 
     # Chains are allowed; cycles are rejected by the command path and fenced here too.
     def target(r, seen):
@@ -67,13 +69,13 @@ def project(scope, discussions, decisions):
         timeline = sorted(
             [r for r in rows if r["thing_id"] == key], key=lambda r: r["occurred_at"]
         )
-        valid = [r for r in timeline if r["evidence_status"] == "valid"]
+        valid = sorted([r for r in timeline if r["evidence_status"] == "valid"], key=lambda r: datetime.fromisoformat(latest_evidence(r).replace("Z", "+00:00")))
         things.append(
             {
                 "id": key,
                 "title": timeline[0]["title"],
                 "discussion_ids": [r["id"] for r in timeline],
-                "last_evidence_at": valid[-1]["occurred_at"] if valid else None,
+                "last_evidence_at": max((latest_evidence(r) for r in valid), key=lambda v: datetime.fromisoformat(v.replace("Z", "+00:00")), default=None),
                 "latest_discussion_id": valid[-1]["id"] if valid else None,
                 "followup_ids": list(
                     dict.fromkeys(r["event_id"] for r in timeline if r.get("event_id"))
@@ -101,10 +103,11 @@ def project(scope, discussions, decisions):
                 "thing_ids": list(dict.fromkeys(r["thing_id"] for r in interactions)),
                 "last_evidence_at": max(
                     (
-                        r["occurred_at"]
+                        latest_evidence(r)
                         for r in interactions
                         if r["evidence_status"] == "valid"
                     ),
+                    key=lambda v: datetime.fromisoformat(v.replace("Z", "+00:00")),
                     default=None,
                 ),
             }
@@ -161,8 +164,9 @@ def project(scope, discussions, decisions):
                 )
                 for e in other["evidence"]
             }
+            continuation = continuation_reason(r, other)
             if (
-                (ids & refs or reverse & replies)
+                (ids & refs or reverse & replies or continuation)
                 and namespaces & other_namespaces
                 and r["evidence_status"] == other["evidence_status"] == "valid"
             ):
@@ -170,7 +174,7 @@ def project(scope, discussions, decisions):
                     {
                         "source": r["id"],
                         "target": other["id"],
-                        "reason": "原消息明确回复另一条讨论中的记录；仍需判断是否同一具体事情",
+                        "reason": continuation or "原消息明确回复另一条讨论中的记录；仍需判断是否同一具体事情",
                     }
                 )
     topics = [
@@ -178,7 +182,7 @@ def project(scope, discussions, decisions):
             "label": label,
             "discussion_ids": [r["id"] for r in rows if label in r["topics"]],
         }
-        for label in TOPICS
+        for label in list(dict.fromkeys(t for r in rows for t in r["topics"]))[:3]
     ]
     return {
         "id": INDEX_ID,
@@ -188,6 +192,7 @@ def project(scope, discussions, decisions):
         "things": things,
         "topics": [t for t in topics if t["discussion_ids"]],
         "candidates": candidates,
+        "excluded": excluded,
         "limitations": [
             "仅固定输入清单；资料缺失不表示没有互动。",
             "原文为带日期的陈述或转述，不构成永久人物标签。",

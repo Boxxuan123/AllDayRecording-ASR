@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone as datetime_timezone
 from zoneinfo import ZoneInfo
 from allday_asr.v3.domain.cross_day_memory import dates, contact_id
 from allday_asr.v3.domain.ids import stable_ulid
+from allday_asr.v3.domain.memory_content import safe_memory, admission
+from allday_asr.v3.domain.chat_projection import semantic_text
 from allday_asr.v3.application.insight_projections import _period
 
 
@@ -197,14 +199,14 @@ class CrossDayMemorySources:
                     for r in matching
                 }
             )
-        return {
+        return safe_memory({
             "first": first,
             "last": last,
             "timezone": timezone,
             "contacts": list(contacts.values()),
             "coverage": coverage,
             "model_calls": 0,
-        }
+        })
 
     def freeze(self, first, last, timezone, selected):
         records, contacts, conversations, events, followups, coverage = self._read(
@@ -261,6 +263,8 @@ class CrossDayMemorySources:
                         "last_sent": r["sent_at"],
                     }
                 )
+        # Do not spend bounded slots on opaque attachments/unsolicited marketing.
+        groups = [g for g in groups if admission({"event_id": g["event_id"], "evidence": [{"source_type": "chat", "identity_self": r.get("is_from_self"), "quote": semantic_text(r["text"])} for r in g["records"]]})[0]]
         # Fair bounded selection: first discussion per selected contact, then chronological remainder.
         picked = []
         for key in selected:
@@ -279,7 +283,7 @@ class CrossDayMemorySources:
                         "dataset": r["dataset"],
                         "record_id": r["record_id"],
                         "revision": r["record_revision"],
-                        "quote": r["text"][:600],
+                        "quote": semantic_text(r["text"])[:600],
                         "speaker": r.get("sender_display_name") or "来源身份未确认",
                         "occurred_at": datetime.fromtimestamp(
                             r["sent_at"], datetime_timezone.utc
@@ -324,7 +328,7 @@ class CrossDayMemorySources:
                     {
                         "source_type": "recording",
                         "revision": e["revision"],
-                        "quote": e["text"][:600],
+                        "quote": semantic_text(e["text"])[:600],
                         "occurred_at": datetime.fromisoformat(
                             e["start_at"].replace("Z", "+00:00")
                         )
@@ -366,7 +370,7 @@ class CrossDayMemorySources:
                     "pending_change": False,
                 }
             )
-        return {
+        return safe_memory({
             "first": first,
             "last": last,
             "timezone": timezone,
@@ -375,7 +379,7 @@ class CrossDayMemorySources:
             "manifest": manifest,
             "model_calls": 0,
             "object_limit": 10,
-        }
+        })
 
     def load(self, scope):
         rows = json.loads(json.dumps(scope["manifest"]))
@@ -410,12 +414,16 @@ class CrossDayMemorySources:
                                 else None
                             )
                             body = json.loads(found[2]) if found else {}
+                            # Project the complete cached message before truncation. Legacy
+                            # manifests may contain a truncated XML fragment; revisions fence it.
+                            if found and found[0] == e["revision"]:
+                                e["quote"] = semantic_text(body.get("text") or "")[:600]
                             e["status"] = (
                                 "valid"
                                 if found
                                 and found[0] == e["revision"]
                                 and not found[1]
-                                and (body.get("text") or "").startswith(e["quote"])
+                                and semantic_text(body.get("text") or "").startswith(e["quote"])
                                 and body.get("is_from_self") == e.get("identity_self")
                                 and body.get("sender_account_id")
                                 == e.get("sender_account_id")
@@ -453,7 +461,7 @@ class CrossDayMemorySources:
                         )
                         if not event:
                             r["evidence_status"] = "source_changed_or_missing"
-                return rows
+                return safe_memory(rows)
             finally:
                 if chat:
                     chat.close()

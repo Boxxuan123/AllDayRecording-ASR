@@ -96,6 +96,9 @@ class SqliteChangeLogRepository:
         operation: str,
         payload: dict[str, Any] | None,
     ) -> int:
+        if resource_type == "memory_index":
+            from allday_asr.v3.domain.memory_content import safe_memory
+            payload = safe_memory(payload)
         if (
             resource_type == "recording_session"
             and operation == "upsert"

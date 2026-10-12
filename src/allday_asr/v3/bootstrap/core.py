@@ -267,7 +267,7 @@ def compose_v3_core(
     cross_day_memory = CrossDayMemoryService(CrossDayMemorySources(database,review_uow,selected.state_dir / "chat/cache.sqlite3"),review_uow)
 
     def daily_refresh(force=False):
-        cross_day_memory.refresh_saved()
+        # Mobile sync validates the bounded memory scope once before its writer.
         insights.refresh_daily_cache(force)
         unified_review.refresh_saved()
         if daily_automation is not None:
