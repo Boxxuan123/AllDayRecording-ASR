@@ -21,3 +21,5 @@
 实际桌面 HTTP：HTML、ready/4 条、两类原文检查通过；聊天上下文 200、录音媒体 Range 206。浏览器自动化连接两次超时，未计点击验证。真实固定日完整资源离线重放进入 Phone 实际 SQLite，重启后 4 条有效结论可读（不是实机网络同步）。HDC 无连接设备，本轮未安装或真机检查 Calendar、日期选择和播放，不重新开启通知观察。Code Linter 8 个 await-thenable 问题与未修改 origin/master 基线逐项相同；Hypium Windows_NT 宿主运行器 60 秒超时，未计为通过。新改动跨 UI、Storage、Transport，职责保持输入适配器/验证域/日期服务/已有同步/证据组件各自边界；无新定时调度、跨天人物记忆或全量补算。
 
 私有审核输出位于本机 outputs/unified-review-20261005-private，包括正文、必要原文与索引、验证和 model-budget；原模型输入/输出/失败日志仅留 state/v3/unified-review。公开内容不包含姓名、聊天、录音、数据 ID、设备信息或凭据。
+
+2026-10-12 手机连接后的补充验收与 Phone 1.0.6 修补见 [真机补充记录](UNIFIED_REVIEW_DEVICE_ACCEPTANCE_20261012.md)。本文件的未连接状态为当时记录。
