@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "history-recall.schema.json",
+  "title": "Bounded history recall and explicit source identity operations",
+  "$defs": {
+    "Request": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "query_id",
+            "question"
+          ],
+          "properties": {
+            "action": {
+              "const": "query"
+            },
+            "query_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,80}$"
+            },
+            "question": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            },
+            "keyword": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "person_id": {
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "all",
+                "qq",
+                "wechat",
+                "recording"
+              ]
+            },
+            "sent_from": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sent_to": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "expand": {
+              "type": "boolean"
+            },
+            "summarize": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ],
+          "properties": {
+            "action": {
+              "const": "catalog"
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "query_id"
+          ],
+          "properties": {
+            "action": {
+              "const": "cancel"
+            },
+            "query_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,80}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "query_id",
+            "page"
+          ],
+          "properties": {
+            "action": {
+              "const": "page"
+            },
+            "query_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,80}$"
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 14
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "query_id",
+            "evidence_id"
+          ],
+          "properties": {
+            "action": {
+              "const": "context"
+            },
+            "query_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,80}$"
+            },
+            "evidence_id": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "decision"
+          ],
+          "properties": {
+            "action": {
+              "const": "identity"
+            },
+            "decision": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation_id",
+                "key",
+                "person_id",
+                "action",
+                "basis",
+                "version"
+              ],
+              "properties": {
+                "operation_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "key": {
+                  "type": "string"
+                },
+                "person_id": {
+                  "type": "string"
+                },
+                "action": {
+                  "enum": [
+                    "link",
+                    "reject",
+                    "unlink"
+                  ]
+                },
+                "basis": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300
+                },
+                "version": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Response": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "query_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{8,80}$"
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object"
+          }
+        },
+        "claims": {
+          "type": "array",
+          "maxItems": 20
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "metrics": {
+          "type": "object"
+        },
+        "model_status": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "description": "Queries, pages and context are business read-only. identity is a separate explicit idempotent human command. Per query: at most 300 records, 6 source requests, one model invocation, 30 seconds. Source coverage remains partial. Evidence IDs bind citations; sender and quoted authors are distinct."
+}

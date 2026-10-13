@@ -109,6 +109,14 @@ class DesktopChatRoutesMixin(DesktopFollowupRoutesMixin):
 
         def run():
             service = self.application.chat
+            if path == "/api/v3/chat/recall":
+                try:
+                    result = self.application.recall.execute("desktop", body)
+                    if body.get("action") == "identity":
+                        self.application.core.cross_day_memory.refresh_saved()
+                    return result
+                except ValueError as exc:
+                    raise ChatDataError(str(exc), 400) from None
             if path == "/api/v3/chat/connection" and set(body) == {"base_url", "token"}:
                 return service.configure(body["base_url"], body["token"])
             if path == "/api/v3/chat/sync" and set(body) <= {"scopes", "reinitialize"}:

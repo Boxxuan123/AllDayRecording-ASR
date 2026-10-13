@@ -42,6 +42,23 @@ class DeviceGateway:
         self.ingest = ingest
         self.session_ingested = session_ingested
         self.review_service = review_service
+        self._recall_service = None
+        from threading import Lock
+        self._recall_lock = Lock()
+
+    def recall(self, key_id, payload):
+        device_id = self.trust.domain_device_id(key_id)
+        if self.review_service is None:
+            raise ValueError("历史查询服务不可用")
+        with self._recall_lock:
+            if self._recall_service is None:
+                from allday_asr.v3.application.history_recall import HistoryRecall
+                core = self.review_service.core
+                self._recall_service = HistoryRecall(core.database, core.paths.state_dir)
+        result = self._recall_service.execute(device_id, payload)
+        if payload.get("action") == "identity" and self.review_service.core.cross_day_memory is not None:
+            self.review_service.core.cross_day_memory.refresh_saved()
+        return result
 
     def reconcile(self) -> int:
         return self.trust.reconcile()

@@ -40,6 +40,8 @@ from .desktop_routes_post import DesktopPostRoutesMixin
 class V3DesktopApplication:
     def __init__(self, core: V3Core, *, token: str | None = None) -> None:
         self.core = core
+        from allday_asr.v3.application.history_recall import HistoryRecall
+        self.recall = HistoryRecall(core.database, core.paths.state_dir)
         from allday_asr.v3.bootstrap.chat import compose_chat_queries
 
         self.chat = compose_chat_queries(core.paths.state_dir / "chat", start_worker=False)

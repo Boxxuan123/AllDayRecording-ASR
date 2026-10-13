@@ -6,7 +6,7 @@ generated decoders, but they must not redefine server enums or resource shapes.
 
 ## Versioning
 
-- Contract version: `3.10.2`
+- Contract version: `3.11.0`
 - Mobile projection version: `7`
 - JSON Schema dialect: 2020-12
 - OpenAPI version: 3.1

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AllDayRecording Device API",
-    "version": "3.10.2",
+    "version": "3.11.0",
     "description": "Restricted paired-device API. It does not expose Desktop administration, Lab, database, or arbitrary file operations."
   },
   "servers": [
@@ -23,6 +23,40 @@
     }
   ],
   "paths": {
+    "/device/v3/recall": {
+  "post": {
+    "operationId": "deviceHistoryRecall",
+    "summary": "Bounded evidence retrieval or explicit source identity command",
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "../schemas/history-recall.schema.json#/$defs/Request"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Partial coverage, evidence, model status, paging or command receipt",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "../schemas/history-recall.schema.json#/$defs/Response"
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "Invalid, expired or changed source/mapping; reload required"
+      },
+      "403": {
+        "description": "Authentication required"
+      }
+    }
+  }
+},
     "/device/v3/status": {
       "get": {
         "operationId": "getDeviceGatewayStatus",

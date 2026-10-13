@@ -414,13 +414,19 @@ class CrossDayMemorySources:
         contacts={}
         with self.database.read() as core:
             for p in scope["contacts"]:
+                source_label=p["label"]
                 person=p.get("person_id") if p["platform"]=="recording" else None
                 if p["platform"]!="recording" and self.chat_path.exists():
                     with sqlite3.connect("file:"+self.chat_path.as_posix()+"?mode=ro",uri=True) as chat:
                         link=chat.execute("SELECT person_id FROM user_account_links WHERE platform=? AND source=? AND account=?",(p["platform"],p["source_account_id"],p["account_id"])).fetchone()
                         person=link[0] if link else None
+                        original=chat.execute("SELECT body FROM search_index WHERE platform=? AND source=? AND sender=? ORDER BY sent_at DESC LIMIT 1",(p["platform"],p["source_account_id"],p["account_id"])).fetchone()
+                        source_label=(json.loads(original[0]).get("sender_display_name") if original else None) or "独立来源联系人"
+                        if person == "self":
+                            self_row=core.execute("SELECT person_id FROM persons WHERE kind='self' AND user_confirmed=1").fetchone()
+                            person=self_row[0] if self_row else None
                 found=core.execute("SELECT display_name FROM persons WHERE person_id=? AND user_confirmed=1",(person,)).fetchone() if person else None
-                contacts[p["id"]]={**p,"person_id":person if found else None,"label":found[0] if found else p["label"],"identity_basis":"原转写已确认稳定人物身份" if p["platform"]=="recording" and found else "人工账号关联" if found else "来源账号独立身份；未关联录音人物"}
+                contacts[p["id"]]={**p,"person_id":person if found else None,"label":found[0] if found else source_label,"identity_basis":"原转写已确认稳定人物身份" if p["platform"]=="recording" and found else "人工账号关联" if found else "来源账号独立身份；未关联录音人物"}
         with self.database.read() as core:
             chat = (
                 sqlite3.connect(

@@ -2,12 +2,46 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AllDayRecording Desktop API",
-    "version": "3.10.2",
+    "version": "3.11.0",
     "description": "Loopback-only query, media, correction, durable-processing, knowledge, reminder, people, daily-summary, and relationship-observation API for the independent Desktop frontend."
   },
   "servers": [{"url": "http://127.0.0.1:8766"}],
   "security": [{"DesktopSession": []}],
   "paths": {
+    "/api/v3/chat/recall": {
+  "post": {
+    "operationId": "desktopHistoryRecall",
+    "summary": "Bounded evidence retrieval or explicit source identity command",
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "../schemas/history-recall.schema.json#/$defs/Request"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Partial coverage, evidence, model status, paging or command receipt",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "../schemas/history-recall.schema.json#/$defs/Response"
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "Invalid, expired or changed source/mapping; reload required"
+      },
+      "403": {
+        "description": "Authentication required"
+      }
+    }
+  }
+},
     "/api/v3/memory/trial": {"get": {"operationId": "getMemoryTrial", "description": "Read persisted three-day trial status, committed receipt times/counts and existing Phone cursor acknowledgements. Does not trigger analysis. Local authorized Desktop only.", "responses": {"200": {"description": "not_started, running, paused, stopped or ended; timestamps absent when not observed, model_calls always zero in deterministic mode"}, "default": {"$ref": "#/components/responses/ApiError"}}}, "post": {"operationId": "controlMemoryTrial", "description": "Start uses one already connected account and up to three saved contacts for the current Singapore date plus two dates; pause/resume/stop persist cursor and stop only trial-owned triggers. No history replay or model calls.", "requestBody": {"required": true, "content": {"application/json": {"schema": {"oneOf": [{"type": "object", "required": ["action", "contacts"], "additionalProperties": false, "properties": {"action": {"const": "start"}, "contacts": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"$ref": "../schemas/primitives.schema.json#/$defs/stable_id"}}}}, {"type": "object", "required": ["action"], "additionalProperties": false, "properties": {"action": {"enum": ["pause", "resume", "stop"]}}}]}}}}, "responses": {"200": {"description": "Persisted status; no new Phone resource or command"}, "default": {"$ref": "#/components/responses/ApiError"}}}},
     "/api/v3/memory": {"get": {"operationId": "getCrossDayMemory", "description": "Validate bounded saved evidence, return one discussion/history page or one citation page. No ingestion or model requests.", "responses": {"200": {"description": "Evidence index, or not_selected before bounded input selection"}, "default": {"$ref": "#/components/responses/ApiError"}}, "parameters": [{"name": "page", "in": "query", "schema": {"type": "integer", "minimum": 0}}, {"name": "discussion", "in": "query", "schema": {"type": "string"}}, {"name": "evidence_page", "in": "query", "schema": {"type": "integer", "minimum": 0}}]}},
     "/api/v3/memory/inventory": {"get": {"operationId": "inventoryCrossDayMemory", "parameters": [{"name": "first", "in": "query", "required": true, "schema": {"type": "string", "format": "date"}}, {"name": "last", "in": "query", "required": true, "schema": {"type": "string", "format": "date"}}], "responses": {"200": {"description": "Cached source coverage and namespace-scoped contacts"}, "default": {"$ref": "#/components/responses/ApiError"}}}},
