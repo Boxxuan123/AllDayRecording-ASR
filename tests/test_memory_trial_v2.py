@@ -28,8 +28,10 @@ def setup(tmp_path):
     trial.start([contact]);assert trial.saved()['initial_snapshot_policy'].startswith('verified boundary')
     assert not any(route=='/v1/messages' for route,_,_ in source.calls)
     chat.sync_once(scope_ids=trial.saved()['scope_ids'],max_pages=2,seconds=5);chat.cache.process();trial.checked()
-    def push(i,text,offset=1,self=False,revision=1):
-        r=rec(i,text,offset,self,revision);source.records.append(r);return r
+    def push(i,text,offset=1,self=False,revision=1,reply=None):
+        r=rec(i,text,offset,self,revision)
+        if reply is not None:r["reply"]={"record_id":"rec:fixture-"+str(reply)}
+        source.records.append(r);return r
     def poll():
         chat.sync_once(scope_ids=trial.saved()['scope_ids'],max_pages=2,seconds=5);cache.process();trial.checked();clock[0]+=31;trial.tick();return trial.status()
     return db,cache,mem,chat,trial,clock,push,poll,rec
@@ -43,7 +45,7 @@ def test_live_history_commit_duplicate_and_reconsider_interest(tmp_path):
     assert status['discussion_counts']['processed_discussions']==0
     assert status['discussion_counts']['excluded_discussions']==1
     # Related self inquiry reconsiders the earlier promotion; exclusion is no account label.
-    push(5,'这款型号多少钱？我想买一台',3,True)
+    push(5,'这款型号多少钱？我想买一台',3,True,reply=3)
     status=poll();assert status['discussion_counts']['processed_discussions']==1
     assert status['processed_messages']==3 and status['excluded_messages']==0
     with mem.uow_factory().reading() as u: _,full=u.cross_day_index.current()

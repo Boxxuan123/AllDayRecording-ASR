@@ -17,7 +17,7 @@ from tests.chat_fixture import record, NOW
 from tests.test_cross_day_memory_quality import row
 from allday_asr.v3.domain.memory_content import content, continuation_reason
 from allday_asr.v3.domain.discussion_boundaries import split
-from allday_asr.v3.domain.recall_language import plan
+from allday_asr.v3.domain.recall_language import plan, shared_anchor
 
 CORPUS = Path(__file__).parent / "fixtures/recall_corrections/frozen.json"
 FIXED = json.loads(CORPUS.read_text(encoding="utf-8"))
@@ -105,10 +105,15 @@ def test_natural_questions_retrieve_and_enter_model_without_keyword(env, case):
 def test_generic_context_boundaries_have_positive_and_negative_pairs(case):
     a, b = record(1, case["a"]), record(2, case["b"])
     groups = split([a, b])
-    assert len(groups) == (1 if case["linked"] else 2)
+    # Frozen labels describe related wording, not verified discussion identity.
+    assert bool(shared_anchor(case["a"], case["b"])) == case["linked"]
+    assert len(groups) == 2
     x, y = row(case["a"]), row(case["b"])
     y["occurred_at"] = "2026-10-07T08:10:00+08:00"
-    assert bool(continuation_reason(x, y)) == case["linked"]
+    assert continuation_reason(x, y) is None
+    if case["linked"]:
+        b["reply"] = {"record_id": a["record_id"]}
+        assert len(split([a, b])) == 1
 
 
 def test_reply_edges_group_unseen_objects_without_vocabulary():

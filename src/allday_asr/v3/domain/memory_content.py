@@ -3,7 +3,7 @@
 import re
 from datetime import datetime
 from .chat_projection import semantic_value
-from .recall_language import shared_anchor
+from .recall_language import shared_anchor, common_object_id
 
 IMAGE = "收到图片，内容未解析"
 PROMOTION = re.compile(
@@ -166,10 +166,10 @@ def continuation_reason(a, b):
     } - {None}
     if not speakers & other:
         return None
-    anchor = shared_anchor(text(earlier), text(later))
+    anchor = common_object_id(text(earlier), text(later))
     if anchor:
         return (
-            "同一会话参与者的相邻记录共有原文片段「"
+            "同一会话参与者的相邻记录具有相同显式对象编号「"
             + anchor
             + "」；仅为连续性候选，是否同一事情仍需人工确认。"
         )

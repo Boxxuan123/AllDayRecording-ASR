@@ -1,11 +1,10 @@
-"""Context boundaries from reply edges, shared wording, time and explicit pivots."""
+"""Conservative segmentation: source reply edges or explicit object references."""
 
-import re
 from .chat_projection import semantic_text
 from .memory_content import readable
-from .recall_language import shared_anchor, object_ids, PIVOT
+from .recall_language import common_object_id, object_ids, PIVOT
 
-RULE_VERSION = 3
+RULE_VERSION = 4
 
 
 def split(records):
@@ -13,39 +12,34 @@ def split(records):
     for r in records:
         text = semantic_text(r.get("text") or "")
         current = groups[-1] if groups else None
+        basis = "bounded_context_excerpt"
         related = False
         if current:
             prior = current["records"][-1]
-            nearby = (r.get("sent_at") or 0) - (prior.get("sent_at") or 0) <= 1800
+            delta = (r.get("sent_at") or 0) - (prior.get("sent_at") or 0)
+            namespace = ("dataset", "platform", "source_account_id", "conversation_id")
+            same_conversation = all(prior.get(k) == r.get(k) for k in namespace)
             reply = r.get("reply") or {}
             explicit = isinstance(reply, dict) and reply.get("record_id") in {
                 x["record_id"] for x in current["records"]
             }
-            previous = "\n".join(
-                semantic_text(x.get("text") or "") for x in current["records"][-4:]
-            )
-            anchor = shared_anchor(previous, text)
-            different = bool(
-                object_ids(previous)
-                and object_ids(text)
-                and not object_ids(previous) & object_ids(text)
-            )
+            previous = semantic_text(prior.get("text") or "")
+            object_id = common_object_id(previous, text)
+            left, right = object_ids(previous), object_ids(text)
+            different = bool(left and right and not left & right)
+            # Nearby/common words, short sentences and pronouns are insufficient.
+            # Opaque media may accompany a segment only as context, never its facts.
             related = (
-                nearby
+                same_conversation
+                and 0 <= delta <= 1800
                 and not PIVOT.search(text)
                 and not different
-                and (
-                    explicit
-                    or bool(anchor)
-                    or (
-                        0 < len(semantic_text(prior.get("text") or "")) <= 5
-                        and text.startswith(semantic_text(prior.get("text") or ""))
-                    )
-                    or bool(re.match(r"^(?:这|那|它|其|上述|前述)", text))
-                    or len(text.strip()) <= 5
-                    or not readable(text)
-                )
+                and (explicit or bool(object_id) or not readable(text))
             )
+            if explicit:
+                basis = "explicit_reply_edge"
+            elif object_id:
+                basis = "explicit_object_reference"
         if not related:
             current = {
                 "records": [],
@@ -53,10 +47,8 @@ def split(records):
                 "boundary_basis": "bounded_context_excerpt",
             }
             groups.append(current)
-        elif explicit:
-            current["boundary_basis"] = "explicit_reply_edge"
-        elif anchor:
-            current["boundary_basis"] = "shared_original_wording_candidate"
+        elif basis != "bounded_context_excerpt":
+            current["boundary_basis"] = basis
         current["records"].append(r)
     return groups
 

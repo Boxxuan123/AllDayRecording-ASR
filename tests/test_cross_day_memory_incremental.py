@@ -15,9 +15,9 @@ def setup(tmp_path):
     factory=lambda:SqliteUnitOfWork(db)
     sources=CrossDayMemorySources(db,factory,cache.path)
     service=CrossDayMemoryService(sources,factory,now=lambda:NOW)
-    def arrive(i,text,offset=0,self=False,revision=1):
+    def arrive(i,text,offset=0,self=False,revision=1,reply=None):
         r=record(i,text,sent=int(NOW.timestamp())+offset,conversation='peer',revision=revision)
-        r.update(conversation_type='c2c',is_from_self=self)
+        r.update(conversation_type='c2c',is_from_self=self,reply={'record_id':'rec:fixture-'+str(reply)} if reply is not None else None)
         cache.receive('fictional',[r]);cache.process();return r
     def update():
         contact=sources.inventory('2026-10-05','2026-10-07','Asia/Singapore')['contacts'][0]['id']
@@ -29,7 +29,7 @@ def test_same_scope_new_interaction_explicit_update_and_stable_evidence(tmp_path
     db,cache,sources,service,arrive,update=setup(tmp_path)
     arrive(1,'讨论新的物理教师招聘，尚未回复')
     first=update();firstid=first['discussions'][0]['id']
-    arrive(2,'我准备考虑一下，尚未实际发送回复',60,True)
+    arrive(2,'我准备考虑一下，尚未实际发送回复',60,True,reply=1)
     assert service.get()==first # reads never ingest new cached originals
     second=update();assert second['revision']==first['revision']+1
     assert second['discussions'][0]['id']==firstid
@@ -48,11 +48,11 @@ def test_incremental_admission_reconsider_interest_and_routine_rewards(tmp_path)
     arrive(1,'国庆购机活动到店享优惠')
     empty=update();assert not empty['things']
     arrive(2,IMAGE,20);assert not update()['things']
-    arrive(3,'这款型号多少钱？我想买一台',40,True)
+    arrive(3,'这款型号多少钱？我想买一台',40,True,reply=1)
     value=update();assert len(value['things'])==1
     assert value['discussions'][0]['evidence'][1]['quote']=='收到图片，内容未解析'
     assert SECRET not in json.dumps(value)
-    arrive(4,'签到',4000,True);arrive(5,'签到成功，本次获得40积分，当前积分200',4010)
+    arrive(4,'签到',4000,True);arrive(5,'签到成功，本次获得40积分，当前积分200',4010,reply=4)
     value=update();assert len(value['things'])==1
     assert value['scope']['coverage']['incremental']['excluded_discussions']==1
     assert update()==value

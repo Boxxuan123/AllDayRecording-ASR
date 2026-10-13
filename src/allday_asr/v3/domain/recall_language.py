@@ -39,13 +39,16 @@ FUNCTION = {
 
 
 def intent(question):
-    if re.search(
-        r"最终|最后|后来怎么样|后来.{0,8}(?:回复|决定)|最新|现在|取消了吗|完成了吗",
-        question,
-    ):
+    if re.search(r"最终|最后|最新|现在|取消了吗|完成了吗", question):
         return "latest"
     if re.search(r"为什么|为何|原因|考虑因素", question):
         return "reason"
+    # Temporal follow-up + a status question, independent of subjects/products.
+    if re.search(
+        r"(?:后来|之后|后续|随后|后面).{0,12}(?:如何|怎样|怎么样|情况|进展|结果|回复|答复|决定|落实|处理|变化)",
+        question,
+    ):
+        return "latest"
     if re.search(r"经过|过程|进展|来龙去脉|发生了什么", question):
         return "timeline"
     return "quote"
@@ -99,13 +102,22 @@ def object_ids(text):
     return set(re.findall(r"[A-Za-z]{1,16}[-_]\d+|(?:编号|单号)\s*[A-Za-z0-9-]+", text))
 
 
+def common_object_id(a, b):
+    """One explicit object reference on both sides, never a lexical noun match."""
+    if PIVOT.search(b):
+        return ""
+    left, right = object_ids(a), object_ids(b)
+    return next(iter(left)) if len(left) == 1 and left == right else ""
+
+
 def shared_anchor(a, b):
     if PIVOT.search(b):
         return ""
     left, right = object_ids(a), object_ids(b)
     if left and right and not left & right:
         return ""
-    # Candidates only; the caller still checks namespace, time, speakers and human decisions.
+    # Vocabulary display only. This overlap cannot establish discussion continuity
+    # or generate a same-event review card; use reply edges or common_object_id.
     matches = SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks()
     parts = [a[m.a : m.a + m.size].strip(" ，。；：?!") for m in matches]
     parts = [s for s in parts if len(s) >= 2 and s not in FUNCTION]

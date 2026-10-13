@@ -1,3 +1,4 @@
 /contracts/v3/**/*.json text eol=lf
 /contracts/v3/*.json text eol=lf
-/tests/fixtures/recall_corrections/frozen.json text eol=lf
+# Immutable review corpus: preserve its original bytes, including the final CRLF.
+/tests/fixtures/recall_corrections/frozen.json -text -diff

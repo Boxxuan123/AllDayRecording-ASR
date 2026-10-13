@@ -53,15 +53,19 @@ def test_generic_content_and_last_evidence_not_first_or_sync():
     b=row('木笛样品已改期，等下周再寄。');b.update(id='b',occurred_at='2026-10-05T01:22:21Z');b['evidence'][0]['occurred_at']='2026-10-05T01:23:36Z'
     last=deepcopy(b['evidence'][0]);last.update(quote='尚未交给快递员。',occurred_at='2026-10-05T01:42:18Z',identity_self=True);b['evidence'].append(last)
     unrelated=row('榕树修剪由园艺队处理。');unrelated.update(id='other',contacts=[])
+    for item in [a,b,unrelated]:item["evidence"][0]["record_id"]="quality-"+item["id"]
+    # Wording alone has no same-event card; an explicit source reply still does.
+    assert not project(s.scope,[a,b,unrelated],[])['candidates']
+    b['evidence'][0]['reply_record_id']=a['evidence'][0]['record_id']
     v=project(s.scope,[a,b,unrelated],[])
     assert v['people'][0]['last_evidence_at']=='2026-10-05T01:42:18Z'
     assert len(v['things'])==3 and len(v['candidates'])==1
-    assert '木笛样品' in v['candidates'][0]['reason'] and '人工确认' in v['candidates'][0]['reason']
+    assert '明确回复' in v['candidates'][0]['reason']
     assert '尚未交给快递员。' in v['discussions'][1]['summary'] and '不推断事实状态' in v['discussions'][1]['summary']
     assert any(t['discussion_ids']==['a','b'] for t in v['topics'])
     for action in ['reject','detach']:
         assert not project(s.scope,[a,b],[{'source':'a','target':'b','action':action}])['candidates']
-    new=deepcopy(b);new['evidence'][0]['quote']='另有一件事，木笛样品只是参考。'
+    new=deepcopy(b);new['evidence'][0]['quote']='另有一件事，木笛样品只是参考。';new['evidence'][0]['reply_record_id']=None
     assert not project(s.scope,[a,new],[])['candidates']
 
 
