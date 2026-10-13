@@ -2,8 +2,14 @@
 
 import json
 from datetime import datetime
+from .recall_state import RecallState, bounded_sql
+from allday_asr.v3.domain.recall_language import relevance
 from allday_asr.v3.domain.chat_projection import semantic_text
-from allday_asr.v3.domain.source_identity import identity_key, resolve_chat
+from allday_asr.v3.domain.source_identity import (
+    identity_key,
+    resolve_chat,
+    effective_self,
+)
 
 ANNOTATED = """CASE WHEN json_extract(u.evidence_json,'$.annotation_review.dimensions.person') IS NULL
  AND json_extract(u.evidence_json,'$.person_annotation.source') IN ('human','human_cluster')
@@ -33,7 +39,10 @@ def chat_evidence(record, identities, people, manual, origin, role="match"):
         if person
         else record.get("sender_display_name") or "未确认发送者",
         "identity_basis": basis,
-        "is_from_self": record.get("is_from_self"),
+        "source_is_from_self": record.get("is_from_self"),
+        "effective_is_self": effective_self(record, manual, people),
+        "is_from_self": effective_self(record, manual, people),
+        "dataset": identities.cache.get("dataset", ""),
         "quote": text[:1200],
         "quote_truncated": len(text) > 1200,
         "sent_at": record.get("sent_at"),
@@ -44,10 +53,11 @@ def chat_evidence(record, identities, people, manual, origin, role="match"):
     }
 
 
-class RecallSources:
+class RecallSources(RecallState):
     def __init__(self, identities):
         self.identities = identities
 
+    @bounded_sql
     def chat(self, scope, terms, limit, cancel, deadline):
         ids = self.identities
         if not ids.chat_path.exists():
@@ -60,7 +70,11 @@ class RecallSources:
             params.append(scope["source"])
         if terms:
             clauses.append(
-                "(" + " OR ".join("instr(coalesce(text,''),?)>0" for _ in terms) + ")"
+                "("
+                + " OR ".join(
+                    "instr(lower(coalesce(text,'')),lower(?))>0" for _ in terms
+                )
+                + ")"
             )
             params.extend(terms)
         if scope["person_id"]:
@@ -95,20 +109,26 @@ class RecallSources:
 
         with ids.cache.connect() as c:
             c.execute("PRAGMA query_only=ON")
+            c.create_function(
+                "recall_score", 1, lambda value: relevance(value or "", terms)
+            )
             c.set_progress_handler(
                 lambda: int(cancel.is_set() or time.monotonic() > deadline), 1000
             )
             rows = c.execute(
                 "SELECT body FROM search_index WHERE "
                 + " AND ".join(clauses)
-                + " ORDER BY sent_at DESC,id DESC LIMIT ?",
+                + " ORDER BY recall_score(text) DESC,sent_at DESC,id DESC LIMIT ?",
                 (*params, limit + 1),
             ).fetchall()
-        return [
+        evidence = [
             chat_evidence(json.loads(r[0]), ids, people, manual, "cache")
             for r in rows[:limit]
-        ], len(rows) > limit
+        ]
+        invalid = self.changed(evidence)
+        return [r for r in evidence if r["id"] not in invalid], len(rows) > limit
 
+    @bounded_sql
     def recordings(self, scope, terms, limit, cancel, deadline):
         import time
 
@@ -122,13 +142,20 @@ class RecallSources:
         ]
         params = [scope["sent_from"], scope["sent_to"]]
         if terms:
-            clauses.append("(" + " OR ".join("instr(u.text,?)>0" for _ in terms) + ")")
+            clauses.append(
+                "("
+                + " OR ".join("instr(lower(u.text),lower(?))>0" for _ in terms)
+                + ")"
+            )
             params.extend(terms)
         if scope["person_id"]:
             clauses.append(ANNOTATED + "=?")
             params.append(scope["person_id"])
         with self.identities.database.read() as c:
             c.execute("PRAGMA busy_timeout=1000")
+            c.create_function(
+                "recall_score", 1, lambda value: relevance(value or "", terms)
+            )
             c.set_progress_handler(
                 lambda: int(cancel.is_set() or time.monotonic() > deadline), 1000
             )
@@ -137,7 +164,7 @@ class RecallSources:
                 + ANNOTATED
                 + " AS confirmed_person FROM utterances u JOIN recording_sessions s ON s.session_id=u.session_id WHERE "
                 + " AND ".join(clauses)
-                + " ORDER BY u.start_at DESC,u.utterance_id DESC LIMIT ?",
+                + " ORDER BY recall_score(u.text) DESC,u.start_at DESC,u.utterance_id DESC LIMIT ?",
                 (*params, limit + 1),
             ).fetchall()
         result = []
@@ -158,6 +185,13 @@ class RecallSources:
                     "original_speaker_track_id": r["original_speaker_track_id"],
                     "speaker_track_id": r["speaker_track_id"],
                     "person_id": person or "",
+                    "source_is_from_self": None,
+                    "effective_is_self": people[person]["kind"] == "self"
+                    if person
+                    else None,
+                    "is_from_self": people[person]["kind"] == "self"
+                    if person
+                    else None,
                     "speaker": people[person]["display_name"]
                     if person
                     else "未知说话人",

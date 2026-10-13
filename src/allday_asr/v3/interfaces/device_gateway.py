@@ -52,9 +52,9 @@ class DeviceGateway:
             raise ValueError("历史查询服务不可用")
         with self._recall_lock:
             if self._recall_service is None:
-                from allday_asr.v3.application.history_recall import HistoryRecall
+                from allday_asr.v3.bootstrap.history_recall import compose_history_recall
                 core = self.review_service.core
-                self._recall_service = HistoryRecall(core.database, core.paths.state_dir)
+                self._recall_service = compose_history_recall(core.database, core.paths.state_dir)
         result = self._recall_service.execute(device_id, payload)
         if payload.get("action") == "identity" and self.review_service.core.cross_day_memory is not None:
             self.review_service.core.cross_day_memory.refresh_saved()

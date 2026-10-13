@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "policy": "Fictional and frozen before implementation; do not add case-specific vocabulary to production.",
+  "semantics": [
+    {"id":"denial-geography","text":"我没有收到招地理讲师的消息，也没有准备回复。","mode":"denial"},
+    {"id":"denial-rewrite","text":"说是有人请我去讲地理课？消息根本没到我这里，谈不上回复。","mode":"denial"},
+    {"id":"reported","text":"林岚转述，周先生说他已经交付了蓝色陶壶。","mode":"reported"},
+    {"id":"conditional","text":"如果星港实验室确认有空位，我才会寄出样品。","mode":"conditional"},
+    {"id":"advice","text":"我建议小俞先换掉旧水泵，是否更换由她决定。","mode":"advice"},
+    {"id":"promise","text":"我答应周六把折叠琴架送给阿森，但现在还没送。","mode":"promise"},
+    {"id":"cancel","text":"原先预约的园艺体验已经取消，请别再订车。","mode":"cancel"},
+    {"id":"complete","text":"我已经把修好的木笛交给了阿森。","mode":"complete"},
+    {"id":"object-swap","text":"我已经把修好的陶笛交给了小俞。","mode":"complete"},
+    {"id":"negated-complete","text":"我并没有把修好的木笛交给阿森。","mode":"denial"}
+  ],
+  "queries": [
+    {"id":"exact","question":"软件工程","evidence":"因为软件工程的考试时间与实习冲突，所以当时没选。","intent":"quote"},
+    {"id":"why-negative","question":"当初为什么不选软件工程来着","evidence":"因为软件工程的考试时间与实习冲突，所以当时没选。","intent":"reason"},
+    {"id":"why-school","question":"帮我回忆一下当时为什么考虑杭电","evidence":"考虑杭电是因为通勤距离短，专业课程也合适。","intent":"reason"},
+    {"id":"unseen-subject","question":"之前为什么考虑海洋测绘这个方向","evidence":"海洋测绘需要野外作业，我想先了解工作环境。","intent":"reason"},
+    {"id":"timeline","question":"星港展览筹备的事情经过是怎样的","evidence":"星港展览原计划周六举办。","intent":"timeline"},
+    {"id":"latest","question":"星港展览后来怎么样，最终决定是什么","evidence":"星港展览已经取消。","intent":"latest"}
+  ],
+  "boundary_pairs": [
+    {"a":"打算寄送木笛样品，需核对收货地点。","b":"木笛样品暂时不寄，等地址确认。","linked":true},
+    {"a":"打算寄送陶笛样品，需核对收货地点。","b":"陶笛样品暂时不寄，等地址确认。","linked":true},
+    {"a":"维修单 RQ-417 的水泵已经停机。","b":"维修单 RQ-928 的水泵也出现异响。","linked":false},
+    {"a":"明天要寄出星港样品。","b":"换个话题，今天讨论湖畔舞台布置。","linked":false}
+  ]
+}

@@ -8,6 +8,8 @@ from allday_asr.v3.domain.cross_day_memory import dates, contact_id
 from allday_asr.v3.domain.ids import stable_ulid
 from allday_asr.v3.domain.memory_content import safe_memory, admission
 from allday_asr.v3.domain.chat_projection import semantic_text
+from allday_asr.v3.domain.source_identity import effective_self, resolve_chat
+from .source_identity_repository import SourceIdentities
 from allday_asr.v3.application.insight_projections import _period
 from allday_asr.v3.domain.discussion_boundaries import split, role, RULE_VERSION
 
@@ -52,12 +54,16 @@ class CrossDayMemorySources:
                     "SELECT person_id,display_name FROM persons WHERE user_confirmed=1"
                 )
             }
+        resolver=SourceIdentities(self.database,self.chat_path)
+        identity_people,manual=resolver.people(),resolver.manual()
+        for record in records:
+            record['effective_is_self']=effective_self(record,manual,identity_people)
         contacts, conversations = {}, {}
         for r in records:
             # Unrelated group traffic cannot become personal interaction from cache alone.
             if (
                 r.get("conversation_type") != "c2c"
-                or r.get("is_from_self") is True
+                or r.get("effective_is_self", r.get("is_from_self")) is True
                 or not r.get("sender_account_id")
             ):
                 continue
@@ -237,8 +243,8 @@ class CrossDayMemorySources:
                 groups.append({**group,"key":key,"day":day,"event_id":event})
         # Do not spend bounded slots on opaque attachments/unsolicited marketing.
         group_count = len(groups)
-        excluded_groups=[{"processing_status":"excluded","processing_reason":admission({"event_id":g["event_id"],"evidence":[{"source_type":"chat","identity_self":r.get("is_from_self"),"quote":semantic_text(r["text"])} for r in g["records"]]})[1],"source_refs":[{"dataset":r["dataset"],"record_id":r["record_id"],"revision":r["record_revision"]} for r in g["records"]]} for g in groups if not admission({"event_id":g["event_id"],"evidence":[{"source_type":"chat","identity_self":r.get("is_from_self"),"quote":semantic_text(r["text"])} for r in g["records"]]})[0]]
-        groups = [g for g in groups if admission({"event_id": g["event_id"], "evidence": [{"source_type": "chat", "identity_self": r.get("is_from_self"), "quote": semantic_text(r["text"])} for r in g["records"]]})[0]]
+        excluded_groups=[{"processing_status":"excluded","processing_reason":admission({"event_id":g["event_id"],"evidence":[{"source_type":"chat","identity_self":r.get("effective_is_self", r.get("is_from_self")),"quote":semantic_text(r["text"])} for r in g["records"]]})[1],"source_refs":[{"dataset":r["dataset"],"record_id":r["record_id"],"revision":r["record_revision"]} for r in g["records"]]} for g in groups if not admission({"event_id":g["event_id"],"evidence":[{"source_type":"chat","identity_self":r.get("effective_is_self", r.get("is_from_self")),"quote":semantic_text(r["text"])} for r in g["records"]]})[0]]
+        groups = [g for g in groups if admission({"event_id": g["event_id"], "evidence": [{"source_type": "chat", "identity_self": r.get("effective_is_self", r.get("is_from_self")), "quote": semantic_text(r["text"])} for r in g["records"]]})[0]]
         # Fair bounded selection: first discussion per selected contact, then chronological remainder.
         picked = []
         for key in selected:
@@ -264,11 +270,13 @@ class CrossDayMemorySources:
                         ).isoformat().replace("+00:00", "Z"),
                         "learned_at": r.get("ingested_at") or r.get("captured_at"),
                         "assertion": "本人原话（行为需原文证明）"
-                        if r.get("is_from_self") is True
+                        if r.get("effective_is_self", r.get("is_from_self")) is True
                         else "他人陈述／转述，未核实为客观事实",
-                        "identity_self": r.get("is_from_self"),
-                        "is_from_self": r.get("is_from_self"),
-                        "identity_basis": "来源消息明确的本人标志及发送账号" if r.get("is_from_self") is True else contacts[g["key"]]["identity_basis"],
+                        "identity_self": r.get("effective_is_self", r.get("is_from_self")),
+                        "is_from_self": r.get("effective_is_self", r.get("is_from_self")),
+                        "source_is_from_self": r.get("is_from_self"),
+                        "effective_is_self": r.get("effective_is_self", r.get("is_from_self")),
+                        "identity_basis": "来源消息明确的本人标志及发送账号" if r.get("effective_is_self", r.get("is_from_self")) is True else contacts[g["key"]]["identity_basis"],
                         "role": role(r),
                         "sender_account_id": r.get("sender_account_id"),
                         "platform": r["platform"],
@@ -409,6 +417,8 @@ class CrossDayMemorySources:
 
     def load(self, scope):
         rows = json.loads(json.dumps(scope["manifest"]))
+        resolver=SourceIdentities(self.database,self.chat_path)
+        identity_people,manual=resolver.people(),resolver.manual()
         # Frozen validation resolves only selected identities and cited originals.
         # It does not re-inventory all chats or structured events on every sync.
         contacts={}
@@ -458,6 +468,15 @@ class CrossDayMemorySources:
                                 else None
                             )
                             body = json.loads(found[2]) if found else {}
+                            if body:
+                                e['source_is_from_self']=body.get('is_from_self')
+                                flag=effective_self(body,manual,identity_people)
+                                e['effective_is_self']=e['identity_self']=e['is_from_self']=flag
+                                person,basis=resolve_chat(body,manual,identity_people)
+                                e['person_id']=person or ''
+                                e['speaker']=identity_people[person]['display_name'] if person else body.get('sender_display_name') or '来源身份未确认'
+                                e['identity_basis']=basis
+                                e['assertion']='本人原话（行为需原文证明）' if flag is True else '他人或未知身份陈述／转述，未核实为客观事实'
                             # Project the complete cached message before truncation. Legacy
                             # manifests may contain a truncated XML fragment; revisions fence it.
                             if found and found[0] == e["revision"]:
@@ -468,7 +487,7 @@ class CrossDayMemorySources:
                                 and found[0] == e["revision"]
                                 and not found[1]
                                 and semantic_text(body.get("text") or "").startswith(e["quote"])
-                                and body.get("is_from_self") == e.get("identity_self")
+                                and body.get("is_from_self") == e.get("source_is_from_self")
                                 and body.get("sender_account_id")
                                 == e.get("sender_account_id")
                                 else "source_changed_or_missing"

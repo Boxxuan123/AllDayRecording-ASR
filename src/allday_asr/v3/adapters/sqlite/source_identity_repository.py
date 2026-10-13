@@ -83,9 +83,7 @@ class SourceIdentities:
             {
                 "links": self.manual(),
                 "people": self.people(),
-                "generation": self.cache.get("generation", 0)
-                if self.chat_path.exists()
-                else 0,
+
             }
         )
 

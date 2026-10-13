@@ -47,33 +47,22 @@ def test_promotion_image_and_real_price_interest_without_account_labels():
     assert project(source.scope, [parsed], [])["things"]
 
 
-def test_specific_topics_content_and_last_evidence_not_first_or_sync():
-    s = Sources()
-    a = row("他给我发了个招物理老师的，我没敢回")
-    a["id"] = "a"; a["occurred_at"] = "2026-10-05T00:35:57Z"; a["evidence"][0]["occurred_at"] = "2026-10-05T00:36:13Z"
-    b = row("那就婉拒了，就算真去的话初中物理擅长一点，高中物理担心教不了")
-    b["id"] = "b"; b["occurred_at"] = "2026-10-05T01:22:21Z"
-    b["evidence"][0]["occurred_at"] = "2026-10-05T01:23:36Z"
-    last = deepcopy(b["evidence"][0]); last.update(quote="高中讲不了一点", occurred_at="2026-10-05T01:42:18Z", identity_self=True)
-    b["evidence"].append(last)
-    english = row("英语教育减负争论，老师说英语带来机会")
-    english["contacts"] = []; english["id"] = "english"; english["title"] = "英语教育讨论"
-    labor = row("澳大利亚工资和劳动力成本，项目利润高，周薪1688澳元")
-    labor["contacts"] = []; labor["id"] = "labor"; labor["title"] = "工资与劳动力成本"
-    v = project(s.scope, [a, b, english, labor], [])
-    assert v["people"][0]["last_evidence_at"] == "2026-10-05T01:42:18Z"
-    assert len(v["things"]) == 4 and len(v["candidates"]) == 1
-    assert "唯一招聘标识" in v["candidates"][0]["reason"]
-    assert v["discussions"][0]["title"] == v["discussions"][1]["title"] == "物理教师招聘与是否回复"
-    assert "婉拒倾向" in v["discussions"][1]["summary"]
-    assert "尚未确认是否实际回复" in v["discussions"][1]["summary"]
-    assert next(t for t in v["topics"] if t["label"] == "招聘与机会")["discussion_ids"] == ["a", "b"]
-    assert all(t["label"] != "材料与项目" for t in v["topics"])
-    for action in ["reject", "detach"]:
-        d = {"source": "a", "target": "b", "action": action}
-        assert not project(s.scope, [a, b], [d])["candidates"]
-    new_opportunity = deepcopy(b);new_opportunity["evidence"][0]["quote"] += "；另有一条招聘物理老师的消息"
-    assert not project(s.scope, [a, new_opportunity], [])["candidates"]
+def test_generic_content_and_last_evidence_not_first_or_sync():
+    s=Sources()
+    a=row('木笛样品暂不寄出，先核对地址。');a.update(id='a',occurred_at='2026-10-05T00:35:57Z');a['evidence'][0]['occurred_at']='2026-10-05T00:36:13Z'
+    b=row('木笛样品已改期，等下周再寄。');b.update(id='b',occurred_at='2026-10-05T01:22:21Z');b['evidence'][0]['occurred_at']='2026-10-05T01:23:36Z'
+    last=deepcopy(b['evidence'][0]);last.update(quote='尚未交给快递员。',occurred_at='2026-10-05T01:42:18Z',identity_self=True);b['evidence'].append(last)
+    unrelated=row('榕树修剪由园艺队处理。');unrelated.update(id='other',contacts=[])
+    v=project(s.scope,[a,b,unrelated],[])
+    assert v['people'][0]['last_evidence_at']=='2026-10-05T01:42:18Z'
+    assert len(v['things'])==3 and len(v['candidates'])==1
+    assert '木笛样品' in v['candidates'][0]['reason'] and '人工确认' in v['candidates'][0]['reason']
+    assert '尚未交给快递员。' in v['discussions'][1]['summary'] and '不推断事实状态' in v['discussions'][1]['summary']
+    assert any(t['discussion_ids']==['a','b'] for t in v['topics'])
+    for action in ['reject','detach']:
+        assert not project(s.scope,[a,b],[{'source':'a','target':'b','action':action}])['candidates']
+    new=deepcopy(b);new['evidence'][0]['quote']='另有一件事，木笛样品只是参考。'
+    assert not project(s.scope,[a,new],[])['candidates']
 
 
 def test_sources_safe_before_truncation_and_original_lookup_preserved(tmp_path):
@@ -152,4 +141,4 @@ def test_physics_topic_does_not_invent_received_message_or_ability():
     from allday_asr.v3.domain.memory_content import content
     title,summary=content(row("正在招聘物理老师，准备婉拒；初中物理不擅长，高中物理也不会"))
     assert "收到" not in summary and "较有把握" not in summary
-    assert "尚未确认是否实际回复" in summary
+    assert "不推断事实状态" in summary and "初中物理不擅长" in summary

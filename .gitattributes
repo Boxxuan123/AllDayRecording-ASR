@@ -1,2 +1,3 @@
 /contracts/v3/**/*.json text eol=lf
 /contracts/v3/*.json text eol=lf
+/tests/fixtures/recall_corrections/frozen.json text eol=lf

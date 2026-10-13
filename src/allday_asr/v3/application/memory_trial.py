@@ -5,15 +5,13 @@ from zoneinfo import ZoneInfo
 from threading import RLock
 from allday_asr.v3.domain.ids import new_ulid
 from allday_asr.v3.domain.chat_data import scope_key
-from allday_asr.v3.adapters.sqlite.memory_trial_cache import TRIAL_KEY
-from allday_asr.v3.adapters.sqlite.memory_trial_sources import MemoryTrialSources
-from .cross_day_memory import CrossDayMemoryService
+from allday_asr.v3.ports.memory_trial import TRIAL_KEY, MemoryTrialStore
 
 class MemoryTrial:
-    def __init__(self, chat, memory, *, clock=time.time):
+    def __init__(self, chat, memory, processor, store: MemoryTrialStore, *, clock=time.time):
         self.chat,self.cache,self.memory,self.clock=chat,chat.cache,memory,clock
         self.lock=RLock()
-        self.processor=CrossDayMemoryService(MemoryTrialSources(memory.sources.database,memory.uow_factory,self.cache),memory.uow_factory)
+        self.processor,self.store=processor,store
         self.next_process=0
         self.ensure_source_baseline()
 
@@ -24,17 +22,7 @@ class MemoryTrial:
         if not run or run['state'] not in {'running','paused'}: return
         # The source snapshot boundary is the baseline, not a history import job.
         # Only trial-owned, untouched snapshots may begin at this verified boundary.
-        changed=False
-        with self.cache.connect() as c:
-            for sid in run['scope_ids']:
-                if run['prior_enabled'][sid]: continue
-                baseline=run['baseline_cursors'].get(sid,{})
-                row=c.execute('SELECT * FROM scopes WHERE id=?',(sid,)).fetchone()
-                if row and row['phase']=='snapshot' and row['received']==0 and row['boundary']==baseline.get('boundary') and row['boundary']:
-                    c.execute("UPDATE scopes SET phase='changes',receive_cursor=boundary,page_cursor=NULL,error=NULL WHERE id=?",(sid,));changed=True
-            if changed:
-                run['initial_snapshot_policy']='verified boundary only; no startup historical import'
-                self.cache._put(c,TRIAL_KEY,run)
+        self.store.ensure_source_baseline(run)
 
     def poll_scopes(self):
         with self.lock:
@@ -59,14 +47,7 @@ class MemoryTrial:
             if len({(p['platform'],p['source_account_id']) for p in selected})!=1: raise ValueError('trial requires one source account')
             now=self.clock();day=datetime.fromtimestamp(now,ZoneInfo('Asia/Singapore')).date()
             end=datetime.combine(day+timedelta(days=3),datetime.min.time(),ZoneInfo('Asia/Singapore')).timestamp()
-            scopes=[];baseline_records=0
-            with self.cache.connect() as c:
-                for p in selected:
-                    rows=c.execute("SELECT DISTINCT conversation FROM search_index WHERE platform=? AND source=? AND sender=? AND json_extract(body,'$.conversation_type')='c2c' LIMIT 2",(p['platform'],p['source_account_id'],p['account_id'])).fetchall()
-                    if len(rows)!=1: raise ValueError('existing direct conversation must be unique')
-                    scopes.append({'platform':p['platform'],'source_account_id':p['source_account_id'],'conversation_id':rows[0][0],'sent_from':int(datetime.combine(day,datetime.min.time(),ZoneInfo('Asia/Singapore')).timestamp()),'sent_to':int(end)-1})
-                    baseline_records+=c.execute("SELECT count(*) FROM search_index WHERE platform=? AND source=? AND conversation=?",(p['platform'],p['source_account_id'],rows[0][0])).fetchone()[0]
-                baseline_task=c.execute('SELECT coalesce(max(id),0) FROM tasks').fetchone()[0]
+            scopes,baseline_records,baseline_task=self.store.prepare(selected,day,end)
             before={r['id']:r['enabled'] for r in self.cache.scopes()};was_paused=self.chat._paused
             try:
                 result=self.chat.start_sync(scopes,trial_mode=True)
@@ -185,16 +166,10 @@ class MemoryTrial:
         run=self.expire()
         if not run: return {'state':'not_started','choices':self.choices(),'model_calls':0}
         result={**run,**self.cache.trial_counts(run['id']),'choices':self.choices()}
-        with self.cache.connect() as c:
-            latest=c.execute("SELECT max(json_extract(r.body,'$.sent_at')) FROM tasks t JOIN records r ON r.dataset=t.dataset AND r.id=t.record_id WHERE t.memory_trial=? AND t.memory_class='live'",(run['id'],)).fetchone()[0]
-            times=[dict(r) for r in c.execute("SELECT t.record_id,t.revision,t.memory_class,t.received_at,t.memory_committed_at,t.memory_completed_at,t.memory_revision,json_extract(r.body,'$.sent_at') AS message_at FROM tasks t JOIN records r ON r.dataset=t.dataset AND r.id=t.record_id WHERE t.memory_trial=? ORDER BY t.id DESC LIMIT 20",(run['id'],))]
+        latest,times=self.store.receipts(run)
         result['latest_message_at']=latest;result['recent_receipts']=times
-        with self.memory.sources.database.read() as c:
-            from allday_asr.v3.domain.cross_day_memory import INDEX_ID
-            sequence=c.execute("SELECT max(sequence) FROM change_events WHERE resource_type='memory_index' AND resource_id=? AND revision=?",(INDEX_ID,run['last_memory_revision'])).fetchone()[0]
-            result['memory_sequence']=sequence
-            result['phone_sync']=[{**dict(r),'acknowledged_current_memory':sequence is not None and r['acknowledged_sequence']>=sequence} for r in c.execute('SELECT acknowledged_sequence,updated_at FROM sync_cursors ORDER BY updated_at DESC LIMIT 3')]
-            receipt_sequences={r['memory_revision']:c.execute("SELECT max(sequence) FROM change_events WHERE resource_type='memory_index' AND resource_id=? AND revision=?",(INDEX_ID,r['memory_revision'])).fetchone()[0] for r in times}
+        sequence,phone_sync,receipt_sequences=self.store.phone_receipts(run,times)
+        result['memory_sequence']=sequence;result['phone_sync']=phone_sync
         for receipt in times:
             target=receipt_sequences.get(receipt['memory_revision'])
             acknowledged=[r['updated_at'] for r in result['phone_sync'] if target is not None and r['acknowledged_sequence']>=target]

@@ -94,7 +94,7 @@ def test_opaque_login_strings_safe_memory_but_raw_source_retained(tmp_path):
     arrive(3,'@Fictional12345',2,True)
     arrive(4,'请帮忙选择照片，登录需要绑定微信',3)
     value=update();r=value['discussions'][0]
-    assert r['title']=='请帮忙选择照片，登录需要绑定微信'
+    assert r['title']=='原文：请帮忙选择照片，登录需要绑定微信'
     assert '13900000000' not in json.dumps(value) and '@Fictional12345' not in json.dumps(value)
     assert update()==value
     with cache.connect() as c:

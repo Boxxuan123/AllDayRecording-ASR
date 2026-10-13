@@ -16,6 +16,11 @@ class MemoryTrialSources(CrossDayMemorySources):
             selected=c.execute("SELECT DISTINCT r.dataset,r.body FROM tasks t JOIN search_index r ON r.dataset=t.dataset AND r.id=t.record_id WHERE t.memory_trial=? AND t.memory_eligible=1 ORDER BY r.sent_at,r.id LIMIT 5001",(trial['id'],)).fetchall()
             if len(selected)>5000: raise ChatDataError('TRIAL_RECORD_BUDGET_REACHED')
             records=[{**json.loads(r['body']),'dataset':r['dataset']} for r in selected]
+        from .source_identity_repository import SourceIdentities
+        from allday_asr.v3.domain.source_identity import effective_self
+        resolver=SourceIdentities(self.database,self.chat_path)
+        people,manual=resolver.people(),resolver.manual()
+        for record in records:record['effective_is_self']=effective_self(record,manual,people)
         contacts={p['id']:p for p in trial['contacts']}
         conversations={}
         for p,scope in zip(trial['contacts'],trial['scopes']):

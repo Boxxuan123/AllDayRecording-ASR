@@ -46,7 +46,7 @@ def test_exact_7_24_new_fair_restart_idempotent_and_no_eviction(tmp_path):
 
 def test_object_boundaries_not_batch_size_core_metadata_and_evidence_pages(tmp_path):
     db,cache,sources,service,arrive,update=setup(tmp_path)
-    for n,text in enumerate(['合成讨论：照明打光亮度不足','合成讨论：调整打光亮度','合成讨论：相机拍摄调整','合成讨论：试试手电筒补光','合成讨论：报考专业选择，虚构方向甲乙','合成讨论：报名专业尚未确定']):
+    for n,text in enumerate(['维修单 MP-1 的照明亮度不足','维修单 MP-1 调整灯位','维修单 MP-1 还需检查接线','维修单 MP-1 暂未完成','申请单 MP-2 专业选择尚未确定','申请单 MP-2 报名专业待核对']):
         arrive(n+1,text,n,self=n in {2,3,5})
     value=update()
     assert len(value['discussions'])==2
@@ -55,7 +55,7 @@ def test_object_boundaries_not_batch_size_core_metadata_and_evidence_pages(tmp_p
     assert any('报名专业' in e['quote'] for e in application['evidence'])
     for r in value['discussions']:
         assert all(type(e['is_from_self']) is bool and e['speaker'] and e['identity_basis'] for e in r['evidence'])
-    for n in range(7,18): arrive(n,'打光细节说明'+str(n),n)
+    for n in range(7,18): arrive(n,'维修单 MP-1 细节说明'+str(n),n)
     value=update()
     row=max(value['discussions'],key=lambda r:r['evidence_total'])
     assert row['evidence_total']>8 and len(row['evidence'])==8

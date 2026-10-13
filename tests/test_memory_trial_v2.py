@@ -9,7 +9,7 @@ from allday_asr.v3.adapters.sqlite.chat_cache import ChatCache
 from allday_asr.v3.adapters.sqlite.cross_day_memory_sources import CrossDayMemorySources
 from allday_asr.v3.application.cross_day_memory import CrossDayMemoryService
 from allday_asr.v3.application.chat_queries import ChatQueries
-from allday_asr.v3.application.memory_trial import MemoryTrial
+from allday_asr.v3.bootstrap.memory_trial import compose_memory_trial as MemoryTrial
 from allday_asr.v3.adapters.sqlite.memory_trial_cache import TRIAL_KEY
 
 def setup(tmp_path):

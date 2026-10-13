@@ -5,6 +5,7 @@ from datetime import date, datetime
 from allday_asr.v3.domain.ids import stable_ulid
 
 INDEX_ID = stable_ulid("cross-day-memory-v1", "bounded-index")
+from .recall_language import shared_anchor
 from .memory_content import safe_memory, admission, content, topics as discussion_topics, latest_evidence, continuation_reason
 
 
@@ -178,12 +179,24 @@ def project(scope, discussions, decisions):
                         "reason": continuation or "原消息明确回复另一条讨论中的记录；仍需判断是否同一具体事情",
                     }
                 )
+    # Shared literal spans group vocabulary, never facts or business identity.
+    shared = {}
+    for i, left in enumerate(rows):
+        for right in rows[i+1:]:
+            a='\n'.join(e['quote'] for e in left['evidence'] if e.get('role','core')=='core')
+            b='\n'.join(e['quote'] for e in right['evidence'] if e.get('role','core')=='core')
+            anchor=shared_anchor(a,b)
+            if len(anchor)>=3:
+                shared.setdefault(anchor,set()).update([left['id'],right['id']])
+    for label,ids in sorted(shared.items(),key=lambda item:-len(item[1]))[:3]:
+        for r in rows:
+            if r['id'] in ids:r['topics'].insert(0,label)
     topics = [
         {
             "label": label,
             "discussion_ids": [r["id"] for r in rows if label in r["topics"]],
         }
-        for label in list(dict.fromkeys(t for r in rows for t in r["topics"]))[:3]
+        for label in sorted(dict.fromkeys(t for r in rows for t in r["topics"]),key=lambda label:-sum(label in r["topics"] for r in rows))[:3]
     ]
     return {
         "id": INDEX_ID,

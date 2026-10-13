@@ -1,7 +1,7 @@
 """Trial receipts extend the existing durable chat tasks, never another sync queue."""
 import json, time
 
-TRIAL_KEY = "memory_trial_v2"
+from allday_asr.v3.ports.memory_trial import TRIAL_KEY
 
 class MemoryTrialCache:
     def initialize_trial_columns(self, db):

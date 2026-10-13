@@ -1,0 +1,37 @@
+"""One bounded invocation of the existing model runner; no background service."""
+
+import json
+from allday_asr.v3.domain.chat_data import packed
+from allday_asr.v3.domain.recall_answer import INSTRUCTIONS, SCHEMA
+from .model_execution_runner import ModelExecutionRunner
+
+
+class RecallModelAdapter:
+    def __init__(self, root):
+        self.root = root
+
+    def __call__(self, payload, cancel):
+        seconds = payload.get("model_budget_seconds", 20)
+        runner = ModelExecutionRunner(
+            self.root / "chat/model-receipts",
+            timeout_seconds=seconds,
+            max_attempts=1,
+            max_batch_calls=1,
+            batch_deadline_seconds=seconds,
+            max_prompt_bytes=60000,
+        )
+        workdir = self.root / "chat/model-workspace"
+        workdir.mkdir(parents=True, exist_ok=True)
+        answer = runner.run(
+            task="history-recall-v2",
+            batch_id="history-recall:" + payload["query_id"],
+            prompt=packed(payload),
+            instructions=INSTRUCTIONS
+            + " Use evidence id for citations. All coverage is partial. Distinguish plans, decisions, reported completion and verified execution. Compare contradictory evidence explicitly.",
+            schema=SCHEMA,
+            model=None,
+            effort="low",
+            workdir=workdir,
+            cancel_event=cancel,
+        )
+        return json.loads(answer.final_response)

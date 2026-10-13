@@ -24,3 +24,14 @@ def resolve_chat(record, manual, people):
             "self_identity_basis", "is_from_self"
         )
     return None, "稳定来源账号；尚未关联人物"
+
+
+def effective_self(record, manual, people):
+    person, _ = resolve_chat(record, manual, people)
+    if person in people:
+        return people[person]["kind"] == "self"
+    if identity_key(record) in manual:
+        return None  # explicit unlink/reject tombstone
+    return (
+        record.get("is_from_self") if type(record.get("is_from_self")) is bool else None
+    )

@@ -1,6 +1,6 @@
 {
-  "release_version": "3.11.0",
-  "contract_version": "3.11.0",
+  "release_version": "3.12.0",
+  "contract_version": "3.12.0",
   "projection_version": 7,
   "core_schema_version": 34,
   "phone_projection_schema_version": 21,

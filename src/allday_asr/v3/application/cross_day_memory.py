@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from copy import deepcopy
 from allday_asr.v3.domain.ids import stable_ulid
 from allday_asr.v3.domain.cross_day_memory import INDEX_ID, project
+from allday_asr.v3.domain.memory_content import content
 from allday_asr.v3.domain.models import CorrectionOperation
 from allday_asr.v3.domain.ids import new_ulid
 
@@ -167,6 +168,11 @@ class CrossDayMemoryService:
             selected={**saved_scope,"manifest":[r for r in saved_scope["manifest"] if r["id"] in wanted]}
             for row in self.sources.load(selected):
                 if row["id"] in wanted and row["id"] in archive:
+                    # Archive rows already contain projected titles. Normalize a
+                    # refreshed source row before comparison so unchanged evidence
+                    # cannot alternate raw/projected labels and consume a revision.
+                    row=deepcopy(row)
+                    row["title"],row["summary"]=content({**row,"evidence":[e for e in row["evidence"] if e.get("role","core")=="core"]})
                     archive[row["id"]]={**archive.get(row["id"],{}),**row,"window_label":saved_scope["first"]+" 至 "+saved_scope["last"]}
                     changed=True
         if changed:

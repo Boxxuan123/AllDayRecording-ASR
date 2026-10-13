@@ -204,7 +204,29 @@
           "type": "array",
           "maxItems": 20,
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "source_is_from_self": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Original source fact, not current ownership."
+              },
+              "effective_is_self": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Current effective identity; manual correction/unlink takes priority."
+              },
+              "validity": {
+                "enum": [
+                  "valid",
+                  "stale"
+                ]
+              }
+            }
           }
         },
         "claims": {
@@ -228,9 +250,26 @@
         },
         "scope": {
           "type": "object"
+        },
+        "intent": {
+          "enum": [
+            "quote",
+            "reason",
+            "timeline",
+            "latest"
+          ]
+        },
+        "latest_status_confirmed": {
+          "type": "boolean"
+        },
+        "invalidated_evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     }
   },
-  "description": "Queries, pages and context are business read-only. identity is a separate explicit idempotent human command. Per query: at most 300 records, 6 source requests, one model invocation, 30 seconds. Source coverage remains partial. Evidence IDs bind citations; sender and quoted authors are distinct."
+  "description": "Queries, pages and context are business read-only. identity is a separate explicit idempotent human command. Per query: at most 300 records, 6 source requests, one model invocation, 30 seconds. Source coverage remains partial. Evidence IDs bind citations; sender and quoted authors are distinct. Additive v3.12 fields distinguish source/effective identity and targeted stale evidence. A stale response invalidates dependent conclusions; an unavailable source only marks cached coverage. Model input is selected for time coverage and relevance before chronological display."
 }

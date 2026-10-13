@@ -701,7 +701,7 @@ def test_quote_presentation_wrappers_preserve_literal_original(service, wrapper)
     }
     answer = service.answer("原话是什么", {"sent_from": 0, "keyword": "杭电"}, Event())
     assert answer["claims"][0]["text"] == original
-    assert answer["prompt_version"] == "chat-answer-v2"
+    assert answer["prompt_version"] == "chat-answer-v3"
     assert answer["normalized_quote_wrappers"] == (wrapper != "{}")
 
 

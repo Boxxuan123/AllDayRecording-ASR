@@ -40,12 +40,12 @@ from .desktop_routes_post import DesktopPostRoutesMixin
 class V3DesktopApplication:
     def __init__(self, core: V3Core, *, token: str | None = None) -> None:
         self.core = core
-        from allday_asr.v3.application.history_recall import HistoryRecall
-        self.recall = HistoryRecall(core.database, core.paths.state_dir)
+        from allday_asr.v3.bootstrap.history_recall import compose_history_recall
+        self.recall = compose_history_recall(core.database, core.paths.state_dir)
         from allday_asr.v3.bootstrap.chat import compose_chat_queries
 
         self.chat = compose_chat_queries(core.paths.state_dir / "chat", start_worker=False)
-        from allday_asr.v3.application.memory_trial import MemoryTrial
+        from allday_asr.v3.bootstrap.memory_trial import compose_memory_trial as MemoryTrial
         self.memory_trial = MemoryTrial(self.chat, core.cross_day_memory)
         self.chat.memory_trial = self.memory_trial
         self.chat._worker.start()
