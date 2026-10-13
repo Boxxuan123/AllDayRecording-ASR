@@ -20,7 +20,10 @@ from allday_asr.v3.domain.chat_identity import (
 )
 
 
-class ChatCache(ChatIdentityCache):
+from .memory_trial_cache import MemoryTrialCache
+
+
+class ChatCache(ChatIdentityCache, MemoryTrialCache):
     def __init__(self, path: Path):
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +63,7 @@ class ChatCache(ChatIdentityCache):
                 PRAGMA user_version=1;
             """)
             db.executescript(IDENTITY_SCHEMA)
+            self.initialize_trial_columns(db)
             for observed in db.execute(
                 "SELECT dataset,body FROM records WHERE deleted=0"
             ).fetchall():
@@ -218,6 +222,7 @@ class ChatCache(ChatIdentityCache):
                         "INSERT OR IGNORE INTO tasks(dataset,record_id,revision,operation) VALUES(?,?,?,?)",
                         (dataset, rid, revision, operation),
                     )
+                    self.tag_trial_receipt(db, dataset, record, revision, operation, old, scope_id, progress, changes)
                     # Remove stale evidence immediately, even if index work fails later.
                     db.execute(
                         "DELETE FROM search_index WHERE dataset=? AND id=?",
@@ -248,6 +253,8 @@ class ChatCache(ChatIdentityCache):
                         scope_id,
                     ),
                 )
+
+        self.mark_trial_committed(dataset, items, changes)
 
     def create_scope(self, dataset, scope, snapshot):
         key = scope_key({"dataset": dataset, "scope": scope})

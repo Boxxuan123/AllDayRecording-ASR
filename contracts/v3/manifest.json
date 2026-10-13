@@ -1,11 +1,11 @@
 {
-  "contract_version": "3.10.1",
+  "contract_version": "3.10.2",
   "projection_version": 7,
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi_version": "3.1.0",
   "release_lock": {
     "path": "release-lock.json",
-    "sha256": "bf3993d97ca624d41ba9f4d3454ac007d2eddd4ea415ef851d4389c8b841d3dc"
+    "sha256": "3602338a1025e3f43a48b54c3763280383449af04baef9df0d730cb42aaa32cb"
   },
   "schemas": {
     "primitives": {
@@ -84,21 +84,21 @@
   "apis": {
     "desktop": {
       "path": "openapi/desktop-api.openapi.json",
-      "sha256": "79d141f9a556b9989a3f3c9117b6b1df979ab12f6c01fc5ec78704b9aabdba99"
+      "sha256": "fb1eac0ee1b8bd6151ad29dfed5bcd4d6410153de26205cdcd7bb0a6797e9ea4"
     },
     "device": {
       "path": "openapi/device-api.openapi.json",
-      "sha256": "2a0d9e7fe738028bf5df22cf17bc8d98139299f486780a851bc09ac8419384a6"
+      "sha256": "4db8a8d956bee821b8ede0800878a57f0b93001c7ea6518a17c75bb5e54261ce"
     }
   },
   "fixtures": {
     "core_resources": {
       "path": "fixtures/core-resources.json",
-      "sha256": "2ecc665bc105261de8bf276f051872b0bdf9d55dcb81d4bffe1aa2fc8e5e6ed8"
+      "sha256": "8380cb56297d8bf3490876835fe04f167fc323c5271cbe5b570de523d79e2f52"
     },
     "forward_enums": {
       "path": "fixtures/forward-enums.json",
-      "sha256": "064f937140464f609ad99beed590552908fa8df881e9bce731d89c92cafc8155"
+      "sha256": "2ed2193d9e58384365bb11c4fe4fbb04bb07d734308d4e5cfda14f81937650b6"
     },
     "explicit_times": {
       "path": "fixtures/explicit-times.json",

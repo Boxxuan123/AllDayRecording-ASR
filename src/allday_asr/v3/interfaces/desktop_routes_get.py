@@ -47,6 +47,9 @@ class DesktopGetRoutesMixin:
             )
             return
         query = parse_qs(parsed.query)
+        if path == "/api/v3/memory/trial":
+            self._send_json(200,self.application.memory_trial.status())
+            return
         if path == "/api/v3/memory":
             self._send_json(200,self.application.core.cross_day_memory.get(**{k:v[0] for k,v in query.items() if k in {"page","discussion","evidence_page"}}))
             return

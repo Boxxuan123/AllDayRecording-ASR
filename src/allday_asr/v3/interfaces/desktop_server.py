@@ -42,7 +42,11 @@ class V3DesktopApplication:
         self.core = core
         from allday_asr.v3.bootstrap.chat import compose_chat_queries
 
-        self.chat = compose_chat_queries(core.paths.state_dir / "chat")
+        self.chat = compose_chat_queries(core.paths.state_dir / "chat", start_worker=False)
+        from allday_asr.v3.application.memory_trial import MemoryTrial
+        self.memory_trial = MemoryTrial(self.chat, core.cross_day_memory)
+        self.chat.memory_trial = self.memory_trial
+        self.chat._worker.start()
         from allday_asr.v3.bootstrap.chat_followups import FollowupJobs
 
         self.followups = FollowupJobs(core, self.chat)

@@ -69,6 +69,14 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
         if not self._authorized_mutation():
             return
         body = self._read_json()
+        if path == "/api/v3/memory/trial":
+            if set(body)=={"action","contacts"} and body["action"]=="start":
+                self._send_json(200,self.application.memory_trial.start(body["contacts"]))
+            elif set(body)=={"action"}:
+                self._send_json(200,self.application.memory_trial.control(body["action"]))
+            else:
+                raise ValueError("invalid trial request")
+            return
         if path == "/api/v3/memory/update":
             self._send_json(200,self.application.core.cross_day_memory.update(**body))
             return

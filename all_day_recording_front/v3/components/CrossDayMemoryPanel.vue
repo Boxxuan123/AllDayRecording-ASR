@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { request } from '../core/api'
+import MemoryTrialPanel from './MemoryTrialPanel.vue'
 import { chatApi, type ChatContext } from '../core/chat'
 import { navigate } from '../core/router'
 import { playSessionRange, release } from '../core/media'
@@ -33,6 +34,7 @@ onMounted(()=>void load());onBeforeUnmount(()=>{generation++;release()})
 <template>
 <article class="panel cross-day-memory">
 <h2>有依据的跨天互动与事情</h2>
+<MemoryTrialPanel v-if="!personId" />
 <p v-if="loading">正在读取记忆…</p><p v-if="error" role="alert">加载或操作失败：{{ error }} <button @click="load">重试</button></p>
 <p v-if="value?.status==='not_selected'">尚未选择输入范围。按缓存人物选择后即可查看；无需生成每日总结。</p>
 <p v-if="value?.scope">{{ value.scope.first }} 至 {{ value.scope.last }} · Asia/Singapore · 所选缓存范围</p>

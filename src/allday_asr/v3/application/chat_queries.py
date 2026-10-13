@@ -80,6 +80,7 @@ class ChatQueries:
         self._stop = Event()
         self._sync_lock = RLock()
         self._answer_lock = Lock()
+        self.memory_trial = None
         self._jobs = {}
         self._threads = []
         self._last_discovery = 0
@@ -273,8 +274,8 @@ class ChatQueries:
                 else self.cache.context(rid, before, after) | {"source_error": exc.code}
             )
 
-    def start_sync(self, scopes, *, reinitialize=False):
-        if not isinstance(scopes, list) or not 1 <= len(scopes) <= 5:
+    def start_sync(self, scopes, *, reinitialize=False, trial_mode=False):
+        if not isinstance(scopes, list) or not 1 <= len(scopes) <= (3 if trial_mode else 5):
             raise ChatDataError("SELECT_ONE_TO_FIVE_CONVERSATIONS", 400)
         with self._sync_lock:
             status = self.discover(force=True)
@@ -296,7 +297,7 @@ class ChatQueries:
             active_keys = {
                 r["id"] for r in old if r["dataset"] == dataset and r["enabled"]
             }
-            if len(active_keys | {key for key, _ in prepared}) > 5:
+            if len(active_keys | {key for key, _ in prepared}) > (8 if trial_mode else 5):
                 raise ChatDataError("ACTIVE_SCOPE_LIMIT_REINITIALIZE_EXPLICITLY", 400)
             for key, scope in prepared:
                 existing = self.cache.scope(key)
@@ -323,13 +324,21 @@ class ChatQueries:
             raise ChatDataError("INVALID_REQUEST", 400)
         return {"paused": self._paused, "cache": self.cache.health()}
 
-    def sync_once(self, max_pages=10, seconds=60):
+    def sync_once(self, max_pages=10, seconds=60, *, scope_ids=None):
         deadline = time.monotonic() + seconds
         with self._sync_lock:
-            for row in self.cache.scopes():
+            trial=self.cache.get("memory_trial_v2") or {}
+            owned={i for i in trial.get("scope_ids",[]) if not trial.get("prior_enabled",{}).get(i,False)}
+            rows=self.cache.scopes()
+            if scope_ids is not None:
+                order={sid:n for n,sid in enumerate(scope_ids)}
+                rows.sort(key=lambda row:order.get(row["id"],len(order)))
+            for row in rows:
+                if scope_ids is not None and row["id"] not in scope_ids: continue
+                if scope_ids is None and row["id"] in owned: continue
                 if not row["enabled"]:
                     continue
-                if self._stop.is_set() or self._paused or time.monotonic() >= deadline:
+                if self._stop.is_set() or (self._paused and scope_ids is None) or time.monotonic() >= deadline:
                     break
                 if row.get("error") in RECOVER_ERRORS:
                     continue  # Never restart history silently.
@@ -341,7 +350,7 @@ class ChatQueries:
                     for _ in range(max_pages):
                         if (
                             self._stop.is_set()
-                            or self._paused
+                            or (self._paused and scope_ids is None)
                             or time.monotonic() >= deadline
                         ):
                             break
@@ -350,6 +359,7 @@ class ChatQueries:
                             r["received"]
                             for r in self.cache.scopes()
                             if r["dataset"] == row["dataset"] and r["enabled"]
+                            and (r["id"] in scope_ids if scope_ids is not None else r["id"] not in owned)
                         )
                         snapshot_phase = row["phase"] == "snapshot"
                         remaining = 5000 - total if snapshot_phase else 100
@@ -374,6 +384,7 @@ class ChatQueries:
                                 exc.code
                                 in {"SERVICE_BUSY", "QUERY_TIMEOUT", "MAC_OFFLINE"}
                                 and retries < 2
+                                and _ + 1 < max_pages
                             ):
                                 retries += 1
                                 continue
@@ -416,12 +427,21 @@ class ChatQueries:
         while not self._stop.is_set():
             try:
                 self.cache.process(100)
-                if not self._paused and time.monotonic() >= next_sync:
-                    self.sync_once(max_pages=10, seconds=60)
+                trial=self.memory_trial.expire() if self.memory_trial else None
+                if time.monotonic() >= next_sync:
+                    if trial and trial["state"]=="running":
+                        self.sync_once(max_pages=2, seconds=15, scope_ids=self.memory_trial.poll_scopes())
+                        self.memory_trial.checked()
+                    if not self._paused:
+                        self.sync_once(max_pages=10, seconds=60)
                     next_sync = time.monotonic() + 30
+                self.cache.process(100)
+                if self.memory_trial: self.memory_trial.tick()
             except Exception:
                 self.cache.put("worker_error", "CHAT_WORKER_FAILED")
                 self._paused = True
+                next_sync = time.monotonic() + 30
+                if self.memory_trial: self.memory_trial.worker_failed()
             self._stop.wait(1)
 
     def submit_answer(self, question, scope, origin="mac"):
