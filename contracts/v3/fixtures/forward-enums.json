@@ -1,5 +1,5 @@
 {
-  "contract_version": "3.10.0",
+  "contract_version": "3.10.1",
   "recording_session": {
     "state": "future_archived_state",
     "status_code": "future_aggregate_status"
@@ -21,7 +21,7 @@
     ]
   },
   "expected_decode": {
-    "contract_version": "3.10.0",
+    "contract_version": "3.10.1",
     "session_state": "unknown",
     "aggregate_status": "unknown",
     "processing_status": "unknown",

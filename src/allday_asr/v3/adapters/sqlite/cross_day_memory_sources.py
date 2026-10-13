@@ -9,6 +9,7 @@ from allday_asr.v3.domain.ids import stable_ulid
 from allday_asr.v3.domain.memory_content import safe_memory, admission
 from allday_asr.v3.domain.chat_projection import semantic_text
 from allday_asr.v3.application.insight_projections import _period
+from allday_asr.v3.domain.discussion_boundaries import split, role, RULE_VERSION
 
 
 class CrossDayMemorySources:
@@ -220,55 +221,23 @@ class CrossDayMemorySources:
             raise ValueError(
                 "contact has no cached direct interaction in selected dates"
             )
-        groups = []
+        buckets = {}
         for r in records:
-            conv = (
-                r["dataset"],
-                r["platform"],
-                r["source_account_id"],
-                r["conversation_id"],
-            )
+            conv = (r["dataset"],r["platform"],r["source_account_id"],r["conversation_id"])
             keys = conversations.get(conv, set()) & set(selected)
-            if (
-                len(keys) != 1
-                or r.get("conversation_type") != "c2c"
-                or not r.get("text")
-            ):
+            if len(keys)!=1 or r.get("conversation_type")!="c2c" or not r.get("text"):
                 continue
-            key = next(iter(keys))
-            event = followups.get((r["dataset"], r["record_id"]))
-            day = (
-                datetime.fromtimestamp(r["sent_at"], ZoneInfo(timezone))
-                .date()
-                .isoformat()
-            )
-            previous = next(
-                (
-                    g
-                    for g in reversed(groups)
-                    if g["key"] == key
-                    and g["day"] == day
-                    and g["event_id"] == event
-                    and r["sent_at"] - g["last_sent"] <= 1800
-                    and len(g["records"]) < 8
-                ),
-                None,
-            )
-            if previous:
-                previous["records"].append(r)
-                previous["last_sent"] = r["sent_at"]
-            else:
-                groups.append(
-                    {
-                        "key": key,
-                        "day": day,
-                        "event_id": event,
-                        "records": [r],
-                        "last_sent": r["sent_at"],
-                    }
-                )
+            key=next(iter(keys))
+            event=followups.get((r["dataset"],r["record_id"]))
+            day=datetime.fromtimestamp(r["sent_at"],ZoneInfo(timezone)).date().isoformat()
+            buckets.setdefault((key,day,event),[]).append(r)
+        groups=[]
+        for (key,day,event),batch in buckets.items():
+            for group in split(batch):
+                groups.append({**group,"key":key,"day":day,"event_id":event})
         # Do not spend bounded slots on opaque attachments/unsolicited marketing.
         group_count = len(groups)
+        excluded_groups=[{"processing_status":"excluded","processing_reason":admission({"event_id":g["event_id"],"evidence":[{"source_type":"chat","identity_self":r.get("is_from_self"),"quote":semantic_text(r["text"])} for r in g["records"]]})[1],"source_refs":[{"dataset":r["dataset"],"record_id":r["record_id"],"revision":r["record_revision"]} for r in g["records"]]} for g in groups if not admission({"event_id":g["event_id"],"evidence":[{"source_type":"chat","identity_self":r.get("is_from_self"),"quote":semantic_text(r["text"])} for r in g["records"]]})[0]]
         groups = [g for g in groups if admission({"event_id": g["event_id"], "evidence": [{"source_type": "chat", "identity_self": r.get("is_from_self"), "quote": semantic_text(r["text"])} for r in g["records"]]})[0]]
         # Fair bounded selection: first discussion per selected contact, then chronological remainder.
         picked = []
@@ -298,6 +267,9 @@ class CrossDayMemorySources:
                         if r.get("is_from_self") is True
                         else "他人陈述／转述，未核实为客观事实",
                         "identity_self": r.get("is_from_self"),
+                        "is_from_self": r.get("is_from_self"),
+                        "identity_basis": "来源消息明确的本人标志及发送账号" if r.get("is_from_self") is True else contacts[g["key"]]["identity_basis"],
+                        "role": role(r),
                         "sender_account_id": r.get("sender_account_id"),
                         "platform": r["platform"],
                         "source_account_id": r["source_account_id"],
@@ -324,43 +296,54 @@ class CrossDayMemorySources:
                     "evidence": evidence,
                     "evidence_status": "valid",
                     "pending_change": False,
+                    "boundary_basis": g["boundary_basis"],
                 }
             )
-        chat_limit = 5 if events else 7
-        fresh = manifest
-        if prior_scope is None:
-            manifest = fresh[:chat_limit]
-            deferred = len(fresh) - len(manifest)
-        else:
-            # Shared original references identify a discussion; semantic similarity never
-            # merges things. Preserve old evidence revisions and every human decision ID.
-            manifest = json.loads(json.dumps(prior_scope["manifest"]))
-            deferred = 0
-            def refs(row):
-                return {(e.get("dataset"), e.get("record_id")) for e in row["evidence"] if e["source_type"] == "chat"}
-            occupied = set().union(*(refs(row) for row in manifest)) if manifest else set()
-            for candidate in fresh:
-                incoming = refs(candidate)
-                matches = [row for row in manifest if refs(row) & incoming]
-                if not incoming - occupied:
-                    continue
-                if len(matches) == 1:
-                    row = matches[0]
-                    additions = [e for e in candidate["evidence"] if (e.get("dataset"), e.get("record_id")) not in occupied]
-                    if len(row["evidence"]) + len(additions) <= 8 and row.get("event_id") == candidate.get("event_id"):
-                        row["evidence"].extend(additions)
-                        occupied.update(incoming)
-                    else:
-                        deferred += 1
-                elif not matches and len(manifest) < 7:
-                    manifest.append(candidate)
-                    occupied.update(incoming)
-                else:
-                    # Capacity or ambiguous overlap: keep independent inputs pending,
-                    # never evict reviewed history or silently combine two discussions.
-                    deferred += 1
-        coverage["incremental"] = {"excluded_discussions": group_count - len(groups), "deferred_discussions": deferred, "discussion_limit": 7}
-        for event in (events[: max(0, 7 - len(manifest))] if prior_scope is None else []):
+        fresh=manifest
+        old = json.loads(json.dumps(prior_scope.get("manifest",[]))) if prior_scope else []
+        def refs(row):
+            return {(e.get("dataset"),e.get("record_id")) for e in row["evidence"] if e["source_type"]=="chat"}
+        # Repair core/context membership without renaming existing discussions or
+        # silently merging legacy records. A concrete continuation remains reviewable.
+        repaired=[]
+        used=set()
+        for candidate in fresh:
+            incoming=refs(candidate)
+            matches=[r for r in old if refs(r)&incoming]
+            if matches:
+                for n,row in enumerate(matches):
+                    selected_e=[e for e in candidate["evidence"] if (e.get("dataset"),e.get("record_id")) in refs(row)]
+                    if n==len(matches)-1:
+                        selected_e.extend(e for e in candidate["evidence"] if not any((e.get("dataset"),e.get("record_id")) in refs(m) for m in matches))
+                    selected_e.extend(e for e in row["evidence"] if row["id"] not in used and (e.get("dataset"),e.get("record_id")) not in set().union(*(refs(c) for c in fresh)) and e not in selected_e)
+                    if not selected_e: continue
+                    # A split can overlap one legacy discussion twice. Retain its ID
+                    # on the first object; the second receives its own source anchor.
+                    ident=row["id"] if row["id"] not in used else stable_ulid("memory-discussion",selected_e[0]["dataset"],selected_e[0]["record_id"])
+                    used.add(ident)
+                    snapshots={(e.get("dataset"),e.get("record_id")):e for e in row["evidence"]}
+                    selected_e=[{**snapshots.get((e.get("dataset"),e.get("record_id")),e),"role":e.get("role","core"),"is_from_self":e.get("is_from_self"),"identity_basis":e.get("identity_basis")} for e in selected_e]
+                    repaired.append({**candidate,"id":ident,"evidence":selected_e,"occurred_at":selected_e[0]["occurred_at"]})
+            else: repaired.append(candidate)
+        # Missing/revised originals keep their prior snapshots and invalidation path.
+        repaired.extend(row for row in old if row["id"] not in used and not refs(row)&set().union(*(refs(c) for c in fresh)))
+        oldids={r["id"] for r in old}
+        done=[r for r in repaired if r["id"] in oldids]
+        waiting=[r for r in repaired if r["id"] not in oldids]
+        prior_pending={r["id"] for r in (prior_scope or {}).get("_pending",[])}
+        arrivals=[r for r in waiting if r["id"] not in prior_pending]
+        backlog=[r for r in waiting if r["id"] in prior_pending]
+        # Alternate newly discovered work and FIFO backlog. Neither can starve.
+        schedule=[]
+        while arrivals or backlog:
+            if arrivals: schedule.append(arrivals.pop(0))
+            if backlog: schedule.append(backlog.pop(0))
+        advance=prior_scope is None or prior_scope.get("_continue") or prior_scope.get("_input_signature") != [[r["dataset"],r["record_id"],r["record_revision"]] for r in records if any(r in g["records"] for g in groups)]
+        chosen=schedule[:7] if advance else []
+        manifest=done+chosen
+        pending=[{**r,"processing_status":"waiting","processing_reason":"bounded_batch_budget"} for r in schedule[len(chosen):]]
+        coverage["incremental"]={"excluded_discussions":group_count-len(groups),"deferred_discussions":len(pending),"processed_discussions":len(manifest),"discussion_limit":7}
+        for event in (events[: max(0, 7 - len(chosen))] if prior_scope is None else []):
             ev = []
             for e in event["evidence"][:8]:
                 ev.append(
@@ -415,16 +398,29 @@ class CrossDayMemorySources:
             "timezone": timezone,
             "contacts": [contacts[k] for k in selected],
             "coverage": coverage,
-            "manifest": manifest,
+            "manifest": sorted([{**r,"processing_status":"processed","processing_reason":"admitted_evidence_discussion"} for r in manifest],key=lambda r:(r["occurred_at"],r["id"])),
+            "_pending": pending,
+            "_excluded": excluded_groups,
+            "_boundary_version": RULE_VERSION,
+            "_input_signature": [[r["dataset"],r["record_id"],r["record_revision"]] for r in records if any(r in g["records"] for g in groups)],
             "model_calls": 0,
             "object_limit": 10,
         })
 
     def load(self, scope):
         rows = json.loads(json.dumps(scope["manifest"]))
-        _, contacts, _, _, _, _ = self._read(
-            scope["first"], scope["last"], scope["timezone"]
-        )
+        # Frozen validation resolves only selected identities and cited originals.
+        # It does not re-inventory all chats or structured events on every sync.
+        contacts={}
+        with self.database.read() as core:
+            for p in scope["contacts"]:
+                person=p.get("person_id") if p["platform"]=="recording" else None
+                if p["platform"]!="recording" and self.chat_path.exists():
+                    with sqlite3.connect("file:"+self.chat_path.as_posix()+"?mode=ro",uri=True) as chat:
+                        link=chat.execute("SELECT person_id FROM user_account_links WHERE platform=? AND source=? AND account=?",(p["platform"],p["source_account_id"],p["account_id"])).fetchone()
+                        person=link[0] if link else None
+                found=core.execute("SELECT display_name FROM persons WHERE person_id=? AND user_confirmed=1",(person,)).fetchone() if person else None
+                contacts[p["id"]]={**p,"person_id":person if found else None,"label":found[0] if found else p["label"],"identity_basis":"原转写已确认稳定人物身份" if p["platform"]=="recording" and found else "人工账号关联" if found else "来源账号独立身份；未关联录音人物"}
         with self.database.read() as core:
             chat = (
                 sqlite3.connect(
@@ -443,6 +439,9 @@ class CrossDayMemorySources:
                             p["identity_basis"] = "来源缺失；原身份依据已失效"
                     valid = True
                     for e in r["evidence"]:
+                        e.setdefault("role", "core")
+                        e.setdefault("is_from_self", e.get("identity_self"))
+                        if not e.get("identity_basis"): e["identity_basis"] = "原转写身份依据" if e["source_type"]=="recording" else "来源消息发送账号及本人标志"
                         if e["source_type"] == "chat":
                             found = (
                                 chat.execute(
@@ -480,7 +479,7 @@ class CrossDayMemorySources:
                                 and found[1] == "active"
                                 else "source_changed_or_missing"
                             )
-                        valid = valid and e["status"] == "valid"
+                        if e.get("role","core")=="core": valid = valid and e["status"] == "valid"
                     r["evidence_status"] = (
                         "valid" if valid else "source_changed_or_missing"
                     )

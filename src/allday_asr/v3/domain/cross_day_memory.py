@@ -31,7 +31,8 @@ def project(scope, discussions, decisions):
         if not admitted and r["id"] not in protected:
             excluded.append({"id": r["id"], "reason": reason, "source_refs": [{k: e[k] for k in ("dataset", "record_id", "revision", "source_type") if k in e} for e in r["evidence"]]})
             continue
-        r["title"], r["summary"] = content(r)
+        core={**r,"evidence":[e for e in r["evidence"] if e.get("role","core")=="core"]}
+        r["title"], r["summary"] = content(core)
         rows.append(r)
     by_id = {r["id"]: r for r in rows}
     links = {d["source"]: d for d in decisions if d["action"] in {"link", "detach"}}
@@ -186,7 +187,7 @@ def project(scope, discussions, decisions):
     ]
     return {
         "id": INDEX_ID,
-        "scope": {k: v for k, v in scope.items() if k != "manifest"},
+        "scope": {k: v for k, v in scope.items() if k != "manifest" and not k.startswith("_")},
         "people": people,
         "discussions": rows,
         "things": things,

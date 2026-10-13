@@ -275,6 +275,7 @@ def compose_v3_core(
 
     mobile_sync.daily_refresh = daily_refresh
     mobile_sync.memory_refresh = cross_day_memory.refresh_saved
+    mobile_sync.memory_target_refresh = cross_day_memory.refresh_targets
     return V3Core(
         paths=selected,
         database=database,

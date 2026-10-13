@@ -218,6 +218,7 @@ class MobileSyncService:
         self._annotation_samples = annotation_samples
         self.daily_refresh = daily_refresh
         self.memory_refresh = None
+        self.memory_target_refresh = None
 
     def synchronize(self, device_id: str, request: SyncRequest) -> SyncResponse:
         started = time.perf_counter()
@@ -231,6 +232,10 @@ class MobileSyncService:
             raise ValueError("invalid snapshot cursor")
         if self.memory_refresh is not None:
             self.memory_refresh()
+        if self.memory_target_refresh is not None:
+            for operation in request.client_operations:
+                if operation.kind == "memory.link":
+                    self.memory_target_refresh(operation.payload.get("source"),operation.payload.get("target"))
         receipts: list[OperationReceipt] = []
         with self._uow_factory() as uow:
             transaction_started = time.perf_counter()

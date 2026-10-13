@@ -31,9 +31,22 @@ def factory():
 
 
 class ArrivalSources(Sources):
+    def freeze(self,first,last,*args):
+        result=deepcopy(self.scope);result.update(first=first,last=last)
+        result["manifest"]=self.selected(first)
+        return result
+    def selected(self,first):
+        if first=='2026-10-05':return deepcopy(self.rows)
+        row=deepcopy(self.rows[2]);row.update(id=stable_ulid('fictional-new-window'),title='新窗口独立互动')
+        row['evidence'][0].update(record_id='new-window',reply_record_id=None,quote='新窗口讨论另一件独立事情')
+        return [row]
+    def load(self,scope):
+        ids={r['id'] for r in scope['manifest']}
+        return [r for r in self.selected(scope['first']) if r['id'] in ids]
     def increment(self, scope):
         updated = deepcopy(scope)
         updated["coverage"] = deepcopy(self.scope["coverage"])
+        updated["manifest"]=self.selected(scope["first"])
         return updated
 
 sources = ArrivalSources()
@@ -50,7 +63,10 @@ if request.get("invalidate"):
     sources.rows[0]["evidence_status"] = "source_changed_or_missing"
     sources.rows[0]["evidence"][0]["status"] = "source_changed_or_missing"
 service = CrossDayMemoryService(sources, factory, now=lambda: NOW)
-service.update("2026-10-05", "2026-10-07", [sources.scope["contacts"][0]["id"]])
+if request.get('window'):
+    (root/'window').write_text('fictional',encoding='utf-8')
+first,last=('2026-10-08','2026-10-10') if (root/'window').exists() else ('2026-10-05','2026-10-07')
+service.update(first,last,[sources.scope["contacts"][0]["id"]])
 device = stable_ulid("fictional-phone")
 with db.transaction() as c:
     c.execute(
@@ -63,6 +79,7 @@ sync = MobileSyncService(
     now=lambda: NOW,
 )
 sync.memory_refresh = service.refresh_saved
+sync.memory_target_refresh=service.refresh_targets
 ops = tuple(
     ClientOperation(v["operation_id"], v["kind"], v["base_revision"], v["payload"])
     for v in request.get("operations", [])

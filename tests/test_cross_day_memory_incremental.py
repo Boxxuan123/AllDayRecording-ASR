@@ -69,7 +69,9 @@ def test_capacity_decisions_restart_replay_and_no_eviction(tmp_path):
     value=service.decide(a,b,'reject',value['revision'])
     for i in range(3,10): arrive(i,'讨论独立机会编号'+str(i),4000*(i-1))
     value=update();assert len(value['discussions'])==7
-    assert value['scope']['coverage']['incremental']['deferred_discussions']==2
+    assert value['scope']['coverage']['incremental']['deferred_discussions']==0
+    assert value['scope']['coverage']['incremental']['processed_discussions']==9
+    assert len(service.get(page=1)['discussions'])==2
     assert {a,b}<={r['id'] for r in value['discussions']}
     assert len({r['thing_id'] for r in value['discussions']})==7
     assert not value['candidates']

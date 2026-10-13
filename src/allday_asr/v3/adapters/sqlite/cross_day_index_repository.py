@@ -16,6 +16,22 @@ class CrossDayIndexRepository:
             else (None, None)
         )
 
+    def has_batch(self, batch_id):
+        return bool(self.connection.execute("SELECT 1 FROM cross_day_index_revisions WHERE json_extract(scope_json,'$._batch_id')=? LIMIT 1",(batch_id,)).fetchone())
+
+    def history(self):
+        # Existing immutable revisions are the history owner; no parallel queue/table.
+        rows=self.connection.execute("SELECT scope_json,value_json FROM cross_day_index_revisions WHERE revision IN (SELECT MAX(revision) FROM cross_day_index_revisions GROUP BY json_extract(scope_json,'$.first'),json_extract(scope_json,'$.last'),json_extract(scope_json,'$.contacts')) ORDER BY revision DESC").fetchall()
+        result=[]
+        for row in rows:
+            scope=safe_memory(json.loads(row[0]));value=safe_memory(json.loads(row[1]))
+            scope={k:v for k,v in scope.items() if k not in {'_history_scopes','_archive'}}
+            value={k:v for k,v in value.items() if not k.startswith('_')}
+            ids={r["id"] for r in scope["manifest"]}
+            value["discussions"]=[r for r in value["discussions"] if r["id"] in ids]
+            result.append([scope,value])
+        return result
+
     def decisions(self):
         return [
             dict(r)
@@ -76,9 +92,9 @@ def memory_review_items(connection):
                 "context": {
                     "memory_association": {**candidate, "revision": value["revision"]},
                     "source_text": "\n".join(
-                        e["quote"]
+                        f"{e.get('speaker','未知发送者')} · {e['occurred_at']} · is_from_self={e.get('is_from_self',e.get('identity_self'))} · {e.get('identity_basis','来源身份依据')} · {e.get('role','core')}：{e['quote']}"
                         for key in [source, target]
-                        for e in rows[key]["evidence"]
+                        for e in rows[key]["evidence"][:8]
                     ),
                 },
             }

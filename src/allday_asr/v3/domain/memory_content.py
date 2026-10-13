@@ -31,7 +31,7 @@ def safe_memory(value):
 
 
 def text(row):
-    return "\n".join(e["quote"] for e in row["evidence"])
+    return "\n".join(e["quote"] for e in row["evidence"] if e.get("role","core")=="core")
 
 
 def readable(quote):
@@ -122,7 +122,7 @@ def topics(row):
 
 
 def latest_evidence(row):
-    values = [e["occurred_at"] for e in row["evidence"] if e.get("status", "valid") == "valid"]
+    values = [e["occurred_at"] for e in row["evidence"] if e.get("status", "valid") == "valid" and e.get("role","core")=="core"]
     return max(values, key=lambda v: datetime.fromisoformat(v.replace("Z", "+00:00"))) if values else None
 
 
@@ -136,4 +136,6 @@ def continuation_reason(a, b):
         later_speakers = {e.get("sender_account_id") for e in later["evidence"] if e.get("identity_self") is False}
         if (speakers - {None}) & later_speakers:
             return "前段明确谈到收到物理教师招聘消息且未回复；后段以‘那就婉拒’衔接回复选择，并具体讨论初中／高中物理教学顾虑。可能延续前段招聘，但没有唯一招聘标识，需人工确认。"
+    if re.search(r"看看照片|选哪一张",x) and re.search(r"不让登|绑定微信",x+y) and re.search(r"复制链接|微信解绑",y) and re.search(r"这张好看|报名照片",y):
+        return "前段提供页面并请对方选择照片；后段明确解释同一页面的微信绑定登录障碍、复制链接打开方法，并继续选择报名照片。存在具体操作衔接，仍由用户判断是否为同一讨论。"
     return None

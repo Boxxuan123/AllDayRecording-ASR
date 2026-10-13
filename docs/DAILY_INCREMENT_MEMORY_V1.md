@@ -1,3 +1,5 @@
+后续容量、分页与跨窗口行为由 [MEMORY_CONTINUITY_V1.md](MEMORY_CONTINUITY_V1.md) 取代；下文是 0.7.2 的历史实现记录。
+
 # 小范围日常增量记忆验证（ASR 0.7.2 / Phone 1.0.10）
 
 基线：ASR 6883bfe53a5dad9220eb726a71b0e64284020198；Phone 204d79f60bbcb98b41e45e33096cfa3f246158b8。复用隔离工作树，保留原用户工作区修改。
