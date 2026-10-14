@@ -11,7 +11,7 @@ class RecallModelAdapter:
         self.root = root
 
     def __call__(self, payload, cancel):
-        seconds = payload.get("model_budget_seconds", 20)
+        seconds = payload.get("model_budget_seconds", 45)
         runner = ModelExecutionRunner(
             self.root / "chat/model-receipts",
             timeout_seconds=seconds,
@@ -24,7 +24,7 @@ class RecallModelAdapter:
         workdir.mkdir(parents=True, exist_ok=True)
         answer = runner.run(
             task="history-recall-v2",
-            batch_id="history-recall:" + payload["query_id"],
+            batch_id=f"history-recall:{payload['query_id']}:{payload.get('summary_attempt', 0)}",
             prompt=packed(payload),
             instructions=INSTRUCTIONS
             + " For intent=conversation, summarize actual topics, important discussions, explicit decisions and unresolved points as separate cited claims. Never answer with a retrieval status. Use evidence id for citations. All coverage is partial. Distinguish plans, decisions, reported completion and verified execution. Compare contradictory evidence explicitly.",

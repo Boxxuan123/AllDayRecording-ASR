@@ -1,26 +1,12 @@
 # 精简独立审核入口
 
-基线 ASR ecd5c9eb2576d141e6f984aa9797d385cf926535；Phone 7032b093bb9150c86111e8cdc63ae47acc71234f。
+基线 ASR e067e72058f5d734a5831567545be43ca521e7b7 / Phone bfbc564d50ef99d895eae8bd324f7edb026d84b6。
 
-重点检查：
+本轮请审查：
+1. recall_actions.py：联系人目录仅实际来源元数据；owner/query 生命周期；两次有界目录刷新；返回候选才可 choose；时间/人物/来源不能绕过；不写身份。
+2. recall_understanding.py：没有实际名字线索的未知联系人直接等待用户选择；模型验证失败原子回退，不能留下半应用的日期/关键词。
+3. recall_summary.py / recall_model.py：45 秒归纳、真实故障分类；显式一次重试隔离 batch/job；引用验证、失效、取消；无隐式重试。
+4. PhoneRecallSearch / PhoneProductRecall：无候选时可查联系人；选后自动继续；原问题保留；失败有原文/重试按钮；70 秒 HTTP 等待与 60 秒查询预算匹配。
+5. tests/test_recall_recovery.py 与 tools/quality/check-recall-query-loop.cjs：最终回答内容、约束、防跨 owner、分页、取消、24 秒模拟模型、选择不写人物关系。
 
-1. `recall_directory.py` 只派生来源目录；没有人物卡门禁。原生key绑定dataset/platform/account/conversation；完整分页后才自动确认唯一，不完整页跨查询有界续取。
-2. `recall_understanding.py` 限定模型候选及原始硬约束，源联系人/统一人物独立。模型候选必须有问题中的真实备注/昵称/别名线索，禁止仅按相似姓名推荐或替换已解析人物。选择请求校验owner和已返回key；不写人工人物关系。过期上下文不授权新范围。
-3. `recall_conversation.py`、`recall_state.py`、`recall_conversations.py` 保持发送者、来源、发生时间及会话真实归属，私聊取双方，群聊不归给群名/引用者。
-4. `recall_summary.py` 保留逐字引用验证与有效citation集合；单方不足和模型失败不返回成功归纳。
-5. Phone `PhoneRecallSearch.ets` 选择后复用原qid；`PhoneProductRecall.ets` 主回答使用claims，普通范围不显示ISO/id/枚举，诊断折叠。
-
-复现（虚构DB、模拟模型）：
-
-```powershell
-$env:PYTHONPATH='src'
-python -m pytest -q tests/test_recall_contacts.py tests/test_recall_query_loop.py tests/test_recall_night_remote.py tests/test_history_recall.py tests/test_recall_corrections.py tests/test_recall_review_regressions.py tests/test_chat_self_identity.py tests/test_chat_time_regressions.py tests/test_v3_architecture.py tests/test_v3_contracts.py tests/test_v3_contract_generation.py tests/test_v3_device_sync.py
-python tools/verify_module_boundaries.py --output outputs/recall-contacts-deploy/gates
-python tools/sync_v3_contracts.py --phone <Phone隔离工作区> --check
-```
-
-Phone设置现有测试环境变量后运行 `node tools/quality/check-recall-query-loop.cjs`，以及官方 `run-code-linter.mjs` / `run-host-tests.mjs`。核验最终展示的内容、原文、同名选择、模型失败与业务outbox未变化，不只统计命中数。
-
-测试：联系人专题36例；相关组合253 passed/1 skipped（隔离工作区默认Phone路径）；指定ALLDAY_HARMONY_REPO后该契约项单独1/1通过；项目既有架构/设备/模型门禁247 passed；Phone桥接通过；Code Linter 0 defects；Hypium170/170。组合有重叠，不相加。
-
-未验证：Mac原数据库备注恢复、完整来源覆盖、真实模型语义归纳、手机实机选择/引用/返回。HDC无设备时不能计为安装或连接成功。此文件仅提供审核入口，不声称已获得ChatGPT独立审核。
+验收只使用虚构数据与模拟模型；本轮没有主动读取真实聊天正文或额外调用真实模型。Mac 备注导出缺口、真实模型最终效果须据实标注，不用工程模拟替代。

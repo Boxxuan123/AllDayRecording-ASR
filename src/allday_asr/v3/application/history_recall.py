@@ -7,6 +7,7 @@ from threading import Event, RLock
 from allday_asr.v3.domain.memory_content import safe_memory
 from allday_asr.v3.domain.recall_language import plan
 from .recall_understanding import interpret, apply_contact, choose
+from .recall_actions import lookup_contacts, retry_summary
 from allday_asr.v3.domain.recall_conversation import native_present
 from allday_asr.v3.ports.chat_data import ChatDataError, ChatDataSource
 from allday_asr.v3.ports.history_recall import (
@@ -24,6 +25,8 @@ LIMITS = {
     "retrieval_requests": 6,
     "model_calls": 2,
     "directory_requests": 6,
+    "contact_lookup_refreshes": 2,
+    "explicit_summary_retries": 1,
     "seconds": 60,
     "retention_seconds": 300,
 }
@@ -80,6 +83,10 @@ class HistoryRecall:
             )
         if action == "choose":
             return choose(self, owner, payload)
+        if action == "contacts":
+            return lookup_contacts(self, owner, payload)
+        if action == "retry_summary":
+            return retry_summary(self, owner, payload)
         if action == "query":
             return self.query(owner, payload)
         raise ValueError("未知回忆操作")
@@ -267,6 +274,9 @@ class HistoryRecall:
                 if not p["person_id"].startswith("native:")
             ],
             "contact_candidates": query_plan.get("contact_candidates", []),
+            "contact_lookup_allowed": query_plan.get("contact_lookup_allowed", False)
+            and bool(query_plan["issue"]),
+            "summary_retry_available": False,
             "_request": deepcopy(payload),
             "_plan": deepcopy(query_plan),
             "query_understanding": {
@@ -404,6 +414,7 @@ class HistoryRecall:
         result.update(
             status="stale",
             model_status="stale",
+            summary_retry_available=False,
             claims=[],
             answer="部分来源已确认修订／撤回，旧结论已失效，请重新查询。",
         )

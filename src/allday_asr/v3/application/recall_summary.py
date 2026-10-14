@@ -28,7 +28,8 @@ def summarize(service, result, question, cancel, deadline):
         "question": question,
         "query_id": result["query_id"],
         "intent": result["intent"],
-        "model_budget_seconds": min(20, int(deadline - time.monotonic())),
+        "model_budget_seconds": min(45, int(deadline - time.monotonic())),
+        "summary_attempt": result.get("_summary_attempt", 0),
         "scope": result["scope"],
         "records": rows,
         "evidence_complete": False,
@@ -73,6 +74,7 @@ def summarize(service, result, question, cancel, deadline):
         result["claims"] = value["claims"]
         result["unknown"] = value["unknown"]
         result["model_status"] = "available" if value["claims"] else "insufficient"
+        result["summary_retry_available"] = False
         # The primary answer is derived only from citation-validated claims.
         result["answer"] = "\n".join(
             ("推测：" + c["text"]) if c["kind"] == "inference" else c["text"]
@@ -88,11 +90,18 @@ def summarize(service, result, question, cancel, deadline):
             else "unavailable"
         )
         result["claims"] = []
-        result["unknown"] = ["归纳模型不可用、超时或证据校验失败。"]
+        reason = {
+            "timeout": "归纳超时",
+            "failed": "归纳的依据校验未通过",
+            "unavailable": "归纳模型暂不可用",
+        }[result["model_status"]]
+        result["unknown"] = [reason + "，本轮未形成内容结论。"]
         result["answer"] = (
-            "无法生成归纳（模型不可用、超时或证据校验失败）；以下仅为符合本次人物、时间和会话约束的原文。"
+            "无法生成归纳：" + reason + "。以下为符合本次联系人、时间与会话约束的原文。"
         )
-        result["coverage"].append("归纳模型不可用或证据校验失败；请直接查看命中的原文")
+        result["summary_retry_available"] = (
+            not cancel.is_set() and result.get("_summary_attempt", 0) == 0
+        )
     finally:
         result["metrics"]["model_elapsed_ms"] = round(
             (time.monotonic() - started) * 1000

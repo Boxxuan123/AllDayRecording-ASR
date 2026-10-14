@@ -101,6 +101,9 @@ def interpret(
         if not error:
             fast = understand(question, keyword, filtered, payload, now)
     scope = fast["scope"]
+    fast["contact_lookup_allowed"] = (
+        not error and not payload.get("person_id") and scope["source"] != "recording"
+    )
     native = {r["key"]: r for r in directory}
     # Prefer a source-native exact match over a same-label unified card. Keep
     # distinct namespaces as candidates rather than merging them by name.
@@ -186,7 +189,14 @@ def interpret(
             fast["intent"] == "conversation"
             and not fast["terms"]
             and fast["person_mention"]
-            and not fast["issue"]
+            and (
+                not fast["issue"]
+                or not any(
+                    n.casefold() in question.casefold()
+                    for r in directory
+                    for n in r["names"]
+                )
+            )
         )
     )
     if simple or service.planner is None:
@@ -240,6 +250,7 @@ def interpret(
                 for c in previous.get("claims", [])[:3]
             ],
         }
+    before_model = deepcopy(fast)
     try:
         fast["understanding_calls"] = 1
         value = service.planner(
@@ -332,6 +343,9 @@ def interpret(
             fast["time_explicit"] = True
         elif error:
             raise ValueError("unresolved time cannot default")
+        fast["contact_lookup_allowed"] = (
+            not payload.get("person_id") and scope["source"] != "recording"
+        )
         fast.update(
             intent=value["intent"],
             terms=[keyword.strip()] if keyword.strip() else topics,
@@ -423,6 +437,8 @@ def interpret(
         ):
             fast["issue"] = fast["issue"] or "请明确交流对象或主题。"
     except Exception:
+        fast = before_model
+        fast["understanding_calls"] = 1
         fast["issue"] = (
             "无法可靠理解本次问题；请补充人物称呼、主题或日期后重试。本轮没有扩大范围。"
         )
@@ -434,13 +450,18 @@ def choose(service, owner, payload):
     candidate = next(
         (
             c
-            for c in saved.get("contact_candidates", [])
+            for c in [
+                *saved.get("contact_candidates", []),
+                *saved.get("_lookup_candidates", []),
+            ]
             if c["key"] == payload.get("contact_key")
         ),
         None,
     )
     if candidate is None:
         raise ValueError("联系人选择已过期，请重新查询")
+    if not saved.get("contact_lookup_allowed"):
+        raise ValueError("请先明确日期或已有的人物筛选；联系人选择不会改变这些约束")
     return service.query(
         owner, saved["_request"], selected=candidate, prepared=saved["_plan"]
     )

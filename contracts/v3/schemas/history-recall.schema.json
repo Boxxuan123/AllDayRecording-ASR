@@ -218,6 +218,49 @@
               "pattern": "^[a-f0-9]{32}$"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "query_id"
+          ],
+          "properties": {
+            "action": {
+              "const": "contacts"
+            },
+            "query_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,80}$"
+            },
+            "search": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4980
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "query_id"
+          ],
+          "properties": {
+            "action": {
+              "const": "retry_summary"
+            },
+            "query_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,80}$"
+            }
+          }
         }
       ]
     },
@@ -361,9 +404,15 @@
               }
             }
           }
+        },
+        "contact_lookup_allowed": {
+          "type": "boolean"
+        },
+        "summary_retry_available": {
+          "type": "boolean"
         }
       }
     }
   },
-  "description": "Queries, pages and context are business read-only. identity is a separate explicit idempotent human command. Per query: at most 300 records, 6 source requests, one model invocation, 30 seconds. Source coverage remains partial. Evidence IDs bind citations; sender and quoted authors are distinct. Additive v3.12 fields distinguish source/effective identity and targeted stale evidence. A stale response invalidates dependent conclusions; an unavailable source only marks cached coverage. Model input is selected for time coverage and relevance before chronological display."
+  "description": "Business-read-only scoped recall. Initial query: 60 seconds, 300 records, 12 source requests (6 directory plus 6 retrieval), at most one planner and one summary. Summary at most 45 seconds. An explicit retry uses the owned, still-valid evidence, once, with no source reads. Explicit directory lookup: at most two refreshes of 6 metadata requests each, 20 contacts per page, no message reads, no person/alias writes. Unknown time/source constraints cannot be bypassed by contact selection. Coverage remains partial and citations are verified."
 }
