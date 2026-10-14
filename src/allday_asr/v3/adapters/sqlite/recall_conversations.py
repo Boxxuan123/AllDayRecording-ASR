@@ -2,7 +2,6 @@
 
 import json
 import time
-from allday_asr.v3.domain.source_identity import resolve_chat
 from allday_asr.v3.domain.recall_conversation import participants
 from allday_asr.v3.ports.chat_data import ChatDataError
 
@@ -11,37 +10,58 @@ def conversation_scopes(ids, scope, cancel, deadline):
     if not ids.chat_path.exists():
         return []
     people, manual = ids.people(), ids.manual()
+    person = scope["person_id"]
+    if person not in people:
+        return []
+    keys = [
+        json.loads(k)
+        for k, v in manual.items()
+        if v == person or (v == "self" and people[person]["kind"] == "self")
+    ]
+    keys = [k for k in keys if scope["source"] in {"all", k[0]}]
+    if not keys:
+        return []
+    if len(keys) > 20:
+        raise ChatDataError("IDENTITY_SCOPE_BUDGET_REACHED", 429)
+    result = []
+    ranks = {}
     with ids.cache.connect() as c:
         c.execute("PRAGMA query_only=ON")
         c.set_progress_handler(
             lambda: int(cancel.is_set() or time.monotonic() > deadline), 1000
         )
-        # Indexed occurrence time, never ingested_at/captured_at. One anchor per
-        # stable sender/conversation; no label-based conversation guesses.
-        rows = c.execute(
-            "SELECT body FROM search_index WHERE dataset=? AND sent_at>=? AND sent_at<=? "
-            "GROUP BY platform,source,conversation,sender LIMIT 501",
-            (ids.cache.get("dataset", ""), scope["sent_from"], scope["sent_to"]),
-        ).fetchall()
-    if len(rows) > 500:
-        raise ChatDataError("IDENTITY_SCOPE_BUDGET_REACHED", 429)
-    result = []
-    for row in rows:
-        record = json.loads(row[0])
-        person, _ = resolve_chat(record, manual, people)
-        if person != scope["person_id"] or scope["source"] not in {
-            "all",
-            record["platform"],
-        }:
-            continue
-        if record.get("conversation_type") not in {"c2c", "group"}:
-            continue
-        selected = {
-            k: record[k] for k in ("platform", "source_account_id", "conversation_id")
-        }
-        if selected not in result:
-            result.append(selected)
-    return result
+        for platform, source, sender in sorted(keys):
+            # Existing index lookup in confirmed source namespaces. Only stable
+            # conversation metadata is selected; query-day messages need not exist.
+            rows = c.execute(
+                "SELECT conversation,json_extract(body,'$.conversation_type') AS kind,max(sent_at) AS last_seen "
+                "FROM search_index WHERE dataset=? AND platform=? AND source=? AND sender=? "
+                "GROUP BY conversation,kind ORDER BY max(sent_at) DESC,conversation LIMIT 501",
+                (ids.cache.get("dataset", ""), platform, source, sender),
+            ).fetchall()
+            if len(rows) > 500:
+                raise ChatDataError("IDENTITY_SCOPE_BUDGET_REACHED", 429)
+            for row in rows:
+                if row["kind"] not in {"c2c", "group"} or not row["conversation"]:
+                    continue
+                selected = {
+                    "platform": platform,
+                    "source_account_id": source,
+                    "conversation_id": row["conversation"],
+                }
+                key = (platform, source, row["conversation"])
+                rank = (row["kind"] != "c2c", -(row["last_seen"] or 0), key)
+                ranks[key] = min(rank, ranks.get(key, rank))
+                if selected not in result:
+                    result.append(selected)
+                if len(result) > 500:
+                    raise ChatDataError("IDENTITY_SCOPE_BUDGET_REACHED", 429)
+    return sorted(
+        result,
+        key=lambda s: ranks[
+            (s["platform"], s["source_account_id"], s["conversation_id"])
+        ],
+    )
 
 
 def conversation_records(ids, scope, terms, limit, cancel, deadline):

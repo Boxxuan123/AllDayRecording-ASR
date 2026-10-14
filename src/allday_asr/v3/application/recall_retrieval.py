@@ -7,10 +7,11 @@ def expand(service, result, scope, query_plan, cancel, deadline):
     repo = service.sources
     scopes = repo.authorized_scopes(scope)
     if not scopes:
-        result["coverage"].append("未确认可用的来源身份或未登记范围；未扩大检索")
+        result["source_status"] = "scope_unavailable"
+        result["coverage"].append("未确认可用的历史来源会话；未扩大检索，来源覆盖不足")
         return
-    if len(scopes) > 2:
-        result["coverage"].append("跨来源取回仅覆盖前两个已授权身份／会话")
+    if len(scopes) > 4:
+        result["coverage"].append("本轮最多核对四个已确认历史会话，其他会话覆盖不足")
 
     def request(route, **kwargs):
         service._checkpoint(cancel, deadline)
@@ -26,6 +27,10 @@ def expand(service, result, scope, query_plan, cancel, deadline):
         status = request("/v1/status")
         if status.get("dataset_id") != repo.dataset():
             raise ChatDataError("DATASET_MISMATCH", 409)
+        if status.get("status") in {"initializing", "not_acquired", "collecting"}:
+            result["source_status"] = "not_collected"
+            result["coverage"].append("Mac 来源尚未采集完成；本轮不能判断是否有聊天")
+            return
         result["source_status"] = "available"
         if scope.get("relationship") == "conversation":
             conversation_expand(service, result, scope, query_plan, scopes, request)
@@ -181,29 +186,55 @@ def contexts(service, result, cancel, deadline):
 
 def conversation_expand(service, result, scope, plan, scopes, request):
     records = []
-    for selected in scopes[:2]:
-        remote = {
-            **selected,
-            "sent_from": scope["sent_from"],
-            "sent_to": scope["sent_to"],
-        }
-        page = request("/v1/messages", scope=remote, limit=min(40, 100 - len(records)))
-        items = page.get("items")
-        if not isinstance(items, list) or len(items) > 40:
-            raise ChatDataError("INVALID_CHAT_PAGE", 502)
-        result["metrics"]["source_records_read"] += len(items)
-        for record in items:
-            service.sources.validate_record(record)
-            if (
-                any(record.get(k) != v for k, v in selected.items())
-                or not scope["sent_from"]
-                <= record.get("sent_at", -1)
-                <= scope["sent_to"]
-            ):
-                raise ChatDataError("CONTEXT_IDENTITY_MISMATCH", 502)
-        records.extend(items)
-        if page.get("has_more"):
-            result["coverage"].append("该会话仍有后续页；本轮原文与归纳不完整")
+    jobs = [(selected, None) for selected in scopes[:4]]
+    error = None
+    seen = set()
+    try:
+        while jobs:
+            selected, cursor = jobs.pop(0)
+            if result["metrics"]["source_requests"] >= 6 or len(records) >= 100:
+                result["source_status"] = "partial"
+                result["coverage"].append("达到本轮分页/记录上限，仍有会话未完整取回")
+                break
+            fingerprint = (tuple(sorted(selected.items())), str(cursor))
+            if fingerprint in seen:
+                raise ChatDataError("INVALID_CHAT_CURSOR", 502)
+            seen.add(fingerprint)
+            remote = {
+                **selected,
+                "sent_from": scope["sent_from"],
+                "sent_to": scope["sent_to"],
+            }
+            limit = min(40, 100 - len(records))
+            options = {"scope": remote, "limit": limit}
+            if cursor is not None:
+                options["cursor"] = cursor
+            page = request("/v1/messages", **options)
+            items = page.get("items")
+            if not isinstance(items, list) or len(items) > limit:
+                raise ChatDataError("INVALID_CHAT_PAGE", 502)
+            result["metrics"]["source_records_read"] += len(items)
+            for record in items:
+                service.sources.validate_record(record)
+                if (
+                    any(record.get(k) != v for k, v in selected.items())
+                    or not scope["sent_from"]
+                    <= record.get("sent_at", -1)
+                    <= scope["sent_to"]
+                ):
+                    raise ChatDataError("CONTEXT_IDENTITY_MISMATCH", 502)
+            records.extend(items)
+            if page.get("has_more"):
+                result["source_status"] = "partial"
+                result["coverage"].append(
+                    "该会话返回部分记录；尚未取完的页不代表没有聊天"
+                )
+                next_cursor = page.get("next_cursor")
+                if not isinstance(next_cursor, str) or not next_cursor:
+                    break
+                jobs.append((selected, next_cursor))
+    except ChatDataError as exc:
+        error = exc
     evidence = service.sources.conversation_evidence(records, scope, result["evidence"])
     if plan["terms"]:
         keys = {
@@ -223,5 +254,12 @@ def conversation_expand(service, result, scope, plan, scopes, request):
         if not old or row["revision"] >= old["revision"]:
             result["evidence"].append(row)
     result["coverage"].append(
-        "按已确认会话取回双方消息；未扩大人物、日期或来源范围，历史完整性仍未知"
+        "按已确认历史会话取回双方消息；本地查询日无缓存也可请求，人物/日期/来源不扩大。Mac 已采集范围和完整性仍未知。"
     )
+    if not records:
+        result["source_status"] = "coverage_unknown"
+        result["coverage"].append(
+            "Mac 在本次范围内未返回消息；可能尚未采集，不能判断没有聊天"
+        )
+    if error:
+        raise error

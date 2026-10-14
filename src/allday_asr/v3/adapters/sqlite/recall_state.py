@@ -103,36 +103,23 @@ class RecallState:
                 if r["enabled"]
                 and scope["source"] in {"all", r["scope"].get("platform")}
             ][:3]
-        if scope.get("relationship") == "conversation":
-            from threading import Event
-            import time
-            from .recall_conversations import conversation_scopes
+        from threading import Event
+        import time
+        from .recall_conversations import conversation_scopes
 
-            return conversation_scopes(ids, scope, Event(), time.monotonic() + 3)
-        # Only known source conversations for effective confirmed senders; names never identify people.
-        people, manual = ids.people(), ids.manual()
-        with ids.cache.connect() as c:
-            rows = c.execute(
-                "SELECT body FROM search_index WHERE dataset=? AND sent_at>=? AND sent_at<=? GROUP BY platform,source,sender,conversation LIMIT 501",
-                (self.dataset(), scope["sent_from"], scope["sent_to"]),
-            ).fetchall()
-        if len(rows) > 500:
-            raise ChatDataError("IDENTITY_SCOPE_BUDGET_REACHED", 429)
-        scopes = []
-        for item in rows:
-            rec = json.loads(item[0])
-            person, _ = resolve_chat(rec, manual, people)
-            if person == scope["person_id"] and scope["source"] in {
-                "all",
-                rec["platform"],
-            }:
-                selected = {
-                    k: rec[k]
-                    for k in ("platform", "source_account_id", "sender_account_id")
-                }
-                if selected not in scopes:
-                    scopes.append(selected)
-        return scopes[:3]
+        scopes = conversation_scopes(ids, scope, Event(), time.monotonic() + 3)
+        if scope.get("relationship") == "conversation":
+            return scopes
+        # Speaker queries stay inside the same historical stable conversations.
+        keys = [
+            json.loads(k) for k, v in ids.manual().items() if v == scope["person_id"]
+        ]
+        return [
+            {**s, "sender_account_id": sender}
+            for s in scopes
+            for platform, source, sender in keys
+            if s["platform"] == platform and s["source_account_id"] == source
+        ][:3]
 
     def _markers(self, c, rows):
         exists = c.execute(
@@ -223,7 +210,7 @@ class RecallState:
             )
 
     def identity_changed(self, rows):
-        from allday_asr.v3.domain.source_identity import resolve_chat, effective_self
+        from allday_asr.v3.domain.source_identity import effective_self
 
         people = self.identities.people()
         manual = self.identities.manual()

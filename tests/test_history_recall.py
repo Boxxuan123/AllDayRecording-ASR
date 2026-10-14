@@ -12,7 +12,9 @@ from tests import test_v35_cross_day_person_memory as memory_fixture
 
 from allday_asr.v3.adapters.sqlite import V3Database, SqliteUnitOfWork
 from allday_asr.v3.adapters.sqlite.chat_cache import ChatCache
-from allday_asr.v3.bootstrap.history_recall import compose_history_recall as HistoryRecall
+from allday_asr.v3.bootstrap.history_recall import (
+    compose_history_recall as HistoryRecall,
+)
 from allday_asr.v3.domain.source_identity import identity_key
 from allday_asr.v3.ports.chat_data import ChatDataError
 
@@ -242,7 +244,7 @@ def test_evidence_conflicts_and_fake_quotes_rejected(env):
     decision(service, rows[3])
     revisions = [dict(rows[0]), dict(rows[3])]
     for revised, statement in zip(
-        revisions, ["杭电：已决定报计算机。", "杭电：没有决定报计算机。"]
+        revisions, ["杭电：已决定报计算机。", "杭电：没有决定报计算机。"], strict=True
     ):
         revised["record_revision"] += 1
         revised["text"] = statement
@@ -287,7 +289,7 @@ def test_evidence_conflicts_and_fake_quotes_rejected(env):
 def test_remote_expansion_and_offline_preserve_readonly(env):
     service, cache, db, rows, source = env
     decision(service, rows[0])
-    new = record(9, "远端唯一词：杭电新增专业", conversation="another-group")
+    new = record(9, "远端唯一词：杭电新增专业", conversation="direct")
     source.records.append(new)
     before = (dump(db.path), dump(cache.path))
     found = query(service, keyword="远端唯一词", person_id="alice-person", expand=True)
@@ -323,9 +325,11 @@ def test_bound_pagination_recording_revision_and_cancel(env):
             "UPDATE utterances SET revision=revision+1 WHERE utterance_id=?",
             (UTTERANCE_IDS[1],),
         )
-    expired=service.page("phone",rec["query_id"])
-    assert expired['status']=='stale' and expired['model_status']=='stale'
-    assert not expired['claims'] and any(e.get('validity')=='stale' for e in expired['evidence'])
+    expired = service.page("phone", rec["query_id"])
+    assert expired["status"] == "stale" and expired["model_status"] == "stale"
+    assert not expired["claims"] and any(
+        e.get("validity") == "stale" for e in expired["evidence"]
+    )
     started = Event()
 
     def waiting(payload, cancel):

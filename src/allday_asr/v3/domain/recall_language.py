@@ -69,7 +69,7 @@ def plan(question, keyword=""):
     # Strip grammatical operators as complete phrases; never generate n-grams.
     separators = re.compile(
         DISCOURSE.pattern
-        + r"|聊了什么|聊过什么|谈了什么|讨论了什么|交流了什么|说了什么|说过什么|聊天内容|对话回顾|原话|原文|帮我找|请查找|整个|筹备|最终决定|决定|考虑因素|提到的|群聊|群里|群中|在|\bQQ\b|微信|录音",
+        + r"|聊了什么|聊过什么|谈了什么|讨论了什么|交流了什么|说了啥|说过啥|说了什么|说过什么|聊天内容|对话回顾|原话|原文|帮我找|请查找|整个|筹备|最终决定|决定|考虑因素|提到的|群聊|群里|群中|在|\bQQ\b|微信|录音",
         re.I,
     )
     chunks = [s.strip() for s in separators.split(question) if s.strip()]

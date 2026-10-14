@@ -6,12 +6,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .recall_language import plan
 
 DATE = r"(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:\d{4}年)?\d{1,2}月\d{1,2}[日号])"
-RELATIVE = re.compile(r"大前天|前天|昨天|今天|上周|本周|这周")
+RELATIVE = re.compile(r"昨天晚上|昨晚|大前天|前天|昨天|今天|上周|本周|这周")
 RELATION = re.compile(
-    r"(?:我|本人)(?:\s*在\s*)?(?:跟|和|与)\s*(.+?)\s*(?=聊|谈|讨论|交流|沟通|说|的对话)"
-    r"|(.+?)(?:跟|和|与)(?:我|本人)(?=聊|谈|讨论|交流|沟通|说)"
+    r"(?:我们|我|本人)\s*(?:在\s*)?(?:跟|和|与)\s*(.+?)\s*(?=聊|谈|讨论|交流|沟通|说|的对话|后来|之后|后续)"
+    r"|(.+?)(?:跟|和|与)(?:我们|我|本人)(?=聊|谈|讨论|交流|沟通|说)"
 )
-SPEAKER = re.compile(r"(.+?)(?=说了什么|说过什么|聊了什么|聊过什么|的发言|的原话)")
+SPEAKER = re.compile(
+    r"(.+?)(?=说了什么|说过什么|说了啥|说过啥|聊了什么|聊过什么|的发言|的原话)"
+)
 
 
 def dates(question, timezone, now):
@@ -19,6 +21,11 @@ def dates(question, timezone, now):
         zone = ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, ValueError, TypeError):
         raise ValueError("用户时区无效，请使用 IANA 时区") from None
+    if re.search(
+        r"上个月|去年|最近\d+天|昨夜|昨儿|前晚|今晚|近日|近来|刚才|前阵子|那天|某天|几天前|近期|夜里|下班后|明天|后天|下周|[一二三四五六七八九十两]{1,3}点|\d{1,2}点(?:半|\d{1,2}分)?",
+        question,
+    ):
+        raise ValueError("时间描述尚不支持，请使用明确日期或昨晚；本轮未检索")
     today = datetime.fromtimestamp(now, zone).date()
     matches = list(re.finditer(DATE, question))
     relative = list(RELATIVE.finditer(question))
@@ -45,7 +52,9 @@ def dates(question, timezone, now):
     elif relative:
         label = relative[0].group()
         labels = [label]
-        if label in {"上周", "本周", "这周"}:
+        if label in {"昨晚", "昨天晚上"}:
+            first = last = today - timedelta(days=1)
+        elif label in {"上周", "本周", "这周"}:
             first = today - timedelta(
                 days=today.weekday() + (7 if label == "上周" else 0)
             )
@@ -55,10 +64,13 @@ def dates(question, timezone, now):
                 days={"今天": 0, "昨天": 1, "前天": 2, "大前天": 3}[label]
             )
     else:
-        if re.search(r"上个月|去年|最近\d+天|\d{1,2}:\d{2}", question):
+        if re.search(
+            r"上个月|去年|最近\d+天|昨夜|昨儿|前晚|今晚|近日|近来|\d{1,2}:\d{2}",
+            question,
+        ):
             raise ValueError("请使用明确日期或日期范围描述时间；本轮未检索")
         return None, question
-    if re.search(r"上个月|去年|最近\d+天", question):
+    if re.search(r"上个月|去年|最近\d+天|昨夜|昨儿|前晚|今晚|近日|近来", question):
         raise ValueError("时间描述尚不支持，请使用明确日期；本轮未检索")
     if last < first:
         raise ValueError("结束日期早于开始日期")
@@ -67,6 +79,11 @@ def dates(question, timezone, now):
     for label in labels:
         question = question.replace(label, " ")
     question = re.sub(r"^\s*(?:到|至|~|～|—|–)\s*", "", question)
+    if labels and labels[0] in {"昨晚", "昨天晚上"}:
+        start = datetime.combine(first, clock_time(18), zone)
+        end = datetime.combine(today, clock_time(6), zone)
+        # A night still in progress is bounded by the query's actual instant.
+        return (int(start.timestamp()), min(int(end.timestamp()) - 1, now)), question
     hours = re.search(
         r"(\d{1,2}):(\d{2})\s*(?:到|至|~|～|-)\s*(\d{1,2}):(\d{2})", question
     )
@@ -206,6 +223,12 @@ def understand(question, keyword, people, payload, now):
         issue = "指定人物尚未确认；本轮未检索，也未回退到全部人物。"
     query = plan(remaining, keyword)
     query["intent"] = plan(question, keyword)["intent"]
+    if (
+        scope["relationship"] == "conversation"
+        and query["intent"] == "quote"
+        and not re.search(r"原话|原文|逐字", question)
+    ):
+        query["intent"] = "conversation"
     if scope["relationship"] == "conversation" and not scope["person_id"]:
         issue = issue or "请确认交流对象；本轮未检索。"
     if (

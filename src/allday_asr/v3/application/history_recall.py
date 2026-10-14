@@ -175,6 +175,13 @@ class HistoryRecall:
             raise ValueError("查询选项无效")
         query_plan = understand(question, keyword, people, payload, now)
         scope = query_plan["scope"]
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        for bound in ("sent_from", "sent_to"):
+            scope[bound + "_local"] = datetime.fromtimestamp(
+                scope[bound], ZoneInfo(scope["timezone"])
+            ).isoformat()
         if (
             not 0 <= scope["sent_from"] <= scope["sent_to"]
             or scope["sent_to"] - scope["sent_from"] > 366 * 86400
@@ -291,8 +298,12 @@ class HistoryRecall:
                     self._summarize(result, question, cancel, deadline)
             else:
                 result["status"] = "not_found"
+                if scope.get("relationship") == "conversation" and payload.get(
+                    "expand", True
+                ):
+                    result["status"] = "coverage_insufficient"
                 result["answer"] = (
-                    "当前人物、时间和会话范围未找到可证明双方交流的记录；不能据此判断没有发生。录音中某人讲话不等于本人在与其交谈。"
+                    "当前人物、时间和会话范围未找到可证明双方交流的记录；来源采集或覆盖不足，不能判断没有聊天。录音中某人讲话不等于本人在与其交谈。"
                     if scope.get("relationship") == "conversation"
                     else "当前范围未找到记录，不能据此判断没有发生。可指定更短关键词、人物或日期。"
                 )
