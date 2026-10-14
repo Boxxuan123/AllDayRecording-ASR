@@ -144,7 +144,7 @@ def test_fuzzy_proposals_from_real_directory_require_choice(native):
         }
 
     native.service.planner = planner
-    result = ask(native, "昨天我跟那位同事聊了什么", expand=True)
+    result = ask(native, "昨天我跟那位昵称Cobalt的同事聊了什么", expand=True)
     assert (
         result["status"] == "needs_clarification"
         and len(result["contact_candidates"]) == 2
@@ -539,3 +539,27 @@ def test_planning_cancel_stops_before_message_read_and_leaves_no_result(native):
     assert not thread.is_alive() and results[0]["status"] == "cancelled"
     assert not any(route == "/v1/messages" for route, _, _ in native.source.calls)
     assert ("phone", payload["query_id"]) not in native.service.results
+
+
+def test_real_but_unrelated_model_candidates_are_not_recommended(native):
+    native.service.planner = semantic(native, person_mention="陌生同事")
+    result = ask(native, "昨天我跟陌生同事聊了什么", source="wechat", expand=True)
+    assert (
+        result["status"] == "needs_clarification" and result["contact_candidates"] == []
+    )
+    assert result["evidence"] == []
+    assert not any(route == "/v1/messages" for route, _, _ in native.source.calls)
+
+
+def test_semantic_proposal_cannot_replace_question_resolved_person(native):
+    with native.db.transaction() as c:
+        c.execute("UPDATE persons SET user_confirmed=1 WHERE person_id='alice-person'")
+    native.service.planner = semantic(native, person_mention="蓝老师")
+    result = ask(native, "昨天我和蓝老师为什么选这个时间", expand=True)
+    assert result["scope"]["person_id"] == "alice-person"
+    assert not result["scope"].get("source_contacts")
+    assert result["contact_candidates"] == []
+    assert all(
+        r["conversation_id"] not in {"native-qq", "native-wechat"}
+        for r in result["evidence"]
+    )

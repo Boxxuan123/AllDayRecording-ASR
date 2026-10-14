@@ -339,13 +339,16 @@ def interpret(
             person_mention=name,
         )
         scope["relationship"] = value["relationship"]
-        if keys and not payload.get("person_id") and not scope.get("source_contacts"):
+        if keys and not scope.get("person_id") and not scope.get("source_contacts"):
             proposed = [native[k] for k in dict.fromkeys(keys)]
             named_in_question = [
                 r
                 for r in directory
                 if any(n.casefold() in question.casefold() for n in r["names"])
             ]
+            grounded_keys = {r["key"] for r in named_in_question}
+            if any(r["key"] not in grounded_keys for r in proposed):
+                raise ValueError("contact proposal lacks a real name/alias clue")
             exact_model = [
                 r
                 for r in proposed
