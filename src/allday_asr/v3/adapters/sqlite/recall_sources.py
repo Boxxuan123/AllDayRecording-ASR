@@ -3,6 +3,7 @@
 import json
 from datetime import datetime
 from .recall_state import RecallState, bounded_sql
+from .recall_conversations import conversation_records
 from allday_asr.v3.domain.recall_language import relevance
 from allday_asr.v3.domain.chat_projection import semantic_text
 from allday_asr.v3.domain.source_identity import (
@@ -32,6 +33,8 @@ def chat_evidence(record, identities, people, manual, origin, role="match"):
         "source": record["platform"],
         "source_account_id": record["source_account_id"],
         "conversation_id": record["conversation_id"],
+        "conversation_type": record.get("conversation_type"),
+        "reply_record_id": (record.get("reply") or {}).get("record_id"),
         "sender_account_id": record.get("sender_account_id"),
         "identity_key": identity_key(record) or "",
         "person_id": person or "",
@@ -63,15 +66,24 @@ class RecallSources(RecallState):
         if not ids.chat_path.exists():
             return [], False
         people, manual = ids.people(), ids.manual()
+        if scope.get("relationship") == "conversation":
+            records, more = conversation_records(
+                ids, scope, terms, limit, cancel, deadline
+            )
+            evidence = [chat_evidence(r, ids, people, manual, "cache") for r in records]
+            invalid = self.changed(evidence)
+            return [r for r in evidence if r["id"] not in invalid], more
         clauses = ["dataset=?", "sent_at>=?", "sent_at<=?"]
         params = [ids.cache.get("dataset", ""), scope["sent_from"], scope["sent_to"]]
         if scope["source"] in {"qq", "wechat"}:
             clauses.append("platform=?")
             params.append(scope["source"])
+        if scope.get("relationship") == "group":
+            clauses.append("json_extract(body,'$.conversation_type')='group'")
         if terms:
             clauses.append(
                 "("
-                + " OR ".join(
+                + " AND ".join(
                     "instr(lower(coalesce(text,'')),lower(?))>0" for _ in terms
                 )
                 + ")"
@@ -104,7 +116,7 @@ class RecallSources(RecallState):
                 choices.append("(" + condition + ")")
             if not choices:
                 return [], False
-            clauses.append("(" + " OR ".join(choices) + ")")
+            clauses.append("(" + " AND ".join(choices) + ")")
         import time
 
         with ids.cache.connect() as c:
@@ -132,6 +144,9 @@ class RecallSources(RecallState):
     def recordings(self, scope, terms, limit, cancel, deadline):
         import time
 
+        if scope.get("relationship") in {"conversation", "group"}:
+            # Confirmed voices alone cannot establish user-to-person interaction.
+            return [], False
         people = self.identities.people()
         clauses = [
             "u.status='active'",
@@ -144,7 +159,7 @@ class RecallSources(RecallState):
         if terms:
             clauses.append(
                 "("
-                + " OR ".join("instr(lower(u.text),lower(?))>0" for _ in terms)
+                + " AND ".join("instr(lower(u.text),lower(?))>0" for _ in terms)
                 + ")"
             )
             params.extend(terms)

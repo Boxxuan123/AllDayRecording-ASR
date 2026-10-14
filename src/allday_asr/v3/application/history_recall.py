@@ -7,6 +7,7 @@ from threading import Event, RLock
 from allday_asr.v3.domain.memory_content import safe_memory
 from allday_asr.v3.domain.recall_answer import verified_quote_text
 from allday_asr.v3.domain.recall_language import plan, select_evidence
+from allday_asr.v3.domain.recall_query import understand
 from allday_asr.v3.ports.chat_data import ChatDataError, ChatDataSource
 from allday_asr.v3.ports.history_recall import (
     RecallRepository,
@@ -135,6 +136,7 @@ class HistoryRecall:
             "sent_to",
             "expand",
             "summarize",
+            "timezone",
         }
         if set(payload) - allowed:
             raise ValueError("查询字段无效")
@@ -168,10 +170,16 @@ class HistoryRecall:
             raise ValueError("每次请选择最多 366 天；默认最近 30 天")
         people = self.identities.people()
         if scope["person_id"] and scope["person_id"] not in people:
-            raise ValueError("人物尚未确认")
+            raise ValueError("指定人物尚未确认；未回退到全部人物")
         if any(type(payload.get(k, True)) is not bool for k in ["expand", "summarize"]):
             raise ValueError("查询选项无效")
-        query_plan = plan(question, keyword)
+        query_plan = understand(question, keyword, people, payload, now)
+        scope = query_plan["scope"]
+        if (
+            not 0 <= scope["sent_from"] <= scope["sent_to"]
+            or scope["sent_to"] - scope["sent_from"] > 366 * 86400
+        ):
+            raise ValueError("每次请选择最多 366 天")
         terms = query_plan["terms"]
         identity_version = self.identities.version()
         started = time.monotonic()
@@ -194,6 +202,11 @@ class HistoryRecall:
             "scope": scope,
             "terms": terms,
             "intent": query_plan["intent"],
+            "person_candidates": query_plan["person_candidates"],
+            "query_understanding": {
+                "person_mention": query_plan["person_mention"],
+                "time_explicit": query_plan["time_explicit"],
+            },
             "latest_status_confirmed": False,
             "identity_version": identity_version,
             "evidence": [],
@@ -214,7 +227,20 @@ class HistoryRecall:
             },
             "limits": LIMITS,
         }
+        if query_plan["issue"]:
+            result.update(
+                status="needs_clarification",
+                answer=query_plan["issue"],
+                unknown=[query_plan["issue"]],
+            )
+            with self.lock:
+                self.active.pop(key, None)
+            return safe_memory(result)
         try:
+            if scope.get("relationship") == "conversation":
+                result["coverage"].append(
+                    "私聊使用来源账号＋会话 ID 取回双方；群聊仅纳入双方的明确回复关系。录音说话人确认不能证明本人在与其交谈，未纳入。"
+                )
             if scope["source"] != "recording":
                 rows, more = self.sources.chat(
                     scope, terms, 100, cancel, min(deadline, started + 3)
@@ -266,7 +292,9 @@ class HistoryRecall:
             else:
                 result["status"] = "not_found"
                 result["answer"] = (
-                    "当前范围未找到记录，不能据此判断没有发生。可指定更短关键词、人物或日期。"
+                    "当前人物、时间和会话范围未找到可证明双方交流的记录；不能据此判断没有发生。录音中某人讲话不等于本人在与其交谈。"
+                    if scope.get("relationship") == "conversation"
+                    else "当前范围未找到记录，不能据此判断没有发生。可指定更短关键词、人物或日期。"
                 )
             self._checkpoint(cancel, deadline)
         except (ChatDataError, TimeoutError):
@@ -347,12 +375,14 @@ class HistoryRecall:
                 raise TimeoutError()
             result["metrics"]["model_calls"] = 1
             value = self.model(payload, cancel)
+            self._checkpoint(cancel, deadline)
             evidence = {r["id"]: r for r in rows}
             if (
                 not isinstance(value, dict)
                 or not isinstance(value.get("claims"), list)
                 or len(value["claims"]) > 20
                 or not isinstance(value.get("unknown"), list)
+                or len(value["unknown"]) > 20
             ):
                 raise ValueError("invalid answer")
             for claim in value["claims"]:
@@ -360,6 +390,7 @@ class HistoryRecall:
                     set(claim) != {"kind", "text", "citations"}
                     or claim["kind"] not in {"quote", "summary", "inference"}
                     or not isinstance(claim["text"], str)
+                    or not claim["text"].strip()
                     or len(claim["text"]) > 2000
                     or not isinstance(claim["citations"], list)
                     or not claim["citations"]
@@ -375,9 +406,19 @@ class HistoryRecall:
                 raise ValueError("invalid unknown")
             result["claims"] = value["claims"]
             result["unknown"] = value["unknown"]
-            result["model_status"] = "available"
+            result["model_status"] = "available" if value["claims"] else "insufficient"
+            # The primary answer is derived only from citation-validated claims.
+            result["answer"] = "\n".join(
+                ("推测：" + c["text"]) if c["kind"] == "inference" else c["text"]
+                for c in value["claims"]
+            ) or ("现有证据不足，无法生成可靠归纳；请核对本次范围内的原文。")
         except Exception:
             result["model_status"] = "unavailable"
+            result["claims"] = []
+            result["unknown"] = ["归纳模型不可用、超时或证据校验失败。"]
+            result["answer"] = (
+                "无法生成归纳（模型不可用、超时或证据校验失败）；以下仅为符合本次人物、时间和会话约束的原文。"
+            )
             result["coverage"].append(
                 "归纳模型不可用或证据校验失败；请直接查看命中的原文"
             )
@@ -435,6 +476,7 @@ class HistoryRecall:
                 raise ChatDataError("SOURCE_CHANGED", 409)
             if anchor["record_revision"] < row["revision"]:
                 raise ChatDataError("SOURCE_REVISION_BEHIND", 503)
+            records = self.sources.filter_context(records, value["scope"])
             return safe_memory(
                 {
                     "status": "available",

@@ -27,7 +27,7 @@ class RecallModelAdapter:
             batch_id="history-recall:" + payload["query_id"],
             prompt=packed(payload),
             instructions=INSTRUCTIONS
-            + " Use evidence id for citations. All coverage is partial. Distinguish plans, decisions, reported completion and verified execution. Compare contradictory evidence explicitly.",
+            + " For intent=conversation, summarize actual topics, important discussions, explicit decisions and unresolved points as separate cited claims. Never answer with a retrieval status. Use evidence id for citations. All coverage is partial. Distinguish plans, decisions, reported completion and verified execution. Compare contradictory evidence explicitly.",
             schema=SCHEMA,
             model=None,
             effort="low",

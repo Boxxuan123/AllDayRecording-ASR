@@ -27,11 +27,20 @@ class SourceIdentities:
         with self.database.read() as c:
             c.execute("PRAGMA busy_timeout=1000")
             rows = c.execute(
-                "SELECT person_id,display_name,kind FROM persons WHERE user_confirmed=1 ORDER BY person_id LIMIT 501"
+                "SELECT p.person_id,p.display_name,p.kind,coalesce(profile.aliases_json,'[]') AS aliases_json "
+                "FROM persons p LEFT JOIN person_profile_revisions profile ON profile.person_id=p.person_id "
+                "AND profile.revision=(SELECT max(revision) FROM person_profile_revisions WHERE person_id=p.person_id) "
+                "WHERE p.user_confirmed=1 ORDER BY p.person_id LIMIT 501"
             ).fetchall()
         if len(rows) > 500:
             raise ValueError("人物目录超过本次 500 人上限")
-        return {r["person_id"]: dict(r) for r in rows}
+        result = {}
+        for row in rows:
+            person = dict(row)
+            aliases = json.loads(person.pop("aliases_json"))
+            person["aliases"] = [a for a in aliases if isinstance(a, str) and a.strip()]
+            result[person["person_id"]] = person
+        return result
 
     def manual(self):
         if not self.chat_path.exists():
@@ -83,7 +92,6 @@ class SourceIdentities:
             {
                 "links": self.manual(),
                 "people": self.people(),
-
             }
         )
 

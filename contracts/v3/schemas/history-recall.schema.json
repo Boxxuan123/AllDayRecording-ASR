@@ -54,6 +54,11 @@
             },
             "summarize": {
               "type": "boolean"
+            },
+            "timezone": {
+              "type": "string",
+              "maxLength": 100,
+              "description": "User IANA timezone; legacy clients default to Asia/Singapore"
             }
           }
         },
@@ -256,7 +261,8 @@
             "quote",
             "reason",
             "timeline",
-            "latest"
+            "latest",
+            "conversation"
           ]
         },
         "latest_status_confirmed": {
@@ -267,6 +273,30 @@
           "items": {
             "type": "string"
           }
+        },
+        "person_candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "person_id",
+              "display_name"
+            ],
+            "properties": {
+              "person_id": {
+                "type": "string"
+              },
+              "display_name": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "source_status": {
+          "type": "string"
+        },
+        "query_understanding": {
+          "type": "object"
         }
       }
     }

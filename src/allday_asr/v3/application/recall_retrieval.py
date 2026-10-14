@@ -1,7 +1,6 @@
 """Bounded expansion decisions based on coverage and intent, not hit counts."""
 
 from allday_asr.v3.ports.chat_data import ChatDataError
-from allday_asr.v3.domain.recall_language import relevance
 
 
 def expand(service, result, scope, query_plan, cancel, deadline):
@@ -28,6 +27,9 @@ def expand(service, result, scope, query_plan, cancel, deadline):
         if status.get("dataset_id") != repo.dataset():
             raise ChatDataError("DATASET_MISMATCH", 409)
         result["source_status"] = "available"
+        if scope.get("relationship") == "conversation":
+            conversation_expand(service, result, scope, query_plan, scopes, request)
+            return
         # Unknown source completeness/freshness warrants one bounded probe even
         # with many local hits. Follow-up probes drop keywords but retain the exact
         # conversation and dates; other senders remain independent context.
@@ -112,11 +114,19 @@ def expand(service, result, scope, query_plan, cancel, deadline):
                     <= scope["sent_to"]
                 ):
                     raise ChatDataError("CONTEXT_IDENTITY_MISMATCH", 502)
+                if (
+                    scope.get("relationship") == "group"
+                    and rec.get("conversation_type") != "group"
+                ):
+                    continue
                 evidence = repo.evidence(rec, "mac", role)
                 if role == "match" and (
                     scope["person_id"]
                     and evidence["person_id"] != scope["person_id"]
-                    or remote.get("keyword", "") not in (rec.get("text") or "")
+                    or not all(
+                        t.casefold() in (rec.get("text") or "").casefold()
+                        for t in query_plan["terms"]
+                    )
                 ):
                     continue
                 old = next(
@@ -128,7 +138,10 @@ def expand(service, result, scope, query_plan, cancel, deadline):
                     continue
                 if (
                     role == "followup"
-                    and relevance(evidence["quote"], query_plan["terms"]) > 0
+                    and all(
+                        t.casefold() in evidence["quote"].casefold()
+                        for t in query_plan["terms"]
+                    )
                     and (
                         not scope["person_id"]
                         or evidence["person_id"] == scope["person_id"]
@@ -163,4 +176,52 @@ def contexts(service, result, cancel, deadline):
         result["evidence"].extend(r for r in part if r["id"] not in existing)
     result["coverage"].append(
         "邻近上下文最多 3 个命中各前 2／后 4 条；其他发言者保留独立身份。未覆盖的更远答复仍未知。"
+    )
+
+
+def conversation_expand(service, result, scope, plan, scopes, request):
+    records = []
+    for selected in scopes[:2]:
+        remote = {
+            **selected,
+            "sent_from": scope["sent_from"],
+            "sent_to": scope["sent_to"],
+        }
+        page = request("/v1/messages", scope=remote, limit=min(40, 100 - len(records)))
+        items = page.get("items")
+        if not isinstance(items, list) or len(items) > 40:
+            raise ChatDataError("INVALID_CHAT_PAGE", 502)
+        result["metrics"]["source_records_read"] += len(items)
+        for record in items:
+            service.sources.validate_record(record)
+            if (
+                any(record.get(k) != v for k, v in selected.items())
+                or not scope["sent_from"]
+                <= record.get("sent_at", -1)
+                <= scope["sent_to"]
+            ):
+                raise ChatDataError("CONTEXT_IDENTITY_MISMATCH", 502)
+        records.extend(items)
+        if page.get("has_more"):
+            result["coverage"].append("该会话仍有后续页；本轮原文与归纳不完整")
+    evidence = service.sources.conversation_evidence(records, scope, result["evidence"])
+    if plan["terms"]:
+        keys = {
+            (r["source"], r["source_account_id"], r["conversation_id"])
+            for r in [*result["evidence"], *evidence]
+            if all(t.casefold() in r["quote"].casefold() for t in plan["terms"])
+        }
+        evidence = [
+            r
+            for r in evidence
+            if (r["source"], r["source_account_id"], r["conversation_id"]) in keys
+        ]
+    for row in evidence:
+        old = next((r for r in result["evidence"] if r["id"] == row["id"]), None)
+        if old and row["revision"] > old["revision"]:
+            service.sources.mark_changed(old, "SOURCE_CHANGED")
+        if not old or row["revision"] >= old["revision"]:
+            result["evidence"].append(row)
+    result["coverage"].append(
+        "按已确认会话取回双方消息；未扩大人物、日期或来源范围，历史完整性仍未知"
     )

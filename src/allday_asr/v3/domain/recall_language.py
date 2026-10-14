@@ -51,6 +51,10 @@ def intent(question):
         return "latest"
     if re.search(r"经过|过程|进展|来龙去脉|发生了什么", question):
         return "timeline"
+    if re.search(
+        r"聊了什么|聊过什么|谈了什么|讨论了什么|对话回顾|聊天内容|交流了什么", question
+    ):
+        return "conversation"
     return "quote"
 
 
@@ -62,33 +66,25 @@ def plan(question, keyword=""):
             "remote_terms": [keyword.strip()],
             "exact": True,
         }
-    # Preserve the original question separately. N-grams recover Chinese short names
-    # without a subject dictionary, destructive stopword replacement or embeddings.
-    chunks = [s.strip() for s in DISCOURSE.split(question) if len(s.strip()) >= 2]
-    primary = []
-    for s in chunks:
-        s = re.sub(r"^(?:不选|没选|选择|考虑|不考虑|不|选|与|和)", "", s)
-        if len(s) >= 2 and s not in FUNCTION:
-            primary.append(s[:100])
-    terms = list(dict.fromkeys(primary))[:8]
-    for s in primary:
-        for word in re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]*", s):
-            if len(word) > 1 and word not in terms:
-                terms.append(word)
-        for size in (4, 3, 2):
-            for i in range(len(s) - size, -1, -1):
-                token = s[i : i + size]
-                if (
-                    re.fullmatch(r"[\u3400-\u9fff]+", token)
-                    and token not in FUNCTION
-                    and token not in terms
-                ):
-                    terms.append(token)
-    terms = terms[:64] or [question.strip()[:100]]
+    # Strip grammatical operators as complete phrases; never generate n-grams.
+    separators = re.compile(
+        DISCOURSE.pattern
+        + r"|聊了什么|聊过什么|谈了什么|讨论了什么|交流了什么|说了什么|说过什么|聊天内容|对话回顾|原话|原文|帮我找|请查找|整个|筹备|最终决定|决定|考虑因素|提到的|群聊|群里|群中|在|\bQQ\b|微信|录音",
+        re.I,
+    )
+    chunks = [s.strip() for s in separators.split(question) if s.strip()]
+    terms = []
+    for chunk in chunks:
+        chunk = re.sub(
+            r"^(?:不考虑|不选|没选|选择|考虑|不|选|与|和|我跟|我和|我与)", "", chunk
+        )
+        chunk = re.sub(r"(?:的|了|吗|呢)$", "", chunk)
+        if len(chunk) >= 2 and chunk not in FUNCTION and chunk not in terms:
+            terms.append(chunk[:100])
     return {
         "intent": intent(question),
-        "terms": terms,
-        "remote_terms": (primary or terms)[:2],
+        "terms": terms[:8],
+        "remote_terms": terms[:2],
         "exact": False,
     }
 

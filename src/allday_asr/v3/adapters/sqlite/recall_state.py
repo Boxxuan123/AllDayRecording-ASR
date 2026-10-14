@@ -47,6 +47,8 @@ class RecallState:
         }
 
     def context(self, row, scope):
+        if scope.get("relationship") == "conversation":
+            return []  # Already selected the bilateral conversation; never add outsiders.
         part = self.identities.cache.context(row["record_id"], 2, 4)
         records = [
             r
@@ -54,6 +56,41 @@ class RecallState:
             if scope["sent_from"] <= r.get("sent_at", -1) <= scope["sent_to"]
         ]
         return [self.evidence(r, "cache", "context") for r in records]
+
+    def filter_context(self, records, scope):
+        records = [
+            r
+            for r in records
+            if scope["sent_from"] <= r.get("sent_at", -1) <= scope["sent_to"]
+        ]
+        if scope.get("relationship") == "conversation":
+            from allday_asr.v3.domain.recall_conversation import participants
+
+            records = participants(
+                records, self.identities.people(), self.identities.manual(), scope
+            )
+        return records
+
+    def conversation_evidence(self, records, scope, existing):
+        # Existing selected records can establish the other side when a bounded
+        # remote page contains only one speaker. They retain their real IDs.
+        local = [
+            self.identities.cache.record(r["record_id"])
+            for r in existing
+            if r["source"] != "recording" and r["origin"] == "cache"
+        ]
+        merged = {r["record_id"]: r for r in local if r}
+        for r in records:
+            old = merged.get(r["record_id"])
+            if not old or r["record_revision"] >= old["record_revision"]:
+                merged[r["record_id"]] = r
+        selected = self.filter_context(list(merged.values()), scope)
+        remote_ids = {r["record_id"] for r in records}
+        return [
+            self.evidence(r, "mac", "match")
+            for r in selected
+            if r["record_id"] in remote_ids
+        ]
 
     def authorized_scopes(self, scope):
         ids = self.identities
@@ -66,6 +103,12 @@ class RecallState:
                 if r["enabled"]
                 and scope["source"] in {"all", r["scope"].get("platform")}
             ][:3]
+        if scope.get("relationship") == "conversation":
+            from threading import Event
+            import time
+            from .recall_conversations import conversation_scopes
+
+            return conversation_scopes(ids, scope, Event(), time.monotonic() + 3)
         # Only known source conversations for effective confirmed senders; names never identify people.
         people, manual = ids.people(), ids.manual()
         with ids.cache.connect() as c:

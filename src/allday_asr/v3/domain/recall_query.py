@@ -1,0 +1,224 @@
+"""Deterministic constraints from confirmed profiles; no model or scope relaxation."""
+
+import re
+from datetime import datetime, timedelta, time as clock_time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from .recall_language import plan
+
+DATE = r"(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:\d{4}年)?\d{1,2}月\d{1,2}[日号])"
+RELATIVE = re.compile(r"大前天|前天|昨天|今天|上周|本周|这周")
+RELATION = re.compile(
+    r"(?:我|本人)(?:\s*在\s*)?(?:跟|和|与)\s*(.+?)\s*(?=聊|谈|讨论|交流|沟通|说|的对话)"
+    r"|(.+?)(?:跟|和|与)(?:我|本人)(?=聊|谈|讨论|交流|沟通|说)"
+)
+SPEAKER = re.compile(r"(.+?)(?=说了什么|说过什么|聊了什么|聊过什么|的发言|的原话)")
+
+
+def dates(question, timezone, now):
+    try:
+        zone = ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        raise ValueError("用户时区无效，请使用 IANA 时区") from None
+    today = datetime.fromtimestamp(now, zone).date()
+    matches = list(re.finditer(DATE, question))
+    relative = list(RELATIVE.finditer(question))
+    if (matches and relative) or len(relative) > 1 or len(matches) > 2:
+        raise ValueError("时间描述有多个范围，请明确日期")
+    labels = []
+    if matches:
+        try:
+
+            def calendar_date(match):
+                parts = list(map(int, re.findall(r"\d+", match.group())))
+                return datetime(
+                    *(parts if len(parts) == 3 else [today.year, *parts])
+                ).date()
+
+            first, last = calendar_date(matches[0]), calendar_date(matches[-1])
+        except ValueError:
+            raise ValueError("日期无效") from None
+        if len(matches) == 2 and not re.fullmatch(
+            r"\s*(?:到|至|~|～|—|–)\s*", question[matches[0].end() : matches[1].start()]
+        ):
+            raise ValueError("请明确日期范围的起止关系")
+        labels = [m.group() for m in matches]
+    elif relative:
+        label = relative[0].group()
+        labels = [label]
+        if label in {"上周", "本周", "这周"}:
+            first = today - timedelta(
+                days=today.weekday() + (7 if label == "上周" else 0)
+            )
+            last = first + timedelta(days=6)
+        else:
+            first = last = today - timedelta(
+                days={"今天": 0, "昨天": 1, "前天": 2, "大前天": 3}[label]
+            )
+    else:
+        if re.search(r"上个月|去年|最近\d+天|\d{1,2}:\d{2}", question):
+            raise ValueError("请使用明确日期或日期范围描述时间；本轮未检索")
+        return None, question
+    if re.search(r"上个月|去年|最近\d+天", question):
+        raise ValueError("时间描述尚不支持，请使用明确日期；本轮未检索")
+    if last < first:
+        raise ValueError("结束日期早于开始日期")
+    start = datetime.combine(first, datetime.min.time(), zone)
+    end = datetime.combine(last + timedelta(days=1), datetime.min.time(), zone)
+    for label in labels:
+        question = question.replace(label, " ")
+    question = re.sub(r"^\s*(?:到|至|~|～|—|–)\s*", "", question)
+    hours = re.search(
+        r"(\d{1,2}):(\d{2})\s*(?:到|至|~|～|-)\s*(\d{1,2}):(\d{2})", question
+    )
+    daytime = re.search(r"凌晨|早上|上午|中午|下午|晚上", question)
+    if hours or daytime:
+        if first != last or (hours and daytime):
+            raise ValueError("请为时间段指定一个明确自然日")
+        if hours:
+            a, b, c, d = map(int, hours.groups())
+            try:
+                start = datetime.combine(first, clock_time(a, b), zone)
+                end = datetime.combine(first, clock_time(c, d), zone)
+            except ValueError:
+                raise ValueError("时刻无效") from None
+            question = question.replace(hours.group(), " ")
+        else:
+            a, b = {
+                "凌晨": (0, 6),
+                "早上": (6, 12),
+                "上午": (0, 12),
+                "中午": (11, 14),
+                "下午": (12, 18),
+                "晚上": (18, 24),
+            }[daytime.group()]
+            start = datetime.combine(first, clock_time(a), zone)
+            end = datetime.combine(
+                first + timedelta(days=b // 24), clock_time(b % 24), zone
+            )
+            question = question.replace(daytime.group(), " ")
+        if end <= start:
+            raise ValueError("结束时刻必须晚于开始时刻")
+        for value in (start, end):
+            if (
+                datetime.fromtimestamp(value.timestamp(), zone).replace(tzinfo=None)
+                != value.replace(tzinfo=None)
+                or value.utcoffset() != value.replace(fold=1).utcoffset()
+            ):
+                raise ValueError("时刻位于时区切换边界，请指定更明确的时间")
+    elif re.search(r"\d{1,2}:\d{2}", question):
+        raise ValueError("请明确起止时刻，不能忽略时间约束")
+    return (int(start.timestamp()), int(end.timestamp()) - 1), question
+
+
+def understand(question, keyword, people, payload, now):
+    timezone = payload.get("timezone", "Asia/Singapore")
+    # An explicit literal lookup may use question == keyword plus source/time.
+    # Their quoted names and relative dates describe the original message, not
+    # new query constraints. Preserve the literal lookup constraints.
+    literal = bool(keyword.strip()) and keyword.strip() == question.strip()
+    period, remaining = dates("" if literal else question, timezone, now)
+    scope = {
+        "person_id": payload.get("person_id", ""),
+        "source": payload.get("source", "all"),
+        "sent_from": payload.get("sent_from", now - 30 * 86400),
+        "sent_to": payload.get("sent_to", now),
+        "timezone": timezone,
+        "relationship": "speaker",
+    }
+    if literal:
+        return {
+            **plan(question, keyword),
+            "intent": "quote",
+            "scope": scope,
+            "person_mention": "",
+            "time_explicit": False,
+            "issue": "",
+            "person_candidates": [],
+        }
+    if period:
+        scope["sent_from"] = max(period[0], payload.get("sent_from", period[0]))
+        scope["sent_to"] = min(period[1], payload.get("sent_to", period[1]))
+        if scope["sent_from"] > scope["sent_to"]:
+            raise ValueError("问题日期与所选日期不相交，请明确范围")
+    platforms = [
+        p
+        for p, label in [("qq", r"QQ"), ("wechat", "微信"), ("recording", "录音")]
+        if re.search(label, remaining, re.I)
+    ]
+    if len(platforms) == 1:
+        if scope["source"] not in {"all", platforms[0]}:
+            raise ValueError("问题来源与所选来源冲突")
+        scope["source"] = platforms[0]
+    elif len(platforms) > 1:
+        raise ValueError("请每次指定一个平台，或选择全部来源")
+    remaining = re.sub(r"QQ|微信|录音", " ", remaining, flags=re.I)
+    relation = RELATION.search(remaining.strip())
+    speaker = SPEAKER.search(remaining.strip()) if not relation else None
+    mention = ""
+    if relation:
+        mention = next(v for v in relation.groups() if v).strip(" ，。？?")
+        scope["relationship"] = "conversation"
+        topics = re.split(r"关于|有关", mention, maxsplit=1)
+        mention = topics[0].strip()
+        remaining = remaining.replace(relation.group(), " ", 1)
+        if len(topics) > 1:
+            remaining = topics[1] + " " + remaining
+    elif speaker:
+        mention = speaker.group().strip(" ，。？?")
+        remaining = remaining.replace(speaker.group(), " ", 1)
+    elif re.search(r"群聊|群里|群中", remaining):
+        scope["relationship"] = "group"
+    names = {}
+    for pid, person in people.items():
+        for name in [person["display_name"], *person.get("aliases", [])]:
+            if isinstance(name, str) and name.strip() and person["kind"] != "self":
+                names.setdefault(name.strip().casefold(), []).append(pid)
+    multiple_people = False
+    if not mention:
+        found = [n for n in names if n in remaining.casefold()]
+        multiple_people = (
+            len({p for n in found for p in names[n]}) > 1 and len(found) > 1
+        )
+        if found:
+            mention = max(found, key=len)
+            remaining = re.sub(re.escape(mention), " ", remaining, flags=re.I)
+    candidates = (
+        list(dict.fromkeys(names.get(mention.casefold(), []))) if mention else []
+    )
+    issue = (
+        "问题涉及多个不同人物，请明确本轮交流对象；本轮未检索。"
+        if multiple_people
+        else ""
+    )
+    if mention:
+        if not candidates:
+            issue = (
+                f"“{mention}”没有可信的已确认姓名或别名映射，请先确认人物；本轮未检索。"
+            )
+        elif scope["person_id"]:
+            if scope["person_id"] not in candidates:
+                issue = "问题人物与所选人物不一致，请重新选择；本轮未检索。"
+        elif len(candidates) > 1:
+            issue = f"“{mention}”对应多个已确认人物，请选择具体人物后重试；本轮未检索。"
+        else:
+            scope["person_id"] = candidates[0]
+    if scope["person_id"] and scope["person_id"] not in people:
+        issue = "指定人物尚未确认；本轮未检索，也未回退到全部人物。"
+    query = plan(remaining, keyword)
+    query["intent"] = plan(question, keyword)["intent"]
+    if scope["relationship"] == "conversation" and not scope["person_id"]:
+        issue = issue or "请确认交流对象；本轮未检索。"
+    if (
+        not query["terms"]
+        and not scope["person_id"]
+        and scope["relationship"] != "group"
+    ):
+        issue = issue or "请明确人物或聊天主题；本轮未检索。"
+    return {
+        **query,
+        "scope": scope,
+        "person_mention": mention,
+        "time_explicit": period is not None,
+        "issue": issue,
+        "person_candidates": [people[p] for p in candidates],
+    }
