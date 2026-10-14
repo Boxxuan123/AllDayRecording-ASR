@@ -22,6 +22,8 @@ def bounded_sql(method):
 
 class RecallState:
     def dataset(self):
+        if getattr(self.identities, "directory_dataset", ""):
+            return self.identities.directory_dataset
         return (
             self.identities.cache.get("dataset", "")
             if self.identities.chat_path.exists()
@@ -63,6 +65,34 @@ class RecallState:
             for r in records
             if scope["sent_from"] <= r.get("sent_at", -1) <= scope["sent_to"]
         ]
+        contacts = scope.get("source_contacts", [])
+        if contacts:
+            from allday_asr.v3.domain.recall_conversation import source_target
+
+            records = [
+                r
+                for r in records
+                if any(
+                    r.get("conversation_type") == c["conversation_type"]
+                    and all(
+                        r.get(k) == c[k]
+                        for k in ("platform", "source_account_id", "conversation_id")
+                    )
+                    for c in contacts
+                )
+                and (
+                    (
+                        scope.get("relationship") == "group"
+                        and r.get("conversation_type") == "group"
+                    )
+                    or (
+                        scope.get("relationship") != "group"
+                        and (
+                            source_target(r, contacts) or r.get("is_from_self") is True
+                        )
+                    )
+                )
+            ]
         if scope.get("relationship") == "conversation":
             from allday_asr.v3.domain.recall_conversation import participants
 
@@ -94,6 +124,13 @@ class RecallState:
 
     def authorized_scopes(self, scope):
         ids = self.identities
+        if scope.get("source_contacts"):
+            return [
+                {k: c[k] for k in ("platform", "source_account_id", "conversation_id")}
+                for c in scope["source_contacts"]
+            ]
+        if scope.get("source_accounts"):
+            return scope["source_accounts"][:3]
         if not ids.chat_path.exists():
             return []
         if not scope["person_id"]:
@@ -215,6 +252,8 @@ class RecallState:
         people = self.identities.people()
         manual = self.identities.manual()
         for row in rows:
+            if row.get("identity_resolution") == "source_native":
+                continue
             if row["source"] == "recording":
                 if row.get("person_id") and row.get("speaker") != people.get(
                     row["person_id"], {}

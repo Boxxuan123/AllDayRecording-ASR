@@ -213,7 +213,9 @@ def test_alias_platform_and_time_variation(env, alias, platform):
 def test_unknown_alias_and_explicit_unknown_person_never_search_all(env):
     result = ask(env, "昨天我跟陌生老师聊了什么")
     assert result["status"] == "needs_clarification" and result["evidence"] == []
-    assert "没有可信" in result["answer"] and result["metrics"]["model_calls"] == 0
+    assert (
+        "来源联系人目录" in result["answer"] and result["metrics"]["model_calls"] == 0
+    )
     assert env.source.calls == []
     with pytest.raises(ValueError, match="尚未确认"):
         ask(env, person_id="invented-person")
@@ -299,7 +301,11 @@ def test_model_failures_have_truthful_final_answers(env, mode):
     result = ask(env)
     assert result["evidence"] and result["claims"] == []
     assert result["model_status"] == (
-        "insufficient" if mode == "insufficient" else "unavailable"
+        "insufficient"
+        if mode == "insufficient"
+        else "timeout"
+        if mode == "timeout"
+        else "failed"
     )
     assert "无法生成" in result["answer"] and "伪造结论" not in result["answer"]
     assert result["metrics"]["model_calls"] == 1 and result["unknown"]

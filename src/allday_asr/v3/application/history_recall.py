@@ -5,9 +5,9 @@ import time
 from copy import deepcopy
 from threading import Event, RLock
 from allday_asr.v3.domain.memory_content import safe_memory
-from allday_asr.v3.domain.recall_answer import verified_quote_text
-from allday_asr.v3.domain.recall_language import plan, select_evidence
-from allday_asr.v3.domain.recall_query import understand
+from allday_asr.v3.domain.recall_language import plan
+from .recall_understanding import interpret, apply_contact, choose
+from allday_asr.v3.domain.recall_conversation import native_present
 from allday_asr.v3.ports.chat_data import ChatDataError, ChatDataSource
 from allday_asr.v3.ports.history_recall import (
     RecallRepository,
@@ -20,9 +20,11 @@ LIMITS = {
     "records": 300,
     "page_size": 20,
     "pages": 15,
-    "source_requests": 6,
-    "model_calls": 1,
-    "seconds": 30,
+    "source_requests": 12,
+    "retrieval_requests": 6,
+    "model_calls": 2,
+    "directory_requests": 6,
+    "seconds": 60,
     "retention_seconds": 300,
 }
 NOTICE = "仅已授权缓存／有界取回；历史完整性未知，未找到不表示未发生。来源修订传播能力以 Mac 为准。"
@@ -37,8 +39,11 @@ class HistoryRecall:
         model: RecallModel,
         *,
         root=None,
+        directory=None,
+        planner=None,
     ):
         self.root = root
+        self.directory, self.planner = directory, planner
         self.identities, self.sources, self.source, self.model = (
             identities,
             sources,
@@ -73,6 +78,8 @@ class HistoryRecall:
             return self.context(
                 owner, payload.get("query_id"), payload.get("evidence_id")
             )
+        if action == "choose":
+            return choose(self, owner, payload)
         if action == "query":
             return self.query(owner, payload)
         raise ValueError("未知回忆操作")
@@ -117,14 +124,18 @@ class HistoryRecall:
         value = self._saved(owner, qid)
         return deepcopy(
             {
-                **{k: v for k, v in value.items() if k not in {"continuations"}},
+                **{
+                    k: v
+                    for k, v in value.items()
+                    if k not in {"continuations"} and not k.startswith("_")
+                },
                 "evidence": value["evidence"][page * 20 : (page + 1) * 20],
                 "page": page,
                 "has_more": (page + 1) * 20 < len(value["evidence"]),
             }
         )
 
-    def query(self, owner, payload):
+    def query(self, owner, payload, selected=None, prepared=None):
         allowed = {
             "action",
             "query_id",
@@ -137,6 +148,7 @@ class HistoryRecall:
             "expand",
             "summarize",
             "timezone",
+            "previous_query_id",
         }
         if set(payload) - allowed:
             raise ValueError("查询字段无效")
@@ -167,30 +179,20 @@ class HistoryRecall:
             or not 0 <= scope["sent_from"] <= scope["sent_to"]
             or scope["sent_to"] - scope["sent_from"] > 366 * 86400
         ):
-            raise ValueError("每次请选择最多 366 天；默认最近 30 天")
+            raise ValueError("每次请选择最多 366 天")
+        from zoneinfo import ZoneInfo
+
+        try:
+            ZoneInfo(payload.get("timezone", "Asia/Singapore"))
+        except (ValueError, TypeError, KeyError):
+            raise ValueError("用户时区无效，请使用 IANA 时区") from None
         people = self.identities.people()
         if scope["person_id"] and scope["person_id"] not in people:
             raise ValueError("指定人物尚未确认；未回退到全部人物")
         if any(type(payload.get(k, True)) is not bool for k in ["expand", "summarize"]):
             raise ValueError("查询选项无效")
-        query_plan = understand(question, keyword, people, payload, now)
-        scope = query_plan["scope"]
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-
-        for bound in ("sent_from", "sent_to"):
-            scope[bound + "_local"] = datetime.fromtimestamp(
-                scope[bound], ZoneInfo(scope["timezone"])
-            ).isoformat()
-        if (
-            not 0 <= scope["sent_from"] <= scope["sent_to"]
-            or scope["sent_to"] - scope["sent_from"] > 366 * 86400
-        ):
-            raise ValueError("每次请选择最多 366 天")
-        terms = query_plan["terms"]
-        identity_version = self.identities.version()
         started = time.monotonic()
-        deadline = started + 30
+        deadline = started + 60
         cancel = Event()
         with self.lock:
             self._prune()
@@ -204,12 +206,69 @@ class HistoryRecall:
                 if other[0] == owner:
                     event.set()
             self.active[key] = cancel
+        try:
+            previous = None
+            if payload.get("previous_query_id"):
+                self._id(payload["previous_query_id"])
+                try:
+                    previous = self._saved(owner, payload["previous_query_id"])
+                except ValueError:
+                    # Expired context grants no scope and must not block a new question.
+                    pass
+            query_plan = (
+                deepcopy(prepared)
+                if prepared
+                else interpret(
+                    self,
+                    question,
+                    keyword,
+                    people,
+                    payload,
+                    now,
+                    cancel,
+                    deadline,
+                    selected,
+                    previous,
+                )
+            )
+            if cancel.is_set():
+                with self.lock:
+                    self.active.pop(key, None)
+                return {"status": "cancelled", "query_id": qid}
+            if selected:
+                apply_contact(query_plan, selected)
+            scope = query_plan["scope"]
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            for bound in ("sent_from", "sent_to"):
+                scope[bound + "_local"] = datetime.fromtimestamp(
+                    scope[bound], ZoneInfo(scope["timezone"])
+                ).isoformat()
+            if (
+                not 0 <= scope["sent_from"] <= scope["sent_to"]
+                or scope["sent_to"] - scope["sent_from"] > 366 * 86400
+            ):
+                raise ValueError("每次请选择最多 366 天")
+            terms = query_plan["terms"]
+            identity_version = self.identities.version()
+        except Exception:
+            with self.lock:
+                self.active.pop(key, None)
+            raise
         result = {
             "query_id": qid,
             "scope": scope,
             "terms": terms,
             "intent": query_plan["intent"],
-            "person_candidates": query_plan["person_candidates"],
+            "person_candidates": [
+                p
+                for p in query_plan["person_candidates"]
+                if not p["person_id"].startswith("native:")
+            ],
+            "contact_candidates": query_plan.get("contact_candidates", []),
+            "_request": deepcopy(payload),
+            "_plan": deepcopy(query_plan),
             "query_understanding": {
                 "person_mention": query_plan["person_mention"],
                 "time_explicit": query_plan["time_explicit"],
@@ -220,13 +279,16 @@ class HistoryRecall:
             "claims": [],
             "unknown": [],
             "status": "partial",
-            "coverage": [NOTICE],
+            "coverage": [NOTICE, *query_plan.get("directory_notes", [])],
             "model_status": "not_requested",
             "metrics": {
                 "hits": 0,
                 "retrieved": 0,
-                "model_calls": 0,
-                "source_requests": 0,
+                "model_calls": query_plan.get("understanding_calls", 0),
+                "understanding_calls": query_plan.get("understanding_calls", 0),
+                "directory_requests": query_plan.get("directory_requests", 0),
+                "source_requests": query_plan.get("directory_requests", 0),
+                "retrieval_requests": 0,
                 "source_records_read": 0,
                 "model_elapsed_ms": 0,
                 "model_input_ids": [],
@@ -242,7 +304,8 @@ class HistoryRecall:
             )
             with self.lock:
                 self.active.pop(key, None)
-            return safe_memory(result)
+                self.results[key] = (time.monotonic(), safe_memory(result))
+            return self.page(owner, qid)
         try:
             if scope.get("relationship") == "conversation":
                 result["coverage"].append(
@@ -250,7 +313,7 @@ class HistoryRecall:
                 )
             if scope["source"] != "recording":
                 rows, more = self.sources.chat(
-                    scope, terms, 100, cancel, min(deadline, started + 3)
+                    scope, terms, 100, cancel, min(deadline, time.monotonic() + 3)
                 )
                 result["evidence"].extend(rows)
                 if more:
@@ -287,6 +350,7 @@ class HistoryRecall:
                 result["coverage"].append(
                     "已排除确认修订／撤回的旧证据；需重新取回当前来源"
                 )
+            result["evidence"] = [native_present(r, scope) for r in result["evidence"]]
             result["evidence"].sort(key=lambda e: (e.get("sent_at") or 0, e["id"]))
             result["metrics"]["retrieved"] = len(result["evidence"])
             self._checkpoint(cancel, deadline)
@@ -361,82 +425,9 @@ class HistoryRecall:
             raise ChatDataError("QUERY_TIMEOUT", 408)
 
     def _summarize(self, result, question, cancel, deadline):
-        # Exact quotes remain available on every model failure. One invocation, no retries.
-        rows = select_evidence(
-            result["evidence"], result["intent"], result["terms"], 20
-        )
-        if len(result["evidence"]) > 20:
-            result["coverage"].append(
-                "归纳最多使用 20 条按相关性、时间跨度和状态变化选出的依据；其余原文仍可翻页"
-            )
-        payload = {
-            "question": question,
-            "query_id": result["query_id"],
-            "intent": result["intent"],
-            "model_budget_seconds": min(20, int(deadline - time.monotonic())),
-            "scope": result["scope"],
-            "records": rows,
-            "evidence_complete": False,
-            "known_gaps": result["coverage"],
-        }
-        result["metrics"]["model_input_ids"] = [r["id"] for r in rows]
-        started = time.monotonic()
-        try:
-            if payload["model_budget_seconds"] < 2:
-                raise TimeoutError()
-            result["metrics"]["model_calls"] = 1
-            value = self.model(payload, cancel)
-            self._checkpoint(cancel, deadline)
-            evidence = {r["id"]: r for r in rows}
-            if (
-                not isinstance(value, dict)
-                or not isinstance(value.get("claims"), list)
-                or len(value["claims"]) > 20
-                or not isinstance(value.get("unknown"), list)
-                or len(value["unknown"]) > 20
-            ):
-                raise ValueError("invalid answer")
-            for claim in value["claims"]:
-                if (
-                    set(claim) != {"kind", "text", "citations"}
-                    or claim["kind"] not in {"quote", "summary", "inference"}
-                    or not isinstance(claim["text"], str)
-                    or not claim["text"].strip()
-                    or len(claim["text"]) > 2000
-                    or not isinstance(claim["citations"], list)
-                    or not claim["citations"]
-                    or any(cid not in evidence for cid in claim["citations"])
-                ):
-                    raise ValueError("invalid citation")
-                if claim["kind"] == "quote":
-                    claim["text"] = verified_quote_text(
-                        claim["text"],
-                        [evidence[cid]["quote"] for cid in claim["citations"]],
-                    )
-            if any(not isinstance(v, str) or len(v) > 2000 for v in value["unknown"]):
-                raise ValueError("invalid unknown")
-            result["claims"] = value["claims"]
-            result["unknown"] = value["unknown"]
-            result["model_status"] = "available" if value["claims"] else "insufficient"
-            # The primary answer is derived only from citation-validated claims.
-            result["answer"] = "\n".join(
-                ("推测：" + c["text"]) if c["kind"] == "inference" else c["text"]
-                for c in value["claims"]
-            ) or ("现有证据不足，无法生成可靠归纳；请核对本次范围内的原文。")
-        except Exception:
-            result["model_status"] = "unavailable"
-            result["claims"] = []
-            result["unknown"] = ["归纳模型不可用、超时或证据校验失败。"]
-            result["answer"] = (
-                "无法生成归纳（模型不可用、超时或证据校验失败）；以下仅为符合本次人物、时间和会话约束的原文。"
-            )
-            result["coverage"].append(
-                "归纳模型不可用或证据校验失败；请直接查看命中的原文"
-            )
-        finally:
-            result["metrics"]["model_elapsed_ms"] = round(
-                (time.monotonic() - started) * 1000
-            )
+        from .recall_summary import summarize
+
+        return summarize(self, result, question, cancel, deadline)
 
     def context(self, owner, qid, evidence_id):
         value = self._saved(owner, qid)
@@ -460,11 +451,17 @@ class HistoryRecall:
         try:
             with self.lock:
                 if (
-                    value["metrics"]["source_requests"] >= 6
+                    value["metrics"].get(
+                        "retrieval_requests", value["metrics"]["source_requests"]
+                    )
+                    >= 6
                     or value["metrics"]["source_records_read"] + 7 > 100
                 ):
                     raise ChatDataError("SOURCE_REQUEST_BUDGET_REACHED", 429)
                 value["metrics"]["source_requests"] += 1
+                value["metrics"]["retrieval_requests"] = (
+                    value["metrics"].get("retrieval_requests", 0) + 1
+                )
             part = self.source.request(
                 "/v1/context", {"record_id": row["record_id"], "before": 2, "after": 4}
             )
@@ -492,7 +489,10 @@ class HistoryRecall:
                 {
                     "status": "available",
                     "evidence": [
-                        self.sources.evidence(r, "mac", "context") for r in records
+                        native_present(
+                            self.sources.evidence(r, "mac", "context"), value["scope"]
+                        )
+                        for r in records
                     ],
                     "notice": "Mac 当前可用上下文；引用对象不是发送者",
                 }

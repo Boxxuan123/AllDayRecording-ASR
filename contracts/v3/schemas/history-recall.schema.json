@@ -59,6 +59,10 @@
               "type": "string",
               "maxLength": 100,
               "description": "User IANA timezone; legacy clients default to Asia/Singapore"
+            },
+            "previous_query_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,80}$"
             }
           }
         },
@@ -192,6 +196,28 @@
               }
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "query_id",
+            "contact_key"
+          ],
+          "properties": {
+            "action": {
+              "const": "choose"
+            },
+            "query_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,80}$"
+            },
+            "contact_key": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{32}$"
+            }
+          }
         }
       ]
     },
@@ -297,6 +323,44 @@
         },
         "query_understanding": {
           "type": "object"
+        },
+        "contact_candidates": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "platform",
+              "display_name"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "platform": {
+                "enum": [
+                  "qq",
+                  "wechat"
+                ]
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "conversation_type": {
+                "enum": [
+                  "c2c",
+                  "group"
+                ]
+              }
+            }
+          }
         }
       }
     }

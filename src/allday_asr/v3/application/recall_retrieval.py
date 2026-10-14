@@ -16,11 +16,17 @@ def expand(service, result, scope, query_plan, cancel, deadline):
     def request(route, **kwargs):
         service._checkpoint(cancel, deadline)
         if (
-            result["metrics"]["source_requests"] >= 6
+            result["metrics"].get(
+                "retrieval_requests", result["metrics"]["source_requests"]
+            )
+            >= 6
             or result["metrics"]["source_records_read"] >= 100
         ):
             raise ChatDataError("SOURCE_REQUEST_BUDGET_REACHED", 429)
         result["metrics"]["source_requests"] += 1
+        result["metrics"]["retrieval_requests"] = (
+            result["metrics"].get("retrieval_requests", 0) + 1
+        )
         return service.source.request(route, **kwargs)
 
     try:
@@ -32,7 +38,7 @@ def expand(service, result, scope, query_plan, cancel, deadline):
             result["coverage"].append("Mac 来源尚未采集完成；本轮不能判断是否有聊天")
             return
         result["source_status"] = "available"
-        if scope.get("relationship") == "conversation":
+        if scope.get("relationship") == "conversation" or scope.get("source_contacts"):
             conversation_expand(service, result, scope, query_plan, scopes, request)
             return
         # Unknown source completeness/freshness warrants one bounded probe even
@@ -124,6 +130,14 @@ def expand(service, result, scope, query_plan, cancel, deadline):
                     and rec.get("conversation_type") != "group"
                 ):
                     continue
+                if scope.get("source_contacts") and role == "match":
+                    from allday_asr.v3.domain.recall_conversation import source_target
+
+                    if (
+                        not source_target(rec, scope["source_contacts"])
+                        and scope.get("relationship") != "group"
+                    ):
+                        continue
                 evidence = repo.evidence(rec, "mac", role)
                 if role == "match" and (
                     scope["person_id"]
@@ -192,7 +206,13 @@ def conversation_expand(service, result, scope, plan, scopes, request):
     try:
         while jobs:
             selected, cursor = jobs.pop(0)
-            if result["metrics"]["source_requests"] >= 6 or len(records) >= 100:
+            if (
+                result["metrics"].get(
+                    "retrieval_requests", result["metrics"]["source_requests"]
+                )
+                >= 6
+                or len(records) >= 100
+            ):
                 result["source_status"] = "partial"
                 result["coverage"].append("达到本轮分页/记录上限，仍有会话未完整取回")
                 break

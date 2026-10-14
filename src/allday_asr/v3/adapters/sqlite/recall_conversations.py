@@ -7,6 +7,11 @@ from allday_asr.v3.ports.chat_data import ChatDataError
 
 
 def conversation_scopes(ids, scope, cancel, deadline):
+    if scope.get("source_contacts"):
+        return [
+            {k: c[k] for k in ("platform", "source_account_id", "conversation_id")}
+            for c in scope["source_contacts"]
+        ]
     if not ids.chat_path.exists():
         return []
     people, manual = ids.people(), ids.manual()
@@ -56,12 +61,19 @@ def conversation_scopes(ids, scope, cancel, deadline):
                     result.append(selected)
                 if len(result) > 500:
                     raise ChatDataError("IDENTITY_SCOPE_BUDGET_REACHED", 429)
-    return sorted(
-        result,
-        key=lambda s: ranks[
-            (s["platform"], s["source_account_id"], s["conversation_id"])
-        ],
-    )
+    linked = [
+        {k: c[k] for k in ("platform", "source_account_id", "conversation_id")}
+        for c in scope.get("linked_contacts", [])
+    ]
+    return [s for s in linked if s not in result] + [
+        s
+        for s in sorted(
+            result,
+            key=lambda s: ranks[
+                (s["platform"], s["source_account_id"], s["conversation_id"])
+            ],
+        )
+    ]
 
 
 def conversation_records(ids, scope, terms, limit, cancel, deadline):

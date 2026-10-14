@@ -231,7 +231,7 @@ def test_query_read_only_no_answer_and_model_failure_keeps_originals(env):
     decision(service, rows[0])
     before = (dump(db.path), dump(cache.path))
     found = query(service, summarize=True)
-    assert found["model_status"] == "unavailable" and found["evidence"]
+    assert found["model_status"] == "timeout" and found["evidence"]
     none = query(service, keyword="虚构未出现的词", summarize=True)
     assert none["status"] == "not_found" and none["metrics"]["model_calls"] == 0
     assert (dump(db.path), dump(cache.path)) == before
@@ -281,9 +281,7 @@ def test_evidence_conflicts_and_fake_quotes_rejected(env):
         "unknown": [],
     }
     bad = query(service, summarize=True)
-    assert (
-        bad["model_status"] == "unavailable" and not bad["claims"] and bad["evidence"]
-    )
+    assert bad["model_status"] == "failed" and not bad["claims"] and bad["evidence"]
 
 
 def test_remote_expansion_and_offline_preserve_readonly(env):

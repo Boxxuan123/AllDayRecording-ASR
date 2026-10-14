@@ -40,12 +40,17 @@ def chat_evidence(record, identities, people, manual, origin, role="match"):
         "person_id": person or "",
         "speaker": people[person]["display_name"]
         if person
-        else record.get("sender_display_name") or "未确认发送者",
+        else "我"
+        if effective_self(record, manual, people) is True
+        else record.get("sender_display_name") or "来源发送者",
         "identity_basis": basis,
         "source_is_from_self": record.get("is_from_self"),
         "effective_is_self": effective_self(record, manual, people),
         "is_from_self": effective_self(record, manual, people),
-        "dataset": identities.cache.get("dataset", ""),
+        "dataset": getattr(identities, "directory_dataset", "")
+        or (
+            identities.cache.get("dataset", "") if identities.chat_path.exists() else ""
+        ),
         "quote": text[:1200],
         "quote_truncated": len(text) > 1200,
         "sent_at": record.get("sent_at"),
@@ -78,6 +83,21 @@ class RecallSources(RecallState):
         if scope["source"] in {"qq", "wechat"}:
             clauses.append("platform=?")
             params.append(scope["source"])
+        if scope.get("source_accounts"):
+            choices = []
+            for account in scope["source_accounts"]:
+                choices.append("(platform=? AND source=?)")
+                params.extend((account["platform"], account["source_account_id"]))
+            clauses.append("(" + " OR ".join(choices) + ")")
+        if scope.get("source_contacts"):
+            choices = []
+            for contact in scope["source_contacts"]:
+                choices.append("(platform=? AND source=? AND conversation=?)")
+                params.extend(
+                    contact[k]
+                    for k in ("platform", "source_account_id", "conversation_id")
+                )
+            clauses.append("(" + " OR ".join(choices) + ")")
         if scope.get("relationship") == "group":
             clauses.append("json_extract(body,'$.conversation_type')='group'")
         if terms:
@@ -133,10 +153,12 @@ class RecallSources(RecallState):
                 + " ORDER BY recall_score(text) DESC,sent_at DESC,id DESC LIMIT ?",
                 (*params, limit + 1),
             ).fetchall()
-        evidence = [
-            chat_evidence(json.loads(r[0]), ids, people, manual, "cache")
-            for r in rows[:limit]
-        ]
+        records = [json.loads(r[0]) for r in rows[:limit]]
+        if scope.get("source_contacts") and scope.get("relationship") == "speaker":
+            from allday_asr.v3.domain.recall_conversation import source_target
+
+            records = [r for r in records if source_target(r, scope["source_contacts"])]
+        evidence = [chat_evidence(r, ids, people, manual, "cache") for r in records]
         invalid = self.changed(evidence)
         return [r for r in evidence if r["id"] not in invalid], len(rows) > limit
 

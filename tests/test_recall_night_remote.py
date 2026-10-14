@@ -175,7 +175,7 @@ def test_pagination_brings_self_reply_into_correct_context(cold):
         message(2250, "周五十点可以，我来准备清单。", "self-account")
     )
     result = ask(cold, expand=True)
-    assert result["answer"] == SUMMARY and result["metrics"]["source_requests"] <= 6
+    assert result["answer"] == SUMMARY and result["metrics"]["source_requests"] <= 12
     assert result["metrics"]["source_records_read"] <= 100
     assert any(
         r["effective_is_self"] is True
@@ -212,7 +212,7 @@ def test_wrong_date_namespace_group_and_person_are_rejected(cold):
 def test_unknown_alias_makes_zero_mac_requests(cold):
     result = ask(cold, "我昨晚跟不存在的老师聊了什么", expand=True)
     assert result["status"] == "needs_clarification" and result["evidence"] == []
-    assert cold.source.calls == []
+    assert not any(route == "/v1/messages" for route, _, _ in cold.source.calls)
 
 
 @pytest.mark.parametrize(
