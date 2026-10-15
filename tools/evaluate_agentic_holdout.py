@@ -37,8 +37,12 @@ def main():
         "real_model_calls": 0,
         "cases": len(suite["cases"]),
         "results": [],
+        "model_attempts": [],
     }
     args.output.mkdir(parents=True, exist_ok=True)
+    if len(suite["cases"]) > 3:
+        parser.error("holdout is limited to three fictional cases")
+    started = time.monotonic()
     if args.real:
         if not 1 <= args.max_model_calls <= 6 or not 1 <= args.max_seconds <= 180:
             parser.error(
@@ -93,7 +97,7 @@ def main():
                 env.cache.process(100)
                 adapter = RecallInvestigatorAdapter(root)
 
-                def bounded(payload, cancel, adapter=adapter):
+                def bounded(payload, cancel, adapter=adapter, case_id=case["id"]):
                     if (
                         receipt["real_model_calls"] >= args.max_model_calls
                         or time.monotonic() >= deadline
@@ -107,7 +111,32 @@ def main():
                             max(1, int(deadline - time.monotonic())),
                         ),
                     }
-                    return adapter(payload, cancel)
+                    attempt = {
+                        "case_id": case_id,
+                        "input": payload,
+                        "status": "started",
+                    }
+                    receipt["model_attempts"].append(attempt)
+                    call_started = time.monotonic()
+                    try:
+                        decision = adapter(payload, cancel)
+                        attempt.update(status="completed", decision=decision)
+                        return decision
+                    except Exception as exc:
+                        attempt.update(
+                            status="failed",
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
+                        raise
+                    finally:
+                        attempt["elapsed_seconds"] = round(
+                            time.monotonic() - call_started, 3
+                        )
+                        (args.output / "receipt.json").write_text(
+                            json.dumps(receipt, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
 
                 env.service.investigator = bounded
                 # No fake summary fallback can report a real-model success.
@@ -136,10 +165,15 @@ def main():
             finally:
                 patch.undo()
         receipt["status"] = "COMPLETED_REQUIRES_HUMAN_SCORING"
+    receipt["elapsed_seconds"] = round(time.monotonic() - started, 3)
     (args.output / "receipt.json").write_text(
         json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", "utf-8"
     )
-    print(json.dumps({k: v for k, v in receipt.items() if k != "results"}))
+    print(
+        json.dumps(
+            {k: v for k, v in receipt.items() if k not in {"results", "model_attempts"}}
+        )
+    )
 
 
 if __name__ == "__main__":

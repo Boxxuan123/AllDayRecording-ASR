@@ -11,6 +11,8 @@ from allday_asr.v3.ports.chat_data import ChatDataError
 from allday_asr.v3.domain.recall_investigation_scope import (
     remote_grants,
     contact_record_allowed,
+    intersect_root,
+    inside_root,
 )
 
 
@@ -19,8 +21,15 @@ class InvestigationTools:
         self.service, self.result, self.plan = service, result, plan
         self.cancel, self.deadline, self.now = cancel, deadline, now
         self.refs, self.seen, self.remote_checked = {}, set(), False
+        self.root_scope = deepcopy(result["scope"])
+        # Automatically resolved directory seeds are leads, not an explicit user filter.
+        if plan.get("_contact_scope_is_seed"):
+            self.root_scope.pop("source_contacts", None)
+        self.root_scope["sent_from"] = result["_request"].get("sent_from", 0)
+        self.root_scope["sent_to"] = result["_request"].get("sent_to", now)
+        self.authorized_directory = deepcopy(plan.get("_directory", []))
         self.directory = sorted(
-            plan.get("_directory", []),
+            [c for c in plan.get("_directory", []) if inside_root(c, self.root_scope)],
             key=lambda c: (
                 not any(
                     n.casefold() in result["_request"]["question"].casefold()
@@ -46,8 +55,18 @@ class InvestigationTools:
         if message not in self.result["coverage"]:
             self.result["coverage"].append(message)
 
+    def bounded_scope(self, scope):
+        bounded = intersect_root(self.root_scope, scope)
+        if bounded is None:
+            self.note("调查目标与原查询硬筛选不相交，未读取该范围；当前覆盖不足。")
+        return bounded
+
     def add(self, rows):
         self.checkpoint()
+        allowed = [r for r in rows if inside_root(r, self.root_scope, evidence=True)]
+        if len(allowed) != len(rows):
+            self.note("已排除原查询硬范围以外的证据。")
+        rows = allowed
         invalid = self.service.sources.changed(rows)
         saved = {r["id"]: r for r in self.result["evidence"]}
         refs = []
@@ -72,6 +91,7 @@ class InvestigationTools:
             context_scope.pop("source_contacts", None)
             context_scope.pop("source_accounts", None)
             context_scope["relationship"] = "topic"
+            context_scope = self.bounded_scope(context_scope)
             self.result["_evidence_scopes"][row["id"]] = context_scope
             self.refs[row["id"]] = {"ref": row["id"], "type": "evidence", **row}
             refs.append(row["id"])
@@ -140,7 +160,7 @@ class InvestigationTools:
             self.note(
                 f"{window} 线索窗口：{datetime.fromtimestamp(value['sent_from'], ZoneInfo(zone)).isoformat()} 至 {datetime.fromtimestamp(value['sent_to'], ZoneInfo(zone)).isoformat()}（Unix边界 {value['sent_from']}–{value['sent_to']}，用户时区 {zone}）；消息时间不等于事件发生时间。"
             )
-        return value
+        return self.bounded_scope(value)
 
     def resolve(self, action, outputs):
         targets = []
@@ -187,6 +207,8 @@ class InvestigationTools:
         self.calls += 1
         self.result["metrics"]["investigation_tools"] = self.calls
         scope = self.scope(action["window"])
+        if scope is None:
+            return []
         self.current_scope = scope
         tool = action["tool"]
         trace = {
@@ -223,6 +245,11 @@ class InvestigationTools:
         elif tool == "get_message_context":
             refs = self.context(targets, scope)
         elif tool == "get_existing_memory":
+            if self.root_scope.get("source_contacts") or self.root_scope.get(
+                "source_accounts"
+            ):
+                self.note("已有记忆无法证明属于当前指定会话，未读取；覆盖不足。")
+                return []
             rows = self.service.sources.existing_memory(
                 scope,
                 action["terms"],
@@ -299,6 +326,10 @@ class InvestigationTools:
                     selected["source_senders"] = [target["sender_account_id"]]
             elif self.result["scope"].get("source_contacts"):
                 selected["source_contacts"] = self.result["scope"]["source_contacts"]
+            selected = self.bounded_scope(selected)
+            if selected is None:
+                continue
+            self.current_scope = selected
             remaining = min(20, 300 - len(self.result["evidence"]))
             if remaining <= 0:
                 self.note("证据预算耗尽。")
@@ -336,8 +367,11 @@ class InvestigationTools:
         return list(dict.fromkeys(found))
 
     def search_remote(self, scope, terms):
+        scope = self.bounded_scope(scope)
+        if scope is None:
+            return []
         grants = remote_grants(
-            scope, self.service.sources.authorized_scopes(scope), self.directory
+            scope, self.service.sources.authorized_scopes(scope), self.authorized_directory
         )
         if len(grants) > 2:
             self.note("远端范围超过本轮两个分支上限，其余会话尚未覆盖。")
@@ -429,6 +463,9 @@ class InvestigationTools:
         return list(dict.fromkeys(refs))
 
     def related(self, targets, scope):
+        scope = self.bounded_scope(scope)
+        if scope is None:
+            return []
         refs = []
         for target in targets:
             if target["type"] == "evidence" and target.get("sender_account_id"):
@@ -441,7 +478,8 @@ class InvestigationTools:
                 target, scope, self.cancel, min(self.deadline, time.monotonic() + 3)
             )
             for item in rows:
-                self.add([item["evidence"]])
+                if not self.add([item["evidence"]]):
+                    continue
                 c = item["contact"]
                 c["relation_evidence"] = [item["evidence"]["id"]]
                 c["relation_basis"] = item.get(
@@ -464,7 +502,13 @@ class InvestigationTools:
         for target in targets:
             if target["type"] != "evidence" or target["source"] == "recording":
                 continue
-            selected = {**scope, "relationship": "topic"}
+            if not inside_root(target, self.root_scope, evidence=True):
+                self.note("上下文目标不属于原查询硬范围，未读取。")
+                continue
+            selected = self.bounded_scope({**scope, "relationship": "topic"})
+            if selected is None:
+                continue
+            self.current_scope = selected
             rows = (
                 self.service.sources.context(target, selected)
                 if target["origin"] == "cache"

@@ -11,7 +11,8 @@ from allday_asr.v3.domain.recall_query import understand, dates
 GENERIC = {"谁", "别人", "其他人", "大家", "有人"}
 
 
-def apply_contact(plan, contact):
+def apply_contact(plan, contact, *, seed=False):
+    plan["_contact_scope_is_seed"] = seed
     scope = plan["scope"]
     scope["person_id"] = ""
     scope["source"] = contact["platform"]
@@ -159,7 +160,7 @@ def interpret(
         if len(exact) == 1 and all(
             r.get("directory_complete", True) for r in directory
         ):
-            apply_contact(fast, exact[0])
+            apply_contact(fast, exact[0], seed=True)
         else:
             fast["contact_candidates"] = exact[:20]
             fast["scope"]["person_id"] = ""
@@ -169,7 +170,7 @@ def interpret(
                     f"已找到“{mention}”的来源联系人，但目录尚未完整覆盖。请确认本次查询对象。"
                 )
     elif scope["person_id"].startswith("native:"):
-        apply_contact(fast, native[scope["person_id"][7:]])
+        apply_contact(fast, native[scope["person_id"][7:]], seed=True)
     if not fast["time_explicit"] and "sent_from" not in payload:
         # Unspecified historical time is a visible bounded year, never a hidden
         # thirty-day substitute for an unparsed time expression.

@@ -38,10 +38,38 @@ class RecallRelations:
             for platform, source, sender in accounts[:20]:
                 if len(rows) >= 101:
                     break
+                restrictions, params = [], []
+                for field, columns in (
+                    ("source_accounts", ("platform", "source")),
+                    ("source_contacts", ("platform", "source", "conversation")),
+                ):
+                    if scope.get(field):
+                        restrictions.append(
+                            "("
+                            + " OR ".join(
+                                "(" + " AND ".join(col + "=?" for col in columns) + ")"
+                                for _ in scope[field]
+                            )
+                            + ")"
+                        )
+                        params.extend(
+                            contact[k]
+                            for contact in scope[field]
+                            for k in (
+                                "platform",
+                                "source_account_id",
+                                "conversation_id",
+                            )[: len(columns)]
+                        )
+                if scope["source"] not in {"all", platform}:
+                    continue
+                extra = " AND " + " AND ".join(restrictions) if restrictions else ""
                 rows.extend(
                     c.execute(
                         "SELECT body FROM search_index WHERE dataset=? AND platform=? AND source=? AND sender=? "
-                        "AND sent_at>=? AND sent_at<=? ORDER BY sent_at DESC,id LIMIT ?",
+                        "AND sent_at>=? AND sent_at<=?"
+                        + extra
+                        + " ORDER BY sent_at DESC,id LIMIT ?",
                         (
                             self.dataset(),
                             platform,
@@ -49,6 +77,7 @@ class RecallRelations:
                             sender,
                             scope["sent_from"],
                             scope["sent_to"],
+                            *params,
                             101 - len(rows),
                         ),
                     ).fetchall()

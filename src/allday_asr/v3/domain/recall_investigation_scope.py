@@ -63,3 +63,82 @@ def contact_record_allowed(record, scope):
         ):
             return True
     return False
+
+
+def intersect_root(root, dynamic):
+    """Intersect immutable user filters; None means an empty, unqueryable scope."""
+    from copy import deepcopy
+
+    scope = deepcopy(dynamic)
+    for key, wildcard in (("source", "all"), ("person_id", "")):
+        hard = root.get(key, wildcard)
+        current = scope.get(key, wildcard)
+        if hard != wildcard and current not in (wildcard, hard):
+            return None
+        if hard != wildcard:
+            scope[key] = hard
+    scope["sent_from"] = max(scope["sent_from"], root["sent_from"])
+    scope["sent_to"] = min(scope["sent_to"], root["sent_to"])
+    if scope["sent_from"] > scope["sent_to"]:
+        return None
+    for field, keys in (("source_accounts", KEYS[:2]), ("source_contacts", KEYS[:3])):
+        hard = root.get(field)
+        if not hard:
+            continue
+        current = scope.get(field)
+        choices = []
+        for wanted in hard:
+            for candidate in current or [wanted]:
+                if any(wanted.get(k) != candidate.get(k) for k in keys):
+                    continue
+                if field == "source_contacts" and any(
+                    wanted.get(k) and candidate.get(k) and wanted[k] != candidate[k]
+                    for k in ("conversation_type", "sender_account_id")
+                ):
+                    continue
+                choices.append({**candidate, **wanted})
+        choices = [c for c in choices if scope["source"] in {"all", c["platform"]}]
+        if not choices:
+            return None
+        scope[field] = choices
+    if scope.get("source_contacts") and scope.get("source_accounts"):
+        scope["source_contacts"] = [
+            c
+            for c in scope["source_contacts"]
+            if any(
+                all(c[k] == a[k] for k in KEYS[:2]) for a in scope["source_accounts"]
+            )
+        ]
+        if not scope["source_contacts"]:
+            return None
+    return scope
+
+
+def inside_root(value, root, *, evidence=False):
+    platform = value.get("platform", value.get("source"))
+    if root.get("source", "all") not in {"all", platform}:
+        return False
+    for field, keys in (("source_accounts", KEYS[:2]), ("source_contacts", KEYS[:3])):
+        if root.get(field) and not any(
+            all(
+                (platform if k == "platform" else value.get(k)) == c.get(k)
+                for k in keys
+            )
+            for c in root[field]
+        ):
+            return False
+    if evidence:
+        if not root["sent_from"] <= (value.get("sent_at") or 0) <= root["sent_to"]:
+            return False
+        if root.get("person_id") and value.get("person_id") != root["person_id"]:
+            return False
+        if root.get("source_contacts"):
+            record = {
+                **value,
+                "platform": platform,
+                "is_from_self": value.get(
+                    "source_is_from_self", value.get("is_from_self")
+                ),
+            }
+            return contact_record_allowed(record, root)
+    return True
