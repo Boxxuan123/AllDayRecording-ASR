@@ -8,6 +8,10 @@ import hashlib
 import time
 from allday_asr.v3.domain.recall_investigation import window_scope
 from allday_asr.v3.ports.chat_data import ChatDataError
+from allday_asr.v3.domain.recall_investigation_scope import (
+    remote_grants,
+    contact_record_allowed,
+)
 
 
 class InvestigationTools:
@@ -332,17 +336,11 @@ class InvestigationTools:
         return list(dict.fromkeys(found))
 
     def search_remote(self, scope, terms):
-        grants = self.service.sources.authorized_scopes(scope)
-        if not grants:
-            grants = list(
-                {
-                    (c["platform"], c["source_account_id"]): {
-                        k: c[k] for k in ("platform", "source_account_id")
-                    }
-                    for c in self.directory
-                    if scope["source"] in {"all", c["platform"]}
-                }.values()
-            )
+        grants = remote_grants(
+            scope, self.service.sources.authorized_scopes(scope), self.directory
+        )
+        if len(grants) > 2:
+            self.note("远端范围超过本轮两个分支上限，其余会话尚未覆盖。")
         if not grants:
             self.note("未发现可用于远端检索的已授权账号或会话。")
             return []
@@ -356,8 +354,6 @@ class InvestigationTools:
             }
             if terms:
                 remote["keyword"] = terms[0]
-            if scope.get("source_senders"):
-                remote["sender_account_id"] = scope["source_senders"][0]
             limit = min(20, 100 - self.result["metrics"]["source_records_read"])
             if limit <= 0:
                 break
@@ -381,6 +377,7 @@ class InvestigationTools:
                             "sender_account_id",
                         }
                     )
+                    or not contact_record_allowed(record, scope)
                     or not scope["sent_from"]
                     <= (record.get("sent_at") or -1)
                     <= scope["sent_to"]

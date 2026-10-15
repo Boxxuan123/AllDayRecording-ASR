@@ -8,6 +8,7 @@ import time
 from allday_asr.v3.domain.recall_investigation import checked, date_scope
 from allday_asr.v3.ports.chat_data import ChatDataError
 from .recall_investigation_tools import InvestigationTools
+from allday_asr.v3.domain.recall_evidence_selection import select_evidence
 from allday_asr.v3.domain.memory_content import safe_memory
 
 
@@ -24,19 +25,15 @@ def _action(tool, terms=None, targets=None, window="target"):
 
 def _payload(tools, round_number, question):
     result = tools.result
-    # Keep full originals in owned results; model input is a separately bounded selection.
-    records, size = [], 0
-    ordered = sorted(result["evidence"], key=lambda r: (r.get("sent_at") or 0, r["id"]))
-    for row in reversed(ordered):
-        if len(records) == 20:
-            break
-        n = len(json.dumps(row, ensure_ascii=False).encode("utf-8"))
-        if size + n > 28000:
-            continue
-        records.append(row)
-        size += n
-    if len(records) < len(ordered):
-        tools.note("模型本轮最多读取 20 条/28KB 依据，其他证据可翻页，可能遗漏后续。")
+    records, selection = select_evidence(
+        safe_memory(result["evidence"]),
+        result["investigation_steps"],
+        result.get("claims", []),
+    )
+    if selection["omitted_count"]:
+        tools.note(
+            "模型本轮最多读取 20 条/28KB 依据；已优先保留引用锚点及各来源时序边界，但未读取全部证据，可能遗漏中间变更、冲突或后续，不能确认完整经过。"
+        )
     refs = []
     reached = {ref for step in result["investigation_steps"] for ref in step["hits"]}
     objects = sorted(
@@ -72,6 +69,7 @@ def _payload(tools, round_number, question):
             "time_unresolved": tools.plan.get("_parse_error", False),
             "person_mention": tools.plan["person_mention"],
             "records": records,
+            "evidence_selection": selection,
             "objects": refs,
             "steps": result["investigation_steps"][-4:],
             "known_gaps": result["coverage"],
@@ -275,7 +273,11 @@ def investigate(service, result, plan, question, cancel, deadline, now):
             if result["investigation_steps"]:
                 last_step = result["investigation_steps"][-1]
                 last_step["continue"] = value["mode"] == "search"
-                last_step["sufficient"] = bool(claims) and value["mode"] == "answer"
+                last_step["sufficient"] = (
+                    bool(claims)
+                    and value["mode"] == "answer"
+                    and payload["evidence_selection"]["complete_conclusion_allowed"]
+                )
                 last_step["assessment_basis"] = (
                     "model_decision_with_validated_citations_not_entailment_proof"
                 )
@@ -294,6 +296,13 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                     + c["text"]
                     for c in claims
                 )
+            if payload["evidence_selection"]["omitted_count"]:
+                result["status"] = "partial"
+                result["unknown"].append(
+                    "部分已取得证据未送入模型，无法确认完整经过或最终状态；中间变更和矛盾仍可能遗漏。"
+                )
+                if claims:
+                    result["answer"] = "仅据本轮选入的部分证据：\n" + result["answer"]
             if value["mode"] == "clarify":
                 result.update(
                     status="needs_clarification",

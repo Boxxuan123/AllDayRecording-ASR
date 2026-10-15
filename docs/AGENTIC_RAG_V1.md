@@ -1,5 +1,7 @@
 # Agentic RAG V1：实现、验收与独立审核说明
 
+> 本文记录 0.8.6 首轮交付；0.8.7 的独立审核修复见 [修复说明](AGENTIC_RAG_REVIEW_FIXES_20261015.md)。
+
 本轮基于 ASR `13b0948cb115cc4d95b5d2b7e6bbf0944b8e9b2e`、Phone `ca767bb6411bfd17ee8aeb8cc1b83f12001f2c21`，在两仓 `.task-worktrees/agentic-rag-v1` 实现。原主工作区的未提交修改、原始聊天、录音、身份/声纹数据、同步游标及业务事实未改动。发布版本 ASR **0.8.6**、Phone **1.0.20 / 1000020**；兼容扩展回忆响应，未改变 SQLite schema 或投影版本。最终提交及远端一致性见交付审核包 `manifest.json`。
 
 ## 现有能力审计
