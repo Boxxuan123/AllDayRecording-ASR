@@ -16,6 +16,13 @@ from allday_asr.v3.domain.recall_investigation_scope import (
 )
 
 
+READ_TOOLS = frozenset({
+    "find_contacts", "find_conversations", "search_messages", "get_group_members",
+    "get_related_conversations", "get_message_context", "get_existing_memory",
+    "get_source_evidence",
+})
+
+
 class InvestigationTools:
     def __init__(self, service, result, plan, cancel, deadline, now):
         self.service, self.result, self.plan = service, result, plan
@@ -182,6 +189,8 @@ class InvestigationTools:
         return [self.refs[r] for r in dict.fromkeys(targets)][:4]
 
     def run(self, action, outputs):
+        if action.get("tool") not in READ_TOOLS:
+            raise ValueError("tool is not in the read capability allowlist")
         self.checkpoint()
         if self.calls >= 8:
             raise ChatDataError("INVESTIGATION_TOOL_BUDGET_REACHED", 429)

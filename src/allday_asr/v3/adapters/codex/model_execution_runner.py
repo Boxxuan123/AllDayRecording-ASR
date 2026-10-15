@@ -8,6 +8,7 @@ next batch is started by this runner.
 from __future__ import annotations
 
 import hashlib
+from contextlib import ExitStack
 import json
 import os
 import sys
@@ -117,6 +118,8 @@ class ModelExecutionRunner:
         identity = {"task": task, "prompt": prompt, "instructions": instructions,
                     "schema": schema, "model": model, "effort": effort}
         if task == "history-investigation-v1":
+            from .investigation_policy import POLICY_VERSION
+            identity["capability_policy"] = POLICY_VERSION
             identity["config_overrides"] = [
                 "features.apps=false", "features.plugins=false",
                 "features.shell_tool=false", "features.skip_host_skill_discovery=true",
@@ -345,11 +348,21 @@ def worker(request_path: Path, result_path: Path) -> None:
         _atomic_json(Path(request["phase_path"]), {"events": events})
 
     client = None
+    stack = ExitStack()
     try:
         phase("sdk_import")
         from openai_codex import Codex, CodexConfig
         phase("sdk_initialize")
-        client = Codex(CodexConfig(config_overrides=tuple(request.get("config_overrides", ()))))
+        overrides = list(request.get("config_overrides", ()))
+        if request.get("task") == "history-investigation-v1":
+            from .investigation_gateway import InvestigationGateway
+            from .investigation_policy import POLICY_VERSION
+            if request.get("capability_policy") != POLICY_VERSION:
+                raise ValueError("missing execution capability policy")
+            gateway = stack.enter_context(InvestigationGateway(
+                request, Path(request["phase_path"].replace(".phases.json", ".capabilities.json"))))
+            overrides.extend(gateway.overrides())
+        client = Codex(CodexConfig(config_overrides=tuple(overrides)))
         from .stream_diagnostics import StreamDiagnostics
         observer = StreamDiagnostics(Path(request["phase_path"].replace(".phases.json", ".stream.json")))
         raw = _direct_call(client, request["prompt"], request["instructions"],
@@ -365,6 +378,7 @@ def worker(request_path: Path, result_path: Path) -> None:
         if client is not None:
             phase("sdk_close")
             client.close()
+        stack.close()
     phase("result_write")
     _atomic_json(result_path, output)
     phase("worker_completed")
