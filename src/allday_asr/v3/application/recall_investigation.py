@@ -129,10 +129,10 @@ def _claims(value, evidence, scope):
                         )
             # Relative-day semantics use the message LOCAL date, never query/import time.
             if event["basis"] == "relative":
-                from allday_asr.v3.domain.recall_query import dates
+                from allday_asr.v3.domain.recall_event_time import source_relative_period
 
                 row = evidence[event["evidence_id"]]
-                period, _ = dates(event["quote"], scope["timezone"], row["sent_at"])
+                period = source_relative_period(event["quote"], scope["timezone"], row["sent_at"])
                 if not period:
                     raise ValueError(
                         "relative time needs supported source wording or inferred basis"

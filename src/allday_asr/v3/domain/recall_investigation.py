@@ -174,14 +174,14 @@ def _validate(value, schema):
             raise ValueError("invalid investigation list")
         for item in value:
             _validate(item, schema["items"])
-    elif not isinstance(value, str) or len(value) > 2000:
+    elif not isinstance(value, str) or len(value) > schema.get("maxLength", 2000):
         raise ValueError("invalid investigation string")
     if "enum" in schema and value not in schema["enum"]:
         raise ValueError("invalid investigation enum")
 
 
-def checked(value):
-    _validate(value, SCHEMA)
+def checked(value, schema=SCHEMA):
+    _validate(value, schema)
     value = deepcopy(value)
     if value["mode"] == "search" and not value["actions"]:
         raise ValueError("empty search plan")
@@ -273,3 +273,42 @@ def window_scope(scope, window, payload, now):
     # Extended windows never exceed the existing global maximum date span.
     value["sent_from"] = max(value["sent_from"], value["sent_to"] - 366 * 86400)
     return value
+
+
+def bounded_final_protocol(*, compact=False):
+    """Reduce repeated final prose, preserving citations and all time validations."""
+    schema = deepcopy(SCHEMA)
+    claims = schema["properties"]["claims"]
+    claims["maxItems"] = 2
+    claims["items"]["properties"]["text"] = {"type": "string", "maxLength": 120}
+    for branch in claims["items"]["properties"]["event_time"]["anyOf"]:
+        branch["properties"]["quote"]["maxLength"] = 64
+    schema["properties"]["unknown"]["maxItems"] = 3
+    schema["properties"]["unknown"]["items"] = {"type": "string", "maxLength": 120}
+    instructions = INSTRUCTIONS + (
+        "\nFinal-round output must be concise. Use at most two claims, each at most 120 "
+        "characters. Combine the initial account, later correction and conditional outcome "
+        "without repeating the same chronology. Keep all necessary citations. Quote only "
+        "the minimal source phrase needed to validate event_time (at most 64 characters). "
+        "Do not omit uncertainty to fit: put unresolved facts in short unknown entries. "
+        "Do not repeat retrieval procedure in the answer. Prefer one compact claim when sufficient."
+    )
+    if compact:
+        schema = obj({key: schema["properties"][key] for key in ("claims", "candidates", "unknown")})
+        instructions += (
+            "\nFor this final response return ONLY claims, candidates and unknown, as the schema "
+            "requires. The executor supplies the fixed answer envelope. Do not produce another "
+            "search plan; state any remaining evidence gaps in unknown."
+        )
+    return schema, instructions
+
+
+def checked_final(value):
+    schema, _ = bounded_final_protocol(compact=True)
+    _validate(value, schema)
+    expanded = {
+        "mode": "clarify" if value["candidates"] and not value["claims"] else "answer",
+        "time": {"kind": "unchanged", "first": "", "last": ""},
+        "actions": [], **value,
+    }
+    return checked(expanded, bounded_final_protocol()[0])
