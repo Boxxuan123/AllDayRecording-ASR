@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from allday_asr.v3.application.failure_diagnostics import log_failure, failure_category
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -11,7 +13,9 @@ class AutomaticWorkflowRetryMixin:
         current = self.status(session_id) or {}
         auto_retry_count = int(current.get("auto_retry_count") or 0)
         stage = str(current.get("stage") or "failed")
-        if auto_retry_count < self.max_auto_retries:
+        category, retryable = failure_category(exc)
+        log_failure(logging.getLogger(__name__), exc, session_id=session_id, job_id=current.get("job_id"), attempt=current.get("attempt_count"), stage=stage)
+        if retryable and auto_retry_count < self.max_auto_retries:
             next_count = auto_retry_count + 1
             delay = self.retry_delays[next_count - 1]
             next_retry = datetime.now(timezone.utc) + timedelta(seconds=delay)
@@ -20,7 +24,8 @@ class AutomaticWorkflowRetryMixin:
                 "retry_scheduled",
                 stage,
                 f"自动流水线失败，{_delay_label(delay)}后自动重试（{next_count}/{self.max_auto_retries}）",
-                error=str(exc),
+                error=category,
+                error_category=category,
                 error_type=type(exc).__name__,
                 auto_retry_count=next_count,
                 next_retry_at=next_retry.isoformat().replace("+00:00", "Z"),
@@ -32,24 +37,24 @@ class AutomaticWorkflowRetryMixin:
                 "needs_attention",
                 stage,
                 "自动重试仍未成功，已进入审核收件箱，可点击重试",
-                error=str(exc),
+                error=category,
+                error_category=category,
                 error_type=type(exc).__name__,
                 next_retry_at=None,
                 needs_manual_retry=True,
             )
-        print(f"[transfer:v3] {session_id} | workflow failure | {exc!r}")
+
 
     def _poll_persistent_work(self) -> None:
         for request in self._states.consume_retry_requests():
             session_id = str(request["session_id"])
             current = self.status(session_id) or {}
-            if current.get("status") not in {"needs_attention", "retry_requested"}:
-                continue
             self._queue_session(
                 session_id,
                 detail="已领取审核收件箱重试请求",
                 auto_retry_count=0,
                 manual_retry_count=int(current.get("manual_retry_count") or 0) + 1,
+                retry_request_id=request["request_id"],
             )
         now = datetime.now(timezone.utc)
         for current in self._states.statuses():
@@ -63,6 +68,7 @@ class AutomaticWorkflowRetryMixin:
                 )
 
     def _recover_pending(self) -> None:
+        self._poll_persistent_work()
         current_by_session = {
             str(value["session_id"]): value for value in self._states.statuses()
         }
@@ -143,7 +149,11 @@ class AutomaticWorkflowRetryMixin:
                     **values,
                 }
             )
-            self._write(session_id, current)
+            if values.get('retry_request_id'):
+                if not self._states.save(session_id, current, claim_request_id=values['retry_request_id']):
+                    return
+            else:
+                self._write(session_id, current)
             self._active.add(session_id)
             self._queue.put(session_id)
 

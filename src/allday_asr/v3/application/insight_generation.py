@@ -11,6 +11,7 @@ from allday_asr.v3.ports.insight_generation import (
 )
 
 from .insight_errors import InsightGenerationFailed
+from .generation_inputs import GenerationSourceConflict
 from .insight_inputs import _daily_inputs, _relationship_inputs
 from .insight_projections import _date, _datetime, _effort, _period, _provenance
 from .insight_validation import (
@@ -30,6 +31,7 @@ class InsightGenerationMixin:
         timezone_name: str,
         *,
         reasoning_effort: str | None = None,
+        execution_id: str | None = None,
     ) -> dict[str, Any]:
         generator = self._require_generator()
         day = _date(summary_date)
@@ -38,6 +40,7 @@ class InsightGenerationMixin:
             all_events = uow.insights.event_sources()
         objective, source_events, quotes = _daily_inputs(all_events, start, end)
         request = DailyInsightModelRequest(
+            execution_id=execution_id,
             summary_date=day.isoformat(),
             timezone=timezone_name,
             objective=objective,
@@ -67,12 +70,16 @@ class InsightGenerationMixin:
         now = self._now()
         provenance = _provenance(generator, result, "daily_summary")
         with self._uow_factory() as uow:
+            current = _daily_inputs(uow.insights.event_sources(), start, end)
+            if canonical_json_sha256(current) != canonical_json_sha256((objective, source_events, quotes)):
+                raise GenerationSourceConflict('daily narrative input context changed')
             generation = _add_generation(
                 uow,
                 generator,
                 input_sha256,
                 {
                     "kind": "daily_summary",
+                    "input_snapshot": {"version": 1, "kind": "insight", "inputs": input_document},
                     "summary_date": day.isoformat(),
                     "timezone": timezone_name,
                 },
@@ -145,6 +152,7 @@ class InsightGenerationMixin:
         timezone_name: str,
         *,
         reasoning_effort: str | None = None,
+        execution_id: str | None = None,
     ) -> dict[str, Any]:
         if window_days not in {7, 30}:
             raise ValueError("relationship observation window must be 7 or 30 days")
@@ -166,6 +174,7 @@ class InsightGenerationMixin:
             period_end,
         )
         request = RelationshipInsightModelRequest(
+            execution_id=execution_id,
             person=person,
             window_days=window_days,
             end_date=day.isoformat(),
@@ -209,12 +218,18 @@ class InsightGenerationMixin:
         now = self._now()
         provenance = _provenance(generator, result, "relationship_observation")
         with self._uow_factory() as uow:
+            current = _relationship_inputs(person_id, uow.insights.event_sources(),
+                uow.insights.person_interactions(person_id), previous_start, period_start, period_end)
+            if (canonical_json_sha256(current) != canonical_json_sha256((facts, source_events, interactions))
+                    or canonical_json_sha256(person) != canonical_json_sha256(uow.insights.person_profile(person_id))):
+                raise GenerationSourceConflict('relationship input context changed')
             generation = _add_generation(
                 uow,
                 generator,
                 input_sha256,
                 {
                     "kind": "relationship_observation",
+                    "input_snapshot": {"version": 1, "kind": "insight", "inputs": input_document},
                     "person_id": person_id,
                     "window_days": window_days,
                     "end_date": day.isoformat(),

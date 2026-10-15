@@ -1,4 +1,6 @@
 """Incremental daily projection over the shared V3 event and summary stores."""
+import logging
+from .failure_diagnostics import log_failure, failure_category
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import time
@@ -36,6 +38,57 @@ class DailyEventMixin:
                 self.refresh_daily(day, allow_model=False)
             self._daily_refreshed_at = time.monotonic()
 
+    def mark_daily_stale(self, day, timezone_name, fingerprint, *, expected_revision=None):
+        from allday_asr.v3.domain.knowledge import InvalidationEvent
+        sid = stable_ulid('daily-summary', day, timezone_name)
+        with self._uow_factory() as uow:
+            try:
+                summary = uow.insights.daily(sid)
+            except KeyError:
+                return False
+            if expected_revision is not None and summary['revision'] != expected_revision:
+                from .generation_inputs import GenerationSourceConflict
+                raise GenerationSourceConflict('daily content changed before local invalidation; retry')
+            identifier = stable_ulid('daily-pending', sid, summary['revision'], fingerprint)
+            uow.derivations.add_invalidation(InvalidationEvent(
+                identifier, 'daily_summary', sid, summary['revision'], 'stale',
+                'daily_sources_pending_regeneration', 'daily_sources', fingerprint, 1,
+                identifier, self._now()))
+            from .daily_sync_projection import publish_daily_summary
+            return publish_daily_summary(uow, uow.insights.daily(sid))
+
+    def daily_sync_differences(self, first_date, last_date, timezone_name='Asia/Singapore'):
+        from .daily_sync_projection import daily_summary_resource
+        differences = []
+        with self._uow_factory().reading() as uow:
+            for day in _repair_dates(first_date, last_date):
+                sid = stable_ulid('daily-summary', day, timezone_name)
+                try:
+                    summary = uow.insights.daily(sid)
+                except KeyError:
+                    continue
+                latest = uow.changes.latest('daily_summary', sid)
+                if summary['derivation_status'] == 'stale' and (latest is None or latest.payload != daily_summary_resource(summary)):
+                    differences.append({'summary_id': sid, 'date': day, 'revision': summary['revision'],
+                                        'derivation_status': 'stale', 'latest_sequence': latest.sequence if latest else None})
+        return differences
+
+    def repair_daily_sync(self, first_date, last_date, *, actor, timezone_name='Asia/Singapore'):
+        from .daily_sync_projection import publish_daily_summary
+        if not actor.strip():
+            raise ValueError('daily sync repair requires an actor')
+        repaired = []
+        for day in _repair_dates(first_date, last_date):
+            sid = stable_ulid('daily-summary', day, timezone_name)
+            with self._uow_factory() as uow:
+                try:
+                    summary = uow.insights.daily(sid)
+                except KeyError:
+                    continue
+                if summary['derivation_status'] == 'stale' and publish_daily_summary(uow, summary, actor=actor):
+                    repaired.append({'summary_id': sid, 'revision': summary['revision'], 'date': day})
+        return {'repaired_count': len(repaired), 'repaired': repaired}
+
     def refresh_daily(self, summary_date, timezone_name: str = 'Asia/Singapore', *, allow_model=True) -> dict:
         day = _date(summary_date)
         start, end = _period(day, timezone_name)
@@ -49,9 +102,10 @@ class DailyEventMixin:
         source_hash = canonical_json_sha256({'rows':rows,'tasks':tasks})
         try:
             semantic, semantic_error = analyze_daily(self, rows, allow_model=allow_model)
-        except Exception:
+        except Exception as exc:
+            log_failure(logging.getLogger(__name__), exc, date=day.isoformat(), stage="semantic")
             # Keep published events/summary unchanged on provider or validation failure.
-            return {'semantic_status':'retryable','error':'semantic_generation_failed'}
+            return {'semantic_status':'retryable' if failure_category(exc)[1] else 'failed', 'error':'semantic_generation_failed', 'error_category':failure_category(exc)[0], 'retryable':failure_category(exc)[1]}
         if semantic is None and not allow_model:
             return {'semantic_status':'pending','error':semantic_error}
         candidates = semantic if semantic is not None else normalize_candidates(candidate_windows(rows))
@@ -63,8 +117,9 @@ class DailyEventMixin:
             synthesis, overview_error = prepare_overview(self, major, tasks, day.isoformat(), allow_model=allow_model)
             if overview_error:
                 return {'semantic_status':'pending','error':overview_error}
-        except Exception:
-            return {'semantic_status':'retryable','error':'semantic_overview_failed'}
+        except Exception as exc:
+            log_failure(logging.getLogger(__name__), exc, date=day.isoformat(), stage='overview')
+            return {'semantic_status':'retryable' if failure_category(exc)[1] else 'failed','error':'semantic_overview_failed', 'error_category':failure_category(exc)[0], 'retryable':failure_category(exc)[1]}
         # One transaction makes source snapshots, CAS event revisions, summary and sync atomic.
         with self._uow_factory() as uow:
             fresh_rows, fresh_tasks = daily_inputs(uow, start.isoformat(), end.isoformat())
@@ -92,6 +147,14 @@ class DailyEventMixin:
             active = [s for s in states if s.derivation_status == 'active']
             return persist_summary(uow, active, tasks, day.isoformat(), timezone_name, start, end, now,
                                    semantic_error=semantic_error, synthesis=synthesis)
+
+
+def _repair_dates(first_date, last_date):
+    from datetime import timedelta
+    first, last = _date(first_date), _date(last_date)
+    if not 0 <= (last - first).days < 14:
+        raise ValueError('explicit daily sync repair range must contain 1 to 14 days')
+    return tuple((first + timedelta(days=i)).isoformat() for i in range((last-first).days + 1))
 
 
 def _source_overlap(current: list[dict], previous: list[dict]) -> bool:

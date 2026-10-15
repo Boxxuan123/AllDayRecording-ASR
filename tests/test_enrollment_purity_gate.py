@@ -3,11 +3,9 @@
 import json
 import os
 import sqlite3
-import shutil
 from dataclasses import replace
 from contextlib import closing
 from pathlib import Path
-from uuid import uuid4
 
 import numpy as np
 import pytest
@@ -302,38 +300,32 @@ def test_missing_session_is_insufficient_for_session_profile():
     assert not provider.seen
 
 
-def test_version_21_to_22_is_additive_repeatable_and_preserves_audit():
+def test_version_21_to_22_is_additive_repeatable_and_preserves_audit(tmp_path):
     from allday_asr.v3.adapters.sqlite.migrations import MIGRATIONS
     from allday_asr.v3.adapters.sqlite.migration_runner import V3MigrationRunner
 
-    base = Path(__file__).resolve().parents[1] / "outputs/test-purity"
-    path = base / uuid4().hex / "core.sqlite3"
-    try:
-        assert (
-            V3MigrationRunner(
-                path, migrations=[m for m in MIGRATIONS if m.version <= 21]
-            ).initialize()
-            == 21
+    path = tmp_path / "core.sqlite3"
+    assert (
+        V3MigrationRunner(
+            path, migrations=[m for m in MIGRATIONS if m.version <= 21]
+        ).initialize()
+        == 21
+    )
+    with closing(sqlite3.connect(path)) as c, c:
+        c.execute(
+            "INSERT INTO speaker_profile_purity_runs VALUES(?,?,?,?,?,?,?,?)",
+            ("run", "v1", "model", "version", "hash", "profile", "{}", "now"),
         )
-        with closing(sqlite3.connect(path)) as c, c:
+    assert V3MigrationRunner(path, migrations=[m for m in MIGRATIONS if m.version <= 22]).initialize() == 22
+    assert V3MigrationRunner(path, migrations=[m for m in MIGRATIONS if m.version <= 22]).initialize() == 22
+    with closing(sqlite3.connect(path)) as c:
+        assert (
             c.execute(
-                "INSERT INTO speaker_profile_purity_runs VALUES(?,?,?,?,?,?,?,?)",
-                ("run", "v1", "model", "version", "hash", "profile", "{}", "now"),
-            )
-        assert V3MigrationRunner(path, migrations=[m for m in MIGRATIONS if m.version <= 22]).initialize() == 22
-        assert V3MigrationRunner(path, migrations=[m for m in MIGRATIONS if m.version <= 22]).initialize() == 22
-        with closing(sqlite3.connect(path)) as c:
-            assert (
-                c.execute(
-                    "SELECT audit_run_id FROM speaker_profile_purity_runs"
-                ).fetchone()[0]
-                == "run"
-            )
-            assert not c.execute("PRAGMA foreign_key_check").fetchall()
-    finally:
-        assert path.parent.resolve().is_relative_to(base.resolve())
-        if path.parent.exists():
-            shutil.rmtree(path.parent)
+                "SELECT audit_run_id FROM speaker_profile_purity_runs"
+            ).fetchone()[0]
+            == "run"
+        )
+        assert not c.execute("PRAGMA foreign_key_check").fetchall()
 
 
 def test_worker_candidate_queue_is_bounded_and_deduplicated():

@@ -96,6 +96,7 @@ def _provenance(
         "prompt_version": generator.prompt_version,
         "extractor_version": generator.extractor_version,
         "turn_id": str(result.turn_id),
+        "execution_id": getattr(result, 'execution_id', None),
         "reasoning_effort": effort.value,
         "usage": dict(result.usage),
     }

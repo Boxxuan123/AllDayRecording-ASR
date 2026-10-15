@@ -11,6 +11,10 @@ htmlcov/
 # Private runtime data
 state/
 outputs/
+build/
+dist/
+src/allday_asr/_build_info.json
+src/allday_asr/v3/web_assets/build-info.json
 models/
 !src/allday_asr/v3/adapters/models/
 !src/allday_asr/v3/adapters/models/*.py
@@ -30,3 +34,28 @@ Thumbs.db
 
 # Local experiments
 codex_connect_test/
+
+# Local worktrees and tool caches
+/.task-worktrees/
+/.review-worktree/
+.ruff_cache/
+.tox/
+.nox/
+coverage.xml
+
+# Private environment and signing material
+.env
+.env.*
+*.env
+!.env.example
+!.env.sample
+!*.example.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Public frontend mock configuration
+!all_day_recording_front/v3/.env.mock

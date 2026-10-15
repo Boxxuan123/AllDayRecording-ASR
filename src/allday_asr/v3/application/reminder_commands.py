@@ -6,11 +6,11 @@ from typing import Any
 
 from allday_asr.v3.application.knowledge import ProposalResolution
 from allday_asr.v3.domain.ids import new_ulid
+from allday_asr.v3.domain.hashing import canonical_json_sha256
 from allday_asr.v3.domain.knowledge import (
     GenerationRecord,
     GenerationSubmission,
     KnowledgeLayer,
-    ProposalStatus,
     StructuredProposal,
 )
 from allday_asr.v3.domain.reminders import (
@@ -37,6 +37,7 @@ class ReminderCommandMixin:
         *,
         allow_auto_apply: bool = True,
         allow_empty: bool = False,
+        _product_recovery: tuple[str, str] | None = None,
     ) -> dict[str, Any]:
         _validate_generation(submission, allow_empty=allow_empty)
         if any(
@@ -78,6 +79,26 @@ class ReminderCommandMixin:
             if not uow.reminders.add_candidate(candidate):
                 raise RuntimeError("reminder candidate identity collision")
             candidate_ids.append(candidate.candidate_id)
+            if _product_recovery is not None:
+                from .reminder_product_recovery import recovery_report
+                old_id, source_key = _product_recovery
+                report = recovery_report(uow, old_id)
+                if not report['eligible'] or report['product_source_key'] != source_key:
+                    raise ValueError('product candidate recovery eligibility changed')
+                old = uow.reminders.get_candidate(old_id)
+                if old.status is ReminderCandidateStatus.PENDING_CONFIRMATION:
+                    uow.knowledge.resolve_proposal(old.proposal_id, 'rejected', _datetime(created_at),
+                        'explicit-product-recovery', 'superseded_by_explicit_recovery')
+                    uow.reminders.resolve_candidate(old_id, 'conflict', None, 'superseded_by_explicit_recovery',
+                                                    _datetime(created_at), 'explicit-product-recovery')
+                redirect = source_key + ':recovery'
+                if not uow.idempotency.begin(redirect, 'reminder-product-recovery'):
+                    raise ValueError('product source already has a recovery')
+                uow.idempotency.complete(redirect, {'candidate_id': candidate.candidate_id,
+                    'previous_candidate_id': old_id, 'generation_id': generation.generation_id})
+                uow.audit.append('reminder.product.recovered', submission.input_scope['recovery_actor'],
+                    'reminder_candidate', old_id, {'replacement_candidate_id': candidate.candidate_id,
+                    'previous_generation_id': old.generation_id, 'reason': report['reason']})
 
         result = self._knowledge.submit_generation(
             GenerationSubmission(
@@ -160,10 +181,19 @@ class ReminderCommandMixin:
             if "scheduled_at" in changes
             else original.scheduled_at
         )
+        if 'title' in changes and (not isinstance(title, str) or not title.strip()):
+            raise ValueError('task title is empty')
+        if 'location' in changes and location is not None and not isinstance(location, str):
+            raise ValueError('task location must be text')
+        if 'scheduled_at' in changes and scheduled_at <= self._now():
+            raise ValueError('due time must be in the future')
         with self._uow_factory().reading() as uow:
-            original_evidence = uow.knowledge.get_proposal(
-                original.proposal_id
-            ).evidence_utterance_ids
+            proposal = uow.knowledge.get_proposal(original.proposal_id)
+            generation = uow.knowledge.get_generation(proposal.generation_id)
+            original_snapshot = generation.input_scope.get('input_snapshot')
+            from .reminder_edit_sources import validate_generation_sources
+            validate_generation_sources(uow, generation, proposal)
+            original_evidence = proposal.evidence_utterance_ids
         revised = replace(
             self._intent_from_candidate(original, original_evidence),
             title=title,
@@ -181,6 +211,12 @@ class ReminderCommandMixin:
                 input_scope={
                     "session_id": original.session_id,
                     "revises_candidate_id": candidate_id,
+                    "input_snapshot": original_snapshot,
+                    "product_source_key": "reminder-edit:" + canonical_json_sha256({
+                        "candidate_id": candidate_id, "title": title.strip() if title else title,
+                        "scheduled_at": _datetime(scheduled_at) if scheduled_at else None,
+                        "location": location.strip() if location else location,
+                        "input_snapshot": original_snapshot}),
                 },
                 intents=(revised,),
             ),
@@ -202,32 +238,6 @@ class ReminderCommandMixin:
                 ReminderCandidateStatus.CONFIRMED,
                 ReminderFeedbackAction.CONFIRM,
                 actor,
-                now,
-            )
-            current_original = uow.knowledge.get_proposal(original.proposal_id)
-            if current_original.status is not ProposalStatus.PENDING:
-                raise ValueError("original reminder candidate is no longer pending")
-            uow.knowledge.resolve_proposal(
-                original.proposal_id,
-                ProposalStatus.REJECTED.value,
-                _datetime(now),
-                actor,
-                "superseded_by_user_edit",
-            )
-            uow.reminders.resolve_candidate(
-                original.candidate_id,
-                ReminderCandidateStatus.MODIFIED.value,
-                str(resolution.resource_id),
-                None,
-                _datetime(now),
-                actor,
-            )
-            self._feedback(
-                uow,
-                original.candidate_id,
-                ReminderFeedbackAction.MODIFY,
-                actor,
-                {"replacement_candidate_id": replacement.candidate_id, **changes},
                 now,
             )
 

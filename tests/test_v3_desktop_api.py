@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import io
 import json
 import http.cookiejar
@@ -9,11 +11,9 @@ import threading
 import unittest
 import wave
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
-from uuid import uuid4
 
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork
 from allday_asr.v3.application import (
@@ -38,7 +38,7 @@ from allday_asr.v3.domain import (
 from allday_asr.v3.interfaces.desktop_server import create_v3_desktop_server
 
 
-TEST_STATE = Path(__file__).parents[1] / "state"
+TEST_STATE = TEST_WORKSPACE_ROOT
 
 
 def _wav_bytes(sample: int) -> bytes:
@@ -53,18 +53,18 @@ def _wav_bytes(sample: int) -> bytes:
 
 class V3DesktopApiTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = TEST_STATE / f"desktop-api-{uuid4().hex}"
+        self.root = test_directory(self, TEST_STATE, "desktop-api")
         self.paths = V3CorePaths.from_state_dir(self.root)
         self.token = "desktop-test-token"
         self.server = create_v3_desktop_server(
             paths=self.paths, port=0, token=self.token
         )
+        self.addCleanup(self._stop_server)
         self._seed()
         self._start_server()
 
     def tearDown(self) -> None:
-        self._stop_server()
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_authentication_error_shape_and_static_spa_routes(self) -> None:
         status, payload, headers = self._request("/api/v3/status", authenticated=False)
@@ -77,6 +77,17 @@ class V3DesktopApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("AllDay Recording V3", html)
         self.assertNotIn("workspace/controller", html)
+
+    def test_internal_error_is_correlated_without_source_or_prompt(self):
+        with patch.object(self.server.application.core.desktop, 'status', side_effect=RuntimeError('SENSITIVE_RECORDING_PROMPT')), self.assertLogs('allday_asr.v3.interfaces.desktop_server', level='ERROR') as captured:
+            status, payload, _ = self._request('/api/v3/status')
+        self.assertEqual(status, 500)
+        self.assertEqual(payload['code'], 'internal_error')
+        diagnostic = '\n'.join(captured.output)
+        self.assertIn(payload['request_id'], diagnostic)
+        self.assertIn('RuntimeError', diagnostic)
+        self.assertIn('File ', diagnostic)
+        self.assertNotIn('SENSITIVE_RECORDING_PROMPT', diagnostic)
 
     def test_segment_classification_route_requires_authentication_and_dispatches_batch(self):
         body = {"selections": [{"utterance_id": "fixture", "revision": 1}], "sound_kind": "non_speech"}
@@ -808,12 +819,16 @@ class V3DesktopApiTests(unittest.TestCase):
     def _stop_server(self) -> None:
         server = getattr(self, "server", None)
         thread = getattr(self, "thread", None)
-        if server is not None:
-            server.shutdown()
-            server.server_close()
-        if thread is not None:
-            thread.join(timeout=2)
-        self.thread = None
+        try:
+            # shutdown() deadlocks if serve_forever() was never started.
+            if thread is not None and thread.is_alive():
+                server.shutdown()
+                thread.join(timeout=2)
+                self.assertFalse(thread.is_alive(), "test HTTP server did not stop")
+        finally:
+            if server is not None:
+                server.server_close()
+            self.thread = None
 
     def _request(
         self,

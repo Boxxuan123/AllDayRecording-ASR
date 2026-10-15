@@ -14,6 +14,7 @@ from .desktop_http_contract import (
     _PERSON_ROUTE,
     _RELATIONSHIP_OBSERVATION_ROUTE,
     _REMINDER_CANDIDATE_ROUTE,
+    _REMINDER_PRODUCT_RECOVERY_ROUTE,
     _REMINDER_FEEDBACK_ROUTE,
     _RUN_ROUTE,
     _SESSION_AUDIO_ROUTE,
@@ -47,11 +48,21 @@ class DesktopGetRoutesMixin:
             )
             return
         query = parse_qs(parsed.query)
+        if self._dispatch_chat_get(path, query):
+            return
         if path == '/api/v3/blind/status':
             self._send_json(HTTPStatus.OK, self.application.core.blind_validation.status())
             return
         if path == '/api/v3/blind/report':
             self._send_json(HTTPStatus.OK, self.application.core.blind_validation.report())
+            return
+        if path == "/api/v3/worker-health":
+            core = self.application.core
+            self._send_json(HTTPStatus.OK, {"daily": core.daily_automation.health(), "annotation_samples": core.people.sample_worker.health()})
+            return
+        if path == "/api/v3/diagnostics":
+            from allday_asr.v3.adapters.sqlite.runtime_diagnostics import RuntimeDiagnosticsRepository
+            self._send_json(HTTPStatus.OK, RuntimeDiagnosticsRepository(self.application.core.database).snapshot())
             return
         if path == "/api/v3/status":
             self._send_json(HTTPStatus.OK, self.application.core.desktop.status())
@@ -234,6 +245,9 @@ class DesktopGetRoutesMixin:
                     )
                 },
             )
+            return
+        if match := _REMINDER_PRODUCT_RECOVERY_ROUTE.fullmatch(path):
+            self._send_json(HTTPStatus.OK, self.application.core.reminder_extraction.inspect_product_recovery(unquote(match.group(1))))
             return
         if path == "/api/v3/reminder-candidates":
             status = query.get("status", [None])[0]

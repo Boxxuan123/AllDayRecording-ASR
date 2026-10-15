@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 from datetime import timedelta
 from typing import Any
 from allday_asr.v3.domain.hashing import canonical_json_sha256
@@ -213,10 +214,17 @@ class DurableProcessingService:
     def complete(
         self, claim: ProcessingClaim, result: StageExecutionResult
     ) -> ProcessingSnapshot:
-        stored_outputs = [
-            (output, self._artifact_store.put_bytes(output.payload))
-            for output in result.artifacts
-        ]
+        if result.stored_artifacts:
+            if len(result.stored_artifacts) != len(result.artifacts):
+                raise ValueError('staged artifact count mismatch')
+            stored_outputs = list(zip(result.artifacts, result.stored_artifacts, strict=True))
+            for output, stored in stored_outputs:
+                digest = hashlib.sha256(output.payload).hexdigest()
+                if (stored.sha256 != digest or stored.size_bytes != len(output.payload)
+                        or stored.storage_key != f'{digest[:2]}/{digest[2:4]}/{digest}'):
+                    raise ValueError('staged artifact identity mismatch')
+        else:
+            stored_outputs = [(output, self._artifact_store.put_bytes(output.payload)) for output in result.artifacts]
         now = self._now()
         with self._uow_factory() as uow:
             if not uow.processing.is_current_input(claim):

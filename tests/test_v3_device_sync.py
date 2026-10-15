@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, workspace_directory
+
 import base64
 import hashlib
 import io
 import json
 import queue
-import shutil
 import threading
 import unittest
 import wave
@@ -18,7 +19,6 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -67,12 +67,8 @@ def _b64(value: bytes) -> str:
 
 @contextmanager
 def _workspace_directory():
-    path = Path(__file__).parent / f"v3-sync-{uuid4().hex}"
-    path.mkdir()
-    try:
+    with workspace_directory(TEST_WORKSPACE_ROOT, "v3-sync") as path:
         yield path
-    finally:
-        shutil.rmtree(path, ignore_errors=True)
 
 
 class _RecordingOperationHandler:
@@ -319,7 +315,12 @@ class V3DeviceSyncTests(unittest.TestCase):
             self.assertEqual(store.status("session-retry")["status"], "retry_requested")
             requests = store.consume_retry_requests()
             self.assertEqual([value["session_id"] for value in requests], ["session-retry"])
-            self.assertEqual(store.consume_retry_requests(), ())
+            self.assertEqual(store.consume_retry_requests(), requests)
+            restarted = AutomaticWorkflowStateStore(root / "automation")
+            self.assertEqual(restarted.consume_retry_requests(), requests)
+            restarted.save("session-retry", {**restarted.status("session-retry"),
+                "status": "queued", "retry_request_id": requests[0]["request_id"]})
+            self.assertEqual(restarted.consume_retry_requests(), ())
 
     def test_automatic_workflow_exhaustion_moves_to_attention_inbox(self) -> None:
         state: dict[str, object] = {

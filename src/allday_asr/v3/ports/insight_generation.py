@@ -19,6 +19,7 @@ class DailyInsightModelRequest:
     objective: dict[str, Any]
     source_events: tuple[dict[str, Any], ...]
     key_quotes: tuple[dict[str, Any], ...]
+    execution_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class RelationshipInsightModelRequest:
     verified_facts: dict[str, Any]
     source_events: tuple[dict[str, Any], ...]
     interactions: tuple[dict[str, Any], ...]
+    execution_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,7 @@ class DailyInsightModelResult:
     turn_id: str
     reasoning_effort: InsightReasoningEffort
     usage: dict[str, Any] = field(default_factory=dict)
+    execution_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class RelationshipInsightModelResult:
     turn_id: str
     reasoning_effort: InsightReasoningEffort
     usage: dict[str, Any] = field(default_factory=dict)
+    execution_id: str | None = None
 
 
 class InsightModelGenerator(Protocol):

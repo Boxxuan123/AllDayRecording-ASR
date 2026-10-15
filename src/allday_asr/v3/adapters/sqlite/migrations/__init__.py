@@ -1,3 +1,7 @@
+from .v033_chat_mobile import SQL as V033_SQL
+from .v032_chat_admission import SQL as V032_SQL
+from .v031_chat_followups import SQL as V031_SQL
+from .v030_sample_queue_age import SQL as V030_SQL
 from .v016_sample_input_revision import SQL as V016_SQL
 from .v017_coalesced_sample_queue import SQL as V017_SQL
 from .v018_manifest_revisions import SQL as V018_SQL
@@ -16,7 +20,9 @@ from .v015_annotation_receipts import SQL as V015_SQL
 from .v013_annotation_facts import SQL as V013_SQL
 from .v014_annotation_samples import SQL as V014_SQL
 from allday_asr.v3.adapters.sqlite.migration_runner import V3Migration
-from allday_asr.v3.adapters.sqlite.migrations.v012_session_sync_identity import SQL as V012_SQL
+from allday_asr.v3.adapters.sqlite.migrations.v012_session_sync_identity import (
+    SQL as V012_SQL,
+)
 from allday_asr.v3.adapters.sqlite.migrations.v001_core import SQL as V001_SQL
 from allday_asr.v3.adapters.sqlite.migrations.v002_device_sync import (
     SQL as V002_SQL,
@@ -71,15 +77,37 @@ MIGRATIONS = (
     V3Migration(version=22, name="enrollment_purity_sources", sql=V022_SQL),
     V3Migration(version=23, name="blind_session_reservation", sql=V023_SQL),
     V3Migration(version=24, name="blind_turn_truth_dimensions", sql=V024_SQL),
-    V3Migration(version=25, name="prospective_speaker_research_reservation", sql=V025_SQL,
-                contract_visible=False),
-    V3Migration(version=26, name="historical_self_identity_review", sql=V026_SQL,
-                contract_visible=False),
+    V3Migration(
+        version=25,
+        name="prospective_speaker_research_reservation",
+        sql=V025_SQL,
+        contract_visible=False,
+    ),
+    V3Migration(
+        version=26,
+        name="historical_self_identity_review",
+        sql=V026_SQL,
+        contract_visible=False,
+    ),
     V3Migration(version=27, name="daily_projection_cursor", sql=V027_SQL),
-    V3Migration(version=28, name="durable_daily_generation", sql=V028_SQL,
-                contract_visible=False),
-    V3Migration(version=29, name="incremental_daily_inventory", sql=V029_SQL,
-                contract_visible=False),
+    V3Migration(
+        version=28,
+        name="durable_daily_generation",
+        sql=V028_SQL,
+        contract_visible=False,
+    ),
+    V3Migration(
+        version=29,
+        name="incremental_daily_inventory",
+        sql=V029_SQL,
+        contract_visible=False,
+    ),
+    V3Migration(
+        version=30, name="sample_queue_age", sql=V030_SQL, contract_visible=False
+    ),
+    V3Migration(31, "chat_followup_provenance", V031_SQL, contract_visible=False),
+    V3Migration(33, "chat_mobile_reminders", V033_SQL),
+    V3Migration(32, "chat_personal_admission", V032_SQL, contract_visible=False),
 )
 
 __all__ = ["MIGRATIONS"]

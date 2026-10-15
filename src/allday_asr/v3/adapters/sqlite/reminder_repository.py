@@ -101,6 +101,13 @@ class SqliteReminderRepository(ReminderSourceMixin):
         ).fetchall()
         return tuple(_candidate_dict(row) for row in rows)
 
+    def generation_created_outputs(self, generation_id: str) -> tuple[str, ...]:
+        return tuple(str(row[0]) for row in self.connection.execute(
+            "SELECT matched_event_id FROM reminder_candidates WHERE generation_id=? "
+            "AND operation IN ('CREATE_TASK','CREATE_APPOINTMENT') "
+            "AND status IN ('confirmed','auto_applied') AND matched_event_id IS NOT NULL",
+            (generation_id,)))
+
     def duplicate_for(
         self, dedup_key: str, *, exclude_candidate_id: str | None = None
     ) -> dict[str, str] | None:
@@ -192,8 +199,18 @@ class SqliteReminderRepository(ReminderSourceMixin):
             _datetime(schedule.updated_at),
         )
         if current is None:
-            if schedule.event_revision != 1:
+            if schedule.event_revision != 1 and schedule.session_id is not None:
                 raise ValueError("reminder schedule revision conflict")
+            state = self.connection.execute(
+                "SELECT revision,session_id FROM event_current_states WHERE event_id=?",
+                (schedule.event_id,),
+            ).fetchone()
+            if (
+                state is None
+                or state["revision"] != schedule.event_revision
+                or state["session_id"] != schedule.session_id
+            ):
+                raise ValueError("reminder schedule does not match current event")
             self.connection.execute(
                 """
                 INSERT INTO reminder_schedules (
@@ -237,7 +254,9 @@ class SqliteReminderRepository(ReminderSourceMixin):
             clauses.append("schedule.session_id = ?")
             parameters.append(session_id)
         if due_before is not None:
-            clauses.extend(("schedule.status = 'scheduled'", "schedule.scheduled_at <= ?"))
+            clauses.extend(
+                ("schedule.status = 'scheduled'", "schedule.scheduled_at <= ?")
+            )
             parameters.append(due_before)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         parameters.append(limit)
@@ -277,9 +296,7 @@ class SqliteReminderRepository(ReminderSourceMixin):
         if cursor.rowcount != 1:
             raise ValueError("reminder is not due for delivery")
 
-    def mark_stale(
-        self, event_id: str, event_revision: int, updated_at: str
-    ) -> bool:
+    def mark_stale(self, event_id: str, event_revision: int, updated_at: str) -> bool:
         cursor = self.connection.execute(
             """
             UPDATE reminder_schedules
@@ -372,7 +389,9 @@ def _candidate(row: sqlite3.Row) -> ReminderCandidate:
         dedup_key=str(row["dedup_key"]),
         status=ReminderCandidateStatus(str(row["status"])),
         matched_event_id=(
-            str(row["matched_event_id"]) if row["matched_event_id"] is not None else None
+            str(row["matched_event_id"])
+            if row["matched_event_id"] is not None
+            else None
         ),
         conflict_reason=(
             str(row["conflict_reason"]) if row["conflict_reason"] is not None else None
@@ -386,9 +405,11 @@ def _candidate(row: sqlite3.Row) -> ReminderCandidate:
 def _schedule(row: sqlite3.Row) -> ReminderSchedule:
     return ReminderSchedule(
         event_id=str(row["event_id"]),
-        session_id=str(row["session_id"]),
+        session_id=str(row["session_id"]) if row["session_id"] is not None else None,
         event_revision=int(row["event_revision"]),
-        source_candidate_id=str(row["source_candidate_id"]),
+        source_candidate_id=str(row["source_candidate_id"])
+        if row["source_candidate_id"] is not None
+        else None,
         title=str(row["title"]),
         actor_person_id=str(row["actor_person_id"]),
         commitment_direction=CommitmentDirection(str(row["commitment_direction"])),
@@ -405,9 +426,7 @@ def _schedule(row: sqlite3.Row) -> ReminderSchedule:
 
 def _candidate_dict(row: sqlite3.Row) -> dict[str, Any]:
     value = _dict(row)
-    value["related_person_ids"] = _string_list(
-        value.pop("related_person_ids_json")
-    )
+    value["related_person_ids"] = _string_list(value.pop("related_person_ids_json"))
     value["evidence_utterance_ids"] = _string_list(
         value.pop("evidence_utterance_ids_json")
     )
@@ -417,9 +436,7 @@ def _candidate_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 def _schedule_dict(row: sqlite3.Row) -> dict[str, Any]:
     value = _dict(row)
-    value["related_person_ids"] = _string_list(
-        value.pop("related_person_ids_json")
-    )
+    value["related_person_ids"] = _string_list(value.pop("related_person_ids_json"))
     value["event_payload"] = json.loads(str(value.pop("event_payload_json")))
     value["source_review_required"] = bool(value["source_review_required"])
     return value
@@ -437,7 +454,9 @@ def _dict(row: sqlite3.Row) -> dict[str, Any]:
 
 def _string_list(value: object) -> list[str]:
     parsed = json.loads(str(value))
-    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+    if not isinstance(parsed, list) or not all(
+        isinstance(item, str) for item in parsed
+    ):
         raise ValueError("stored reminder string list is invalid")
     return parsed
 

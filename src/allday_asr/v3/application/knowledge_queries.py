@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from .generation_inputs import GenerationSourceConflict, validate_snapshot
+from .reminder_edit_sources import edit_sources, validate_generation_sources
+
 from allday_asr.v3.domain.knowledge import (
     EventOperationKind,
     GenerationSubmission,
@@ -39,6 +42,16 @@ class KnowledgeQueryMixin:
             if session_id is not None:
                 uow.catalog.get_session(session_id)
             return uow.knowledge.list_memories(session_id, subject_type, subject_id)
+
+    def proposal_sources_current(self, proposal_id):
+        with self._uow_factory().reading() as uow:
+            proposal = uow.knowledge.get_proposal(proposal_id)
+            generation = uow.knowledge.get_generation(proposal.generation_id)
+            try:
+                validate_generation_sources(uow, generation, proposal)
+            except (GenerationSourceConflict, KeyError):
+                return False
+            return True
 
     def list_proposals(
         self, status: str | None = None, limit: int = 100
@@ -88,11 +101,20 @@ class KnowledgeQueryMixin:
         if not 1 <= limit <= 500:
             raise ValueError("recompute page limit must be between 1 and 500")
         with self._uow_factory().reading() as uow:
-            return uow.derivations.list_recompute_requests(status, limit)
+            rows = uow.derivations.list_recompute_requests(status, limit)
+            return tuple({**row, 'execution_mode': 'manual',
+                          'action_required': 'regenerate_from_current_sources' if row['status'] in {'queued','failed'} else None}
+                         for row in rows)
 
     def _resolve_inputs(
         self, uow: UnitOfWork, submission: GenerationSubmission
     ) -> dict[str, Any]:
+        snapshot = submission.input_scope.get("input_snapshot")
+        source_id, _ = edit_sources(uow, submission.producer, submission.model, submission.input_scope, submission.proposals)
+        if snapshot is not None:
+            validate_snapshot(uow, snapshot, generation_id=source_id)
+        elif submission.producer.startswith("codex-"):
+            raise GenerationSourceConflict("model generation requires actual input snapshot; regenerate")
         evidence_ids = tuple(
             dict.fromkeys(
                 utterance_id
@@ -149,8 +171,12 @@ class KnowledgeQueryMixin:
             if state.derivation_status != "active":
                 raise ValueError(f"memory input event is stale: {event_id}")
             events.append({"event_id": event_id, "revision": state.revision})
+        resolved = {"utterances": [
+            {"utterance_id": i, "session_id": utterances[i][0], "revision": utterances[i][1]}
+            for i in evidence_ids], "events": events}
         return {
             **submission.input_scope,
+            "input_snapshot": snapshot or {"version": 1, "kind": "command", "inputs": resolved},
             "resolved_inputs": {
                 "utterances": [
                     {

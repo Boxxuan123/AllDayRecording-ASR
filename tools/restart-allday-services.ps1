@@ -1,12 +1,20 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    [switch] $StopOnly
+    [switch] $StopOnly,
+    [string] $DataRoot,
+    [string] $SourceRoot,
+    [switch] $ValidateOnly,
+    [switch] $NoOpen,
+    [switch] $CachedOnly
 )
 
 $ErrorActionPreference = 'Stop'
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$CliPath = Join-Path $ProjectRoot '.venv\Scripts\allday-asr.exe'
+if ($DataRoot) { $ProjectRoot = (Resolve-Path -LiteralPath $DataRoot).Path }
+$PythonPath = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
+$RuntimePath = Join-Path $PSScriptRoot 'allday_service_runtime.py'
+$startedServices = @()
 $LogRoot = Join-Path $ProjectRoot 'state\runtime-logs'
 $WebUrl = 'http://127.0.0.1:8765/'
 
@@ -22,9 +30,10 @@ function Get-AllDayServiceProcesses {
         return @(
             Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
                 $commandLine = [string] $_.CommandLine
+                $_.Name -match '^(?:python(?:w|[0-9.]+)?|allday-asr)\.exe$' -and
                 $commandLine -match $escapedRoot -and
-                $commandLine -match '(?i)(?:allday-asr(?:\.exe)?|allday_asr)' -and
-                $commandLine -match '(?i)(?:\bweb\b|\bdesktop\b|\bdevice\s+receive\b)'
+                $commandLine -match '(?i)(?:allday-asr(?:\.exe)?|allday_asr|allday_service_runtime)' -and
+                $commandLine -match '(?i)(?:\bweb\b|\bdesktop\b|\bdevice\s+receive\b|--role\s+\x22?receiver)'
             }
         )
     }
@@ -97,11 +106,17 @@ function Test-TcpPort {
 function Wait-TcpPort {
     param(
         [Parameter(Mandatory)] [int] $Port,
-        [int] $TimeoutSeconds = 30
+        [int] $TimeoutSeconds = 30,
+        [Diagnostics.Process] $Process,
+        [string] $ServiceName = 'Service'
     )
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
+        if ($null -ne $Process) {
+            $Process.Refresh()
+            if ($Process.HasExited) { throw "$ServiceName exited with code $($Process.ExitCode). See $LogRoot for stderr logs." }
+        }
         if (Test-TcpPort -Port $Port) {
             return $true
         }
@@ -119,9 +134,20 @@ if ($StopOnly) {
 }
 
 try {
-    if (-not (Test-Path -LiteralPath $CliPath -PathType Leaf)) {
-        throw "Project command not found: $CliPath"
+    if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
+        throw "Project Python not found: $PythonPath"
     }
+    $preflightArgs = @('-B', $RuntimePath, 'preflight', '--data-root', $ProjectRoot)
+    if ($SourceRoot) { $preflightArgs += @('--source-root', $SourceRoot) }
+    $preflightOutput = & $PythonPath @preflightArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Source/database compatibility check failed; old services were not stopped.' }
+    $runtime = $preflightOutput | ConvertFrom-Json
+    $SourceRoot = $runtime.source_root
+    Write-Host "Code: $SourceRoot"
+    Write-Host "Data: $ProjectRoot"
+    Write-Host "Schema: $($runtime.database_schema) / supported $($runtime.supported_schema); Device API: $($runtime.contract_version) / projection $($runtime.projection_version)"
+    if ($CachedOnly) { Write-Host 'Cached-only verification: automatic processing and model jobs disabled.' }
+    if ($ValidateOnly) { exit 0 }
 
     $oldProcesses = Get-AllDayServiceProcesses
     $oldPortPids = Get-AllDayServicePortPids
@@ -140,9 +166,8 @@ try {
         }
         catch {
             Write-Host 'Requesting administrator permission to stop remaining old services...'
-            $quotedScript = '"' + $PSCommandPath.Replace('"', '""') + '"'
             $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru `
-                -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -File $quotedScript -StopOnly"
+                -ArgumentList ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" -StopOnly -DataRoot "{1}"' -f $PSCommandPath, $ProjectRoot)
             if ($elevated.ExitCode -ne 0) {
                 throw "Stopping old services failed. Exit code: $($elevated.ExitCode)"
             }
@@ -161,24 +186,28 @@ try {
     Set-Location -LiteralPath $ProjectRoot
     $env:PYTHONUNBUFFERED = '1'
 
+    $commonArguments = @('-B', ('"' + $RuntimePath + '"'), 'run', '--data-root', ('"' + $ProjectRoot + '"'), '--source-root', ('"' + $SourceRoot + '"'))
+    if ($CachedOnly) { $commonArguments += '--cached-only' }
     Write-Host 'Starting phone receiver on port 8766...'
-    $receiver = Start-Process -FilePath $CliPath `
-        -ArgumentList @('device', 'receive', '--port', '8766') `
+    $receiver = Start-Process -FilePath $PythonPath `
+        -ArgumentList ($commonArguments + @('--role', 'receiver')) `
         -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $LogRoot 'receiver.stdout.log') `
         -RedirectStandardError (Join-Path $LogRoot 'receiver.stderr.log')
 
+    $startedServices += $receiver
     Write-Host 'Starting WebUI on port 8765...'
-    $web = Start-Process -FilePath $CliPath `
-        -ArgumentList @('web', '--port', '8765', '--no-open') `
+    $web = Start-Process -FilePath $PythonPath `
+        -ArgumentList ($commonArguments + @('--role', 'web')) `
         -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $LogRoot 'web.stdout.log') `
         -RedirectStandardError (Join-Path $LogRoot 'web.stderr.log')
 
-    if (-not (Wait-TcpPort -Port 8766)) {
+    $startedServices += $web
+    if (-not (Wait-TcpPort -Port 8766 -Process $receiver -ServiceName 'Receiver')) {
         throw "Receiver startup timed out. See $LogRoot\receiver.stderr.log"
     }
-    if (-not (Wait-TcpPort -Port 8765)) {
+    if (-not (Wait-TcpPort -Port 8765 -Process $web -ServiceName 'WebUI')) {
         throw "WebUI startup timed out. See $LogRoot\web.stderr.log"
     }
 
@@ -192,15 +221,22 @@ try {
     # Browser launch is best-effort: a shell/browser association failure must
     # not make an otherwise healthy pair of background services look failed.
     try {
-        Start-Process -FilePath $WebUrl -ErrorAction Stop | Out-Null
-        Write-Host 'Default browser launch requested.'
+        if (-not $NoOpen) { Start-Process -FilePath $WebUrl -ErrorAction Stop | Out-Null }
+        if (-not $NoOpen) { Write-Host 'Default browser launch requested.' }
     }
     catch {
         Write-Host "Could not open the browser automatically. Open manually: $WebUrl" -ForegroundColor Yellow
     }
 }
 catch {
+    $startupFailure = $_.Exception.Message
     Write-Host ''
-    Write-Host ("ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    foreach ($started in $startedServices) {
+        $started.Refresh()
+        if (-not $started.HasExited) {
+            & taskkill.exe /PID $started.Id /T /F 2>&1 | Out-Null
+        }
+    }
+    Write-Host ("ERROR: {0}" -f $startupFailure) -ForegroundColor Red
     exit 1
 }

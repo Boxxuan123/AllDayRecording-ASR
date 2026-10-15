@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import shutil
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from uuid import uuid4
 
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.domain.models import (
@@ -27,18 +26,18 @@ from allday_asr.v3.domain.models import (
 )
 
 
-TEST_ROOT = Path(__file__).parent
+TEST_ROOT = TEST_WORKSPACE_ROOT
 NOW = datetime(2026, 8, 31, 1, 2, 3, tzinfo=timezone.utc)
 NOW_TEXT = "2026-08-31T01:02:03Z"
 
 
 class V3RepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.directory = TEST_ROOT / f"v3b-repository-{uuid4().hex}"
+        self.directory = test_directory(self, TEST_ROOT, "v3b-repository")
         self.database = V3Database.open(self.directory / "core.sqlite3")
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.directory, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_catalog_and_supporting_infrastructure_persist_atomically(self) -> None:
         device, session, asset, replica, segment = _catalog_graph()

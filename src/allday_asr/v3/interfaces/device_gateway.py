@@ -58,6 +58,13 @@ class DeviceGateway:
             "sync_features": ["snapshot-v1", "adaptive-batch-v1"],
         }
 
+    def report_diagnostics(self, key_id, payload):
+        device_id = self.trust.domain_device_id(key_id)
+        from allday_asr.v3.adapters.sqlite.runtime_diagnostics import RuntimeDiagnosticsRepository
+        if self.review_service is None:
+            raise LookupError('runtime reporting unavailable')
+        return RuntimeDiagnosticsRepository(self.review_service.core.database).report(device_id, payload)
+
     def synchronize(
         self, key_id: str, payload: Mapping[str, Any]
     ) -> dict[str, Any]:

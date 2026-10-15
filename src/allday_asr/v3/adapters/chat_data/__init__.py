@@ -1,0 +1,1 @@
+"""Mac chat service adapters."""

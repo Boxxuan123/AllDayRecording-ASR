@@ -51,6 +51,150 @@ def test_persistence_evidence_and_idempotency(source):
         assert c.execute('SELECT count(*) FROM change_events').fetchone()[0] == 2
 
 
+def test_deleted_date_retains_inventory_and_invalidates_published_result_locally(source):
+    from allday_asr.v3.adapters.sqlite.daily_inventory import DailyHistoryInventory
+    from allday_asr.v3.application.daily_automation import DailyGenerationCoordinator
+    published = source[1].refresh_daily('2026-09-01')
+    seed = source[0]
+    with seed.database.transaction() as c:
+        c.execute("UPDATE utterances SET status='stale'")
+        c.execute("UPDATE recording_sessions SET tombstoned_at='2026-09-02T00:00:00Z'")
+    def clock():
+        return seed.now + timedelta(days=2)
+    inventory = DailyHistoryInventory(seed.database, source[1].generation_version, now=clock)
+    rows = inventory.scan(only_dates=('2026-09-01',))
+    assert len(rows) == 1 and rows[0]['existing_summary_present'] and rows[0]['active_utterance_count'] == 0
+    coordinator = DailyGenerationCoordinator(seed.database, lambda _: pytest.fail('no model allowed'),
+        source[1].generation_version, now=clock, local_service=source[1], remote_enabled=False)
+    coordinator.catch_up()
+    with source[2]().reading() as uow:
+        summary = uow.insights.daily(published['summary_id'])
+        assert summary['revision'] == published['revision']
+        assert summary['objective'] == published['objective']
+        assert uow.derivations.list_invalidations('daily_summary', published['summary_id'], 100)
+
+
+def test_fup03_local_invalidity_publishes_stale_sync_projection(source):
+    published = source[1].refresh_daily('2026-09-01')
+    source[1].mark_daily_stale('2026-09-01', 'Asia/Singapore', 'changed-source')
+    with source[0].database.read() as c:
+        rows = c.execute("SELECT payload_json FROM change_events WHERE resource_type='daily_summary' ORDER BY sequence").fetchall()
+    assert len(rows) == 2
+    payload = json.loads(rows[-1]['payload_json'])
+    assert payload['derivation_status'] == 'stale'
+    assert payload['revision'] == published['revision']
+    assert payload['objective']['headline'] == published['objective']['headline']
+
+
+def sync_service(source):
+    from allday_asr.v3.application import MobileSyncService
+    return MobileSyncService(source[2], now=lambda: source[0].now)
+
+
+def sync_pull(service, cursor='cursor-0', limit=100, bootstrap=False):
+    from allday_asr.v3.domain import SyncRequest
+    return service.synchronize('computer-1', SyncRequest(5, cursor, (), limit, bootstrap))
+
+
+def test_fup03_real_correction_coordinator_incremental_and_bootstrap(source):
+    from allday_asr.v3.bootstrap import compose_v3_core, V3CorePaths
+    from allday_asr.v3.config import CodexReminderSettings
+    from allday_asr.v3.application import CorrectUtteranceCommand
+    seed, service, _ = source
+    published = service.refresh_daily('2026-09-01')
+    core = compose_v3_core(V3CorePaths.from_state_dir(seed.root), codex_settings=CodexReminderSettings(enabled=False))
+    try:
+        before = sync_pull(core.mobile_sync)
+        core.corrections.correct_utterance(CorrectUtteranceCommand(
+            utterance_id=UTTERANCE_ID, expected_revision=1, text='修订后的材料', actor='test-user'))
+        core.daily_automation.catch_up()
+        after = sync_pull(core.mobile_sync, before.next_cursor)
+        changes = [c for c in after.changes if c.resource_type == 'daily_summary']
+        assert len(changes) == 1
+        assert changes[0].resource['derivation_status'] == 'stale'
+        assert changes[0].revision == published['revision']
+        assert changes[0].resource['objective']['headline'] == published['objective']['headline']
+        assert 'events' not in changes[0].resource['objective']
+        bootstrap = sync_pull(core.mobile_sync, bootstrap=True)
+        latest = next(c for c in bootstrap.changes if c.resource_type == 'daily_summary')
+        assert latest.resource['derivation_status'] == 'stale'
+        core.daily_automation.catch_up()
+        assert not [c for c in sync_pull(core.mobile_sync, after.next_cursor).changes if c.resource_type == 'daily_summary']
+    finally:
+        core.close()
+
+
+def test_fup03_bootstrap_watermark_retains_old_page_then_incremental_converges(source):
+    published = source[1].refresh_daily('2026-09-01')
+    service = sync_service(source)
+    first = sync_pull(service, limit=1, bootstrap=True)
+    assert first.next_cursor.startswith('snapshot-v1-')
+    source[1].mark_daily_stale('2026-09-01', 'Asia/Singapore', 'source-change')
+    remaining = sync_pull(service, first.next_cursor, bootstrap=True)
+    summary = next(c for c in remaining.changes if c.resource_type == 'daily_summary')
+    assert summary.resource['derivation_status'] == 'active'
+    assert summary.revision == published['revision']
+    delta = sync_pull(service, remaining.next_cursor)
+    assert next(c for c in delta.changes if c.resource_type == 'daily_summary').resource['derivation_status'] == 'stale'
+
+
+def test_fup03_append_failure_rolls_back_invalidity_and_keeps_dirty_for_restart(source, monkeypatch):
+    from allday_asr.v3.adapters.sqlite.operational_repositories import SqliteChangeLogRepository
+    from allday_asr.v3.application.daily_automation import DailyGenerationCoordinator
+    seed, service, factory = source
+    published = service.refresh_daily('2026-09-01')
+    with seed.database.transaction() as c:
+        c.execute("UPDATE utterances SET status='stale'")
+    def clock():
+        return seed.now + timedelta(days=2)
+    worker = DailyGenerationCoordinator(seed.database, lambda _: pytest.fail('remote prohibited'), service.generation_version,
+        now=clock, local_service=service, remote_enabled=False)
+    before = seed.database.daily_dirty_ranges()
+    original = SqliteChangeLogRepository.append
+    def fail(self, kind, *args):
+        if kind == 'daily_summary':
+            raise OSError('injected publication failure')
+        return original(self, kind, *args)
+    with monkeypatch.context() as m:
+        m.setattr(SqliteChangeLogRepository, 'append', fail)
+        with pytest.raises(OSError):
+            worker.catch_up()
+    with factory().reading() as uow:
+        assert not uow.derivations.list_invalidations('daily_summary', published['summary_id'], 100)
+    assert seed.database.daily_dirty_ranges() == before
+    worker.catch_up()
+    with factory().reading() as uow:
+        assert uow.changes.latest('daily_summary', published['summary_id']).payload['derivation_status'] == 'stale'
+
+
+def test_fup03_content_revision_cas_and_bounded_historical_projection_repair(source):
+    from allday_asr.v3.domain import stable_ulid
+    from allday_asr.v3.domain.knowledge import InvalidationEvent
+    from allday_asr.v3.application.generation_inputs import GenerationSourceConflict
+    seed, service, factory = source
+    first = service.refresh_daily('2026-09-01')
+    with factory() as uow:
+        identifier = stable_ulid('legacy-stale', first['summary_id'])
+        uow.derivations.add_invalidation(InvalidationEvent(identifier, 'daily_summary', first['summary_id'], 1,
+            'stale', 'legacy_missing_sync', 'daily_sources', 'legacy', 1, identifier, seed.now))
+    difference = service.daily_sync_differences('2026-09-01', '2026-09-01')
+    assert len(difference) == 1
+    assert service.repair_daily_sync('2026-09-01', '2026-09-01', actor='test-operator')['repaired_count'] == 1
+    assert service.repair_daily_sync('2026-09-01', '2026-09-01', actor='test-operator')['repaired_count'] == 0
+    assert service.daily_sync_differences('2026-09-01', '2026-09-01') == []
+    with seed.database.read() as c:
+        assert c.execute("SELECT count(*) FROM audit_entries WHERE action='daily.sync_projection.repaired'").fetchone()[0] == 1
+    new = service.refresh_daily('2026-09-01')
+    assert new['revision'] == 2
+    with pytest.raises(GenerationSourceConflict):
+        service.mark_daily_stale('2026-09-01', 'Asia/Singapore', 'old-plan', expected_revision=1)
+    with factory().reading() as uow:
+        assert uow.insights.daily(new['summary_id'])['derivation_status'] == 'active'
+        assert uow.changes.latest('daily_summary', new['summary_id']).payload['derivation_status'] == 'active'
+    with pytest.raises(ValueError, match='1 to 14 days'):
+        service.repair_daily_sync('2026-01-01', '2026-12-31', actor='test-operator')
+
+
 def test_contiguous_task_speech_groups(source):
     add(source, text='我们讨论项目材料')
     add(source, 2, '继续讨论项目材料')

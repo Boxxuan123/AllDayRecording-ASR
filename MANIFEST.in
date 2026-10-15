@@ -1,0 +1,2 @@
+include src/allday_asr/build_info.py
+include pyproject.toml

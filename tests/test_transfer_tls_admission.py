@@ -4,10 +4,8 @@ import socket
 import ssl
 import threading
 import time
-from contextlib import contextmanager
-from pathlib import Path
-from uuid import uuid4
-import shutil
+from contextlib import contextmanager, ExitStack
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, workspace_directory
 import json
 import logging
 
@@ -18,24 +16,25 @@ from allday_asr.v3.interfaces.transfer.http_handler import TransferRequestHandle
 
 @contextmanager
 def running_server():
-    root = Path('outputs') / ('tls-admission-' + uuid4().hex)
-    root.mkdir(parents=True)
-    identity = ensure_tls_identity(root / 'tls', addresses=['127.0.0.1'])
-    server = create_transfer_server(inbox=root / 'inbox', host='127.0.0.1', port=0,
-                                    tls_cert=identity.certificate_path,
-                                    tls_key=identity.private_key_path)
-    server.handshake_timeout = 0.4
-    context = ssl.create_default_context(cafile=str(identity.ca_certificate_path))
-    thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.02})
-    thread.start()
-    try:
+    with ExitStack() as stack:
+        root = stack.enter_context(workspace_directory(TEST_WORKSPACE_ROOT, 'tls-admission'))
+        identity = ensure_tls_identity(root / 'tls', addresses=['127.0.0.1'])
+        server = create_transfer_server(inbox=root / 'inbox', host='127.0.0.1', port=0,
+                                       tls_cert=identity.certificate_path,
+                                       tls_key=identity.private_key_path)
+        stack.callback(server.server_close)
+        server.handshake_timeout = 0.4
+        context = ssl.create_default_context(cafile=str(identity.ca_certificate_path))
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.02})
+        thread.start()
+
+        def stop():
+            server.shutdown()
+            thread.join(2)
+            assert not thread.is_alive(), 'test TLS server did not stop'
+
+        stack.callback(stop)
         yield server, context
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(2)
-        assert not thread.is_alive()
-        shutil.rmtree(root)
 
 
 def test_stalled_handshake_does_not_block_https():

@@ -1,8 +1,22 @@
 """Cross-process finite file lock for the daily worker and backfill marker."""
 
 import os
+import time
 from contextlib import contextmanager
 from pathlib import Path
+
+
+def replace_atomic(source, destination, *, timeout_seconds=2):
+    """Bound transient Windows sharing/scan locks without hiding durable errors."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            if os.name != 'nt' or exc.winerror not in {5, 32} or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 @contextmanager
 def day_worker_lock(database_path):

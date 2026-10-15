@@ -6,6 +6,7 @@ from typing import Any, Protocol
 from allday_asr.v3.domain.models import Artifact
 from allday_asr.v3.domain.identity import SelfIdentity, unknown_identity_evidence
 from allday_asr.v3.domain.processing import ProcessingClaim
+from .stores import StoredContent
 
 
 class StageCancellationRequested(RuntimeError):
@@ -60,6 +61,8 @@ class StageExecutionResult:
     artifacts: tuple[StageArtifactOutput, ...] = ()
     speakers: tuple[SpeakerProjectionOutput, ...] = ()
     utterances: tuple[UtteranceProjectionOutput, ...] = ()
+    # An isolated trusted adapter may stage immutable bytes before returning.
+    stored_artifacts: tuple[StoredContent, ...] = ()
 
 
 class StageExecutionControl(Protocol):

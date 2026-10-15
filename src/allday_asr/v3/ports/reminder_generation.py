@@ -19,6 +19,7 @@ class ReminderModelRequest:
     now_utc: str
     utterances: tuple[dict[str, Any], ...]
     active_reminders: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    execution_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class ReminderModelResult:
     turn_id: str
     reasoning_effort: ReminderReasoningEffort
     usage: dict[str, Any] = field(default_factory=dict)
+    execution_id: str | None = None
 
 
 class ReminderModelGenerator(Protocol):

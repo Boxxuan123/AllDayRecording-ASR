@@ -80,6 +80,56 @@ def test_repeated_trigger_enqueues_once(queue, trigger):
     assert len(q.states()) == 1
 
 
+def test_reason_wording_cannot_change_queue_state_and_old_owner_cannot_finish(queue):
+    q, clock = queue
+    q.observe([item(reason='Current day translated text', reason_code='MISSING')])
+    assert q.states()[0]['status'] == 'PENDING'
+    job = q.claim([item()])
+    assert job and job['attempts'] == 1
+    assert q.claim([item()]) is None
+    with pytest.raises(ValueError, match='No failed'):
+        q.retry(job['local_date'], job['generation_version'])
+    q.recover_abandoned()
+    replacement = q.claim([item()])
+    assert replacement['attempts'] == 2
+    with pytest.raises(RuntimeError, match='lease lost'):
+        q.finish(job, {}, success=True)
+    assert q.finish(replacement, {}, success=False) == 'FAILED_TERMINAL'
+    assert q.claim([item()]) is None
+    q.observe([item(reason='new translated reason')])
+    assert q.states()[0]['attempts'] == 2
+
+
+def test_local_owner_exclusion_failed_maintenance_retains_dirty_and_new_write_survives_ack(queue):
+    q, clock = queue
+    with q.database.transaction() as c:
+        c.execute('DELETE FROM daily_dirty_ranges')
+        c.execute("INSERT INTO daily_dirty_ranges(first_date,last_date,reason) VALUES('2026-01-01','2026-01-01','synthetic')")
+    local = SimpleNamespace(refresh_daily=lambda *_a, **_k: {'semantic_status': 'failed'}, mark_daily_stale=lambda *_a: None)
+    coordinator = DailyGenerationCoordinator(q.database, lambda _: None, 'approved-version',
+        now=lambda: clock.value, local_service=local, remote_enabled=False)
+    coordinator.inventory.scan = lambda **_: [item()]
+    before = q.database.daily_dirty_ranges()
+    with day_worker_lock(q.database.path) as acquired:
+        assert acquired
+        assert not coordinator.catch_up()['items']
+    assert q.database.daily_dirty_ranges() == before
+    with pytest.raises(RuntimeError, match='dirty range retained'):
+        coordinator.catch_up()
+    assert q.database.daily_dirty_ranges() == before
+
+    def refresh(*_a, **_k):
+        with q.database.transaction() as c:
+            c.execute("INSERT INTO daily_dirty_ranges(first_date,last_date,reason) VALUES('2025-12-31','2025-12-31','new-write-during-maintenance')")
+        return {'semantic_status': 'pending'}
+
+    local.refresh_daily = refresh
+    coordinator.catch_up()
+    remaining = q.database.daily_dirty_ranges()
+    assert len(remaining) == 1 and remaining[0][1:] == ('2025-12-31', '2025-12-31')
+    assert not q.states()
+
+
 def test_today_rollover_only_becomes_pending(queue):
     q, _ = queue
     q.observe(
@@ -88,6 +138,7 @@ def test_today_rollover_only_becomes_pending(queue):
                 classification="STALE_SOURCE",
                 needs_backfill=False,
                 reason="Current day stays dirty until local rollover",
+                reason_code="CURRENT_DAY",
             )
         ]
     )
@@ -335,7 +386,7 @@ def test_isolated_startup_to_atomic_publish_and_clean_restart():
             pass
 
     def clock():
-        return seed.now + timedelta(days=2)
+        return seed.now + timedelta(days=1)
 
     def service(_):
         return DailyInsightService(

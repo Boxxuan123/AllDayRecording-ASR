@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:alldayrecording:contracts:v3:chat-followup",
+  "title": "ChatFollowup",
+  "type": "object",
+  "required": [
+    "event_id",
+    "revision",
+    "source_key",
+    "title",
+    "status",
+    "category",
+    "actor_is_from_self",
+    "time",
+    "historical",
+    "progress_unknown",
+    "user_confirmed",
+    "ignored",
+    "uncertainty",
+    "evidence",
+    "pending_change",
+    "updated_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "$ref": "primitives.schema.json#/$defs/StableId"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_key": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "active",
+        "completed",
+        "cancelled"
+      ]
+    },
+    "category": {
+      "enum": [
+        "self",
+        "waiting",
+        "pending",
+        "cared"
+      ]
+    },
+    "actor_is_from_self": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "time": {
+      "type": "object"
+    },
+    "historical": {
+      "type": "boolean"
+    },
+    "progress_unknown": {
+      "type": "boolean"
+    },
+    "user_confirmed": {
+      "type": "boolean"
+    },
+    "ignored": {
+      "type": "boolean"
+    },
+    "uncertainty": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "source_type",
+          "record_id",
+          "record_revision",
+          "platform",
+          "sent_at",
+          "quote",
+          "is_from_self",
+          "speaker",
+          "context"
+        ],
+        "properties": {
+          "source_type": {
+            "const": "chat_record"
+          },
+          "record_id": {
+            "type": "string"
+          },
+          "record_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "platform": {
+            "enum": [
+              "qq",
+              "wechat"
+            ]
+          },
+          "sent_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "quote": {
+            "type": "string"
+          },
+          "is_from_self": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "speaker": {
+            "type": "string"
+          },
+          "context": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "pending_change": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "updated_at": {
+      "$ref": "primitives.schema.json#/$defs/UtcDateTime"
+    }
+  }
+}

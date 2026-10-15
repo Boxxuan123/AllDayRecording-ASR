@@ -5,9 +5,33 @@ type Pending = { promise: Promise<unknown>; controller: AbortController; subscri
 const inFlight = new Map<string, Pending>()
 const versions = new Map<string, number>()
 const TTL_MS = 30_000
+const MAX_CACHE_ENTRIES = 128
+const activeQueries = new Map<string, number>()
+
+function pruneCache(): void {
+  const now = Date.now()
+  for (const [key, entry] of cache) if (now - entry.at >= TTL_MS) cache.delete(key)
+  while (cache.size > MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value!)
+}
+
+export function invalidateQueriesMatching(predicate: (key: string) => boolean): void {
+  for (const key of new Set([...cache.keys(), ...inFlight.keys(), ...activeQueries.keys()])) {
+    if (predicate(key)) invalidateQuery(key)
+  }
+}
+
+export function invalidateEvidenceQueries(sessionId?: string): void {
+  invalidateQueriesMatching(key => ['overview', 'recordings', 'reviews', 'persons', 'person-choices',
+    'people-voice', 'daily-summaries', 'relationship-reports', 'reminders',
+    'review-voice-candidates', 'review-reminder-candidates'].includes(key)
+    || (key.startsWith('session-') && (!sessionId || key.endsWith(`:${sessionId}`))))
+}
+
 
 export function useQuery<T>(key: string, loader: (signal: AbortSignal) => Promise<T>, enabled: () => boolean = () => true) {
   const subscriber = Symbol(key)
+  pruneCache()
+  activeQueries.set(key, (activeQueries.get(key) ?? 0) + 1)
   const cached = cache.get(key)
   const data = ref<T | null>(cached ? cached.value as T : null)
   const error = ref<Error | null>(null)
@@ -16,6 +40,7 @@ export function useQuery<T>(key: string, loader: (signal: AbortSignal) => Promis
   let generation = 0
 
   async function refresh(force = false): Promise<void> {
+    pruneCache()
     const hit = cache.get(key)
     if (!force && hit && Date.now() - hit.at < TTL_MS) {
       data.value = hit.value as T
@@ -40,7 +65,9 @@ export function useQuery<T>(key: string, loader: (signal: AbortSignal) => Promis
       pending.subscribers.add(subscriber)
       const value = await pending.promise as T
       if (current === generation && version === (versions.get(key) ?? 0)) {
+        cache.delete(key)
         cache.set(key, { value, at: Date.now() })
+        pruneCache()
         data.value = value
       }
     } catch (value) {
@@ -72,6 +99,9 @@ export function useQuery<T>(key: string, loader: (signal: AbortSignal) => Promis
     }
   })
   onBeforeUnmount(() => {
+    const count = (activeQueries.get(key) ?? 1) - 1
+    if (count) activeQueries.set(key, count)
+    else { activeQueries.delete(key); versions.delete(key) }
     generation += 1
     const pending = inFlight.get(key)
     if (pending) {
@@ -95,5 +125,5 @@ export function invalidateQuery(key: string): void {
   cache.delete(key)
   inFlight.get(key)?.controller.abort()
   inFlight.delete(key)
-  versions.set(key, (versions.get(key) ?? 0) + 1)
+  if (activeQueries.has(key)) versions.set(key, (versions.get(key) ?? 0) + 1)
 }

@@ -70,7 +70,7 @@ def run_attempt(
         stem.with_suffix(".log"),
         Path.cwd(),
     )
-    status = owned.wait(180)
+    status = owned.wait(180, analyzer._cancel_event)
     stem.with_suffix(".process.json").write_text(
         json.dumps(owned.identity, indent=2), encoding="utf-8"
     )
@@ -86,6 +86,9 @@ def run_attempt(
             encoding="utf-8",
         )
     result = json.loads(result_path.read_text(encoding="utf-8"))
+    if status == 125:
+        from .model_execution_runner import ModelExecutionCancelled
+        raise ModelExecutionCancelled("daily execution cancelled")
     if status == 124:
         raise TimeoutError("bounded daily model attempt exceeded 180 seconds")
     if result["status"] != "RETURNED":

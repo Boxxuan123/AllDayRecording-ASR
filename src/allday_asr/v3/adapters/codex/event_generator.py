@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable
 from importlib.metadata import version
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Event
 from typing import Any
 
 from openai_codex import Codex
@@ -124,6 +124,7 @@ class CodexSemanticEventGenerator:
         receipts = workdir.parent / (f"{workdir.name}.receipts" if codex_factory else "model-execution-receipts")
         self._runner = ModelExecutionRunner(receipts)
         self._lock = RLock()
+        self._cancel_event = Event()
         self.model_label = model or "codex-configured-default"
         self.producer_version = version("openai-codex")
         self.prompt_version = PROMPT_VERSION
@@ -138,6 +139,7 @@ class CodexSemanticEventGenerator:
             workdir = self._prepare_workdir()
             try:
                 result = self._runner.run(
+                    scope_execution=True, execution_id=request.execution_id, cancel_event=self._cancel_event,
                     task="semantic-event", batch_id=request.session_id,
                     prompt=_prompt(request), instructions=_DEVELOPER_INSTRUCTIONS,
                     schema=CODEX_SEMANTIC_EVENT_OUTPUT_SCHEMA, model=self._model,
@@ -159,9 +161,11 @@ class CodexSemanticEventGenerator:
                 turn_id=str(result.id),
                 reasoning_effort=effort,
                 usage=_usage(result.usage),
+                execution_id=result.execution_id,
             )
 
     def close(self) -> None:
+        self._cancel_event.set()
         with self._lock:
             if self._codex is not None:
                 self._codex.close()

@@ -25,6 +25,7 @@ from allday_asr.v3.config import V3ConfigurationError, V3Settings
 from allday_asr.v3.interfaces.desktop_server import serve_v3_desktop
 from .self_backfill_cli import register as register_self_backfill
 from .daily_automation_cli import register as register_daily_automation
+from .engineering_recovery_cli import register as register_engineering_recovery
 
 
 app = typer.Typer(
@@ -34,6 +35,7 @@ app = typer.Typer(
 
 register_self_backfill(app)
 register_daily_automation(app)
+register_engineering_recovery(app)
 
 
 @app.command(name="status")
@@ -311,6 +313,7 @@ def semantic_events_generate_command(
             help="auto, low, medium, high or xhigh.",
         ),
     ] = "auto",
+    execution_id: Annotated[str | None, typer.Option("--execution-id", help="Explicit new execution ID; reuse this ID for retries.")] = None,
     state_dir: Annotated[Path | None, typer.Option("--state-dir")] = None,
 ) -> None:
     """Generate evidence-bound native events for one existing V3 session."""
@@ -320,6 +323,7 @@ def semantic_events_generate_command(
         result = core.semantic_events.extract(
             session_id,
             reasoning_effort=reasoning_effort,
+            execution_id=execution_id,
         )
     except (KeyError, RuntimeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
@@ -357,6 +361,7 @@ def worker_command(
         resolved,
         requested_profile=profile,
         diarization_model_path=diarization_model_path,
+        artifact_store_path=core.paths.artifact_store_path,
     )
 
     selected_worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}"
@@ -369,18 +374,22 @@ def worker_command(
             "pipeline": "v3-native.1",
         },
     )
-    while True:
-        worked = worker.run_once()
-        if once:
-            typer.echo(
-                json.dumps(
-                    {"worker_id": selected_worker_id, "worked": worked},
-                    ensure_ascii=False,
+    try:
+        while True:
+            worked = worker.run_once()
+            if once:
+                typer.echo(
+                    json.dumps(
+                        {"worker_id": selected_worker_id, "worked": worked},
+                        ensure_ascii=False,
+                    )
                 )
-            )
-            return
-        if not worked:
-            time.sleep(poll_seconds)
+                return
+            if not worked:
+                time.sleep(poll_seconds)
+    finally:
+        worker.close()
+        core.close()
 
 
 def _settings() -> V3Settings:

@@ -23,6 +23,35 @@ class SqliteRecordingCatalogRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
 
+    def manifest_revision(self, session_id, sha256=None):
+        row = self.connection.execute(
+            'SELECT input_revision,sha256,entries_json FROM session_manifest_revisions WHERE session_id=?'
+            + (' AND sha256=?' if sha256 else '') + ' ORDER BY input_revision DESC LIMIT 1',
+            (session_id, sha256) if sha256 else (session_id,)).fetchone()
+        return dict(row) if row else None
+
+    def original_manifest(self, session_id):
+        row = self.connection.execute('SELECT sha256,entries_json FROM session_manifests WHERE session_id=?', (session_id,)).fetchone()
+        return dict(row) if row else None
+
+    def manifest_segments(self, session_id):
+        return tuple(dict(r) for r in self.connection.execute(
+            'SELECT s.sequence,s.start_sample,s.session_start_ms,s.session_end_ms,a.sha256,a.size_bytes '
+            'FROM capture_segments s JOIN audio_assets a ON a.asset_id=s.asset_id WHERE s.session_id=? ORDER BY s.sequence', (session_id,)))
+
+    def append_manifest_revision(self, session_id, input_revision, sha256, storage_ref, entries, now):
+        self.connection.execute('INSERT INTO session_manifest_revisions '
+            '(session_id,input_revision,sha256,storage_ref,entries_json,reason,created_at) VALUES (?,?,?,?,?,?,?)',
+            (session_id,input_revision,sha256,storage_ref,_json(entries),'verified_append',_datetime(now)))
+
+    def mark_manifest_append(self, session_id, expected_revision, captured_end, now):
+        count = self.connection.execute("""UPDATE recording_sessions SET captured_end=?,revision=revision+1,
+            state='admission_pending',status_code='backup_required',current_stage='backup_admission',progress=0,
+            blocking_reason='backup_restore_evidence_required',updated_at=? WHERE session_id=? AND revision=?""",
+            (_datetime(captured_end),_datetime(now),session_id,expected_revision)).rowcount
+        if count != 1:
+            raise ValueError('manifest session revision conflict')
+
     def current_manifest_input_revision(self, session_id: str) -> int:
         row = self.connection.execute(
             "SELECT COALESCE(MAX(input_revision), 1) FROM session_manifest_revisions "

@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from allday_asr.v3.interfaces.transfer.passkeys import RequestBinding
+from allday_asr.v3.application.file_lock import replace_atomic
 
 
 DEVICE_ALGORITHM = "ECDSA_P256_SHA256"
@@ -211,7 +212,7 @@ class DeviceCredentialStore:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, self.path)
+        replace_atomic(temporary, self.path)
 
 
 class DeviceAuthManager:

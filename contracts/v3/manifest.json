@@ -1,16 +1,16 @@
 {
-  "contract_version": "3.8.0",
-  "projection_version": 5,
+  "contract_version": "3.9.0",
+  "projection_version": 6,
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi_version": "3.1.0",
   "release_lock": {
     "path": "release-lock.json",
-    "sha256": "9f99f8fd000b92fb67809f2e09365b01b95742b12917af7e8f229b3e0f471bb2"
+    "sha256": "4e837ca0f2ac796da584e01924f1b3877b76317f33ed68a5b0dd2fb81e443f16"
   },
   "schemas": {
     "primitives": {
       "path": "schemas/primitives.schema.json",
-      "sha256": "0d8e39305d939b2d6a56905b0ea99a917064cf854276c8d2488b135274d1fcbd"
+      "sha256": "13d149a0ced972708421058a5aaaa50566bd59cb85702f7d90d92964f4641c91"
     },
     "recording_session": {
       "path": "schemas/recording-session.schema.json",
@@ -30,7 +30,7 @@
     },
     "device_sync": {
       "path": "schemas/device-sync.schema.json",
-      "sha256": "260966f8910e1972ba06ddb7a09ff1456073be7370cb50a823ee5da974fbc825"
+      "sha256": "cf2944fff3f152546e27474fe01c0b3759eabb228104e9b0cb74ae4871124064"
     },
     "timeline_quality": {
       "path": "schemas/timeline-quality.schema.json",
@@ -42,7 +42,7 @@
     },
     "reminder": {
       "path": "schemas/reminder.schema.json",
-      "sha256": "44b8fcf1bd12e95a70ec3d6e75e0324e0e4bfe26249ebaf661244c29507b3126"
+      "sha256": "6bd8ee9e482ed9f492d6753107b89d2a201ec90e2d4fe5216d75e107012b0a3d"
     },
     "person": {
       "path": "schemas/person.schema.json",
@@ -67,22 +67,26 @@
     "daily_summary": {
       "path": "schemas/daily-summary.schema.json",
       "sha256": "ae287f7844ba948a51153844b1b9423772b02f013e7d71d59850a4fcf4eff010"
+    },
+    "chat_followup": {
+      "path": "schemas/chat-followup.schema.json",
+      "sha256": "a01d11661a70f1c6273deb5e86d138b77fcac620b3ec2acf217984ec7a06dca4"
     }
   },
   "apis": {
     "desktop": {
       "path": "openapi/desktop-api.openapi.json",
-      "sha256": "333c2ef1c5343775b5c9a472c13b5e8344246e80b56b4cf2471f9166960ff951"
+      "sha256": "1224bdcd105cf8489e2a63ded714d80c9deea827ea85c5259a72e1066e4a5d2e"
     },
     "device": {
       "path": "openapi/device-api.openapi.json",
-      "sha256": "a92674468cfe4df1963f9dddc59cee29134c4ee739b9667548e78668c4cbe6f8"
+      "sha256": "55bbf5ac5bc18293e4d4b1f13eebcecf011f2cd4271f06ee21c9f0831d1bbc85"
     }
   },
   "fixtures": {
     "core_resources": {
       "path": "fixtures/core-resources.json",
-      "sha256": "65e9c8058ee412ba5e0972a2b1e407233bf77fd8ab20bbb88f90f0cf815c5511"
+      "sha256": "3c843ab30c4e6aa194481bb5e56d15b48f4dc3dc6af0a09fd812dd6a34850c79"
     },
     "forward_enums": {
       "path": "fixtures/forward-enums.json",

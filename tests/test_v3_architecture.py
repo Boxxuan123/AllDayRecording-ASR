@@ -39,6 +39,25 @@ FORBIDDEN_IMPORT_PREFIXES = (
 
 
 class V3ArchitectureTests(unittest.TestCase):
+    def test_application_and_transfer_ingest_do_not_execute_repository_sql(self):
+        paths = list((V3_ROOT / 'application').rglob('*.py'))
+        paths += [V3_ROOT / 'adapters' / 'transfer' / f for f in ('ingest.py', 'completion.py')]
+        violations = []
+        for path in paths:
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr not in {'execute', 'executemany', 'executescript'}:
+                    continue
+                owner = node.func.value
+                if isinstance(owner, ast.Attribute) and owner.attr == 'connection':
+                    violations.append(f'{path.name}:{node.lineno}')
+                elif node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    if node.args[0].value.lstrip().upper().startswith(('SELECT ', 'INSERT ', 'UPDATE ', 'DELETE ')):
+                        violations.append(f'{path.name}:{node.lineno}')
+        self.assertEqual(violations, [])
+
     def test_domain_application_and_ports_do_not_import_ui_http_models_or_sqlite(
         self,
     ) -> None:

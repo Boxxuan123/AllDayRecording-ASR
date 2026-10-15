@@ -47,6 +47,7 @@ _REMINDER_CANDIDATE_ROUTE = re.compile(r"^/api/v3/reminder-candidates/([^/]+)$")
 _REMINDER_FEEDBACK_ROUTE = re.compile(
     r"^/api/v3/reminder-candidates/([^/]+)/feedback$"
 )
+_REMINDER_PRODUCT_RECOVERY_ROUTE = re.compile(r"^/api/v3/reminder-candidates/([^/]+)/product-recovery$")
 _REMINDER_CONFIRM_ROUTE = re.compile(
     r"^/api/v3/reminder-candidates/([^/]+)/confirm$"
 )
@@ -111,6 +112,8 @@ _FRONTEND_ROUTES = {
     "/devices",
     "/data",
     "/settings",
+    "/chat",
+    "/followups",
     "/lab",
 }
 _SESSION_RECOVERY_ROUTE = "/api/v3/desktop-session"

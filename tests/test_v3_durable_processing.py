@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import json
-import shutil
 import time
 import unittest
 import wave
@@ -10,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
 
 from allday_asr.v3.adapters.files import ContentAddressedStore
 from allday_asr.v3.adapters.backup import FilesystemSessionBackupAdapter
@@ -60,7 +60,7 @@ from allday_asr.v3.ports.processing import (
 SESSION_ID = stable_ulid("durable-processing-test", "session")
 
 
-TEST_ROOT = Path(__file__).parent
+TEST_ROOT = TEST_WORKSPACE_ROOT
 
 
 class _Clock:
@@ -287,7 +287,7 @@ class _NativeDiarizationBackend:
 
 class V3DurableProcessingTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = TEST_ROOT / f"v3d-{uuid4().hex}"
+        self.root = test_directory(self, TEST_ROOT, "v3d")
         self.database = V3Database.open(self.root / "core.sqlite3")
         self.audio_store = ContentAddressedStore(self.root / "audio")
         self.artifact_store = ContentAddressedStore(self.root / "artifacts")
@@ -305,7 +305,7 @@ class V3DurableProcessingTests(unittest.TestCase):
         self._seed_admitted_session()
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_submission_is_immediately_durable_and_deduplicated(self) -> None:
         command = self._command()

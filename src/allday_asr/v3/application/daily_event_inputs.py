@@ -1,26 +1,27 @@
 """Build revisioned evidence snapshots from existing timeline identity references."""
-from .event_extraction import _utterance
+from .evidence_identity import project_evidence_identity as _utterance
 
 
 def daily_inputs(uow, start: str, end: str) -> tuple[tuple[dict, ...], tuple[dict, ...]]:
     sources = uow.insights.daily_utterances(start, end)
     tasks = uow.insights.daily_tasks(tuple(row['utterance_id'] for row in sources))
-    references = {}
-    for sid in dict.fromkeys(row['session_id'] for row in sources):
-        detail = uow.desktop.session_detail(sid)
-        references.update({r['speaker_track_id']: r for r in detail['speaker_tracks']})
+    references = uow.insights.daily_identity_references(tuple(dict.fromkeys(row['speaker_track_id'] for row in sources)))
+    resolved_rows = [(row, _utterance(row, references.get(row['speaker_track_id'], {}))) for row in sources]
+    names = uow.insights.daily_person_names(tuple(dict.fromkeys(value['speaker_person_id'] for _, value in resolved_rows if value['speaker_person_id'])))
+    task_ids = {}
+    for task in tasks:
+        for identifier in task['evidence_ids']:
+            task_ids.setdefault(identifier, []).append(task['event_id'])
     rows = []
-    for row in sources:
+    for row, resolved in resolved_rows:
         ref = references.get(row['speaker_track_id'], {})
-        resolved = _utterance(row, ref)
         if resolved['identity'] == 'self':
             participant = {'key': 'self', 'kind': 'self', 'label': '本人',
                            'status': 'source_confirmed', 'confidence': None}
         elif resolved['speaker_person_id']:
             pid = resolved['speaker_person_id']
-            profile = uow.insights.person_profile(pid)
             participant = {'key': pid, 'person_id': pid, 'kind': 'known',
-                           'label': profile['display_name'], 'status': 'source_confirmed',
+                           'label': names[pid], 'status': 'source_confirmed',
                            'confidence': None}
         else:
             track = row['speaker_track_id']
@@ -31,6 +32,5 @@ def daily_inputs(uow, start: str, end: str) -> tuple[tuple[dict, ...], tuple[dic
         rows.append({k: row[k] for k in ('utterance_id', 'revision', 'session_id',
                     'start_ms', 'end_ms', 'start_at', 'end_at', 'text', 'audio_ranges')} |
                     {'participant': participant, 'identity_at_generation': resolved['identity'],
-                     'task_ids': sorted(t['event_id'] for t in tasks
-                                        if row['utterance_id'] in t['evidence_ids'])})
+                     'task_ids': sorted(task_ids.get(row['utterance_id'], []))})
     return tuple(rows), tasks

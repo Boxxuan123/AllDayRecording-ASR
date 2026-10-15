@@ -17,7 +17,7 @@ from threading import Event, RLock
 from types import SimpleNamespace
 from typing import Any
 
-from allday_asr.v3.application.file_lock import day_worker_lock
+from allday_asr.v3.application.file_lock import day_worker_lock, replace_atomic
 
 
 ALLOWED_ITEMS = {"agentMessage", "contextCompaction", "plan", "reasoning", "userMessage"}
@@ -37,7 +37,7 @@ def _atomic_json(path: Path, value: dict) -> None:
         json.dump(value, stream, ensure_ascii=False, indent=2)
         stream.flush()
         os.fsync(stream.fileno())
-    part.replace(path)
+    replace_atomic(part, path)
 
 
 def _result_data(result: Any) -> dict[str, Any]:
@@ -64,6 +64,7 @@ def _restore_result(data: dict[str, Any]) -> Any:
     return SimpleNamespace(
         id=data["id"], final_response=data["final_response"],
         usage=data.get("usage"),
+        execution_id=data.get('execution_id'),
         items=[SimpleNamespace(type=kind) for kind in data["items"]],
     )
 
@@ -101,9 +102,16 @@ class ModelExecutionRunner:
     def run(self, *, task: str, batch_id: str, prompt: str,
             instructions: str, schema: dict, model: str | None,
             effort: str, workdir: Path, fake_client: Any | None = None,
-            cancel_event: Event | None = None) -> Any:
+            cancel_event: Event | None = None, scope_execution: bool = False,
+            execution_id: str | None = None) -> Any:
+        if scope_execution:
+            prompt, execution_id = self._execution(task, batch_id, prompt, instructions, schema, model, effort, execution_id)
+            batch_id = f"execution-v2:{task}:{execution_id}"
         identity = {"task": task, "prompt": prompt, "instructions": instructions,
                     "schema": schema, "model": model, "effort": effort}
+        if execution_id is not None:
+            identity["execution_id"] = execution_id
+            identity["identity_version"] = 2
         if len(json.dumps(identity, ensure_ascii=False).encode("utf-8")) > self.max_prompt_bytes:
             raise ModelExecutionTerminal("model request budget exceeded")
         job_id = hashlib.sha256(json.dumps(identity, ensure_ascii=False,
@@ -117,6 +125,8 @@ class ModelExecutionRunner:
                 "job_id": job_id, "task": task, "attempts": 0,
                 "max_attempts": self.max_attempts, "status": "pending",
             }
+            if execution_id is not None:
+                state.update(execution_id=execution_id, identity_version=2)
             if state["status"] == "started":
                 # The per-job lock is now ours, so the prior owner died. The
                 # owned child was terminated with it; close the orphan receipt
@@ -169,6 +179,8 @@ class ModelExecutionRunner:
             receipt_path = self.receipt_dir / f"{job_id}.{attempt}.receipt.json"
             receipt = {"job_id": job_id, "attempt": attempt, "status": "started",
                        "started_at": state["started_at"], "usage": None}
+            if execution_id is not None:
+                receipt.update(execution_id=execution_id, identity_version=2)
             _atomic_json(receipt_path, receipt)
             try:
                 if cancel_event is not None and cancel_event.is_set():
@@ -181,6 +193,8 @@ class ModelExecutionRunner:
                     data = self._owned_call(identity, workdir, job_id, attempt,
                                             cancel_event, min(self.timeout_seconds, batch_remaining))
                 receipt["usage"] = data.get("usage")
+                if execution_id is not None:
+                    data['execution_id'] = execution_id
                 state["used_tokens"] = state.get("used_tokens", 0) + _reported_tokens(data.get("usage"))
                 if state["used_tokens"] > min(self.max_job_tokens, state["max_job_tokens"]):
                     raise ModelExecutionTerminal("model job token budget exceeded")
@@ -203,6 +217,40 @@ class ModelExecutionRunner:
                 _atomic_json(receipt_path, receipt)
                 _atomic_json(state_path, state)
                 raise
+
+    def _execution(self, task, entity, prompt, instructions, schema, model, effort, explicit_id):
+        # Canonicalize payload order and freeze time on first accepted execution.
+        prefix, separator, body = prompt.partition("\n")
+        try:
+            payload = json.loads(body if separator else prompt)
+        except ValueError:
+            payload = None
+        normalized = dict(payload) if isinstance(payload, dict) else prompt
+        if isinstance(normalized, dict):
+            normalized.pop("now_utc", None)
+        identity = {"version": 2, "task": task, "entity": entity, "input": normalized,
+                    "prompt_prefix": prefix if separator else None,
+                    "instructions": instructions, "schema": schema, "model": model, "effort": effort,
+                    "explicit_id": explicit_id}
+        key = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":")).encode()).hexdigest()
+        self.receipt_dir.mkdir(parents=True, exist_ok=True)
+        path = self.receipt_dir / f"execution-{key}.json"
+        with self._lock, day_worker_lock(path) as acquired:
+            if not acquired:
+                raise RuntimeError("model execution is already being prepared")
+            if path.exists():
+                state = json.loads(path.read_text(encoding="utf-8"))
+                return state["prompt"], state["execution_id"]
+            fixed_prompt = ((prefix + "\n") if separator else "") + json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ) if payload is not None else prompt
+            state = {"version": 2, "execution_id": key, "created_at": time.time(),
+                     "prompt": fixed_prompt, "task": task, "entity": entity,
+                     "explicit_id": explicit_id, "model": model, "effort": effort,
+                     "identity_sha256": key}
+            _atomic_json(path, state)
+            return fixed_prompt, key
 
     def _owned_call(self, identity: dict, workdir: Path, job_id: str,
                     attempt: int, cancel_event: Event | None,

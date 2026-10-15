@@ -1,0 +1,270 @@
+[
+  {
+    "id": 1,
+    "question": "杭电原话",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "杭电"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-1",
+      "rec:fixture-9",
+      "rec:fixture-19"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 2,
+    "question": "报名原话",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "报名"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-1",
+      "rec:fixture-9"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 3,
+    "question": "文件名称",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "report_v2.PDF"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-4"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 4,
+    "question": "英文缩写",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "GPU"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-18"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 5,
+    "question": "数字检索",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "12345"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-5"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 6,
+    "question": "特殊字符原话",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "20%_ \"quoted\""
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-5"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 7,
+    "question": "会议最终安排",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "会议"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-1",
+      "rec:fixture-2",
+      "rec:fixture-3"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 8,
+    "question": "材料完成情况",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "材料"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-4"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 9,
+    "question": "微信活动改期",
+    "scope": {
+      "platform": "wechat",
+      "sent_from": 0,
+      "keyword": "活动"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-11",
+      "rec:fixture-12",
+      "rec:fixture-13"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 10,
+    "question": "微信活动完成",
+    "scope": {
+      "platform": "wechat",
+      "sent_from": 0,
+      "keyword": "完成"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-13",
+      "rec:fixture-20"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 11,
+    "question": "转发的说话者",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "转发"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-7"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 12,
+    "question": "引用作者未知",
+    "scope": {
+      "platform": "wechat",
+      "sent_from": 0,
+      "keyword": "引用"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-16"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 13,
+    "question": "同名不同账号",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "会议"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-1",
+      "rec:fixture-2",
+      "rec:fixture-3"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 14,
+    "question": "2020 QQ 旧历史",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "2020"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-9"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 15,
+    "question": "2020 微信旧历史",
+    "scope": {
+      "platform": "wechat",
+      "sent_from": 0,
+      "keyword": "2020"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-10"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 16,
+    "question": "旧文件检索",
+    "scope": {
+      "platform": "wechat",
+      "sent_from": 0,
+      "keyword": "old.docx"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-10"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 17,
+    "question": "范围内没有记录",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "不存在的活动"
+    },
+    "expected_evidence_ids": [],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 18,
+    "question": "图片实际内容未知",
+    "scope": {
+      "platform": "qq",
+      "sent_from": 0,
+      "keyword": "图片"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-8"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 19,
+    "question": "正文未解码",
+    "scope": {
+      "platform": "wechat",
+      "sent_from": 0,
+      "conversation_id": "wx-personal"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-15"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  },
+  {
+    "id": 20,
+    "question": "未确认完成",
+    "scope": {
+      "platform": "wechat",
+      "sent_from": 0,
+      "keyword": "尚待确认"
+    },
+    "expected_evidence_ids": [
+      "rec:fixture-20"
+    ],
+    "allowed_boundary": "仅虚构已捕获范围；未知作者、附件正文、未见后续和源修订不可推断"
+  }
+]

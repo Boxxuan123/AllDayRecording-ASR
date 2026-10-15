@@ -7,6 +7,7 @@ from allday_asr.v3.domain.ids import new_ulid, stable_ulid
 from allday_asr.v3.domain.knowledge import KnowledgeLayer
 from .daily_event_persistence import local_generation, event_resource
 from .insight_validation import _link_evidence
+from .daily_sync_projection import publish_daily_summary
 
 
 def _major_score(event):
@@ -187,10 +188,5 @@ def persist_summary(uow, events, tasks, day: str, timezone: str, start, end, now
         uow.derivations.complete_recompute_for_target('daily_summary', sid, previous['revision'],
                                                      generation.generation_id, now.isoformat())
     value = uow.insights.daily(sid)
-    resource = {'summary_id': sid, 'revision': revision, 'summary_date': day,
-                'timezone': timezone, 'status': value['status'],
-                'derivation_status': value['derivation_status'], 'created_at': value['created_at'],
-                'objective': {k: v for k, v in objective.items() if k != 'events'},
-                'provenance': value['provenance']}
-    uow.changes.append('daily_summary', sid, revision, 'upsert', resource)
+    publish_daily_summary(uow, value)
     return value

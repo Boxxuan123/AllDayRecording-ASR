@@ -19,7 +19,7 @@ import {
   statusLabel,
 } from '../core/format'
 import { mediaState, playRange, playSessionRange, release, seek, stop } from '../core/media'
-import { invalidateQuery, useQuery } from '../core/query'
+import { invalidateQuery, invalidateEvidenceQueries, useQuery } from '../core/query'
 import { navigate, route } from '../core/router'
 import type { SegmentSummary, SelfIdentity, SpeakerTrackSummary, TimelinePage, Utterance } from '../core/types'
 const sessionId = route.value.sessionId ?? ''
@@ -422,6 +422,7 @@ async function saveCorrection(): Promise<void> {
       draftSpeakerTrackId.value || null,
       draftIdentity.value,
     )
+    invalidateEvidenceQueries(sessionId)
     for (const key of ['persons', 'person-choices', 'people-voice', 'reviews', 'daily-summaries', 'relationship-reports']) invalidateQuery(key)
     editing.value = null
     await query.refresh(true)
@@ -554,7 +555,7 @@ async function saveCorrection(): Promise<void> {
       </template>
     </PageState>
 
-    <SegmentClassification v-if="classifying" :items="classifying" @close="classifying = null" @saved="classifying = null; query.refresh(true); loadTimeline()" />
+    <SegmentClassification v-if="classifying" :items="classifying" @close="classifying = null" @saved="classifying = null; invalidateEvidenceQueries(sessionId); query.refresh(true); loadTimeline()" />
     <div v-if="editing" class="dialog-backdrop" @click.self="editing = null">
       <form class="dialog" @submit.prevent="saveCorrection">
         <p class="section-kicker">人工校正</p><h2>校正转写片段</h2><p>原始证据不会被覆盖；保存后创建版本 {{ editing.revision + 1 }}。</p>

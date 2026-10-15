@@ -6,6 +6,8 @@ import { navigate, route, type RouteName } from '../core/router'
 
 const navigation: { name: RouteName; label: string; eyebrow: string; path: string }[] = [
   { name: 'overview', label: '总览', eyebrow: 'NOW', path: '/' },
+  { name: 'followups', label: '跟进事项', eyebrow: 'FOLLOW', path: '/followups' },
+  { name: 'chat', label: '聊天查询', eyebrow: 'CHAT', path: '/chat' },
   { name: 'recordings', label: '录音库', eyebrow: 'AUDIO', path: '/recordings' },
   { name: 'reviews', label: '审核', eyebrow: 'INBOX', path: '/reviews' },
   { name: 'reminders', label: '提醒', eyebrow: 'ACT', path: '/reminders' },

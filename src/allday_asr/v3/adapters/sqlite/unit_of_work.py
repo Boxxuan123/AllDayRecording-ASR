@@ -1,4 +1,7 @@
 from __future__ import annotations
+from contextlib import contextmanager
+
+from .chat_followup_repository import SqliteChatFollowupRepository
 
 import sqlite3
 from types import TracebackType
@@ -57,7 +60,9 @@ class SqliteUnitOfWork:
     def __enter__(self) -> SqliteUnitOfWork:
         if self._connection is not None:
             raise RuntimeError("unit of work is already active")
-        self._context = self.database.read() if self.read_only else self.database.transaction()
+        self._context = (
+            self.database.read() if self.read_only else self.database.transaction()
+        )
         self._connection = self._context.__enter__()
         connection = self._connection
         self.catalog = SqliteRecordingCatalogRepository(connection)
@@ -76,6 +81,7 @@ class SqliteUnitOfWork:
         self.tombstones = SqliteTombstoneRepository(connection, now=self.now)
         self.desktop = SqliteDesktopReadRepository(connection)
         self.knowledge = SqliteKnowledgeRepository(connection)
+        self.followups = SqliteChatFollowupRepository(connection)
         self.derivations = SqliteDerivationRepository(connection)
         self.reminders = SqliteReminderRepository(connection)
         self.people = SqlitePeopleRepository(connection)
@@ -83,6 +89,20 @@ class SqliteUnitOfWork:
         self.person_memories = SqlitePersonMemoryRepository(connection)
         self.insights = SqliteInsightRepository(connection)
         return self
+
+    @contextmanager
+    def savepoint(self):
+        if self._connection is None or self.read_only:
+            raise RuntimeError("active writer required")
+        self._connection.execute("SAVEPOINT chat_phone_command")
+        try:
+            yield self
+        except BaseException:
+            self._connection.execute("ROLLBACK TO chat_phone_command")
+            self._connection.execute("RELEASE chat_phone_command")
+            raise
+        else:
+            self._connection.execute("RELEASE chat_phone_command")
 
     def __exit__(
         self,

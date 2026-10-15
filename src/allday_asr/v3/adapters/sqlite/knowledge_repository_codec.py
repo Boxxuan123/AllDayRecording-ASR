@@ -72,7 +72,7 @@ def _proposal_dict(row: sqlite3.Row) -> dict[str, Any]:
 def _event_state(row: sqlite3.Row) -> EventCurrentState:
     return EventCurrentState(
         event_id=str(row["event_id"]),
-        session_id=str(row["session_id"]),
+        session_id=str(row["session_id"]) if row["session_id"] is not None else None,
         event_kind=EventKind(str(row["event_kind"])),
         status=EventStatus(str(row["status"])),
         revision=int(row["revision"]),

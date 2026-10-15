@@ -1,7 +1,8 @@
 from __future__ import annotations
-from allday_asr.v3.domain.sound_kind import is_usable_speech
+from .generation_inputs import session_inputs, input_snapshot, product_inputs, product_snapshot
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 from allday_asr.v3.domain.hashing import canonical_json_sha256
@@ -95,10 +96,11 @@ class ReminderExtractionService:
         session_id: str,
         *,
         reasoning_effort: str | None = None,
+        execution_id: str | None = None,
     ) -> dict[str, Any]:
         if self._generator is None:
             raise ReminderGenerationUnavailable("Codex reminder generation is disabled")
-        request = self._request(session_id)
+        request = replace(self._request(session_id), execution_id=execution_id)
         effort = select_reasoning_effort(
             request,
             reasoning_effort or self._default_effort,
@@ -126,6 +128,7 @@ class ReminderExtractionService:
                 extractor_version=self._generator.extractor_version,
                 input_scope={
                     "session_id": request.session_id,
+                    "input_snapshot": input_snapshot("reminder", request),
                     "utterance_ids": [
                         item["utterance_id"] for item in request.utterances
                     ],
@@ -133,6 +136,7 @@ class ReminderExtractionService:
                         item["event_id"] for item in request.active_reminders
                     ],
                     "codex_turn_id": generated.turn_id,
+                    "execution_id": generated.execution_id,
                     "reasoning_effort": generated.reasoning_effort.value,
                     "usage": generated.usage,
                 },
@@ -154,7 +158,13 @@ class ReminderExtractionService:
             self._generator.close()
 
     def extract_product(self, session_id: str, **_options) -> dict[str, Any]:
-        request = self._request(session_id)
+        with self._uow_factory().reading() as uow:
+            detail = uow.desktop.session_detail(session_id)
+            inputs = session_inputs(uow, session_id, 'product-reminder')
+            snapshots = {r['utterance_id']: product_snapshot(product_inputs(uow, session_id, r['utterance_id'], detail=detail))
+                         for r in inputs['utterances']}
+        request = ReminderModelRequest(session_id, inputs['captured_timezone'], _datetime(self._now()),
+                                       tuple(inputs['utterances']), ())
         candidates = []
         now = datetime.fromisoformat(request.now_utc.replace("Z", "+00:00"))
         for utterance in request.utterances:
@@ -171,7 +181,11 @@ class ReminderExtractionService:
             key = "product-reminder:" + canonical_json_sha256(source)
             # Consult prior decisions even after a task has become overdue.
             with self._uow_factory().reading() as uow:
+                recovered = uow.idempotency.response(key + ':recovery')
                 prior = uow.idempotency.response(key)
+            if recovered:
+                candidates.append(self._reminders.candidate(recovered['candidate_id']))
+                continue
             if due <= now and prior is None:
                 continue
             intent = ReminderIntent(
@@ -184,6 +198,7 @@ class ReminderExtractionService:
                 producer="product-reminder", producer_version=VERSION, model="bounded-rule",
                 prompt_version=VERSION, extractor_version=VERSION,
                 input_scope={**source, "product_source_key": key,
+                    "input_snapshot": snapshots[utterance['utterance_id']],
                     "utterance_ids": [utterance["utterance_id"]],
                     "source_text": utterance["text"], "speaker_identity": "self",
                     "recorded_at": utterance["start_at"], "timezone": request.captured_timezone,
@@ -194,44 +209,60 @@ class ReminderExtractionService:
 
     def _request(self, session_id: str) -> ReminderModelRequest:
         with self._uow_factory().reading() as uow:
-            detail = uow.desktop.session_detail(session_id)
-            scheduled = uow.reminders.list_schedules(
-                status="scheduled",
-                session_id=session_id,
-                due_before=None,
-                limit=100,
-            )
-            delivered = uow.reminders.list_schedules(
-                status="delivered",
-                session_id=session_id,
-                due_before=None,
-                limit=100,
-            )
-        speaker_references = {
-            str(value["speaker_track_id"]): value
-            for value in detail["speaker_tracks"]
-        }
-        utterances = tuple(
-            _utterance(
-                value,
-                speaker_references.get(str(value.get("speaker_track_id"))),
-            )
-            for value in detail["utterances"]
-            if value.get("status") == "active" and str(value.get("text", "")).strip()
-            and is_usable_speech(value.get("evidence", {}))
-        )
+            inputs = session_inputs(uow, session_id, "reminder")
+        utterances = tuple(inputs["utterances"])
         if not utterances:
             raise ValueError("recording session has no active utterances")
         if sum(len(str(value["text"])) for value in utterances) > 200_000:
             raise ValueError("recording session transcript exceeds Codex extraction limit")
-        active = tuple(_active_reminder(value) for value in (*scheduled, *delivered))
+        active = tuple(inputs["active_reminders"])
         return ReminderModelRequest(
             session_id=session_id,
-            captured_timezone=str(detail["session"].get("timezone") or "UTC"),
+            captured_timezone=inputs["captured_timezone"],
             now_utc=_datetime(self._now()),
             utterances=utterances,
             active_reminders=active,
         )
+
+    def inspect_product_recovery(self, candidate_id: str) -> dict:
+        from .reminder_product_recovery import recovery_report
+        with self._uow_factory().reading() as uow:
+            report = recovery_report(uow, candidate_id)
+        return {k: v for k, v in report.items() if k != 'current_inputs'}
+
+    def recover_product(self, candidate_id: str, actor: str) -> dict:
+        from .reminder_product_recovery import recovery_report
+        if not actor.strip():
+            raise ValueError('recovery requires an actor')
+        with self._uow_factory().reading() as uow:
+            report = recovery_report(uow, candidate_id)
+            original = uow.reminders.get_candidate(candidate_id)
+            generation = uow.knowledge.get_generation(original.generation_id)
+            proposal = uow.knowledge.get_proposal(original.proposal_id)
+        if report['replacement_candidate_id']:
+            return {'candidate': self._reminders.candidate(report['replacement_candidate_id']), 'replayed': True}
+        if not report['eligible']:
+            raise ValueError('product recovery requires source review: ' + report['reason'])
+        inputs = report['current_inputs']
+        parsed = explicit_task(inputs['utterance']['text'], inputs['utterance']['start_at'], inputs['captured_timezone'])
+        if parsed is None or parsed[1] <= self._now():
+            raise ValueError('product recovery requires a current explicit future self task')
+        key = report['product_source_key']
+        scope = {**generation.input_scope, 'input_snapshot': product_snapshot(inputs),
+                 'product_source_key': key + ':attempt:' + candidate_id,
+                 'recovery_of_candidate_id': candidate_id, 'recovery_of_generation_id': generation.generation_id,
+                 'recovery_actor': actor, 'recovery_reason': report['reason']}
+        scope.pop('resolved_inputs', None)
+        result = self._reminders.submit_generation(ReminderGenerationSubmission(
+            producer='product-reminder', producer_version=VERSION, model='bounded-rule',
+            prompt_version=VERSION, extractor_version=VERSION, input_scope=scope,
+            intents=(ReminderIntent(operation=original.operation, session_id=original.session_id,
+                actor_person_id=original.actor_person_id, commitment_direction=original.commitment_direction,
+                title=parsed[0], scheduled_at=parsed[1], related_person_ids=original.related_person_ids,
+                location=original.location, confidence=original.confidence, needs_confirmation=True,
+                evidence_utterance_ids=proposal.evidence_utterance_ids),)),
+            allow_auto_apply=False, _product_recovery=(candidate_id, key))
+        return {'candidate': result['candidates'][0], 'replayed': False}
 
 
 def select_reasoning_effort(
@@ -316,33 +347,6 @@ def _intent(value: dict[str, Any], request: ReminderModelRequest) -> ReminderInt
         reason=_optional_string(value["reason"], "reason"),
     )
 
-
-def _utterance(
-    value: dict[str, Any], speaker_reference: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    if "person" in value.get("evidence", {}).get("annotation_review", {}).get("dimensions", {}):
-        speaker_reference = None
-        value = {**value, "identity": "unknown", "speaker_label": None, "speaker_track_id": None}
-    speaker_reference = speaker_reference or {}
-    annotation = value.get("evidence", {}).get("person_annotation", {})
-    if annotation.get("person_id") and "person" not in value.get("evidence", {}).get("annotation_review", {}).get("dimensions", {}):
-        person_id = annotation["person_id"]
-        speaker_reference = {**speaker_reference, "person_id": person_id,
-            "person_name": speaker_reference.get("person_name") if speaker_reference.get("person_id") == person_id else None}
-    return {
-        "utterance_id": str(value["utterance_id"]),
-        "start_at": str(value["start_at"]),
-        "end_at": str(value["end_at"]),
-        "speaker_label": value.get("speaker_label"),
-        "speaker_reference_id": (
-            speaker_reference.get("person_id")
-            or speaker_reference.get("speaker_cluster_id")
-            or value.get("speaker_track_id")
-        ),
-        "identity": str(value.get("identity") or "unknown"),
-        "text": str(value["text"]),
-        "revision": int(value["revision"]),
-    }
 
 
 def _active_reminder(value: dict[str, Any]) -> dict[str, Any]:

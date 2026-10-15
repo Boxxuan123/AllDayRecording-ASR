@@ -238,6 +238,9 @@ def _reconcile_round(
                     break
                 except Exception as exc:
                     if attempt == 1 or not retry_allowed(exc):
+                        if isinstance(exc, ValueError):
+                            from .failure_diagnostics import ProviderOutputInvalid
+                            raise ProviderOutputInvalid('daily reconciliation response rejected') from exc
                         raise
                     analyzed_request = {
                         **request,

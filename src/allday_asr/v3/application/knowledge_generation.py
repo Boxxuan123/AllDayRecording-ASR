@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .reminder_edit_sources import finalize_edit_sources, validate_generation_sources
+
 from allday_asr.v3.domain.hashing import canonical_json_sha256
 from allday_asr.v3.domain.ids import new_ulid, stable_ulid
 from allday_asr.v3.domain.knowledge import (
@@ -166,6 +168,9 @@ class KnowledgeGenerationMixin:
             generation = uow.knowledge.get_generation(proposal.generation_id)
             if generation.status is not GenerationStatus.SUCCEEDED:
                 raise ValueError("proposal generation is not usable")
+            edit_ancestors = validate_generation_sources(uow, generation, proposal)
+            if edit_ancestors and on_accepted is None:
+                raise ValueError('reminder edit must be accepted through reminder review')
             if proposal.kind is ProposalKind.EVENT_OPERATION:
                 resolution = self._accept_event(uow, proposal, actor, now)
             else:
@@ -179,6 +184,9 @@ class KnowledgeGenerationMixin:
             )
             if on_accepted is not None:
                 on_accepted(uow, proposal, resolution, now)
+            if edit_ancestors:
+                replacement = uow.reminders.get_candidate_by_proposal(proposal_id)
+                finalize_edit_sources(uow, edit_ancestors, replacement.candidate_id, resolution.resource_id, actor, now)
             uow.audit.append(
                 "knowledge.proposal.accepted",
                 actor,

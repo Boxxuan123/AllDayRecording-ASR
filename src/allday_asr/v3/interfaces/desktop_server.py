@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
+from allday_asr.v3.application.failure_diagnostics import log_failure, failure_category
+from allday_asr.v3.application.generation_inputs import GenerationSourceConflict
+from allday_asr.v3.application.event_extraction import SemanticEventGenerationFailed, SemanticEventGenerationUnavailable
 import mimetypes
 import secrets
 import time
@@ -32,6 +36,7 @@ from .desktop_http_contract import (
     _location_without_token,
     _parse_range,
 )
+from .desktop_chat_routes import DesktopChatRoutesMixin
 from .desktop_routes_get import DesktopGetRoutesMixin
 from .desktop_routes_post import DesktopPostRoutesMixin
 
@@ -40,6 +45,10 @@ from .desktop_routes_post import DesktopPostRoutesMixin
 class V3DesktopApplication:
     def __init__(self, core: V3Core, *, token: str | None = None) -> None:
         self.core = core
+        from allday_asr.v3.bootstrap.chat import compose_chat_queries
+        self.chat = compose_chat_queries(core.paths.state_dir / "chat")
+        from allday_asr.v3.bootstrap.chat_followups import FollowupJobs
+        self.followups = FollowupJobs(core, self.chat)
         self.core.people.sample_worker.start()
         self.core.blind_validation.start()
         self.automatic_workflows = AutomaticWorkflowStateStore(
@@ -55,6 +64,8 @@ class V3DesktopApplication:
         return f"http://{self.host}:{self.port}"
 
     def close(self) -> None:
+        self.followups.close()
+        self.chat.close()
         self.core.close()
 
     def list_reviews(self, limit: int) -> tuple[dict[str, Any], ...]:
@@ -64,7 +75,7 @@ class V3DesktopApplication:
 
 
 class V3DesktopRequestHandler(
-    DesktopGetRoutesMixin, DesktopPostRoutesMixin, BaseHTTPRequestHandler
+    DesktopChatRoutesMixin, DesktopGetRoutesMixin, DesktopPostRoutesMixin, BaseHTTPRequestHandler
 ):
     asset_root = ASSET_ROOT
     server: "V3DesktopHTTPServer"
@@ -104,17 +115,19 @@ class V3DesktopRequestHandler(
                 str(exc),
                 request_id=request_id,
             )
-        except ReminderGenerationUnavailable as exc:
+        except (ReminderGenerationUnavailable, SemanticEventGenerationUnavailable) as exc:
             self._send_error(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 "codex_unavailable",
                 str(exc),
                 request_id=request_id,
             )
-        except ReminderGenerationFailed as exc:
+        except (ReminderGenerationFailed, SemanticEventGenerationFailed) as exc:
+            log_failure(logging.getLogger(__name__), exc, request_id=request_id, method=self.command)
+            category, _ = failure_category(exc)
             self._send_error(
                 HTTPStatus.BAD_GATEWAY,
-                "codex_generation_failed",
+                category if category in {"budget_terminal", "cancelled", "storage_failure", "program_error"} else "codex_generation_failed",
                 str(exc),
                 request_id=request_id,
             )
@@ -126,12 +139,15 @@ class V3DesktopRequestHandler(
                 request_id=request_id,
             )
         except InsightGenerationFailed as exc:
+            log_failure(logging.getLogger(__name__), exc, request_id=request_id, method=self.command)
             self._send_error(
                 HTTPStatus.BAD_GATEWAY,
                 "codex_generation_failed",
                 str(exc),
                 request_id=request_id,
             )
+        except GenerationSourceConflict as exc:
+            self._send_error(HTTPStatus.CONFLICT, "source_conflict", str(exc), request_id=request_id)
         except ValueError as exc:
             self._send_error(
                 HTTPStatus.BAD_REQUEST,
@@ -141,7 +157,8 @@ class V3DesktopRequestHandler(
             )
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
-        except Exception:
+        except Exception as exc:
+            log_failure(logging.getLogger(__name__), exc, request_id=request_id, method=self.command)
             self._send_error(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "internal_error",
@@ -401,6 +418,8 @@ class V3DesktopRequestHandler(
         )
 
     def log_message(self, format: str, *args) -> None:
+        if self._log_chat_request(args):
+            return
         print(f"[v3-desktop] {self.address_string()} {format % args}")
 
 

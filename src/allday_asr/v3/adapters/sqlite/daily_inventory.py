@@ -162,7 +162,7 @@ class DailyHistoryInventory:
                     (first + timedelta(days=offset)).isoformat(), []
                 ).append(session)
         keys = [
-            d for d in set(source_days) | set(session_days)
+            d for d in set(source_days) | set(session_days) | set(summaries)
             if d <= last.isoformat() and (target_day is None or d == target_day.isoformat())
         ]
         self.last_scan_stats = {
@@ -305,6 +305,7 @@ class DailyHistoryInventory:
             )
             item.update(
                 classification=classification,
+                reason_code="CURRENT_DAY" if day >= today.isoformat() else classification,
                 reason=reason,
                 needs_backfill=classification in BACKFILL_CLASSES
                 and day < today.isoformat(),

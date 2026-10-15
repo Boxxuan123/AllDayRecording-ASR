@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import shutil
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from uuid import uuid4
 
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.application import (
@@ -43,7 +42,7 @@ from allday_asr.v3.ports.insight_generation import (
 )
 
 
-TEST_ROOT = Path(__file__).parent
+TEST_ROOT = TEST_WORKSPACE_ROOT
 NOW = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
 
 
@@ -112,7 +111,7 @@ class _InsightGenerator:
 
 class V36DailyInsightTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = TEST_ROOT / f"v36-insights-{uuid4().hex}"
+        self.root = test_directory(self, TEST_ROOT, "v36-insights")
         self.database = V3Database.open(self.root / "core.sqlite3")
         self.now = NOW
 
@@ -126,6 +125,7 @@ class V36DailyInsightTests(unittest.TestCase):
         self.insights = DailyInsightService(
             factory, self.generator, now=lambda: self.now
         )
+        self.addCleanup(self.insights.close)
         self._seed_session(1, self.now - timedelta(days=8), "上周讨论合同范围")
         self._seed_session(2, self.now, "今天确认合同周五交付")
         with self.factory() as uow:
@@ -158,7 +158,7 @@ class V36DailyInsightTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_daily_summary_is_rebuilt_from_events_and_becomes_stale_after_correction(
         self,

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import shutil
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from uuid import uuid4
 
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.application import (
@@ -44,7 +43,7 @@ from allday_asr.v3.ports.reminder_generation import (
 )
 
 
-TEST_ROOT = Path(__file__).parent
+TEST_ROOT = TEST_WORKSPACE_ROOT
 SESSION_ID = "01990d5a-7c00-7000-8000-000000000101"
 UTTERANCE_ID = "01990d5a-7c00-7000-8000-000000000102"
 SPEAKER_ID = "01990d5a-7c00-7000-8000-000000000103"
@@ -52,7 +51,7 @@ SPEAKER_ID = "01990d5a-7c00-7000-8000-000000000103"
 
 class V33IntelligentReminderTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = TEST_ROOT / f"v33-reminders-{uuid4().hex}"
+        self.root = test_directory(self, TEST_ROOT, "v33-reminders")
         self.database = V3Database.open(self.root / "core.sqlite3")
         self.current_time = datetime(2026, 8, 31, 16, 0, tzinfo=timezone.utc)
         self._seed()
@@ -71,7 +70,7 @@ class V33IntelligentReminderTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_candidate_requires_confirmation_and_preserves_playable_evidence(
         self,

@@ -83,6 +83,8 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
         self._active: set[str] = set()
         self._lock = threading.RLock()
         self._closed = False
+        self.last_error = None
+        self.last_success = None
         self._worker = DurableProcessingWorker(
             core.processing,
             model_adapter,
@@ -165,10 +167,28 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
             if self._closed:
                 return
             self._closed = True
+        self._worker.close()
         self._queue.put(None)
-        self._thread.join()
+        self._thread.join(timeout=5)
+        if self._thread.is_alive():
+            self.last_error = "shutdown_incomplete"
+
+    def health(self):
+        states = self._states.statuses()
+        return {'state': 'failed' if self.last_error else 'running' if self._thread.is_alive() else 'stopped',
+                'last_success': self.last_success, 'last_error': self.last_error,
+                'queued': sum(s.get('status') in {'queued','retry_requested','retry_scheduled'} for s in states)}
 
     def _run(self) -> None:
+        try:
+            self._run_loop()
+        except Exception as exc:
+            from allday_asr.v3.application.failure_diagnostics import log_failure
+            import logging
+            self.last_error = type(exc).__name__
+            log_failure(logging.getLogger(__name__), exc, worker='automatic_workflow')
+
+    def _run_loop(self) -> None:
         while True:
             self._poll_persistent_work()
             try:
@@ -192,6 +212,7 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
             )
             try:
                 self._process(session_id)
+                self.last_success = _utc_now()
             except SupersededInput:
                 pass
             except Exception as exc:  # noqa: BLE001 - persist the complete failure
@@ -287,6 +308,8 @@ class V3AutomaticWorkflowRunner(AutomaticWorkflowRetryMixin):
             "cancelled",
         }
         while snapshot.job.status not in terminal:
+            if self._closed:
+                raise SupersededInput("service_shutdown; durable job remains recoverable")
             self._require_input_revision(session_id, input_revision)
             worked = self._worker.run_once()
             snapshot = self.core.processing.get(snapshot.job.job_id)

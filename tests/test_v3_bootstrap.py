@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import json
-import shutil
 import unittest
-from pathlib import Path
-from uuid import uuid4
 
 from typer.testing import CliRunner
 
@@ -37,7 +36,7 @@ class V3BootstrapTests(unittest.TestCase):
         self.assertEqual(start_empty_runtime(settings).state, "empty_ready")
 
     def test_empty_runtime_does_not_modify_an_unrelated_database(self) -> None:
-        directory = Path(__file__).parent / f"v3-empty-{uuid4().hex}"
+        directory = test_directory(self, TEST_WORKSPACE_ROOT, "v3-empty")
         directory.mkdir()
         marker = directory / "unrelated.sqlite3"
         try:
@@ -95,7 +94,7 @@ class V3BootstrapTests(unittest.TestCase):
         self.assertEqual(payload["contract_version"], "3.8.0")
 
     def test_cli_migration_requires_feature_flag_and_uses_v3_only_state(self) -> None:
-        directory = Path(__file__).parent / f"v3-migrate-{uuid4().hex}"
+        directory = test_directory(self, TEST_WORKSPACE_ROOT, "v3-migrate")
         try:
             disabled = CliRunner().invoke(
                 app,
@@ -118,7 +117,7 @@ class V3BootstrapTests(unittest.TestCase):
             self.assertEqual(payload["state"], "ready")
             self.assertTrue((directory / "core.sqlite3").is_file())
         finally:
-            shutil.rmtree(directory, ignore_errors=True)
+            cleanup_test_case(self)
 
 
 if __name__ == "__main__":

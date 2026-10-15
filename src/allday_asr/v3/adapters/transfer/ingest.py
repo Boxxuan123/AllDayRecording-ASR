@@ -114,11 +114,7 @@ class V3UploadIngestAdapter:
             )
             if confirmed is not None:
                 return confirmed
-            revision = uow.catalog.connection.execute(
-                "SELECT input_revision, entries_json FROM session_manifest_revisions "
-                "WHERE session_id = ? AND sha256 = ?",
-                (session_id, record.sha256),
-            ).fetchone()
+            revision = uow.catalog.manifest_revision(session_id, record.sha256)
             if revision is not None:
                 entries = json.loads(revision["entries_json"])
                 return {"status": "already_ingested", "session_id": session_id,
@@ -393,16 +389,8 @@ class V3UploadIngestAdapter:
         stored_audio: list[StoredContent],
         device_id: str, session_ref: str, now: datetime,
     ) -> dict[str, Any]:
-        connection = uow.catalog.connection
-        latest = connection.execute(
-            "SELECT input_revision, sha256, entries_json FROM session_manifest_revisions "
-            "WHERE session_id = ? ORDER BY input_revision DESC LIMIT 1",
-            (existing.session_id,),
-        ).fetchone()
-        original = connection.execute(
-            "SELECT sha256, entries_json FROM session_manifests WHERE session_id = ?",
-            (existing.session_id,),
-        ).fetchone()
+        latest = uow.catalog.manifest_revision(existing.session_id)
+        original = uow.catalog.original_manifest(existing.session_id)
         if original is None:
             return confirm_duplicate_completion(
                 uow, existing, manifest, prepared, record, stored_manifest,
@@ -427,12 +415,7 @@ class V3UploadIngestAdapter:
         )
         if len(manifest["chunks"]) <= len(old_chunks) and not confirmation_only:
             raise UploadConflictError("新清单没有连续追加分片，不能替换已确认版本")
-        old_assets = connection.execute(
-            "SELECT s.sequence, a.sha256, a.size_bytes FROM capture_segments s "
-            "JOIN audio_assets a ON a.asset_id = s.asset_id "
-            "WHERE s.session_id = ? ORDER BY s.sequence",
-            (existing.session_id,),
-        ).fetchall()
+        old_assets = uow.catalog.manifest_segments(existing.session_id)
         if len(old_assets) != len(old_chunks) or any(
             int(asset["sequence"]) != index or
             asset["sha256"] != prepared[index][1].sha256 or
@@ -513,27 +496,12 @@ class V3UploadIngestAdapter:
                 _asset_projection(canonical_asset, existing.session_id, index),
             )
 
-        connection.execute(
-            "INSERT INTO session_manifest_revisions "
-            "(session_id,input_revision,sha256,storage_ref,entries_json,reason,created_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (existing.session_id, next_revision, record.sha256,
-             stored_manifest.storage_key,
-             json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-             "verified_append", now.isoformat()),
-        )
+        uow.catalog.append_manifest_revision(existing.session_id, next_revision, record.sha256,
+                                            stored_manifest.storage_key, dict(manifest), now)
         end = started_at + timedelta(milliseconds=_samples_to_ms(
             manifest["totalSamples"], manifest["audio"]["sampleRate"],
         ))
-        connection.execute(
-            "UPDATE recording_sessions SET captured_end=?, revision=?, "
-            "state='admission_pending', status_code='backup_required', "
-            "current_stage='backup_admission', progress=0, "
-            "blocking_reason='backup_restore_evidence_required', updated_at=? "
-            "WHERE session_id=?",
-            (end.isoformat().replace("+00:00", "Z"), existing.revision + 1,
-             now.isoformat().replace("+00:00", "Z"), existing.session_id),
-        )
+        uow.catalog.mark_manifest_append(existing.session_id, existing.revision, end, now)
         refreshed = uow.catalog.get_session(existing.session_id)
         uow.changes.append(
             "recording_session", existing.session_id, refreshed.revision,

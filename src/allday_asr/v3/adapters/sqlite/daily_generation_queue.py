@@ -48,7 +48,7 @@ class DailyGenerationQueue:
                     else "WAITING_UPSTREAM"
                     if state == "UPSTREAM_INCOMPLETE"
                     else "DIRTY_SOURCE_CHANGED"
-                    if "Current day" in item["reason"]
+                    if item.get("reason_code") == "CURRENT_DAY"
                     else "PENDING"
                     if item["needs_backfill"]
                     else "FAILED_TERMINAL"

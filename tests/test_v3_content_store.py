@@ -1,24 +1,23 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import hashlib
-import shutil
 import unittest
-from pathlib import Path
-from uuid import uuid4
 
 from allday_asr.v3.adapters.files import ContentAddressedStore
 
 
-TEST_ROOT = Path(__file__).parent
+TEST_ROOT = TEST_WORKSPACE_ROOT
 
 
 class V3ContentStoreTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.directory = TEST_ROOT / f"v3b-store-{uuid4().hex}"
+        self.directory = test_directory(self, TEST_ROOT, "v3b-store")
         self.store = ContentAddressedStore(self.directory / "content")
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.directory, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_constructor_is_empty_and_repeated_put_is_content_addressed(self) -> None:
         self.assertFalse(self.directory.exists())

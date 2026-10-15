@@ -248,6 +248,17 @@ def test_real_readonly_scoring_cannot_change_identity_enrollment_or_blind(
     other.mkdir()
     manifest(other, [malformed])
     write(other / "before/fingerprints.json", before)
+    connections = []
+
+    def tracked_readonly(state):
+        connection = readonly(state)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr("short_self_evidence.readonly", tracked_readonly)
     with pytest.raises(ValueError, match="malformed"):
         score_partition(core.paths.state_dir, other, "development")
+    assert len(connections) == 1
+    with pytest.raises(Exception, match="closed database"):
+        connections[0].execute("SELECT 1")
     assert not (other / "development-evidence.json").exists()

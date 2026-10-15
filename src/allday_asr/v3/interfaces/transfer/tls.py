@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+from allday_asr.v3.application.file_lock import replace_atomic
+
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -285,7 +287,7 @@ def _atomic_write(path: Path, data: bytes, *, private: bool) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        replace_atomic(temporary, path)
         if private:
             path.chmod(0o600)
     finally:

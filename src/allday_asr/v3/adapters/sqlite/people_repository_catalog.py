@@ -30,7 +30,7 @@ class PeopleCatalogRepositoryMixin:
         actor: str = "system:local-clustering",
         reuse_membership: bool = False,
     ) -> None:
-        from allday_asr.v3.domain.dataset_roles import require_learning
+        from .dataset_role_repository import require_learning
         session = self.connection.execute('SELECT session_id FROM speaker_tracks WHERE speaker_track_id=?',
                                           (embedding.speaker_track_id,)).fetchone()
         require_learning(self.connection, session[0] if session else None)

@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,52 @@ from allday_asr.v3.application.blind_scoring import components, digest
 from allday_asr.v3.adapters.purity_shadow import build_shadow
 from tests.test_enrollment_purity_gate import enrollment_source
 from allday_asr.v3.domain.people import PersonKind, RepresentativeClip, SpeakerEmbedding
+
+
+@pytest.mark.parametrize('winerror', [5, 32])
+def test_report_retries_transient_windows_export_lock(world, monkeypatch, winerror):
+    from allday_asr.v3.application import file_lock
+
+    service = world[2]
+    original_replace = file_lock.os.replace
+    attempts = []
+
+    def locked_once(source, destination):
+        attempts.append(destination)
+        if len(attempts) == 1:
+            error = PermissionError('synthetic Windows export lock')
+            error.winerror = winerror
+            raise error
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(file_lock, 'os', SimpleNamespace(name='nt', replace=locked_once))
+    report = service.report('synthetic-v1')
+    assert report['progress']['generated_events'] == 0
+    assert attempts[0] == attempts[1]
+    assert json.loads((service.output_dir / 'current-report.json').read_text(encoding='utf-8')) == report
+
+
+def test_report_persistent_export_lock_keeps_previous_publication(world, monkeypatch):
+    from allday_asr.v3.application import file_lock
+
+    service = world[2]
+    service.report('synthetic-v1')
+    previous = (service.output_dir / 'current-report.json').read_bytes()
+    ticks = iter([0, 0, 3])
+    attempts = []
+
+    def locked(source, destination):
+        attempts.append(destination)
+        error = PermissionError('synthetic persistent export lock')
+        error.winerror = 32
+        raise error
+
+    monkeypatch.setattr(file_lock, 'os', SimpleNamespace(name='nt', replace=locked))
+    monkeypatch.setattr(file_lock, 'time', SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _: None))
+    with pytest.raises(PermissionError):
+        service.report('synthetic-v1')
+    assert len(attempts) == 2
+    assert (service.output_dir / 'current-report.json').read_bytes() == previous
 
 
 class Provider:

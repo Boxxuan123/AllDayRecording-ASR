@@ -21,9 +21,14 @@ def build_native_model_pipeline(
     requested_profile: str | None = None,
     diarization_model_path: Path | None = None,
     builders: Mapping[str, Callable[..., Any]] | None = None,
+    _in_child: bool = False,
+    artifact_store_path: Path | None = None,
 ) -> NativeModelPipelineAdapter:
     """Compose local model backends while keeping all execution state in V3."""
 
+    if builders is None and not _in_child:
+        from .isolated_native import IsolatedNativeAdapter
+        return IsolatedNativeAdapter(database, audio_store, config, requested_profile, diarization_model_path, artifact_store_path)
     if builders is None:
         from allday_asr.v3.adapters.models.asr_backends import (
             FunAsrNanoBackend,

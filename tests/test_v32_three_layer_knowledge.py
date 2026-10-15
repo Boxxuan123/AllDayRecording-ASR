@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import shutil
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from uuid import uuid4
 
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.application import (
@@ -36,7 +35,7 @@ from allday_asr.v3.domain import (
 )
 
 
-TEST_ROOT = Path(__file__).parent
+TEST_ROOT = TEST_WORKSPACE_ROOT
 SESSION_ID = "01990d5a-7c00-7000-8000-000000000001"
 UTTERANCE_ID = "01990d5a-7c00-7000-8000-000000000002"
 SPEAKER_ID = "01990d5a-7c00-7000-8000-000000000003"
@@ -44,7 +43,7 @@ SPEAKER_ID = "01990d5a-7c00-7000-8000-000000000003"
 
 class V32ThreeLayerKnowledgeTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = TEST_ROOT / f"v32-knowledge-{uuid4().hex}"
+        self.root = test_directory(self, TEST_ROOT, "v32-knowledge")
         self.database = V3Database.open(self.root / "core.sqlite3")
         self.now = datetime(2026, 8, 31, 16, 0, tzinfo=timezone.utc)
         self._seed()
@@ -58,7 +57,7 @@ class V32ThreeLayerKnowledgeTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_model_proposals_do_not_mutate_until_accepted_and_history_is_kept(
         self,

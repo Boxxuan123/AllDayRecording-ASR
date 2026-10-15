@@ -40,7 +40,6 @@ from allday_asr.v3.ports.speaker_embeddings import SpeakerEmbeddingProvider
 from allday_asr.v3.ports.self_identity_matching import SelfIdentityMatcher
 from allday_asr.v3.adapters.blind_validation import BlindValidationService
 from allday_asr.v3.application.daily_automation import DailyGenerationCoordinator
-from allday_asr.v3.application.daily_inventory import generation_version
 
 
 @dataclass(frozen=True)
@@ -209,20 +208,16 @@ def compose_v3_core(
             model=os.environ.get('ALLDAY_V3_DAILY_MODEL') or 'gpt-5.6-luna')
             if selected_codex.enabled else None),
     )
-    daily_automation = None
-    if selected_codex.enabled:
-        def daily_service(day):
-            analyzer = CodexDailySemanticAnalyzer(selected_codex.workdir,
-                model=os.environ.get('ALLDAY_V3_DAILY_MODEL') or 'gpt-5.6-luna',
-                receipt_dir=selected.state_dir / 'daily-generation-receipts' / day)
-            return DailyInsightService(lambda: SqliteUnitOfWork(database),None,daily_analyzer=analyzer)
-        daily_automation = DailyGenerationCoordinator(database,daily_service,
-            generation_version(insights._daily_analyzer),model=insights._daily_analyzer.model_label)
-    def daily_refresh(force=False):
-        insights.refresh_daily_cache(force)
-        if daily_automation is not None:
-            daily_automation.notify('receiver_sync')
-    mobile_sync.daily_refresh = daily_refresh
+    def daily_service(day):
+        analyzer = CodexDailySemanticAnalyzer(selected_codex.workdir,
+            model=os.environ.get('ALLDAY_V3_DAILY_MODEL') or 'gpt-5.6-luna',
+            receipt_dir=selected.state_dir / 'daily-generation-receipts' / day)
+        return DailyInsightService(lambda: SqliteUnitOfWork(database), None, daily_analyzer=analyzer)
+    daily_automation = DailyGenerationCoordinator(
+        database, daily_service, insights.generation_version,
+        model=insights.daily_model_label, local_service=insights,
+        remote_enabled=selected_codex.enabled)
+    mobile_sync.daily_refresh = lambda force=False: daily_automation.notify('receiver_sync')
     return V3Core(
         paths=selected,
         database=database,

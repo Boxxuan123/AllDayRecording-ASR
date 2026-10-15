@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import shutil
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import sqlite3
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from uuid import uuid4
 
 from allday_asr.v3.adapters.sqlite import SqliteUnitOfWork, V3Database
 from allday_asr.v3.application import (
@@ -44,7 +43,7 @@ from allday_asr.v3.domain import (
 )
 
 
-TEST_ROOT = Path(__file__).parent
+TEST_ROOT = TEST_WORKSPACE_ROOT
 NOW = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
 TRACK_IDS = {1: f"{701:026d}", 2: f"{702:026d}"}
 UTTERANCE_IDS = {1: f"{801:026d}", 2: f"{802:026d}"}
@@ -60,7 +59,7 @@ class _UnusedEmbeddingProvider:
 
 class V35CrossDayPersonMemoryTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = TEST_ROOT / f"v35-person-memory-{uuid4().hex}"
+        self.root = test_directory(self, TEST_ROOT, "v35-person-memory")
         self.database = V3Database.open(self.root / "core.sqlite3")
         self.now = NOW
         self.session_ids = {1: new_ulid(), 2: new_ulid()}
@@ -80,6 +79,7 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
             self.knowledge,
             now=lambda: self.now,
         )
+        self.addCleanup(self.people.sample_worker.close)
         self._seed_session(1, self.now - timedelta(days=1), "昨天确认合同时间")
         self._seed_session(2, self.now, "今天答应发送修改稿")
         with self.factory() as uow:
@@ -94,7 +94,7 @@ class V35CrossDayPersonMemoryTests(unittest.TestCase):
         self.knowledge.materialize_evidence(self.session_ids[2])
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_projects_cross_day_fact_and_commitment_with_playable_evidence(
         self,

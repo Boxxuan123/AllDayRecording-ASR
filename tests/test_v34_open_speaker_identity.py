@@ -1,18 +1,17 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import io
 import hashlib
 import json
-import shutil
 import sqlite3
 import threading
 import unittest
 import wave
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest.mock import patch
-from uuid import uuid4
 
 import numpy as np
 
@@ -44,7 +43,7 @@ from allday_asr.v3.interfaces.device_reviews import DeviceReviewService
 from allday_asr.v3.ports.speaker_embeddings import SpeakerClipInput, SpeakerTrackInput
 
 
-TEST_STATE = Path(__file__).parents[1] / "state"
+TEST_STATE = TEST_WORKSPACE_ROOT
 NOW = datetime(2026, 9, 1, 1, 2, 3, tzinfo=timezone.utc)
 NOW_TEXT = NOW.isoformat()
 UTTERANCE_END_TEXT = (NOW + timedelta(seconds=5)).isoformat()
@@ -114,7 +113,7 @@ class FakeCalibratedSelfMatcher:
 
 class V34OpenSpeakerIdentityTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = TEST_STATE / f"v34-people-{uuid4().hex}"
+        self.root = test_directory(self, TEST_STATE, "v34-people")
         self.paths = V3CorePaths.from_state_dir(self.root)
         self.provider = FakeEmbeddingProvider(
             {
@@ -129,6 +128,7 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
             codex_settings=CodexReminderSettings(enabled=False),
             speaker_embedding_provider=self.provider,
         )
+        self.addCleanup(lambda: self.core.close())
         self.assertEqual(self.core.initialize(), LATEST_V3_SCHEMA_VERSION)
         with self.core.database.transaction() as connection:
             # These fixtures specifically exercise the existing learning pipeline.
@@ -143,8 +143,7 @@ class V34OpenSpeakerIdentityTests(unittest.TestCase):
             )
 
     def tearDown(self) -> None:
-        self.core.close()
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_unintelligible_identity_is_independent_and_not_a_sample(self):
         self._seed_track(1)

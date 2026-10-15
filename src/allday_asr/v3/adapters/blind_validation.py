@@ -17,6 +17,7 @@ from allday_asr.v3.adapters.sqlite.dataset_reservations import now, settings
 from allday_asr.v3.ports.speaker_embeddings import SpeakerClipInput, SpeakerTrackInput
 from allday_asr.v3.adapters.sqlite.blind_report import build_report, markdown
 from allday_asr.v3.application.blind_scoring import components, digest, encoded, score, unit
+from allday_asr.v3.application.file_lock import replace_atomic
 from allday_asr.v3.adapters.query_purity import probe, query_features
 
 LOG = logging.getLogger(__name__)
@@ -327,10 +328,10 @@ class BlindValidationService:
                 for filename, value in files.items():
                     temporary = directory / (filename + '.' + uuid4().hex + '.tmp')
                     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-                    temporary.replace(directory / filename)
+                    replace_atomic(temporary, directory / filename)
                 temporary = directory / ('current-report.md.' + uuid4().hex + '.tmp')
                 temporary.write_text(markdown(report), encoding='utf-8')
-                temporary.replace(directory / 'current-report.md')
+                replace_atomic(temporary, directory / 'current-report.md')
             return report
 
     def status(self):

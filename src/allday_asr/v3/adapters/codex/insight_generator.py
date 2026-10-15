@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable
 from importlib.metadata import version
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Event
 from typing import Any
 
 from openai_codex import Codex
@@ -122,6 +122,7 @@ class CodexInsightGenerator:
         receipts = workdir.parent / (f"{workdir.name}.receipts" if codex_factory else "model-execution-receipts")
         self._runner = ModelExecutionRunner(receipts)
         self._lock = RLock()
+        self._cancel_event = Event()
         self.model_label = model or "codex-configured-default"
         self.producer_version = version("openai-codex")
         self.prompt_version = PROMPT_VERSION
@@ -132,7 +133,7 @@ class CodexInsightGenerator:
     ) -> DailyInsightModelResult:
         result = self._run(
             _daily_prompt(request), effort, CODEX_DAILY_INSIGHT_OUTPUT_SCHEMA,
-            batch_id=f"daily:{request.summary_date}",
+            batch_id=f"daily:{request.summary_date}", execution_id=request.execution_id,
         )
         payload = _decode_object(result.final_response, set(DAILY_NARRATIVE_SECTIONS))
         narrative: dict[str, tuple[dict[str, Any], ...]] = {}
@@ -148,6 +149,7 @@ class CodexInsightGenerator:
             turn_id=str(result.id),
             reasoning_effort=effort,
             usage=_usage(result.usage),
+                execution_id=result.execution_id,
         )
 
     def generate_relationship(
@@ -159,7 +161,7 @@ class CodexInsightGenerator:
             _relationship_prompt(request),
             effort,
             CODEX_RELATIONSHIP_INSIGHT_OUTPUT_SCHEMA,
-            batch_id=f"relationship:{request.person.get('person_id', 'unknown')}:{request.end_date}",
+            batch_id=f"relationship:{request.person.get('person_id', 'unknown')}:{request.end_date}", execution_id=request.execution_id,
         )
         payload = _decode_object(result.final_response, {"observations"})
         values = payload["observations"]
@@ -174,9 +176,11 @@ class CodexInsightGenerator:
             turn_id=str(result.id),
             reasoning_effort=effort,
             usage=_usage(result.usage),
+                execution_id=result.execution_id,
         )
 
     def close(self) -> None:
+        self._cancel_event.set()
         with self._lock:
             if self._codex is not None:
                 self._codex.close()
@@ -184,12 +188,13 @@ class CodexInsightGenerator:
 
     def _run(
         self, prompt: str, effort: InsightReasoningEffort, schema: dict[str, Any],
-        *, batch_id: str,
+        *, batch_id: str, execution_id: str | None = None,
     ) -> Any:
         with self._lock:
             workdir = self._prepare_workdir()
             try:
                 result = self._runner.run(
+                    scope_execution=True, execution_id=execution_id, cancel_event=self._cancel_event,
                     task="insight", batch_id=batch_id, prompt=prompt,
                     instructions=_DEVELOPER_INSTRUCTIONS, schema=schema,
                     model=self._model, effort=effort.value, workdir=workdir,

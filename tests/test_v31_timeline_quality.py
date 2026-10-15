@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import json
-import shutil
 import unittest
-from pathlib import Path
-from uuid import uuid4
 
 from typer.testing import CliRunner
 
@@ -66,7 +65,7 @@ class V31TimelineQualityTests(unittest.TestCase):
         self.assertIn("overlap_error_rate_exceeds_limit", decision.blockers)
 
     def test_hashed_receipt_is_deterministic_and_cli_is_machine_readable(self) -> None:
-        directory = Path(__file__).parent / f"v31c-{uuid4().hex}"
+        directory = test_directory(self, TEST_WORKSPACE_ROOT, "v31c")
         directory.mkdir()
         source = directory / "audit.json"
         first = directory / "first.json"
@@ -96,7 +95,7 @@ class V31TimelineQualityTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 0, result.output)
             self.assertTrue(json.loads(result.output)["accepted"])
         finally:
-            shutil.rmtree(directory, ignore_errors=True)
+            cleanup_test_case(self)
 
     def test_seams_must_be_independent_and_predictions_trace_to_joined_chunks(self) -> None:
         document = _accepted_document()

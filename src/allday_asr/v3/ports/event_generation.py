@@ -17,6 +17,7 @@ class SemanticEventModelRequest:
     session_id: str
     captured_timezone: str
     utterances: tuple[dict[str, Any], ...]
+    execution_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class SemanticEventModelResult:
     turn_id: str
     reasoning_effort: SemanticEventReasoningEffort
     usage: dict[str, Any] = field(default_factory=dict)
+    execution_id: str | None = None
 
 
 class SemanticEventModelGenerator(Protocol):

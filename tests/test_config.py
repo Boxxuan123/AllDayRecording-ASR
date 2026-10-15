@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
-from uuid import uuid4
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, test_directory
 
 from allday_asr.v3.model_config import (
     ModelConfigError,
@@ -30,7 +29,9 @@ class ModelConfigTests(unittest.TestCase):
             model_config_from_mapping({"diarization": {"num_speakers": 0}})
 
     def test_custom_toml_is_loaded(self) -> None:
-        path = Path(__file__).parent / f"config-{uuid4().hex}.toml"
+        directory = test_directory(self, TEST_WORKSPACE_ROOT, "config")
+        directory.mkdir()
+        path = directory / "config.toml"
         try:
             path.write_text(
                 """config_version = 1

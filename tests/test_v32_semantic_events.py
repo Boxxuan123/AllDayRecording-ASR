@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import json
-import shutil
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
 
 from openai_codex import ApprovalMode, Sandbox
 from openai_codex.types import ReasoningEffort
@@ -50,7 +49,7 @@ from allday_asr.v3.ports.event_generation import (
 )
 
 
-TEST_ROOT = Path(__file__).parent
+TEST_ROOT = TEST_WORKSPACE_ROOT
 SESSION_ID = "01990d5a-7c00-7000-8000-000000000201"
 UTTERANCE_ID = "01990d5a-7c00-7000-8000-000000000202"
 SPEAKER_ID = "01990d5a-7c00-7000-8000-000000000203"
@@ -58,7 +57,7 @@ SPEAKER_ID = "01990d5a-7c00-7000-8000-000000000203"
 
 class V32SemanticEventTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = TEST_ROOT / f"v32-semantic-events-{uuid4().hex}"
+        self.root = test_directory(self, TEST_ROOT, "v32-semantic-events")
         self.database = V3Database.open(self.root / "core.sqlite3")
         self.current_time = datetime(2026, 8, 31, 16, 0, tzinfo=timezone.utc)
         self._seed()
@@ -73,7 +72,7 @@ class V32SemanticEventTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.root, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_high_confidence_record_event_is_accepted_and_idempotent(self) -> None:
         generator = _FakeSemanticEventGenerator((_decision(),))
@@ -302,13 +301,10 @@ class V32SemanticEventTests(unittest.TestCase):
 
 class V32CodexSemanticEventAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.workdir = TEST_ROOT / f"codex-event-empty-{uuid4().hex}"
+        self.workdir = test_directory(self, TEST_ROOT, "codex-event-empty") / "workdir"
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.workdir, ignore_errors=True)
-        receipts = self.workdir.with_name(f"{self.workdir.name}.receipts").resolve()
-        if receipts.parent == TEST_ROOT.resolve():
-            shutil.rmtree(receipts, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_codex_event_extraction_is_ephemeral_read_only_and_tool_free(self) -> None:
         fake = _FakeCodex({"events": []})

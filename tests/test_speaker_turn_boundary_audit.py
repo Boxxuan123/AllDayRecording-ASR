@@ -1,11 +1,11 @@
 """Guard evidence distinctions in the read-only diagnostic, not production behavior."""
+from contextlib import closing
 
 import importlib.util
-import os
 import sqlite3
 import unittest
 from pathlib import Path
-from tempfile import mkstemp
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, test_directory
 
 SCRIPT = Path(__file__).resolve().parents[1] / "tools/audit_speaker_turn_boundaries.py"
 SPEC = importlib.util.spec_from_file_location("boundary_audit", SCRIPT)
@@ -87,15 +87,11 @@ class BoundaryAuditTest(unittest.TestCase):
         )
 
     def test_database_is_readonly_and_unchanged(self):
-        # Keep fixture inside an explicitly writable output directory on Windows.
-        root = SCRIPT.parents[1] / "outputs"
-        descriptor, filename = mkstemp(
-            prefix="boundary-audit-test-", suffix=".sqlite3", dir=root
-        )
-        os.close(descriptor)
-        path = Path(filename)
+        directory = test_directory(self, TEST_WORKSPACE_ROOT, "boundary-audit")
+        directory.mkdir()
+        path = directory / "core.sqlite3"
         try:
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute("CREATE TABLE evidence(value INTEGER)")
                 connection.execute("INSERT INTO evidence VALUES(1)")
             connection.close()

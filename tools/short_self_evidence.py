@@ -1,5 +1,6 @@
 """Within-event evidence via the existing frozen CAM++ provider and matcher."""
 
+from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
 
@@ -158,91 +159,90 @@ def score_partition(state, output, partition):
         raise ValueError("freeze development-only rules before inspecting holdout")
     manifest = validate_manifest(output)
     events = [e for e in manifest["events"] if e["split"] == partition]
-    c = readonly(state)
-    if integrity(c) != read(output / "before/fingerprints.json"):
-        raise ValueError("production identity/Blind fingerprints changed since prepare")
-    # Validate all source references before any embedding or output write.
-    for e in events:
-        asset = c.execute(
-            """SELECT a.duration_ms,a.media_id,r.storage_key FROM audio_assets a
-            JOIN audio_replicas r USING(asset_id) WHERE a.media_id=? AND r.state='available' AND r.storage_key=?""",
-            (e["media_id"], e["storage_key"]),
-        ).fetchone()
-        if asset is None or not (
-            0 <= e["source_start_ms"] < e["source_end_ms"] <= asset["duration_ms"]
+    with closing(readonly(state)) as c:
+        if integrity(c) != read(output / "before/fingerprints.json"):
+            raise ValueError("production identity/Blind fingerprints changed since prepare")
+        # Validate all source references before any embedding or output write.
+        for e in events:
+            asset = c.execute(
+                """SELECT a.duration_ms,a.media_id,r.storage_key FROM audio_assets a
+                JOIN audio_replicas r USING(asset_id) WHERE a.media_id=? AND r.state='available' AND r.storage_key=?""",
+                (e["media_id"], e["storage_key"]),
+            ).fetchone()
+            if asset is None or not (
+                0 <= e["source_start_ms"] < e["source_end_ms"] <= asset["duration_ms"]
+            ):
+                raise ValueError("malformed or unavailable audio clip")
+        matcher = CalibratedSelfIdentityMatcher(state)
+        loaded, reason = matcher._load()
+        if loaded is None:
+            raise ValueError("frozen matcher unavailable: " + reason)
+        _, references, _ = loaded
+        others = []
+        for pid, vector in SqlitePeopleRepository(c).person_vectors(
+            "FunASR/CAM++", "v1-local"
         ):
-            raise ValueError("malformed or unavailable audio clip")
-    matcher = CalibratedSelfIdentityMatcher(state)
-    loaded, reason = matcher._load()
-    if loaded is None:
-        raise ValueError("frozen matcher unavailable: " + reason)
-    _, references, _ = loaded
-    others = []
-    for pid, vector in SqlitePeopleRepository(c).person_vectors(
-        "FunASR/CAM++", "v1-local"
-    ):
-        v = np.asarray(vector, dtype=np.float32)
-        if np.isfinite(v).all() and np.linalg.norm(v) > 0:
-            others.append((pid, v / np.linalg.norm(v)))
-    all_tracks = []
-    event_tracks = {}
-    for e in events:
-        start, end = e["source_start_ms"], e["source_end_ms"]
-        ranges = [("full", start, end)] + [
-            (f"crop:{i}", a, b) for i, (a, b) in enumerate(crop_ranges(start, end))
-        ]
-        if end - start >= 4000:
-            mid = (start + end) // 2
-            ranges.extend([("independent:0", start, mid), ("independent:1", mid, end)])
-        pairs = []
-        for label, a, b in ranges:
-            track = SpeakerTrackInput(
-                e["event_id"] + "|" + label,
-                e["session_id"],
-                (
-                    SpeakerClipInput(
-                        e["media_id"], e["storage_key"], a, b, e["utterance_id"]
+            v = np.asarray(vector, dtype=np.float32)
+            if np.isfinite(v).all() and np.linalg.norm(v) > 0:
+                others.append((pid, v / np.linalg.norm(v)))
+        all_tracks = []
+        event_tracks = {}
+        for e in events:
+            start, end = e["source_start_ms"], e["source_end_ms"]
+            ranges = [("full", start, end)] + [
+                (f"crop:{i}", a, b) for i, (a, b) in enumerate(crop_ranges(start, end))
+            ]
+            if end - start >= 4000:
+                mid = (start + end) // 2
+                ranges.extend([("independent:0", start, mid), ("independent:1", mid, end)])
+            pairs = []
+            for label, a, b in ranges:
+                track = SpeakerTrackInput(
+                    e["event_id"] + "|" + label,
+                    e["session_id"],
+                    (
+                        SpeakerClipInput(
+                            e["media_id"], e["storage_key"], a, b, e["utterance_id"]
+                        ),
                     ),
-                ),
-            )
-            pairs.append((label, track))
-            all_tracks.append(track)
-        event_tracks[e["event_id"]] = pairs
-    write(
-        output / f"{partition}-inputs.json",
-        {
-            "manifest_sha256": digest(output / "split-manifest.json"),
-            "inference_protocol": "existing provider/preprocessor, existing CAM++; batch_size=1 to prevent cross-event padding from masquerading as crop instability",
-            "tracks": [asdict(t) for t in all_tracks],
-        },
-    )
-    backend = SingleBatchBackend(FunASRBackend(device="cpu"))
-    provider = FunASRSpeakerEmbeddingProvider(
-        ContentAddressedStore(state / "audio"),
-        backend_factory=lambda: backend,
-        temp_root=output / "clips",
-    )
-    print(
-        f"SCORING {partition}: {len(events)} events, {len(all_tracks)} within-event windows",
-        flush=True,
-    )
-    # Bounded chunks, same single-waveform model protocol in every partition.
-    embeddings = {}
-    for offset in range(0, len(all_tracks), 64):
-        batch = provider.embed(tuple(all_tracks[offset : offset + 64]))
-        embeddings.update({e.speaker_track_id: e for e in batch})
+                )
+                pairs.append((label, track))
+                all_tracks.append(track)
+            event_tracks[e["event_id"]] = pairs
+        write(
+            output / f"{partition}-inputs.json",
+            {
+                "manifest_sha256": digest(output / "split-manifest.json"),
+                "inference_protocol": "existing provider/preprocessor, existing CAM++; batch_size=1 to prevent cross-event padding from masquerading as crop instability",
+                "tracks": [asdict(t) for t in all_tracks],
+            },
+        )
+        backend = SingleBatchBackend(FunASRBackend(device="cpu"))
+        provider = FunASRSpeakerEmbeddingProvider(
+            ContentAddressedStore(state / "audio"),
+            backend_factory=lambda: backend,
+            temp_root=output / "clips",
+        )
         print(
-            f"{partition} windows {min(offset + 64, len(all_tracks))}/{len(all_tracks)}",
+            f"SCORING {partition}: {len(events)} events, {len(all_tracks)} within-event windows",
             flush=True,
         )
-    result = [
-        features(
-            e, embeddings, event_tracks[e["event_id"]], matcher, references, others
-        )
-        for e in events
-    ]
-    assert integrity(c) == read(output / "before/fingerprints.json")
-    c.close()
+        # Bounded chunks, same single-waveform model protocol in every partition.
+        embeddings = {}
+        for offset in range(0, len(all_tracks), 64):
+            batch = provider.embed(tuple(all_tracks[offset : offset + 64]))
+            embeddings.update({e.speaker_track_id: e for e in batch})
+            print(
+                f"{partition} windows {min(offset + 64, len(all_tracks))}/{len(all_tracks)}",
+                flush=True,
+            )
+        result = [
+            features(
+                e, embeddings, event_tracks[e["event_id"]], matcher, references, others
+            )
+            for e in events
+        ]
+        assert integrity(c) == read(output / "before/fingerprints.json")
     report = {
         "manifest_sha256": digest(output / "split-manifest.json"),
         "partition": partition,

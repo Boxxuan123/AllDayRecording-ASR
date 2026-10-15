@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Any
 
 
-PROJECTION_VERSION = 5
+PROJECTION_VERSION = 6
 MAX_SYNC_OPERATIONS = 500
 MAX_SYNC_CHANGES = 500
 
@@ -98,7 +98,11 @@ class OperationReceipt:
             "status": self.status.value,
             "resource_revision": self.resource_revision,
             "error": self.error,
-            **({"resource_results": list(self.resource_results)} if self.resource_results is not None else {}),
+            **(
+                {"resource_results": list(self.resource_results)}
+                if self.resource_results is not None
+                else {}
+            ),
         }
 
 
@@ -130,7 +134,9 @@ class SyncRequest:
             raise ValueError("pull_limit is outside the supported range")
         if type(self.bootstrap) is not bool:
             raise ValueError("bootstrap must be a boolean")
-        if self.pull_bytes is not None and (type(self.pull_bytes) is not int or not 16384 <= self.pull_bytes <= 1048576):
+        if self.pull_bytes is not None and (
+            type(self.pull_bytes) is not int or not 16384 <= self.pull_bytes <= 1048576
+        ):
             raise ValueError("pull_bytes must be between 16384 and 1048576")
 
 

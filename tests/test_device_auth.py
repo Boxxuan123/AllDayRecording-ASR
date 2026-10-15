@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, workspace_directory
+
 import base64
 import json
-import shutil
 import struct
 import threading
 import unittest
@@ -10,8 +11,9 @@ import urllib.error
 import urllib.request
 from http import HTTPStatus
 from contextlib import contextmanager
-from pathlib import Path
-from uuid import uuid4
+from types import SimpleNamespace
+
+import pytest
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -39,12 +41,58 @@ def _b64(value: bytes) -> str:
 
 @contextmanager
 def _workspace_directory():
-    path = Path(__file__).parent / f"device-auth-{uuid4().hex}"
-    path.mkdir()
-    try:
+    with workspace_directory(TEST_WORKSPACE_ROOT, "device-auth") as path:
         yield path
-    finally:
-        shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.mark.parametrize('winerror', [5, 32])
+def test_credential_registration_retries_transient_lock(tmp_path, monkeypatch, winerror):
+    from allday_asr.v3.application import file_lock
+
+    store = DeviceCredentialStore(tmp_path / 'devices.json')
+    original_replace = file_lock.os.replace
+    attempts = []
+
+    def locked_once(source, destination):
+        attempts.append(destination)
+        if len(attempts) == 1:
+            error = PermissionError('synthetic credential file lock')
+            error.winerror = winerror
+            raise error
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(file_lock, 'os', SimpleNamespace(name='nt', replace=locked_once))
+    key = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    registered = store.register(device_name='Synthetic phone', algorithm=DEVICE_ALGORITHM,
+                                public_key=_b64(key), passkey_credential_id='synthetic-passkey')
+    assert len(attempts) == 2
+    assert store.get(registered.device_id) == registered
+
+
+def test_persistent_credential_write_failure_preserves_registry(tmp_path, monkeypatch):
+    from allday_asr.v3.application import file_lock
+
+    store = DeviceCredentialStore(tmp_path / 'devices.json')
+    previous = store.path.read_bytes()
+    ticks = iter([0, 0, 3])
+    attempts = []
+
+    def locked(source, destination):
+        attempts.append(destination)
+        error = PermissionError('synthetic persistent credential lock')
+        error.winerror = 5
+        raise error
+
+    monkeypatch.setattr(file_lock, 'os', SimpleNamespace(name='nt', replace=locked))
+    monkeypatch.setattr(file_lock, 'time', SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _: None))
+    key = ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    with pytest.raises(PermissionError):
+        store.register(device_name='Synthetic phone', algorithm=DEVICE_ALGORITHM,
+                       public_key=_b64(key), passkey_credential_id='synthetic-passkey')
+    assert len(attempts) == 2
+    assert store.path.read_bytes() == previous
 
 
 class DeviceAuthTests(unittest.TestCase):

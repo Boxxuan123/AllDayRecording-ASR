@@ -11,8 +11,12 @@ LOG = logging.getLogger(__name__)
 
 
 class AnnotationSampleWorker:
-    def __init__(self, people):
+    def __init__(self, people, *, maximum_run_seconds=3600, lease_renew_interval=30):
         self.people = people
+        self.maximum_run_seconds = maximum_run_seconds
+        self.lease_renew_interval = lease_renew_interval
+        self.last_success = None
+        self.last_error = None
         self.stop_event = threading.Event()
         self.thread = None
         self.lock = threading.Lock()
@@ -31,13 +35,30 @@ class AnnotationSampleWorker:
         self.stop_event.set()
         if self.thread:
             self.thread.join(timeout=2)
+            if self.thread.is_alive():
+                self.last_error = 'shutdown_incomplete'
+
+    def health(self):
+        with self.people._uow_factory().reading() as uow:
+            backlog = uow.people.sample_queue_health(time.time())
+        running = self.thread is not None and self.thread.is_alive()
+        return {**backlog, 'state': 'failed' if self.last_error else 'running' if running else 'stopped',
+                'last_success': self.last_success, 'last_error': self.last_error}
 
     def _loop(self):
+        failures = 0
         while not self.stop_event.wait(1):
             try:
                 self.run_pending(limit=4)
+                failures = 0
             except Exception:
-                LOG.exception("annotation sample worker iteration failed")
+                self.last_error = "worker_iteration_failed"
+                from .failure_diagnostics import log_failure
+                import sys
+                log_failure(LOG, sys.exception(), worker="annotation_samples")
+                failures += 1
+                if failures >= 3:
+                    return
 
     def run_pending(self, limit=20):
         if not self.lock.acquire(blocking=False):
@@ -48,6 +69,8 @@ class AnnotationSampleWorker:
             self.lock.release()
 
     def _run_pending(self, limit):
+        if self.stop_event.is_set():
+            return []
         service = self.people
         provider = service._provider
         model, version = provider.model, provider.model_version
@@ -55,6 +78,8 @@ class AnnotationSampleWorker:
             uow.people.refresh_sample_model(model, version)
         results = []
         for _ in range(limit):
+            if self.stop_event.is_set():
+                break
             token = new_ulid()
             claim_started = time.perf_counter()
             with service._uow_factory() as uow:
@@ -68,6 +93,25 @@ class AnnotationSampleWorker:
                 (time.perf_counter() - claim_started) * 1000,
             )
             started = time.perf_counter()
+            renew_stop, lease_lost = threading.Event(), threading.Event()
+            deadline = time.monotonic() + self.maximum_run_seconds
+
+            def renew(current_job=job, owner=token, halted=renew_stop, lost=lease_lost, expires=deadline):
+                while not halted.wait(self.lease_renew_interval):
+                    if self.stop_event.is_set() or time.monotonic() >= expires:
+                        lost.set()
+                        return
+                    try:
+                        with service._uow_factory() as uow:
+                            if not uow.people.renew_sample_job(current_job['session_id'], current_job['generation'], owner, time.time()):
+                                lost.set()
+                                return
+                    except Exception:
+                        lost.set()
+                        return
+
+            renew_thread = threading.Thread(target=renew, daemon=True)
+            renew_thread.start()
             try:
                 with service._uow_factory().reading() as uow:
                     snapshot = uow.people.annotation_sample_snapshot(session_id)
@@ -87,6 +131,8 @@ class AnnotationSampleWorker:
                     len(snapshot.facts),
                 )
             except Exception:
+                renew_stop.set()
+                renew_thread.join(timeout=2)
                 with service._uow_factory() as uow:
                     uow.people.finish_sample_job(
                         session_id,
@@ -127,16 +173,22 @@ class AnnotationSampleWorker:
                         "not_applicable",
                         reason or "no_eligible_person_evidence",
                     )
-            except FileNotFoundError as exc:
-                status, reason = "missing_audio", str(exc)
+            except FileNotFoundError:
+                status, reason = "missing_audio", "audio_unavailable"
             except Exception as exc:
-                status, reason = "retryable", str(exc)
+                from .failure_diagnostics import log_failure
+                log_failure(LOG, exc, session_id=session_id, job_id=token)
+                status, reason = "retryable", type(exc).__name__
+            renew_stop.set()
+            renew_thread.join(timeout=2)
             publish_started = time.perf_counter()
             with service._uow_factory() as uow:
                 revision = uow.people.annotation_input_revision()
                 lease = uow.people.sample_job(session_id)
                 valid = (
-                    lease.get("token") == token
+                    not self.stop_event.is_set() and not lease_lost.is_set()
+                    and time.monotonic() < deadline
+                    and lease.get("token") == token
                     and lease.get("generation") == job["generation"]
                     and revision == snapshot.revision
                     and lease.get("lease_until", 0) >= time.time()
@@ -178,6 +230,8 @@ class AnnotationSampleWorker:
                 (time.perf_counter() - publish_started) * 1000,
                 status,
             )
+            self.last_success = time.time() if status == "processed" else self.last_success
+            self.last_error = reason if status == "retryable" else None
             results.append(
                 {"session_id": session_id, "status": status, "reason": reason}
             )

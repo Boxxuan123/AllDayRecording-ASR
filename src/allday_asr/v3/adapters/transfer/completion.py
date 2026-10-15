@@ -55,14 +55,8 @@ def confirm_duplicate_completion(
     started_at = datetime.fromtimestamp(manifest["sessionStartedAt"] / 1000, tz=timezone.utc)
     if canonical.captured_start != started_at:
         raise UploadConflictError("重复录音的开始时间与正式记录不同")
-    connection = uow.catalog.connection
-    latest = connection.execute(
-        "SELECT input_revision, sha256, entries_json FROM session_manifest_revisions "
-        "WHERE session_id=? ORDER BY input_revision DESC LIMIT 1", (canonical_id,),
-    ).fetchone()
-    original = connection.execute(
-        "SELECT sha256, entries_json FROM session_manifests WHERE session_id=?", (canonical_id,),
-    ).fetchone()
+    latest = uow.catalog.manifest_revision(canonical_id)
+    original = uow.catalog.original_manifest(canonical_id)
     if original is None:
         raise UploadConflictError("重复录音的正式记录缺少可核验的清单")
     previous = json.loads((latest or original)["entries_json"])
@@ -77,11 +71,7 @@ def confirm_duplicate_completion(
             or manifest["totalSamples"] != previous.get("totalSamples", previous.get("duration_samples"))
             or manifest["completedSegments"] != previous.get("completedSegments", previous.get("chunk_count"))):
         raise UploadConflictError("重复录音的格式或样本总量与正式记录不同")
-    segments = connection.execute(
-        "SELECT s.sequence,s.start_sample,s.session_start_ms,s.session_end_ms,a.sha256,a.size_bytes "
-        "FROM capture_segments s JOIN audio_assets a ON a.asset_id=s.asset_id "
-        "WHERE s.session_id=? ORDER BY s.sequence", (canonical_id,),
-    ).fetchall()
+    segments = uow.catalog.manifest_segments(canonical_id)
     rate = manifest["audio"]["sampleRate"]
     if len(segments) != len(prepared) or any(
         int(segment["sequence"]) != index

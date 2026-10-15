@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, workspace_directory
+
 import base64
 import hashlib
 import json
-import shutil
 import ssl
 import threading
 import unittest
@@ -11,8 +12,9 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from http import HTTPStatus
-from pathlib import Path
-from uuid import uuid4
+from types import SimpleNamespace
+
+import pytest
 
 import cbor2
 from cryptography import x509
@@ -173,12 +175,8 @@ def _decode_base64url(value: str) -> bytes:
 
 @contextmanager
 def _workspace_directory():
-    path = Path(__file__).parent / f"transfer-{uuid4().hex}"
-    path.mkdir()
-    try:
+    with workspace_directory(TEST_WORKSPACE_ROOT, "transfer") as path:
         yield path
-    finally:
-        shutil.rmtree(path, ignore_errors=True)
 
 
 class UploadStoreTests(unittest.TestCase):
@@ -901,3 +899,46 @@ class TransferServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize('winerror,private', [(5, False), (32, True)])
+def test_tls_publication_retries_transient_windows_lock(tmp_path, monkeypatch, winerror, private):
+    from allday_asr.v3.application import file_lock
+    from allday_asr.v3.interfaces.transfer.tls import _atomic_write
+    path = tmp_path / 'synthetic.pem'
+    _atomic_write(path, b'previous synthetic PEM', private=private)
+    original_replace = file_lock.os.replace
+    attempts = []
+    def locked_once(source, destination):
+        attempts.append(destination)
+        if len(attempts) == 1:
+            error = PermissionError('synthetic TLS file lock')
+            error.winerror = winerror
+            raise error
+        return original_replace(source, destination)
+    monkeypatch.setattr(file_lock, 'os', SimpleNamespace(name='nt', replace=locked_once))
+    _atomic_write(path, b'replacement synthetic PEM', private=private)
+    assert len(attempts) == 2
+    assert path.read_bytes() == b'replacement synthetic PEM'
+    assert not path.with_name('.synthetic.pem.tmp').exists()
+
+
+def test_tls_persistent_publication_error_preserves_previous_pem(tmp_path, monkeypatch):
+    from allday_asr.v3.application import file_lock
+    from allday_asr.v3.interfaces.transfer.tls import _atomic_write
+    path = tmp_path / 'synthetic.pem'
+    _atomic_write(path, b'previous synthetic PEM', private=True)
+    attempts = []
+    ticks = iter([0, 0, 3])
+    def locked(source, destination):
+        attempts.append(destination)
+        error = PermissionError('synthetic persistent TLS file lock')
+        error.winerror = 32
+        raise error
+    monkeypatch.setattr(file_lock, 'os', SimpleNamespace(name='nt', replace=locked))
+    monkeypatch.setattr(file_lock, 'time', SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _: None))
+    with pytest.raises(PermissionError):
+        _atomic_write(path, b'must not replace synthetic PEM', private=True)
+    assert len(attempts) == 2
+    assert path.read_bytes() == b'previous synthetic PEM'
+    assert not path.with_name('.synthetic.pem.tmp').exists()

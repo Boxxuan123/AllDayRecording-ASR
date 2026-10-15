@@ -32,6 +32,7 @@ from .desktop_http_contract import (
     _RELATIONSHIP_OBSERVATION_REVISE_ROUTE,
     _RELATIONSHIP_OBSERVATION_UNDO_ROUTE,
     _REMINDER_CONFIRM_ROUTE,
+    _REMINDER_PRODUCT_RECOVERY_ROUTE,
     _REMINDER_DELIVER_ROUTE,
     _REMINDER_IGNORE_ROUTE,
     _REMINDER_MODIFY_ROUTE,
@@ -69,6 +70,8 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
         if not self._authorized_mutation():
             return
         body = self._read_json()
+        if self._dispatch_chat_post(path, body):
+            return
         if self._dispatch_annotation_post(path, body):
             return
         if match := _AUTOMATIC_WORKFLOW_RETRY_ROUTE.fullmatch(path):
@@ -422,8 +425,8 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
                 ),
             )
             return
-        if path == "/api/v3/reminder-generations/codex":
-            if set(body) not in ({"session_id"}, {"session_id", "reasoning_effort"}):
+        if path in {"/api/v3/reminder-generations/codex", "/api/v3/semantic-event-generations/codex"}:
+            if not {"session_id"}.issubset(body) or set(body) - {"session_id", "reasoning_effort", "execution_id"}:
                 raise ValueError("Codex reminder generation fields are invalid")
             session_id = body.get("session_id")
             effort = body.get("reasoning_effort")
@@ -431,11 +434,16 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
                 raise ValueError("Codex reminder generation session_id is required")
             if effort is not None and not isinstance(effort, str):
                 raise ValueError("Codex reminder reasoning_effort is invalid")
+            execution_id = body.get("execution_id")
+            if execution_id is not None and (not isinstance(execution_id, str) or not execution_id):
+                raise ValueError("execution_id must be a nonempty string")
+            service = self.application.core.semantic_events if "semantic-event" in path else self.application.core.reminder_extraction
             self._send_json(
                 HTTPStatus.ACCEPTED,
-                self.application.core.reminder_extraction.extract(
+                service.extract(
                     session_id,
                     reasoning_effort=effort,
+                    execution_id=execution_id,
                 ),
             )
             return
@@ -455,6 +463,11 @@ class DesktopPostRoutesMixin(DesktopAnnotationRoutesMixin):
                 unquote(match.group(1)), "desktop-user", reason
             )
             self._send_json(HTTPStatus.OK, resolution.as_dict())
+            return
+        if match := _REMINDER_PRODUCT_RECOVERY_ROUTE.fullmatch(path):
+            if body:
+                raise ValueError('product recovery body must be empty; inspect eligibility first')
+            self._send_json(HTTPStatus.ACCEPTED, self.application.core.reminder_extraction.recover_product(unquote(match.group(1)), 'desktop-user'))
             return
         if match := _REMINDER_CONFIRM_ROUTE.fullmatch(path):
             if body:

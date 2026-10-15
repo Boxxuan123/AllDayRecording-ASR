@@ -151,7 +151,8 @@
         "review_item",
         "reminder",
         "daily_event",
-        "daily_summary"
+        "daily_summary",
+        "chat_followup"
       ]
     },
     "ApiError": {

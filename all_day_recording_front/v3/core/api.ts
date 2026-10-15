@@ -73,11 +73,11 @@ function recoverDesktopSession(): Promise<boolean> {
   return sessionRecovery
 }
 
-async function request<T>(path: string, init?: RequestInit, recovered = false): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit, recovered = false): Promise<T> {
   if (mock) return mockRequest<T>(path, init)
   // Generated reports and other writes can take longer; bound ordinary reads.
   const signal = (init?.method ?? 'GET') === 'GET'
-    ? AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(15_000)])
+    ? AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(path.startsWith('/api/v3/chat/') ? 55_000 : 15_000)])
     : init?.signal
   const response = await fetch(path, {
     credentials: 'same-origin',
@@ -193,6 +193,9 @@ export const desktopApi = {
   ignoreReminder: (candidateId: string, reason: string) => request(`/api/v3/reminder-candidates/${encodeURIComponent(candidateId)}/ignore`, { method: 'POST', body: JSON.stringify({ reason }) }),
   devices: () => request<{ items: DeviceSummary[] }>('/api/v3/devices'),
   dataHealth: () => request<DataHealth>('/api/v3/data-health'),
+  diagnostics: () => request<{ build: { release_version: string; git_commit: string };
+    frontend_build: object; contract_version: string; database_schema_version: number;
+    devices: object }>('/api/v3/diagnostics'),
   settings: () => request<DesktopSettings>('/api/v3/settings'),
   lab: () => request<{ enabled: boolean; label: string; message: string }>('/api/v3/lab'),
   classifySegments: (selections: Array<{ utterance_id: string; revision: number }>, soundKind: string) =>

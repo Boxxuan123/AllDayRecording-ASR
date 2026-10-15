@@ -157,6 +157,13 @@ class ReminderQueryMixin:
                 in {ReminderOperation.CREATE_TASK, ReminderOperation.CREATE_APPOINTMENT}
                 else None
             )
+            generation = uow.knowledge.get_generation(candidate.generation_id)
+            if duplicate is not None and not duplicate['event_id'] and 'revises_candidate_id' in generation.input_scope:
+                from .reminder_edit_sources import validate_generation_sources
+                proposal = uow.knowledge.get_proposal(candidate.proposal_id)
+                ancestors = validate_generation_sources(uow, generation, proposal)
+                if duplicate['candidate_id'] in {parent.candidate_id for parent in ancestors}:
+                    duplicate = None
             can_auto_apply = allow_auto_apply and self._auto_apply_allowed(
                 uow, candidate
             )

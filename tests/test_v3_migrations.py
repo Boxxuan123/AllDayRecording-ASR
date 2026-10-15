@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import shutil
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import json
 import sqlite3
 import unittest
-from pathlib import Path
-from uuid import uuid4
+from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 from allday_asr.v3.adapters.sqlite import (
     LATEST_V3_SCHEMA_VERSION,
@@ -17,15 +19,15 @@ from allday_asr.v3.bootstrap import V3CorePaths, compose_v3_core
 from allday_asr.v3.adapters.sqlite.migrations import MIGRATIONS
 
 
-TEST_ROOT = Path(__file__).parent
+TEST_ROOT = TEST_WORKSPACE_ROOT
 
 
 class V3MigrationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.directory = TEST_ROOT / f"v3b-migration-{uuid4().hex}"
+        self.directory = test_directory(self, TEST_ROOT, "v3b-migration")
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.directory, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_composition_and_database_constructor_have_no_io(self) -> None:
         paths = V3CorePaths.from_state_dir(self.directory)
@@ -82,6 +84,57 @@ class V3MigrationTests(unittest.TestCase):
             }.issubset(tables)
         )
         self.assertNotIn("source_objects", tables)
+
+    def test_concurrent_initializers_recheck_migrations_under_writer_lock(self) -> None:
+        for starting_version in (0, 28):
+            with self.subTest(starting_version=starting_version):
+                path = self.directory / f"concurrent-{starting_version}.sqlite3"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if starting_version:
+                    V3MigrationRunner(
+                        path,
+                        migrations=[m for m in MIGRATIONS if m.version <= starting_version],
+                    ).initialize()
+                else:
+                    # Prepare WAL as the normal connection setup does, leaving
+                    # the schema empty for the simultaneous first migration.
+                    with closing(sqlite3.connect(path)) as connection, connection:
+                        connection.execute("PRAGMA journal_mode = WAL")
+                barrier = Barrier(2)
+
+                class ConcurrentRunner(V3MigrationRunner):
+                    def _apply(
+                        self, connection, migration, *,
+                        first_version=starting_version + 1, startup_barrier=barrier,
+                    ):
+                        if migration.version == first_version:
+                            # Both services saw the same old version before
+                            # either acquired the migration's writer lock.
+                            startup_barrier.wait(timeout=10)
+                        super()._apply(connection, migration)
+
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [
+                        executor.submit(ConcurrentRunner(path).initialize)
+                        for _ in range(2)
+                    ]
+                    self.assertEqual(
+                        [future.result(timeout=30) for future in futures],
+                        [LATEST_V3_SCHEMA_VERSION] * 2,
+                    )
+                with closing(sqlite3.connect(path)) as connection, connection:
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT version, name, sha256 FROM schema_migrations "
+                            "ORDER BY version"
+                        ).fetchall(),
+                        [(m.version, m.name, m.sha256)
+                         for m in sorted(MIGRATIONS, key=lambda m: m.version)],
+                    )
+                    self.assertEqual(
+                        connection.execute("PRAGMA integrity_check").fetchone(),
+                        ("ok",),
+                    )
 
     def test_failed_migration_rolls_back_its_schema_and_version(self) -> None:
         path = self.directory / "core.sqlite3"
@@ -181,11 +234,9 @@ class V3MigrationTests(unittest.TestCase):
 
         V3Database(path).initialize()
 
-        with sqlite3.connect(path) as migrated:
+        with closing(sqlite3.connect(path)) as migrated, migrated:
             payload = json.loads(
-                migrated.execute(
-                    "SELECT payload_json FROM change_events"
-                ).fetchone()[0]
+                migrated.execute("SELECT payload_json FROM change_events").fetchone()[0]
             )
         self.assertEqual(payload["session_id"], "session-1")
         self.assertEqual(payload["status_code"], "ready")
@@ -369,7 +420,7 @@ class V3MigrationTests(unittest.TestCase):
         self.assertEqual(utterance["original_text"], "模型文本")
         self.assertEqual(utterance["start_at"], "2026-08-31T02:00:00.125Z")
         self.assertEqual(utterance["end_at"], "2026-08-31T02:00:00.900Z")
-        self.assertEqual(tuple(cursor), (5, 0))
+        self.assertEqual(tuple(cursor), (6, 0))
         self.assertEqual(utterance["identity"], "unknown")
         self.assertEqual(utterance["original_identity"], "unknown")
         self.assertEqual(

@@ -92,6 +92,9 @@ def analyze_daily(service, rows, *, allow_model=True):
                     break
                 except Exception as exc:
                     if attempt == 1 or not retry_allowed(exc):
+                        if isinstance(exc, ValueError):
+                            from .failure_diagnostics import ProviderOutputInvalid
+                            raise ProviderOutputInvalid('daily semantic response rejected') from exc
                         raise
                     request = {
                         **payload,

@@ -6,8 +6,8 @@ generated decoders, but they must not redefine server enums or resource shapes.
 
 ## Versioning
 
-- Contract version: `3.7.0`
-- Mobile projection version: `4`
+- Contract version: `3.9.0`
+- Mobile projection version: `6`
 - JSON Schema dialect: 2020-12
 - OpenAPI version: 3.1
 
@@ -65,3 +65,7 @@ new API path and contract major version.
 The OpenAPI documents deliberately have disjoint paths and security schemes:
 Desktop endpoints live under `/api/v3`, while paired-device endpoints live under
 `/device/v3` and declare their required device scopes.
+
+## V3.9 chat followups
+
+Projection 6 adds accepted independent chat_followup resources and chat.followup operations on the existing Event revision and sync receipt path. Chat evidence uses source_type=chat_record; recording identifiers remain absent. Only explicitly enabled chat reminders have nullable session_id/source_candidate_id and chat_record source_type; recording schedules retain their original identifiers. Core migration 33 and Phone projection migration 20 preserve acknowledged cursors, queued operations and Calendar bindings. Upgrade the Phone consumer with the server; projection 5 requests are rejected explicitly. Relative-time record_id is optional for saved legacy responses and never changes the stable anchor.

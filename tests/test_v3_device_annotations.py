@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import base64
-import shutil
-from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 
@@ -12,8 +9,8 @@ from allday_asr.v3.interfaces.device_annotations import DeviceAnnotationService
 from allday_asr.v3.interfaces.transfer.http_review_routes import dispatch_review_post
 
 
-def test_audio_assembles_session_offsets_across_files_and_cleans_up(monkeypatch):
-    root = Path(__file__).parent / f"annotation-audio-{uuid4().hex}"
+def test_audio_assembles_session_offsets_across_files_and_cleans_up(monkeypatch, tmp_path):
+    root = tmp_path
     seen = []
 
     def descriptors(session_id, start, end):
@@ -37,26 +34,23 @@ def test_audio_assembles_session_offsets_across_files_and_cleans_up(monkeypatch)
     monkeypatch.setattr(
         "allday_asr.v3.interfaces.device_annotations.assemble_audio_clips", assemble
     )
-    try:
-        result = DeviceAnnotationService(core).execute(
-            "phone",
-            {
-                "action": "audio",
-                "session_id": "session",
-                "start_ms": 9000,
-                "end_ms": 12000,
-            },
-        )
-        assert [(c.start_ms, c.end_ms) for c in seen] == [(9000, 10000), (0, 2000)]
-        assert result["audio"]["start_ms"] == 0
-        assert result["audio"]["end_ms"] == 3000
-        assert (
-            base64.urlsafe_b64decode(result["audio"]["data_base64url"] + "==")
-            == b"RIFFjoined"
-        )
-        assert not list(root.rglob("*.wav"))
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
+    result = DeviceAnnotationService(core).execute(
+        "phone",
+        {
+            "action": "audio",
+            "session_id": "session",
+            "start_ms": 9000,
+            "end_ms": 12000,
+        },
+    )
+    assert [(c.start_ms, c.end_ms) for c in seen] == [(9000, 10000), (0, 2000)]
+    assert result["audio"]["start_ms"] == 0
+    assert result["audio"]["end_ms"] == 3000
+    assert (
+        base64.urlsafe_b64decode(result["audio"]["data_base64url"] + "==")
+        == b"RIFFjoined"
+    )
+    assert not list(root.rglob("*.wav"))
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,7 @@ from allday_asr.v3.domain.reminders import (
 from .knowledge import KnowledgeArchitectureService
 from .reminder_apply import ReminderApplyMixin
 from .reminder_support import _datetime, _parse_datetime, _candidate_dedup_key
+from .reminder_edit_sources import validate_generation_sources, finalize_edit_sources
 
 
 def apply_reminder_operation(operation, uow, now: datetime):
@@ -32,19 +33,17 @@ def apply_reminder_operation(operation, uow, now: datetime):
         uow.reminders.resolve_candidate(candidate.candidate_id, "ignored", None, "phone_ignored", _datetime(now), actor)
         ReminderApplyMixin._feedback(uow, candidate.candidate_id, ReminderFeedbackAction.IGNORE, actor, {}, now)
         return OperationReceipt(operation.operation_id, ClientOperationStatus.APPLIED, 1, None)
-    original = candidate
     if changes or operation.kind == "reminder.task":
         candidate, proposal = _manual_proposal(operation, uow, candidate, proposal, changes, now)
+    generation = uow.knowledge.get_generation(candidate.generation_id)
+    edit_ancestors = validate_generation_sources(uow, generation, proposal) if operation.kind == 'reminder.review' else ()
     knowledge = KnowledgeArchitectureService(lambda: None)
     resolution = knowledge._accept_event(uow, proposal, actor, now)
     uow.knowledge.resolve_proposal(proposal.proposal_id, "accepted", _datetime(now), actor, None)
     ReminderApplyMixin._apply_candidate(uow, candidate, resolution,
         ReminderCandidateStatus.CONFIRMED, ReminderFeedbackAction.CONFIRM, actor, now)
-    if operation.kind == "reminder.review" and changes:
-        uow.knowledge.resolve_proposal(original.proposal_id, "rejected", _datetime(now), actor, "superseded_by_user_edit")
-        uow.reminders.resolve_candidate(original.candidate_id, "modified", resolution.resource_id, None, _datetime(now), actor)
-        ReminderApplyMixin._feedback(uow, original.candidate_id, ReminderFeedbackAction.MODIFY,
-            actor, {"replacement_candidate_id": candidate.candidate_id, **changes}, now)
+    if edit_ancestors:
+        finalize_edit_sources(uow, edit_ancestors, candidate.candidate_id, resolution.resource_id, actor, now)
     return OperationReceipt(operation.operation_id, ClientOperationStatus.APPLIED, resolution.resource_revision, None,
         ({"resource_id": resolution.resource_id, "revision": resolution.resource_revision},))
 
@@ -109,8 +108,10 @@ def _validate(operation, uow, now):
         generation = uow.knowledge.get_generation(candidate.generation_id)
         if generation.status is not GenerationStatus.SUCCEEDED:
             raise ValueError("candidate generation is stale")
+        validate_generation_sources(uow, generation, proposal)
         facts = uow.knowledge.utterance_facts(proposal.evidence_utterance_ids)
-        inputs = generation.input_scope.get("resolved_inputs", {}).get("utterances", [])
+        inputs = [item for item in generation.input_scope.get("resolved_inputs", {}).get("utterances", [])
+                  if item["utterance_id"] in proposal.evidence_utterance_ids]
         revisions = uow.knowledge.utterance_revisions(proposal.evidence_utterance_ids)
         if (not facts or any(value["status"] != "active" or value["identity"] != "self" for value in facts.values())
             or any(revisions.get(item["utterance_id"], (None, None))[1] != item["revision"] for item in inputs)):
@@ -138,9 +139,14 @@ def _manual_proposal(operation, uow, original, source_proposal, changes, now):
         "operation": event_operation.value, "expected_revision": intent.expected_revision, "patch": _event_patch(intent)}
     if intent.target_event_id:
         payload["event_id"] = intent.target_event_id
-    digest = canonical_json_sha256({"operation_id": operation.operation_id})
+    scope = {"operation_id": operation.operation_id}
+    if operation.kind == 'reminder.review':
+        source_generation = uow.knowledge.get_generation(original.generation_id)
+        scope.update(session_id=original.session_id, revises_candidate_id=original.candidate_id,
+                     input_snapshot=source_generation.input_scope.get('input_snapshot'))
+    digest = canonical_json_sha256(scope)
     generation = GenerationRecord(new_ulid(), KnowledgeLayer.EVENT, "phone-user", "3.3.0",
-        "manual-edit", "phone-command.1", "phone-command.1", {"operation_id": operation.operation_id},
+        "manual-edit", "phone-command.1", "phone-command.1", scope,
         digest, 1, GenerationStatus.COLLECTING, now)
     uow.knowledge.add_generation(generation)
     proposal = StructuredProposal(new_ulid(), generation.generation_id, ProposalKind.EVENT_OPERATION,

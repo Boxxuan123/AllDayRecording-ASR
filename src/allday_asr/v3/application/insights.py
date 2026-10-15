@@ -39,6 +39,22 @@ class DailyInsightService(
         self._daily_refresh_lock = Lock()
         self._daily_refreshed_at = float("-inf")
 
+    @property
+    def generation_version(self):
+        from .daily_inventory import generation_version
+        return generation_version(self._daily_analyzer)
+
+    @property
+    def daily_model_label(self):
+        return getattr(self._daily_analyzer, 'model_label', 'local-disabled')
+
+    @property
+    def daily_execution_observation(self):
+        analyzer = self._daily_analyzer
+        return {'receipt_dir': getattr(analyzer, 'receipt_dir', None),
+                'remote_starts': getattr(analyzer, 'remote_starts', 0),
+                'cache_hits': len(getattr(analyzer, 'cache_hits', []))}
+
     def close(self) -> None:
         try:
             super().close()

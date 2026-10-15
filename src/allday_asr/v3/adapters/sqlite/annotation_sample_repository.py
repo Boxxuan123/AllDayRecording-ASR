@@ -16,12 +16,23 @@ class AnnotationSampleRepositoryMixin:
         )
 
     def enqueue_samples(self, session_id):
-        from allday_asr.v3.domain.dataset_roles import is_learning
+        from .dataset_role_repository import is_learning
         if not is_learning(self.connection, session_id):
             return
+        # Earlier migration backfills deliberately use the repository before
+        # v030 runs. Keep their recorded migration semantics intact.
+        available = getattr(self, '_sample_age_available', None)
+        if available is None:
+            available = any(row[1] == 'queued_at' for row in self.connection.execute('PRAGMA table_info(annotation_sample_queue)'))
+            self._sample_age_available = available
+        if not available:
+            self.connection.execute("""INSERT INTO annotation_sample_queue(session_id) VALUES(?)
+                ON CONFLICT(session_id) DO UPDATE SET generation=generation+1,status='queued',attempts=0,retry_at=0
+                WHERE status!='queued' OR attempts!=0 OR retry_at!=0""", (session_id,))
+            return
         self.connection.execute(
-            """INSERT INTO annotation_sample_queue(session_id) VALUES(?)
-            ON CONFLICT(session_id) DO UPDATE SET generation=generation+1,status='queued',attempts=0,retry_at=0
+            """INSERT INTO annotation_sample_queue(session_id,queued_at) VALUES(?,(julianday('now')-2440587.5)*86400)
+            ON CONFLICT(session_id) DO UPDATE SET generation=generation+1,status='queued',attempts=0,retry_at=0,queued_at=excluded.queued_at
             WHERE status!='queued' OR attempts!=0 OR retry_at!=0""",
             (session_id,),
         )
@@ -65,11 +76,28 @@ class AnnotationSampleRepositoryMixin:
         )
         return dict(row)
 
+    def renew_sample_job(self, session_id, generation, token, now, *, lease_seconds=120):
+        return self.connection.execute("""UPDATE annotation_sample_queue SET lease_until=?
+            WHERE session_id=? AND generation=? AND token=? AND status='running' AND lease_until>=?""",
+            (now + lease_seconds, session_id, generation, token, now)).rowcount == 1
+
+    def sample_queue_health(self, now):
+        rows = self.connection.execute("SELECT status,attempts,COUNT(*) AS count,MIN(queued_at) AS oldest FROM annotation_sample_queue GROUP BY status,attempts").fetchall()
+        result = {'queued': 0, 'running': 0, 'failed': 0, 'oldest_wait_seconds': 0}
+        for row in rows:
+            kind = ('failed' if row['attempts'] >= 3 and row['status'] in {'retryable','running'}
+                    else 'queued' if row['status'] == 'retryable' else row['status'])
+            if kind in result:
+                result[kind] += row['count']
+            if kind == 'queued' and row['oldest']:
+                result['oldest_wait_seconds'] = max(result['oldest_wait_seconds'], now - row['oldest'])
+        return result
+
     def finish_sample_job(self, session_id, generation, token, status, reason, now):
         self.connection.execute(
             """UPDATE annotation_sample_queue SET
             status=CASE WHEN generation=? THEN ? ELSE 'queued' END,
-            reason=?,retry_at=?,lease_until=0,token=NULL WHERE session_id=? AND token=?""",
+            reason=?,retry_at=?,lease_until=0,token=NULL WHERE session_id=? AND token=? AND lease_until>=?""",
             (
                 generation,
                 status,
@@ -77,6 +105,7 @@ class AnnotationSampleRepositoryMixin:
                 now + 30 if status == "retryable" else 0,
                 session_id,
                 token,
+                now,
             ),
         )
 
@@ -127,7 +156,7 @@ class AnnotationSampleRepositoryMixin:
         return True
 
     def record_sample_set(self, plan, embedding, prototype_id, now):
-        from allday_asr.v3.domain.dataset_roles import require_learning
+        from .dataset_role_repository import require_learning
         require_learning(self.connection, plan.track.session_id)
         from allday_asr.v3.domain.ids import new_ulid
         from dataclasses import replace

@@ -1,7 +1,8 @@
 from __future__ import annotations
-from allday_asr.v3.domain.sound_kind import is_usable_speech
+from .generation_inputs import session_inputs, input_snapshot
 
 from collections.abc import Callable
+from dataclasses import replace
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,7 +69,7 @@ class _EventDraft:
     reason: str
 
     def proposal(
-        self, session_id: str
+        self, session_id: str, current=None
     ) -> tuple[ProposalKind, dict[str, Any], tuple[str, ...]]:
         patch: dict[str, Any] = {
             "title": self.title,
@@ -84,10 +85,10 @@ class _EventDraft:
             ProposalKind.EVENT_OPERATION,
             {
                 "event_id": self.event_id,
-                "operation": EventOperationKind.CREATE.value,
+                "operation": EventOperationKind.UPDATE.value if current else EventOperationKind.CREATE.value,
                 "session_id": session_id,
                 "event_kind": self.event_kind.value,
-                "expected_revision": 0,
+                "expected_revision": current.revision if current else 0,
                 "patch": patch,
             },
             self.evidence_utterance_ids,
@@ -123,12 +124,13 @@ class SemanticEventExtractionService:
         session_id: str,
         *,
         reasoning_effort: str | None = None,
+        execution_id: str | None = None,
     ) -> dict[str, Any]:
         if self._generator is None:
             raise SemanticEventGenerationUnavailable(
                 "Codex semantic event generation is disabled"
             )
-        request = self._request(session_id)
+        request = replace(self._request(session_id), execution_id=execution_id)
         effort = select_semantic_event_reasoning_effort(
             request,
             reasoning_effort or self._default_effort,
@@ -147,6 +149,8 @@ class SemanticEventExtractionService:
                 "Codex returned semantic events that failed validation"
             ) from exc
 
+        with self._uow_factory().reading() as uow:
+            existing = {draft.event_id: uow.knowledge.get_event(draft.event_id) for draft in drafts}
         known_ids = self._known_event_ids(session_id)
         selected = tuple(value for value in drafts if value.event_id not in known_ids)
         receipt = self._knowledge.submit_generation(
@@ -159,14 +163,16 @@ class SemanticEventExtractionService:
                 extractor_version=self._generator.extractor_version,
                 input_scope={
                     "session_id": request.session_id,
+                    "input_snapshot": input_snapshot("semantic-event", request),
                     "utterance_ids": [
                         item["utterance_id"] for item in request.utterances
                     ],
                     "codex_turn_id": generated.turn_id,
+                    "execution_id": generated.execution_id,
                     "reasoning_effort": generated.reasoning_effort.value,
                     "usage": generated.usage,
                 },
-                proposals=tuple(value.proposal(session_id) for value in selected),
+                proposals=tuple(value.proposal(session_id, existing.get(value.event_id)) for value in selected),
             ),
             allow_empty=True,
         )
@@ -216,19 +222,8 @@ class SemanticEventExtractionService:
 
     def _request(self, session_id: str) -> SemanticEventModelRequest:
         with self._uow_factory().reading() as uow:
-            detail = uow.desktop.session_detail(session_id)
-        speaker_references = {
-            str(value["speaker_track_id"]): value for value in detail["speaker_tracks"]
-        }
-        utterances = tuple(
-            _utterance(
-                value,
-                speaker_references.get(str(value.get("speaker_track_id"))),
-            )
-            for value in detail["utterances"]
-            if value.get("status") == "active" and str(value.get("text", "")).strip()
-            and is_usable_speech(value.get("evidence", {}))
-        )
+            inputs = session_inputs(uow, session_id, "semantic-event")
+        utterances = tuple(inputs["utterances"])
         if not utterances:
             raise ValueError("recording session has no active utterances")
         if sum(len(str(value["text"])) for value in utterances) > 200_000:
@@ -237,15 +232,18 @@ class SemanticEventExtractionService:
             )
         return SemanticEventModelRequest(
             session_id=session_id,
-            captured_timezone=str(detail["session"].get("timezone") or "UTC"),
+            captured_timezone=inputs["captured_timezone"],
             utterances=utterances,
         )
 
     def _known_event_ids(self, session_id: str) -> set[str]:
         event_ids = {
             str(value["event_id"]) for value in self._knowledge.list_events(session_id)
+            if value.get("derivation_status", "active") == "active"
         }
-        for proposal in self._knowledge.list_proposals(limit=500):
+        for proposal in self._knowledge.list_proposals(status="pending", limit=500):
+            if not self._knowledge.proposal_sources_current(str(proposal["proposal_id"])):
+                continue
             payload = proposal.get("payload")
             if not isinstance(payload, dict) or payload.get("session_id") != session_id:
                 continue
@@ -345,31 +343,6 @@ def _assert_distinct_drafts(values: tuple[_EventDraft, ...]) -> None:
     if len(event_ids) != len(set(event_ids)):
         raise ValueError("Codex returned duplicate semantic events")
 
-
-def _utterance(
-    value: dict[str, Any],
-    speaker_reference: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if "person" in value.get("evidence", {}).get("annotation_review", {}).get("dimensions", {}):
-        speaker_reference = None
-        value = {**value, "identity": "unknown", "speaker_label": None, "speaker_track_id": None}
-    speaker_reference = speaker_reference or {}
-    annotation = value.get("evidence", {}).get("person_annotation", {})
-    if annotation.get("person_id") and "person" not in value.get("evidence", {}).get("annotation_review", {}).get("dimensions", {}):
-        person_id = annotation["person_id"]
-        speaker_reference = {**speaker_reference, "person_id": person_id,
-            "person_name": speaker_reference.get("person_name") if speaker_reference.get("person_id") == person_id else None}
-    return {
-        "utterance_id": str(value["utterance_id"]),
-        "start_at": str(value["start_at"]),
-        "end_at": str(value["end_at"]),
-        "speaker_label": value.get("speaker_label"),
-        "speaker_person_id": speaker_reference.get("person_id"),
-        "speaker_name": speaker_reference.get("person_name"),
-        "identity": str(value.get("identity") or "unknown"),
-        "text": str(value["text"]),
-        "revision": int(value["revision"]),
-    }
 
 
 def _string(value: Any, name: str) -> str:

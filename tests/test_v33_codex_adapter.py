@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+from tests.temp_workspace import TEST_WORKSPACE_ROOT, cleanup_test_case, test_directory
+
 import json
-import shutil
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
 
 from openai_codex import ApprovalMode, Sandbox
 from openai_codex.types import ReasoningEffort
@@ -29,18 +28,15 @@ from allday_asr.v3.ports.reminder_generation import (
 )
 
 
-TEST_ROOT = Path(__file__).parent
+TEST_ROOT = TEST_WORKSPACE_ROOT
 
 
 class V33CodexAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.workdir = TEST_ROOT / f"codex-empty-{uuid4().hex}"
+        self.workdir = test_directory(self, TEST_ROOT, "codex-empty") / "workdir"
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.workdir, ignore_errors=True)
-        receipts = self.workdir.with_name(f"{self.workdir.name}.receipts").resolve()
-        if receipts.parent == TEST_ROOT.resolve():
-            shutil.rmtree(receipts, ignore_errors=True)
+        cleanup_test_case(self)
 
     def test_codex_runs_in_empty_read_only_ephemeral_thread_with_no_approvals(
         self,

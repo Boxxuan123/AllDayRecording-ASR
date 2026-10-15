@@ -6,7 +6,8 @@ import VoiceReviewActions from '../components/VoiceReviewActions.vue'
 import { desktopApi } from '../core/api'
 import { formatDate } from '../core/format'
 import { playRange } from '../core/media'
-import { invalidateQuery, useQuery } from '../core/query'
+import { invalidateQuery, invalidateEvidenceQueries } from '../core/query'
+import { useReviewInbox } from '../core/reviewInbox'
 import {
   reviewCategories,
   reviewCategory,
@@ -31,27 +32,7 @@ type ReviewFilter = 'all' | ReviewCategory
 type ReviewGroupMode = 'session' | 'person'
 type ReviewUnit = ReviewItem & { members: ReviewItem[] }
 
-const query = useQuery('reviews', async (signal) => {
-  const reviews = await desktopApi.reviews(signal)
-  const needsReminders = reviews.items.some((item) => item.kind === 'reminder')
-  const needsVoice = reviews.items.some((item) => item.kind === 'voice_identity'
-    && item.context.voice_mode !== 'speaker_discovery'
-    && !Array.isArray(item.context.voice_candidates))
-  const [voiceCandidates, reminderCandidates] = await Promise.all([
-    needsVoice
-      ? desktopApi.voicePrototypeCandidates('', 'pending', signal).catch(() => ({ items: [] as VoicePrototypeCandidate[] }))
-      : Promise.resolve({ items: [] as VoicePrototypeCandidate[] }),
-    needsReminders
-      ? desktopApi.reminderCandidates(signal).catch(() => ({ items: [] as ReminderCandidate[] }))
-      : Promise.resolve({ items: [] as ReminderCandidate[] }),
-  ])
-  return {
-    items: reviews.items,
-    nextCursor: reviews.next_cursor,
-    voiceCandidates: voiceCandidates.items,
-    reminderCandidates: reminderCandidates.items,
-  }
-})
+const query = useReviewInbox()
 const moreItems = ref<ReviewItem[]>([])
 const moreCursor = ref<string | null>(null)
 const moreLoading = ref(false)
@@ -60,16 +41,16 @@ const moreVoiceCandidates = ref<VoicePrototypeCandidate[]>([])
 const moreReminderCandidates = ref<ReminderCandidate[]>([])
 let moreRequest = 0
 let moreAbort: AbortController | null = null
-watch(query.data, (value) => {
+watch(() => query.data.value?.items, () => {
   moreRequest += 1
   moreAbort?.abort()
   moreLoading.value = false
   moreItems.value = []
-  moreCursor.value = value?.nextCursor ?? null
+  moreCursor.value = query.data.value?.nextCursor ?? null
   moreVoiceCandidates.value = []
   moreReminderCandidates.value = []
 }, { immediate: true })
-onBeforeUnmount(() => moreAbort?.abort())
+onBeforeUnmount(() => { moreRequest += 1; moreAbort?.abort() })
 const loadedItems = computed(() => [...(query.data.value?.items ?? []), ...moreItems.value])
 async function loadMoreReviews(): Promise<void> {
   if (!moreCursor.value || moreLoading.value) return
@@ -84,14 +65,40 @@ async function loadMoreReviews(): Promise<void> {
     moreItems.value = [...moreItems.value, ...page.items]
     moreCursor.value = page.next_cursor
     if (page.items.some((item) => item.kind === 'reminder')) {
-      moreReminderCandidates.value = (await desktopApi.reminderCandidates(controller.signal)).items
+      const candidates = await desktopApi.reminderCandidates(controller.signal)
+      if (request !== moreRequest) return
+      moreReminderCandidates.value = candidates.items
     }
     if (page.items.some((item) => item.kind === 'voice_identity' && !Array.isArray(item.context.voice_candidates))) {
-      moreVoiceCandidates.value = (await desktopApi.voicePrototypeCandidates('', 'pending', controller.signal)).items
+      const candidates = await desktopApi.voicePrototypeCandidates('', 'pending', controller.signal)
+      if (request !== moreRequest) return
+      moreVoiceCandidates.value = candidates.items
     }
   } catch (error) {
     if (request === moreRequest) moreError.value = error instanceof Error ? error.message : String(error)
   } finally { if (request === moreRequest) moreLoading.value = false }
+}
+
+async function retryMoreCandidates(): Promise<void> {
+  const request = ++moreRequest
+  moreAbort?.abort()
+  const controller = new AbortController()
+  moreAbort = controller
+  moreError.value = ''
+  try {
+    if (moreItems.value.some((item) => item.kind === 'reminder')) {
+      const page = await desktopApi.reminderCandidates(controller.signal)
+      if (request !== moreRequest) return
+      moreReminderCandidates.value = page.items
+    }
+    if (moreItems.value.some((item) => item.kind === 'voice_identity')) {
+      const page = await desktopApi.voicePrototypeCandidates('', 'pending', controller.signal)
+      if (request !== moreRequest) return
+      moreVoiceCandidates.value = page.items
+    }
+  } catch (error) {
+    if (request === moreRequest) moreError.value = error instanceof Error ? error.message : String(error)
+  }
 }
 
 const selectedKind = ref<ReviewFilter>('all')
@@ -132,7 +139,10 @@ const reviewUnits = computed<ReviewUnit[]>(() => {
     const lane = declaredLane === 'primary' || declaredLane === 'training'
       ? declaredLane
       : candidate ? voiceReviewLane(candidate) : item.context.voice_mode === 'speaker_discovery' ? 'primary' : null
-    if (!lane) continue
+    if (!lane) {
+      units.set(item.review_id, { ...item, members: [item] })
+      continue
+    }
     const clusterId = stringValue(item.context.cluster_id) ?? candidate?.cluster_id ?? item.source_id
     const key = `voice:${clusterId}:${item.person_id ?? 'unknown'}:${lane}`
     const prototypeIds = unique([
@@ -230,6 +240,11 @@ function candidatesFor(item: ReviewItem): VoicePrototypeCandidate[] {
 
 function reminderCandidate(item: ReviewItem): ReminderCandidate | undefined {
   return reminderCandidates.value.get(item.source_id)
+}
+
+function reminderReady(item: ReviewItem): boolean {
+  return Boolean(reminderCandidate(item)) && (query.remindersReady.value
+    || moreReminderCandidates.value.some((candidate) => candidate.candidate_id === item.source_id))
 }
 
 function voiceTier(item: ReviewItem): SpeakerMatchTier | null {
@@ -338,7 +353,8 @@ async function act(item: ReviewItem, action: () => Promise<unknown>, message: st
   notice.value = ''
   try {
     await action()
-    for (const key of ['reviews', 'persons', 'person-choices', 'people-voice']) invalidateQuery(key)
+    invalidateEvidenceQueries(item.session_id ?? undefined)
+    for (const key of ['review-voice-candidates', 'review-reminder-candidates']) invalidateQuery(key)
     notice.value = message
     await query.refresh(true)
   } catch (error) {
@@ -371,6 +387,7 @@ function reviewVoiceCandidate(
 }
 
 function confirmReminder(item: ReviewItem): void {
+  if (!reminderReady(item)) { actionError.value = '候选详情尚未加载，请先重试。'; return }
   void act(item, () => desktopApi.confirmReminder(item.source_id), `已确认提醒“${item.title}”。`)
 }
 
@@ -483,6 +500,10 @@ function unique(values: string[]): string[] {
           <button type="button" :class="{ active: groupMode === 'person' }" :aria-pressed="groupMode === 'person'" @click="groupMode = 'person'">按人物</button>
         </div>
       </div>
+      <p v-if="query.candidateErrors.value.length" class="review-message error-state">
+        候选详情加载失败，审核列表已保留。{{ query.candidateErrors.value.map(error => error?.message).join('；') }}
+        <button type="button" class="quiet-button" @click="query.retryCandidates()">重试候选详情</button>
+      </p>
       <p v-if="actionError" class="review-message error-state">{{ actionError }}</p>
       <p v-else-if="notice" class="review-message">{{ notice }}</p>
       <div v-if="!filteredItems.length" class="state-panel">当前筛选下没有待审核项目。</div>
@@ -524,8 +545,8 @@ function unique(values: string[]): string[] {
                 </template>
                 <template v-else-if="item.kind === 'reminder'">
                   <button type="button" class="review-action play" :disabled="busyId === item.review_id || !reminderCandidate(item)?.evidence.length" @click="playReminder(item)">▶ 原话</button>
-                  <button type="button" class="review-action reject" :disabled="busyId === item.review_id" @click="ignoreReminder(item)">不执行</button>
-                  <button type="button" class="review-action primary" :disabled="busyId === item.review_id" @click="confirmReminder(item)">{{ busyId === item.review_id ? '处理中' : '确认执行' }}</button>
+                  <button type="button" class="review-action reject" :disabled="busyId === item.review_id || !reminderReady(item)" @click="ignoreReminder(item)">不执行</button>
+                  <button type="button" class="review-action primary" :disabled="busyId === item.review_id || !reminderReady(item)" @click="confirmReminder(item)">{{ busyId === item.review_id ? '处理中' : '确认执行' }}</button>
                 </template>
                 <template v-else-if="item.kind === 'person_memory'">
                   <button type="button" class="review-action reject" :disabled="busyId === item.review_id" @click="retractMemory(item)">不记</button>
@@ -541,7 +562,7 @@ function unique(values: string[]): string[] {
           </div>
         </section>
       </div>
-      <p v-if="moreError" class="review-message error-state">{{ moreError }}</p>
+      <p v-if="moreError" class="review-message error-state">{{ moreError }} <button type="button" class="quiet-button" @click="retryMoreCandidates()">重试候选详情</button></p>
       <footer v-if="moreCursor" class="load-more-row"><button class="quiet-button" type="button" :disabled="moreLoading" @click="loadMoreReviews">{{ moreLoading ? '正在读取…' : '继续加载审核' }}</button></footer>
     </PageState>
   </section>

@@ -129,6 +129,7 @@ class NativeModelPipelineAdapter:
             ("primary", self.primary_factory),
             ("secondary", self.secondary_factory),
         ):
+            control.heartbeat({"phase": "model_load", "role": role})
             backend: AsrBackend = factory()
             if backend.role != role:
                 raise ValueError(f"V3 ASR backend role mismatch: {role}")
@@ -138,9 +139,11 @@ class NativeModelPipelineAdapter:
                         raise StageCancellationRequested(
                             "V3 ASR cancelled at a window boundary"
                         )
+                    control.heartbeat({"phase": "audio_prepare", "role": role, "window": window.index})
                     with _temporary_audio(
                         window.sources, window.analysis_start_ms, window.analysis_end_ms
                     ) as audio:
+                        control.heartbeat({"phase": "transcribe", "role": role, "window": window.index})
                         result = backend.transcribe(audio, language=self.asr.language)
                     tokens = self._tokens(result.tokens, window, sources)
                     all_tokens[role].extend(tokens)
@@ -160,6 +163,7 @@ class NativeModelPipelineAdapter:
                     )
                 manifests[role] = _backend_manifest(backend)
             finally:
+                control.heartbeat({"phase": "backend_close", "role": role})
                 backend.close()
         snapshot = {
             "format": "AllDayRecording V3 ASR evidence v1",
@@ -209,8 +213,11 @@ class NativeModelPipelineAdapter:
             )
         backend: DiarizationBackend = self.diarization_factory()
         try:
+            control.heartbeat({"phase": "model_load"})
             backend.ensure_loaded()
+            control.heartbeat({"phase": "audio_prepare"})
             with _temporary_audio(sources, 0, duration_ms) as audio:
+                control.heartbeat({"phase": "diarize"})
                 result = backend.diarize(
                     audio,
                     num_speakers=self.diarization.num_speakers,
@@ -231,6 +238,7 @@ class NativeModelPipelineAdapter:
                 "raw_response": _json_safe(result.raw_response),
             }
         finally:
+            control.heartbeat({"phase": "backend_close"})
             backend.close()
         dependencies = tuple(
             ArtifactDependencyOutput("audio_asset", source.asset_id, 1)

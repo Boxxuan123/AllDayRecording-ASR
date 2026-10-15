@@ -40,6 +40,17 @@ class IO(ctypes.Structure):
     ]
 
 
+class Accounting(ctypes.Structure):
+    _fields_ = [(n, ctypes.c_longlong) for n in (
+        "TotalUserTime", "TotalKernelTime", "ThisPeriodTotalUserTime", "ThisPeriodTotalKernelTime")]
+    _fields_ += [(n, W.DWORD) for n in (
+        "TotalPageFaultCount", "TotalProcesses", "ActiveProcesses", "TotalTerminatedProcesses")]
+
+
+class ProcessIds(ctypes.Structure):
+    _fields_ = [("assigned", W.DWORD), ("count", W.DWORD), ("ids", SIZE * 8192)]
+
+
 class Limits(ctypes.Structure):
     _fields_ = [
         ("BasicLimitInformation", BasicLimits),
@@ -59,8 +70,14 @@ K.AssignProcessToJobObject.argtypes = [HANDLE, HANDLE]
 K.AssignProcessToJobObject.restype = W.BOOL
 K.TerminateJobObject.argtypes = [HANDLE, W.UINT]
 K.TerminateJobObject.restype = W.BOOL
+K.QueryInformationJobObject.argtypes = [HANDLE, ctypes.c_int, ctypes.c_void_p, W.DWORD, ctypes.c_void_p]
+K.QueryInformationJobObject.restype = W.BOOL
 K.CloseHandle.argtypes = [HANDLE]
 K.CloseHandle.restype = W.BOOL
+K.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+K.OpenProcess.restype = HANDLE
+K.WaitForSingleObject.argtypes = [HANDLE, W.DWORD]
+K.WaitForSingleObject.restype = W.DWORD
 K.GetProcessTimes.argtypes = [HANDLE, *([ctypes.POINTER(W.FILETIME)] * 4)]
 K.GetProcessTimes.restype = W.BOOL
 N.NtResumeProcess.argtypes = [HANDLE]
@@ -94,6 +111,7 @@ class OwnedAttempt:
         self.output = open(log, "wb")
         self.proc = None
         self.closed = False
+        self.terminated = False
         try:
             self.proc = subprocess.Popen(
                 argv,
@@ -134,8 +152,30 @@ class OwnedAttempt:
                 raise RuntimeError(
                     "SAFE_TIMEOUT_CONTROL_UNAVAILABLE: handle creation changed"
                 )
-        checked(K.TerminateJobObject(self.job, 124))
+        self._terminate_tree()
         self.identity["termination"] = "EXCLUSIVE_ASSIGNED_JOB_HANDLE_ONLY"
+
+    def _terminate_tree(self):
+        if self.terminated:
+            return
+        members = ProcessIds()
+        checked(K.QueryInformationJobObject(self.job, 3, ctypes.byref(members), ctypes.sizeof(members), None))
+        # Acquire wait-only handles while membership is known. Termination always
+        # targets the exclusive Job handle, never a looked-up PID.
+        handles = [K.OpenProcess(0x100000, False, pid) for pid in members.ids[:members.count]]
+        try:
+            checked(K.TerminateJobObject(self.job, 124))
+            deadline = time.monotonic() + 3
+            for handle in handles:
+                if handle:
+                    remaining = max(0, int((deadline - time.monotonic()) * 1000))
+                    if K.WaitForSingleObject(handle, remaining) != 0:
+                        raise RuntimeError("SAFE_TIMEOUT_CONTROL_UNAVAILABLE: owned process did not stop")
+            self.terminated = True
+        finally:
+            for handle in handles:
+                if handle:
+                    checked(K.CloseHandle(handle))
 
     def wait(self, timeout, cancel_event=None):
         deadline = time.monotonic() + timeout
@@ -159,7 +199,22 @@ class OwnedAttempt:
 
     def close(self):
         if not self.closed:
-            self.closed = True
             if self.job:
+                # A returned parent may still own descendants holding audio/GPU/log handles.
+                # Wait for the exclusive job, not just Popen's parent process.
+                self._terminate_tree()
+                deadline = time.monotonic() + 3
+                while True:
+                    accounting = Accounting()
+                    checked(K.QueryInformationJobObject(self.job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None))
+                    if not accounting.ActiveProcesses:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("SAFE_TIMEOUT_CONTROL_UNAVAILABLE: owned job did not stop")
+                    time.sleep(0.01)
                 checked(K.CloseHandle(self.job))
+            self.closed = True
             self.output.close()
+            if self.proc is not None:
+                self.proc.wait(timeout=0.5)
+                self.proc._handle.Close()

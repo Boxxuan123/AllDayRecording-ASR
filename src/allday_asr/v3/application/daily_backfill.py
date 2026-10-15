@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from allday_asr.v3.domain.hashing import canonical_json_sha256
-from .file_lock import day_worker_lock
+from .file_lock import day_worker_lock, replace_atomic
 
 
 def atomic_json(path, value):
@@ -16,7 +16,7 @@ def atomic_json(path, value):
         json.dump(value, stream, ensure_ascii=False, indent=2, default=str)
         stream.flush()
         os.fsync(stream.fileno())
-    temporary.replace(path)
+    replace_atomic(temporary, path)
 
 
 class DailyBackfillPass:

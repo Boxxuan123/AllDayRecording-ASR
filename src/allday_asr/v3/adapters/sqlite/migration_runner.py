@@ -28,7 +28,7 @@ def _default_migrations() -> tuple[V3Migration, ...]:
     return MIGRATIONS
 
 
-LATEST_V3_SCHEMA_VERSION = 29
+LATEST_V3_SCHEMA_VERSION = 33
 
 
 class V3MigrationRunner:
@@ -40,8 +40,12 @@ class V3MigrationRunner:
         now: Callable[[], str] | None = None,
     ) -> None:
         self.path = path.resolve()
-        selected = tuple(migrations if migrations is not None else _default_migrations())
-        self.migrations = tuple(sorted(selected, key=lambda migration: migration.version))
+        selected = tuple(
+            migrations if migrations is not None else _default_migrations()
+        )
+        self.migrations = tuple(
+            sorted(selected, key=lambda migration: migration.version)
+        )
         if not self.migrations:
             raise ValueError("at least one V3 migration is required")
         versions = [migration.version for migration in self.migrations]
@@ -107,22 +111,54 @@ class V3MigrationRunner:
         }
 
     def _apply(self, connection: sqlite3.Connection, migration: V3Migration) -> None:
+        generalized = migration.name == "chat_followup_provenance"
+        if generalized:
+            connection.execute("PRAGMA foreign_keys = OFF")
         connection.execute("BEGIN IMMEDIATE")
         try:
+            # Another service may have migrated while we waited for the writer
+            # lock. Recheck under that lock before executing any schema SQL.
+            applied = self._applied(connection)
+            if applied and max(applied) > self.latest_version:
+                raise RuntimeError(
+                    f"V3 database schema {max(applied)} is newer than supported "
+                    f"version {self.latest_version}"
+                )
+            recorded = applied.get(migration.version)
+            if recorded is not None:
+                if recorded != (migration.name, migration.sha256):
+                    raise RuntimeError(
+                        f"V3 migration {migration.version} checksum/name mismatch"
+                    )
+                connection.execute("COMMIT")
+                return
+            if generalized:
+                from .migrations.v031_chat_followups import generalize_event_sessions
+
+                generalize_event_sessions(connection)
             for statement in _statements(migration.sql):
                 connection.execute(statement)
             if migration.name == "versioned_audio_annotations":
                 from .annotation_fact_migration import backfill_annotation_facts
+
                 backfill_annotation_facts(connection)
             connection.execute(
                 "INSERT INTO schema_migrations "
                 "(version, name, sha256, applied_at) VALUES (?, ?, ?, ?)",
                 (migration.version, migration.name, migration.sha256, self.now()),
             )
+            if (
+                generalized
+                and connection.execute("PRAGMA foreign_key_check").fetchone()
+            ):
+                raise RuntimeError("chat event migration foreign key check failed")
             connection.execute("COMMIT")
         except Exception:
             connection.execute("ROLLBACK")
             raise
+        finally:
+            if generalized:
+                connection.execute("PRAGMA foreign_keys = ON")
 
 
 def _connect(path: Path) -> sqlite3.Connection:

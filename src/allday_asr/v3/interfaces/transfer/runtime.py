@@ -158,6 +158,7 @@ def serve_transfer(
                 load_model_config(workflow_config),
                 requested_profile=workflow_profile,
                 diarization_model_path=workflow_diarization_model_path,
+                artifact_store_path=v3_core.paths.artifact_store_path,
             )
             automatic_runner = V3AutomaticWorkflowRunner(
                 v3_core,

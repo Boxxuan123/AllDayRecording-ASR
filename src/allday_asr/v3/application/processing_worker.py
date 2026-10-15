@@ -38,13 +38,22 @@ class DurableProcessingWorker:
         self.worker_id = worker_id
         self.config = dict(config or {})
         self.heartbeat_interval_seconds = selected_interval
+        self.stop_event = threading.Event()
+
+    def close(self):
+        self.stop_event.set()
+        close = getattr(self.adapter, "close", None)
+        if close is not None:
+            close()
 
     def run_once(self) -> bool:
+        if self.stop_event.is_set():
+            return False
         self.service.recover_expired()
         claim = self.service.claim(self.worker_id, self.config)
         if claim is None:
             return False
-        control = _WorkerControl(self.service, claim)
+        control = _WorkerControl(self.service, claim, self.stop_event)
         try:
             if control.heartbeat(claim.resume_checkpoint):
                 self.service.cancel_claim(claim, "cancelled before stage execution")
@@ -62,13 +71,22 @@ class DurableProcessingWorker:
             finally:
                 lease_heartbeat.stop()
             lease_heartbeat.raise_if_failed()
+            if self.stop_event.is_set():
+                raise StageCancellationRequested('worker shut down before publication')
             if control.heartbeat(result.checkpoint):
                 self.service.cancel_claim(claim, "cancelled at safe checkpoint")
             else:
                 self.service.complete(claim, result)
         except StageCancellationRequested as exc:
-            self.service.cancel_claim(claim, str(exc))
+            if self.stop_event.is_set():
+                self.service.fail(claim, "worker_shutdown", retryable=True, log_summary="Owned execution stopped; retry after restart")
+            else:
+                self.service.cancel_claim(claim, str(exc))
         except Exception as exc:
+            from .failure_diagnostics import log_failure
+            import logging
+            log_failure(logging.getLogger(__name__), exc, session_id=claim.run.session_id,
+                        job_id=claim.job.job_id, attempt=claim.attempt.attempt_id, stage=claim.stage.stage)
             try:
                 if control.heartbeat():
                     self.service.cancel_claim(
@@ -90,10 +108,11 @@ class DurableProcessingWorker:
 
 class _WorkerControl(StageExecutionControl):
     def __init__(
-        self, service: DurableProcessingService, claim: ProcessingClaim
+        self, service: DurableProcessingService, claim: ProcessingClaim, stop_event=None
     ) -> None:
         self.service = service
         self.claim = claim
+        self.stop_event = stop_event or threading.Event()
         self._cancelled = False
         self._lock = threading.Lock()
 
@@ -105,7 +124,7 @@ class _WorkerControl(StageExecutionControl):
             return self._cancelled
 
     def cancellation_requested(self) -> bool:
-        return self._cancelled
+        return self._cancelled or self.stop_event.is_set()
 
 
 class _LeaseHeartbeat:
@@ -137,4 +156,5 @@ class _LeaseHeartbeat:
                 self.control.heartbeat()
             except Exception as exc:  # noqa: BLE001 - surface in the worker thread
                 self._failure = exc
+                self.control._cancelled = True
                 return
