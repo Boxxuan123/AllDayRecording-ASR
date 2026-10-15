@@ -16,14 +16,27 @@ from allday_asr.v3.domain.recall_investigation_scope import (
 )
 
 
-READ_TOOLS = frozenset({
-    "find_contacts", "find_conversations", "search_messages", "get_group_members",
-    "get_related_conversations", "get_message_context", "get_existing_memory",
-    "get_source_evidence",
-})
+from .recall_investigation_context import InvestigationContext
+from .recall_evidence_flow import EvidenceFlow
+from allday_asr.v3.domain.recall_event_anchor import event_anchors, literal_anchor
+from .recall_investigation_relevance import InvestigationRelevance
 
 
-class InvestigationTools:
+READ_TOOLS = frozenset(
+    {
+        "find_contacts",
+        "find_conversations",
+        "search_messages",
+        "get_group_members",
+        "get_related_conversations",
+        "get_message_context",
+        "get_existing_memory",
+        "get_source_evidence",
+    }
+)
+
+
+class InvestigationTools(InvestigationContext, InvestigationRelevance):
     def __init__(self, service, result, plan, cancel, deadline, now):
         self.service, self.result, self.plan = service, result, plan
         self.cancel, self.deadline, self.now = cancel, deadline, now
@@ -45,6 +58,10 @@ class InvestigationTools:
             ),
         )
         self.calls = 0
+        self.flow = EvidenceFlow(result)
+        self.anchors = event_anchors(
+            result["_request"]["question"], plan.get("person_mention", "")
+        )
         self.current_scope = result["scope"]
         result["_evidence_scopes"] = {}
         for contact in self.directory[:500]:
@@ -70,7 +87,12 @@ class InvestigationTools:
 
     def add(self, rows):
         self.checkpoint()
-        allowed = [r for r in rows if inside_root(r, self.root_scope, evidence=True)]
+        allowed = []
+        for row in rows:
+            if inside_root(row, self.root_scope, evidence=True):
+                allowed.append(row)
+            else:
+                self.flow.record("hard_rejected", row, "immutable_scope")
         if len(allowed) != len(rows):
             self.note("已排除原查询硬范围以外的证据。")
         rows = allowed
@@ -79,8 +101,12 @@ class InvestigationTools:
         refs = []
         for row in rows:
             if row["id"] in invalid:
+                self.flow.record("hard_rejected", row, "source_changed")
                 self.note("部分来源已修订或撤回，已排除旧证据。")
                 continue
+            self.flow.record(
+                "application_accepted", row, "hard_scope_and_integrity_valid"
+            )
             old = saved.get(row["id"])
             if old and old["revision"] > row["revision"]:
                 continue
@@ -93,6 +119,12 @@ class InvestigationTools:
                     model_status="stale",
                     answer="来源在调查期间更新，旧结论已失效，请重新查询。",
                 )
+            self.flow.record(
+                "candidate",
+                row,
+                row.get("retrieval_basis", "scoped_match"),
+                row.get("relation_ids", []),
+            )
             saved[row["id"]] = row
             context_scope = deepcopy(self.current_scope)
             context_scope.pop("source_contacts", None)
@@ -142,11 +174,15 @@ class InvestigationTools:
             or m["source_requests"] >= 12
             or m["source_records_read"] >= 100
         ):
+            self.flow.gap("source_request_budget")
             raise ChatDataError("SOURCE_REQUEST_BUDGET_REACHED", 429)
         m["retrieval_requests"] += 1
         m["source_requests"] += 1
         value = self.service.source.request(route, body, **params)
         self.checkpoint()
+        for row in value.get("items", []):
+            if isinstance(row, dict) and row.get("record_id"):
+                self.flow.received([row], "remote", route)
         return value
 
     def verify_remote(self):
@@ -257,9 +293,9 @@ class InvestigationTools:
         elif tool == "get_group_members":
             refs = self.members(targets, action, scope)
         elif tool == "get_related_conversations":
-            refs = self.related(targets, scope)
+            refs = self.related(targets, scope, action["terms"])
         elif tool == "get_message_context":
-            refs = self.context(targets, scope)
+            refs = self.context(targets, scope, action["terms"])
         elif tool == "get_existing_memory":
             if self.root_scope.get("source_contacts") or self.root_scope.get(
                 "source_accounts"
@@ -340,7 +376,10 @@ class InvestigationTools:
                             "cross-conversation account search needs a cited event anchor"
                         )
                     selected["source_senders"] = [target["sender_account_id"]]
-            elif self.result["scope"].get("source_contacts"):
+            elif self.result["scope"].get("source_contacts") and not (
+                action["window"] == "identity"
+                and self.plan.get("_contact_scope_is_seed")
+            ):
                 selected["source_contacts"] = self.result["scope"]["source_contacts"]
             selected = self.bounded_scope(selected)
             if selected is None:
@@ -353,12 +392,13 @@ class InvestigationTools:
             if selected["source"] != "recording":
                 rows, more = self.service.sources.chat(
                     selected,
-                    action["terms"],
+                    self.candidate_terms(action["terms"]),
                     remaining,
                     self.cancel,
                     min(self.deadline, time.monotonic() + 3),
                 )
-                found.extend(self.add(rows))
+                self.flow.received(rows, "cache", "topic_search")
+                found.extend(self.add(self.topic_rows(rows, action["terms"])))
                 if more:
                     self.note("单次聊天检索只读取前 20 条；未覆盖其他页。")
                 # Existing source API, never a new network destination or arbitrary query.
@@ -377,6 +417,7 @@ class InvestigationTools:
                     self.cancel,
                     min(self.deadline, time.monotonic() + 3),
                 )
+                self.flow.received(rows, "cache", "recording_search")
                 found.extend(self.add(rows))
                 if more:
                     self.note("单次录音检索只读取前 20 条。")
@@ -387,7 +428,9 @@ class InvestigationTools:
         if scope is None:
             return []
         grants = remote_grants(
-            scope, self.service.sources.authorized_scopes(scope), self.authorized_directory
+            scope,
+            self.service.sources.authorized_scopes(scope),
+            self.authorized_directory,
         )
         if len(grants) > 2:
             self.note("远端范围超过本轮两个分支上限，其余会话尚未覆盖。")
@@ -403,7 +446,7 @@ class InvestigationTools:
                 "sent_to": scope["sent_to"],
             }
             if terms:
-                remote["keyword"] = terms[0]
+                remote["keyword"] = self.candidate_terms(terms)[0]
             limit = min(20, 100 - self.result["metrics"]["source_records_read"])
             if limit <= 0:
                 break
@@ -432,12 +475,13 @@ class InvestigationTools:
                     <= (record.get("sent_at") or -1)
                     <= scope["sent_to"]
                 ):
+                    self.flow.record("hard_rejected", record, "source_scope_mismatch")
                     raise ChatDataError("CONTEXT_IDENTITY_MISMATCH", 502)
                 row = self.service.sources.evidence(record, "mac")
-                if (
-                    not scope["person_id"] or row["person_id"] == scope["person_id"]
-                ) and all(t.casefold() in row["quote"].casefold() for t in terms):
-                    rows.append(row)
+                if not scope["person_id"] or row["person_id"] == scope["person_id"]:
+                    rows.extend(self.topic_rows([row], terms))
+                else:
+                    self.flow.record("hard_rejected", row, "person_permission")
             found.extend(self.add(rows))
             if page.get("has_more"):
                 self.note("Mac 尚有后续页，本轮预算内没有完整覆盖。")
@@ -478,7 +522,7 @@ class InvestigationTools:
                 refs.append(self.ref("account", account, key))
         return list(dict.fromkeys(refs))
 
-    def related(self, targets, scope):
+    def related(self, targets, scope, terms=()):
         # A directory-resolved seed must not become a conversation restriction
         # on the account relationship scan. Explicit root filters remain binding.
         scope = deepcopy(scope)
@@ -499,8 +543,26 @@ class InvestigationTools:
                 target, scope, self.cancel, min(self.deadline, time.monotonic() + 3)
             )
             for item in rows:
-                if not self.add([item["evidence"]]):
+                row = item["evidence"]
+                self.flow.received([row], "cache", "account_relationship")
+                if not inside_root(row, self.root_scope, evidence=True):
+                    self.flow.record("hard_rejected", row, "relationship_scope")
                     continue
+                if self.service.sources.changed([row]):
+                    self.flow.record(
+                        "hard_rejected", row, "relationship_source_changed"
+                    )
+                    continue
+                if not terms or literal_anchor(row["quote"], terms):
+                    if not self.add([row]):
+                        continue
+                else:
+                    self.flow.record(
+                        "relationship_lead",
+                        row,
+                        "same_account_not_same_event",
+                        [target["ref"]],
+                    )
                 c = item["contact"]
                 c["relation_evidence"] = [item["evidence"]["id"]]
                 c["relation_basis"] = item.get(
@@ -517,70 +579,3 @@ class InvestigationTools:
                 self.note("账号会话关系扫描达到 100 条/20 会话上限。")
         self.note("跨会话关系仅覆盖已有缓存和原生目录；同账号参与不能证明是同一事件。")
         return list(dict.fromkeys(refs))
-
-    def context(self, targets, scope):
-        found = []
-        for target in targets:
-            if target["type"] != "evidence" or target["source"] == "recording":
-                continue
-            if not inside_root(target, self.root_scope, evidence=True):
-                self.note("上下文目标不属于原查询硬范围，未读取。")
-                continue
-            selected = self.bounded_scope({**scope, "relationship": "topic"})
-            if selected is None:
-                continue
-            self.current_scope = selected
-            rows = (
-                self.service.sources.context(target, selected)
-                if target["origin"] == "cache"
-                else []
-            )
-            found.extend(self.add(rows))
-            if self.result["_request"].get("expand", True):
-                try:
-                    self.verify_remote()
-                    if self.result["metrics"]["source_records_read"] + 7 > 100:
-                        raise ChatDataError("SOURCE_REQUEST_BUDGET_REACHED", 429)
-                    part = self.remote(
-                        "/v1/context",
-                        {"record_id": target["record_id"], "before": 2, "after": 4},
-                    )
-                    records = part.get("items")
-                    if not isinstance(records, list) or len(records) > 7:
-                        raise ChatDataError("INVALID_CHAT_CONTEXT", 502)
-                    self.result["metrics"]["source_records_read"] += len(records)
-                    for r in records:
-                        self.service.sources.validate_record(r)
-                        if (
-                            r["platform"],
-                            r["source_account_id"],
-                            r["conversation_id"],
-                        ) != (
-                            target["source"],
-                            target["source_account_id"],
-                            target["conversation_id"],
-                        ):
-                            raise ChatDataError("CONTEXT_IDENTITY_MISMATCH", 502)
-                    anchor = next(
-                        (r for r in records if r["record_id"] == target["record_id"]),
-                        None,
-                    )
-                    if not anchor or anchor["record_revision"] > target["revision"]:
-                        self.service.sources.mark_changed(target, "SOURCE_CHANGED")
-                        raise ChatDataError("SOURCE_CHANGED", 409)
-                    if anchor["record_revision"] < target["revision"]:
-                        raise ChatDataError("SOURCE_REVISION_BEHIND", 503)
-                    found.extend(
-                        self.add(
-                            [
-                                self.service.sources.evidence(r, "mac", "context")
-                                for r in records
-                                if scope["sent_from"]
-                                <= (r.get("sent_at") or -1)
-                                <= scope["sent_to"]
-                            ]
-                        )
-                    )
-                except ChatDataError as exc:
-                    self.note("上下文未完整核对：" + exc.code)
-        return list(dict.fromkeys(found))

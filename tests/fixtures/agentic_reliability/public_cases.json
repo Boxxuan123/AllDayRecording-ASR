@@ -1,0 +1,280 @@
+{
+  "fictional": true,
+  "pre_registered_aliases": [],
+  "cases": [
+    {
+      "id": "A",
+      "structure": "历史直接称呼、回复自认与同名第三人消歧",
+      "question": "先查清我过去称呼的“纸鹭”对应哪个来源账号，再告诉我2026年10月11日跟他实际商量了什么？",
+      "timezone": "Asia/Singapore",
+      "local_now": "2026-10-15T12:00:00+08:00",
+      "contacts": [
+        {
+          "id": "stage",
+          "name": "砂汀小剧场布景组",
+          "kind": "group"
+        },
+        {
+          "id": "lo",
+          "name": "岑洛",
+          "kind": "c2c",
+          "peer": "acct-lo"
+        },
+        {
+          "id": "other",
+          "name": "纸鹭",
+          "kind": "c2c",
+          "peer": "acct-other"
+        }
+      ],
+      "messages": [
+        {
+          "id": 8101,
+          "conversation": "stage",
+          "sender": "self-account",
+          "at": "2026-10-03T09:00:00+08:00",
+          "text": "@岑洛，纸鹭，旧幕布的尺寸请你核一下。我这个称呼说的就是你。"
+        },
+        {
+          "id": 8102,
+          "conversation": "stage",
+          "sender": "acct-lo",
+          "at": "2026-10-03T09:01:00+08:00",
+          "text": "回复上一条给我的@：收到，你叫我纸鹭就行，尺寸今晚核。"
+        },
+        {
+          "id": 8103,
+          "conversation": "lo",
+          "sender": "self-account",
+          "at": "2026-10-11T10:00:00+08:00",
+          "text": "纸鹭，布景使用权确认了吗？我担心只有照片授权，没有现场展示授权。"
+        },
+        {
+          "id": 8104,
+          "conversation": "lo",
+          "sender": "acct-lo",
+          "at": "2026-10-11T10:02:00+08:00",
+          "text": "照片授权已收到，但现场展示权还未确认。我们先做不带原图的灰色样板；这只是打样，不能对外展示原图。"
+        },
+        {
+          "id": 8105,
+          "conversation": "lo",
+          "sender": "self-account",
+          "at": "2026-10-11T10:03:00+08:00",
+          "text": "好，我做灰样，你继续问现场展示权。不要把照片授权当作全部授权。"
+        },
+        {
+          "id": 8106,
+          "conversation": "stage",
+          "sender": "acct-third",
+          "at": "2026-10-10T11:00:00+08:00",
+          "text": "书里那位“纸鹭”是虚构角色，并不是我们组的岑洛。"
+        },
+        {
+          "id": 8107,
+          "conversation": "other",
+          "sender": "acct-other",
+          "at": "2026-10-11T10:05:00+08:00",
+          "text": "我外号也叫纸鹭。我在另一个社团做灯具，不认识岑洛；我的灯具授权齐了。"
+        },
+        {
+          "id": 8108,
+          "conversation": "lo",
+          "sender": "acct-lo",
+          "at": "2026-10-12T10:00:00+08:00",
+          "text": "今天只收到继续询问的回信，仍没有现场展示授权。"
+        },
+        {
+          "id": 8109,
+          "conversation": "stage",
+          "sender": "acct-third",
+          "at": "2026-10-11T12:00:00+08:00",
+          "text": "排练室饮水机已清洗。"
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "structure": "跨组织会话的数量口径与实物交接链",
+      "question": "澄桥互助站10月11日说的“橘灯借用42号”后来到底交接了几台轮椅，三台是不是都到借用人手里了？",
+      "timezone": "Asia/Singapore",
+      "local_now": "2026-10-15T12:00:00+08:00",
+      "contacts": [
+        {
+          "id": "station",
+          "name": "澄桥互助站值班群",
+          "kind": "group"
+        },
+        {
+          "id": "handover",
+          "name": "河湾物资交接群",
+          "kind": "group"
+        },
+        {
+          "id": "stock",
+          "name": "许砚",
+          "kind": "c2c",
+          "peer": "acct-yan"
+        },
+        {
+          "id": "noise",
+          "name": "澄桥旧物交流群",
+          "kind": "group"
+        }
+      ],
+      "messages": [
+        {
+          "id": 8201,
+          "conversation": "station",
+          "sender": "acct-shu",
+          "at": "2026-10-11T09:00:00+08:00",
+          "text": "橘灯借用42号：申请的是三台轮椅，今天先开一张取件登记。不能凭登记张数确认交接数量。"
+        },
+        {
+          "id": 8202,
+          "conversation": "station",
+          "sender": "acct-shu",
+          "at": "2026-10-11T09:02:00+08:00",
+          "text": "澄桥互助站这项橘灯借用42号，我会带到另一个交接群核库存。"
+        },
+        {
+          "id": 8203,
+          "conversation": "handover",
+          "sender": "acct-shu",
+          "at": "2026-10-11T11:00:00+08:00",
+          "text": "澄桥互助站的橘灯借用42号申请三台，这边哪位记实际出库？"
+        },
+        {
+          "id": 8204,
+          "conversation": "handover",
+          "sender": "acct-yan",
+          "at": "2026-10-11T11:01:00+08:00",
+          "text": "橘灯借用42号实际出库由我逐台核。取件登记不等于签收，明天我私下发逐台结果。"
+        },
+        {
+          "id": 8205,
+          "conversation": "stock",
+          "sender": "acct-yan",
+          "at": "2026-10-12T16:00:00+08:00",
+          "text": "橘灯借用42号今天逐台核完：W-11、W-12两台已由借用人签收；W-13仍在维修间，从未发出。一张登记对应这三台申请，不能读成三台已交接。这里只是我转述签收情况，原签收单还没附。"
+        },
+        {
+          "id": 8206,
+          "conversation": "stock",
+          "sender": "acct-yan",
+          "at": "2026-10-12T16:02:00+08:00",
+          "text": "我之前在群里说“登记已办妥”，指登记手续，不是三台全部交付。"
+        },
+        {
+          "id": 8207,
+          "conversation": "noise",
+          "sender": "acct-other",
+          "at": "2026-10-12T17:00:00+08:00",
+          "text": "青灯借用42号三把折叠椅都取走了，是另一个组织的申请，不是轮椅。"
+        },
+        {
+          "id": 8208,
+          "conversation": "stock",
+          "sender": "acct-yan",
+          "at": "2026-10-10T16:00:00+08:00",
+          "text": "上周橘灯借用41号有三台，全部返还了。"
+        },
+        {
+          "id": 8209,
+          "conversation": "handover",
+          "sender": "acct-third",
+          "at": "2026-10-11T12:00:00+08:00",
+          "text": "晚饭盒已到，不属于物资出库。"
+        }
+      ]
+    },
+    {
+      "id": "C",
+      "structure": "独立来源冲突、指控与证据能力边界",
+      "question": "霁禾档案会的“棱镜捐款簿”是不是被挪用了？请核对10月12日前后的说法，分清哪些有原始依据、哪些仍不确定。",
+      "timezone": "Asia/Singapore",
+      "local_now": "2026-10-15T12:00:00+08:00",
+      "contacts": [
+        {
+          "id": "archive",
+          "name": "霁禾档案会公告讨论",
+          "kind": "group"
+        },
+        {
+          "id": "check",
+          "name": "棱镜账页核对室",
+          "kind": "group"
+        },
+        {
+          "id": "uploader",
+          "name": "闻澈",
+          "kind": "c2c",
+          "peer": "acct-che"
+        },
+        {
+          "id": "otherbook",
+          "name": "霁禾藏书互换",
+          "kind": "group"
+        }
+      ],
+      "messages": [
+        {
+          "id": 8301,
+          "conversation": "archive",
+          "sender": "acct-jin",
+          "at": "2026-10-12T08:00:00+08:00",
+          "text": "棱镜捐款簿首页显示支出四千，附件截图只有两千。我怀疑剩下两千被人挪用，但没有看银行流水，也没核对截图日期。"
+        },
+        {
+          "id": 8302,
+          "conversation": "archive",
+          "sender": "acct-che",
+          "at": "2026-10-12T08:05:00+08:00",
+          "text": "棱镜捐款簿截图是我传的，我去核对室说明版本和日期，别把差额直接当成挪用。"
+        },
+        {
+          "id": 8303,
+          "conversation": "check",
+          "sender": "acct-che",
+          "at": "2026-10-12T10:00:00+08:00",
+          "text": "核对棱镜捐款簿：截图是10月10日的第一笔两千；首页四千合并了10日和11日两笔各两千。我要补银行回单；目前只是在解释记账口径。"
+        },
+        {
+          "id": 8304,
+          "conversation": "check",
+          "sender": "acct-auditor",
+          "at": "2026-10-12T10:03:00+08:00",
+          "text": "我只见过这两版账页截图，没看银行回单或收款方确认，无法证明钱确实到了指定用途。不能只因差额有解释就认定完全合规。"
+        },
+        {
+          "id": 8305,
+          "conversation": "uploader",
+          "sender": "acct-che",
+          "at": "2026-10-13T09:00:00+08:00",
+          "text": "棱镜捐款簿第二笔回单仍未找到，收款方也还没回。我对“两个日期合计四千”的说明不等于资金用途已获独立核实。"
+        },
+        {
+          "id": 8306,
+          "conversation": "archive",
+          "sender": "acct-third",
+          "at": "2026-10-13T09:30:00+08:00",
+          "text": "听别人转发说已经坐实挪用，我没见新材料，只是转述上午那条怀疑。"
+        },
+        {
+          "id": 8307,
+          "conversation": "otherbook",
+          "sender": "acct-jin-other",
+          "at": "2026-10-12T12:00:00+08:00",
+          "text": "另一本棱镜旧书簿有人少交两千购书款，和捐款簿不是同一账。"
+        },
+        {
+          "id": 8308,
+          "conversation": "archive",
+          "sender": "acct-third",
+          "at": "2026-10-12T13:00:00+08:00",
+          "text": "有人提议周末换公告栏字体。"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "A": {
+    "mode": "search",
+    "time": {
+      "kind": "unchanged",
+      "first": "",
+      "last": ""
+    },
+    "actions": [
+      {
+        "tool": "search_messages",
+        "purpose": "在有界历史中查找用户对“纸鹭”的实际称呼，区分历史称呼与当前目录同名账号。",
+        "targets": [],
+        "terms": [
+          "纸鹭"
+        ],
+        "window": "identity",
+        "evidence_ids": []
+      },
+      {
+        "tool": "get_message_context",
+        "purpose": "核对同名账号自述的上下文及用户回复，不能仅凭昵称认定身份。",
+        "targets": [
+          "chat:rec:fixture-8107"
+        ],
+        "terms": [],
+        "window": "target",
+        "evidence_ids": [
+          "chat:rec:fixture-8107"
+        ]
+      },
+      {
+        "tool": "search_messages",
+        "purpose": "核对指定日期岑洛私聊和布景组中的实际讨论及称呼线索；仅作为待核实候选，不预设账号关联。",
+        "targets": [
+          "contact:a3418fb63acedaf93cdf4a002978f34e",
+          "contact:b2bc00fe5134728c073c38c33937179c"
+        ],
+        "terms": [],
+        "window": "target",
+        "evidence_ids": []
+      }
+    ],
+    "claims": [],
+    "candidates": [],
+    "unknown": [
+      "目前仅有账号 acct-other 自称“外号也叫纸鹭”的发言，尚不能确认其就是用户过去称呼的“纸鹭”。"
+    ]
+  },
+  "B": {
+    "mode": "search",
+    "time": {
+      "kind": "unchanged",
+      "first": "",
+      "last": ""
+    },
+    "actions": [
+      {
+        "tool": "search_messages",
+        "purpose": "查找10月11日“橘灯借用42号”的原始说法、交接数量及参与账户线索。",
+        "targets": [
+          "contact:85e7f62d8d39095d93e95d5c17cc4e8d",
+          "contact:34b342502c2fa76194a50aa65c5842f4",
+          "contact:32297e9d3ba74975e6d0782c4c222f23"
+        ],
+        "terms": [
+          "橘灯借用42号"
+        ],
+        "window": "target",
+        "evidence_ids": []
+      },
+      {
+        "tool": "get_message_context",
+        "purpose": "展开命中消息及其上下文，核对三台是否仅为计划、实际交接对象和到手情况。",
+        "targets": [
+          "$0"
+        ],
+        "terms": [],
+        "window": "target",
+        "evidence_ids": []
+      }
+    ],
+    "claims": [],
+    "candidates": [],
+    "unknown": []
+  },
+  "C": {
+    "mode": "search",
+    "time": {
+      "kind": "unchanged",
+      "first": "",
+      "last": ""
+    },
+    "actions": [
+      {
+        "tool": "search_messages",
+        "purpose": "检索10月12日授权范围内棱镜捐款簿的原始说法、质疑及附件线索，区分指控与核对材料",
+        "targets": [
+          "contact:04141e60ae559b4ee3598327d6d1cef1",
+          "contact:3457f8acf68e92048cdbdf94962e2e26",
+          "contact:c6cd66ed7231b0b09446c02811c15537"
+        ],
+        "terms": [
+          "棱镜",
+          "捐款",
+          "挪用"
+        ],
+        "window": "target",
+        "evidence_ids": []
+      },
+      {
+        "tool": "get_message_context",
+        "purpose": "展开检索命中的原始上下文，核对回应、修订及原始凭据是否实际提供",
+        "targets": [
+          "$0"
+        ],
+        "terms": [],
+        "window": "target",
+        "evidence_ids": []
+      }
+    ],
+    "claims": [],
+    "candidates": [],
+    "unknown": [
+      "目前尚无消息正文，不能判断是否存在挪用；须区分聊天指控、当事人解释与可核验的原始凭据。"
+    ]
+  }
+}

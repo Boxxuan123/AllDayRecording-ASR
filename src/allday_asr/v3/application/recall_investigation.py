@@ -30,6 +30,7 @@ def _payload(tools, round_number, question):
         result["investigation_steps"],
         result.get("claims", []),
     )
+    tools.flow.selected(records, round_number)
     if selection["omitted_count"]:
         tools.note(
             "模型本轮最多读取 20 条/28KB 依据；已优先保留引用锚点及各来源时序边界，但未读取全部证据，可能遗漏中间变更、冲突或后续，不能确认完整经过。"
@@ -129,10 +130,14 @@ def _claims(value, evidence, scope):
                         )
             # Relative-day semantics use the message LOCAL date, never query/import time.
             if event["basis"] == "relative":
-                from allday_asr.v3.domain.recall_event_time import source_relative_period
+                from allday_asr.v3.domain.recall_event_time import (
+                    source_relative_period,
+                )
 
                 row = evidence[event["evidence_id"]]
-                period = source_relative_period(event["quote"], scope["timezone"], row["sent_at"])
+                period = source_relative_period(
+                    event["quote"], scope["timezone"], row["sent_at"]
+                )
                 if not period:
                     raise ValueError(
                         "relative time needs supported source wording or inferred basis"
@@ -213,10 +218,17 @@ def investigate(service, result, plan, question, cancel, deadline, now):
     try:
         if not plan.get("_parse_error"):
             contacts = result["scope"].get("source_contacts", [])
+            identity_lookup = unresolved_person or bool(
+                plan.get("_contact_scope_is_seed")
+                and plan["person_mention"]
+                and any(c["conversation_type"] == "c2c" for c in contacts)
+            )
+            if identity_lookup:
+                contacts = []
             terms = (
                 [plan["person_mention"]]
-                if unresolved_person
-                else ([] if contacts else plan["terms"][:2])
+                if identity_lookup
+                else ([] if contacts else tools.anchors[:1] or plan["terms"][:2])
             )
             targets = ["contact:" + c["key"] for c in contacts[:2]]
             if terms or targets:
@@ -225,11 +237,11 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                         "search_messages",
                         terms,
                         targets,
-                        "identity" if unresolved_person else "target",
+                        "identity" if identity_lookup else "target",
                     ),
                     [],
                 )
-                if unresolved_person and hits:
+                if identity_lookup and hits:
                     tools.run(
                         _action(
                             "get_message_context", targets=hits[:2], window="identity"
@@ -238,6 +250,10 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                     )
         for round_number in (1, 2):
             tools.checkpoint()
+            if round_number == 2:
+                from .recall_investigation_followup import complete_followup
+
+                complete_followup(tools)
             payload = _payload(tools, round_number, question)
             if (
                 payload["model_budget_seconds"] < 2
@@ -363,6 +379,15 @@ def investigate(service, result, plan, question, cancel, deadline, now):
             r["role"] == "match" for r in result["evidence"]
         )
         result["metrics"]["retrieved"] = len(result["evidence"])
+        tools.flow.value["stop_reason"] = (
+            "cancelled"
+            if cancel.is_set()
+            else "identity_confirmation"
+            if result.get("contact_candidates")
+            else "validation_failed"
+            if result.get("model_status") == "failed"
+            else "bounded_result_with_gaps"
+        )
         result["summary_retry_available"] = False
         result["investigation_steps"] = deepcopy(result["investigation_steps"])
     return result

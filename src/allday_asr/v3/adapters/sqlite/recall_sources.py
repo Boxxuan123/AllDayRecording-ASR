@@ -47,6 +47,9 @@ def chat_evidence(record, identities, people, manual, origin, role="match"):
             if isinstance(m, str) and len(m) <= 200
         ],
         "reply_record_id": (record.get("reply") or {}).get("record_id"),
+        "quote_record_id": (
+            record["quote"] if isinstance(record.get("quote"), dict) else {}
+        ).get("record_id"),
         "sender_account_id": record.get("sender_account_id"),
         "identity_key": identity_key(record) or "",
         "person_id": person or "",
