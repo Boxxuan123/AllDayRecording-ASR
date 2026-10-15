@@ -17,6 +17,10 @@ class ReviewPagingTests(unittest.TestCase):
         connection = sqlite3.connect(':memory:')
         connection.row_factory = sqlite3.Row
         connection.executescript('''
+            -- The real review query now also reads the existing cross-day index.
+            -- Keep it empty in this paging fixture; do not mock away that read.
+            CREATE TABLE cross_day_index_revisions (
+              revision INTEGER PRIMARY KEY, scope_json TEXT, value_json TEXT, created_at TEXT);
             CREATE TABLE utterances (
               utterance_id TEXT, session_id TEXT, revision INTEGER, status TEXT,
               text TEXT, evidence_json TEXT, created_at TEXT, updated_at TEXT);

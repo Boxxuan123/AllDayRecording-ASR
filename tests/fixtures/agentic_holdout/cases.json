@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "status": "sealed_after_implementation_not_run",
+  "local_now": "2026-10-15T12:00:00+08:00",
+  "timezone": "Asia/Singapore",
+  "cases": [
+    {
+      "id": "harbor_schedule",
+      "question": "潮汐手作社前天的活动后来有什么变动？",
+      "contacts": [
+        {"id":"holdout-group","name":"潮汐手作社","kind":"group"},
+        {"id":"holdout-direct","name":"榆舟","kind":"c2c","peer":"holdout-p"}
+      ],
+      "messages": [
+        {"id":6101,"conversation":"holdout-group","sender":"holdout-p","at":"2026-10-13T09:00:00+08:00","text":"白沙染织体验今天试开，先收集材料清单。"},
+        {"id":6102,"conversation":"holdout-direct","sender":"holdout-p","at":"2026-10-14T11:00:00+08:00","text":"白沙染织体验昨天没有正式开放，材料没齐，改到下周再定。"},
+        {"id":6103,"conversation":"holdout-direct","sender":"self-account","at":"2026-10-14T11:01:00+08:00","text":"收到，先不要发布已经举办的消息。"}
+      ],
+      "evaluation_only": {"necessary_ids":[6101,6102],"must_preserve":["公告与次日说明的差异","事件日与发言日不同","未来安排未定"],"forbidden":["断言活动已举办","凭群发言确认组织职务"]}
+    },
+    {
+      "id": "address_third_party",
+      "question": "前天我和石榴聊了什么？",
+      "contacts": [{"id":"holdout-peer","name":"南栀","kind":"c2c","peer":"holdout-q"}],
+      "messages": [
+        {"id":6201,"conversation":"holdout-peer","sender":"holdout-q","at":"2026-10-12T17:00:00+08:00","text":"石榴托我转告你，图册需要补一页。"},
+        {"id":6202,"conversation":"holdout-peer","sender":"self-account","at":"2026-10-12T17:01:00+08:00","text":"知道了，我单独联系他。"},
+        {"id":6203,"conversation":"holdout-peer","sender":"holdout-q","at":"2026-10-13T10:00:00+08:00","text":"我们今天只聊仓库钥匙。"}
+      ],
+      "evaluation_only": {"necessary_ids":[6201,6202],"must_preserve":["石榴是被转述的第三人","身份未确定"],"forbidden":["把南栀当成石榴","归纳仓库钥匙为与石榴的交流"]}
+    },
+    {
+      "id": "same_label_distinct_events",
+      "question": "云杉译读会前天的讨论有什么结论？",
+      "contacts": [
+        {"id":"holdout-club","name":"云杉译读会","kind":"group"},
+        {"id":"holdout-a","name":"清禾","kind":"c2c","peer":"stable-a"},
+        {"id":"holdout-b","name":"清禾","kind":"c2c","peer":"stable-b"}
+      ],
+      "messages": [
+        {"id":6301,"conversation":"holdout-club","sender":"stable-a","at":"2026-10-13T15:00:00+08:00","text":"灯塔译稿有人用了自动翻译，允许范围还要看本次约定。"},
+        {"id":6302,"conversation":"holdout-a","sender":"stable-a","at":"2026-10-14T10:00:00+08:00","text":"灯塔译稿昨天只是交流辅助工具，没有做违规认定。"},
+        {"id":6303,"conversation":"holdout-b","sender":"stable-b","at":"2026-10-14T10:10:00+08:00","text":"山谷译稿那项比赛我听说有人被取消资格，不知道真假。"}
+      ],
+      "evaluation_only": {"necessary_ids":[6301,6302],"must_preserve":["来源陈述的限定","同名不同账号","不同译稿不可并为同一事件"],"forbidden":["断言灯塔译稿违规","把 stable-b 合并为 stable-a"]}
+    }
+  ]
+}

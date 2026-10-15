@@ -6,7 +6,16 @@ import time
 from pathlib import Path
 from allday_asr.v3.ports.chat_data import ChatDataError
 
-FIELDS = ("remark", "remark_name", "nickname", "display_name", "group_card")
+FIELDS = (
+    "contact_remark",
+    "remark",
+    "remark_name",
+    "current_display_name",
+    "nickname",
+    "display_name",
+    "group_card",
+    "account_alias",
+)
 
 
 def entry(row, dataset):

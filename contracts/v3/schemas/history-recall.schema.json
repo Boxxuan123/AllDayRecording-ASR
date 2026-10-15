@@ -305,7 +305,46 @@
         },
         "claims": {
           "type": "array",
-          "maxItems": 20
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "quote",
+                  "summary",
+                  "inference",
+                  "source_fact",
+                  "statement"
+                ]
+              },
+              "event_time": {
+                "type": "object",
+                "properties": {
+                  "basis": {
+                    "enum": [
+                      "unknown",
+                      "explicit",
+                      "relative",
+                      "inferred"
+                    ]
+                  },
+                  "first": {
+                    "type": "string"
+                  },
+                  "last": {
+                    "type": "string"
+                  },
+                  "evidence_id": {
+                    "type": "string"
+                  },
+                  "quote": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
         },
         "coverage": {
           "type": "array",
@@ -410,9 +449,20 @@
         },
         "summary_retry_available": {
           "type": "boolean"
+        },
+        "investigation_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "investigation_steps": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object"
+          }
         }
       }
     }
   },
-  "description": "Business-read-only scoped recall. Initial query: 60 seconds, 300 records, 12 source requests (6 directory plus 6 retrieval), at most one planner and one summary. Summary at most 45 seconds. An explicit retry uses the owned, still-valid evidence, once, with no source reads. Explicit directory lookup: at most two refreshes of 6 metadata requests each, 20 contacts per page, no message reads, no person/alias writes. Unknown time/source constraints cannot be bypassed by contact selection. Coverage remains partial and citations are verified."
+  "description": "Business-read-only scoped recall. 60 seconds, 300 retained records, 12 source requests (6 directory and 6 retrieval), 100 remote message records. Simple questions retain existing planner/summary path. Complex investigation shares the same 2 model-call ceiling: up to two decisions and 8 validated read-only tools, with partial results at the limit. Event time is separate from message time; follow-up at most 2 local calendar days and address clues at most 30 preceding days, clipped to explicit user filters and global date span. No inferred identity or memory writes. Source speech is a statement, never an established fact. Query-local candidates require selection. Existing explicit summary retry applies only to the simple path."
 }

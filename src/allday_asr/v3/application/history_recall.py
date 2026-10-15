@@ -44,8 +44,10 @@ class HistoryRecall:
         root=None,
         directory=None,
         planner=None,
+        investigator=None,
     ):
         self.root = root
+        self.investigator = investigator
         self.directory, self.planner = directory, planner
         self.identities, self.sources, self.source, self.model = (
             identities,
@@ -199,7 +201,9 @@ class HistoryRecall:
         if any(type(payload.get(k, True)) is not bool for k in ["expand", "summarize"]):
             raise ValueError("查询选项无效")
         started = time.monotonic()
-        deadline = started + 60
+        deadline = started + (
+            prepared.get("_remaining_seconds", 60) if prepared else 60
+        )
         cancel = Event()
         with self.lock:
             self._prune()
@@ -306,6 +310,26 @@ class HistoryRecall:
             },
             "limits": LIMITS,
         }
+        if query_plan.get("_carried_metrics"):
+            carried = query_plan["_carried_metrics"]
+            for name in (
+                "model_calls",
+                "source_requests",
+                "retrieval_requests",
+                "directory_requests",
+                "source_records_read",
+            ):
+                result["metrics"][name] = carried.get(name, 0)
+            result["_spent_ms"] = carried.get("elapsed_ms", 0)
+        if query_plan.get("agentic"):
+            from .recall_investigation import investigate
+
+            try:
+                investigate(self, result, query_plan, question, cancel, deadline, now)
+            finally:
+                with self.lock:
+                    self.active.pop(key, None)
+            return self._finish(owner, qid, key, cancel, started, result)
         if query_plan["issue"]:
             result.update(
                 status="needs_clarification",
@@ -317,6 +341,7 @@ class HistoryRecall:
                 self.results[key] = (time.monotonic(), safe_memory(result))
             return self.page(owner, qid)
         try:
+            self._checkpoint(cancel, deadline)
             if scope.get("relationship") == "conversation":
                 result["coverage"].append(
                     "私聊使用来源账号＋会话 ID 取回双方；群聊仅纳入双方的明确回复关系。录音说话人确认不能证明本人在与其交谈，未纳入。"
@@ -393,7 +418,12 @@ class HistoryRecall:
         finally:
             with self.lock:
                 self.active.pop(key, None)
-        result["metrics"]["elapsed_ms"] = round((time.monotonic() - started) * 1000)
+        return self._finish(owner, qid, key, cancel, started, result)
+
+    def _finish(self, owner, qid, key, cancel, started, result):
+        result["metrics"]["elapsed_ms"] = result.get("_spent_ms", 0) + round(
+            (time.monotonic() - started) * 1000
+        )
         result["metrics"]["retrieved"] = len(result["evidence"])
         if result["identity_version"] != self.identities.version():
             raise ValueError("查询期间人物关联或来源变化，请重新查询")
@@ -418,6 +448,9 @@ class HistoryRecall:
             claims=[],
             answer="部分来源已确认修订／撤回，旧结论已失效，请重新查询。",
         )
+        if result.get("investigation_version"):
+            result["contact_candidates"] = []
+            result["contact_lookup_allowed"] = False
         for row in result["evidence"]:
             if row["id"] in ids:
                 row["validity"] = "stale"
@@ -495,13 +528,16 @@ class HistoryRecall:
                 raise ChatDataError("SOURCE_CHANGED", 409)
             if anchor["record_revision"] < row["revision"]:
                 raise ChatDataError("SOURCE_REVISION_BEHIND", 503)
-            records = self.sources.filter_context(records, value["scope"])
+            context_scope = value.get("_evidence_scopes", {}).get(
+                row["id"], value["scope"]
+            )
+            records = self.sources.filter_context(records, context_scope)
             return safe_memory(
                 {
                     "status": "available",
                     "evidence": [
                         native_present(
-                            self.sources.evidence(r, "mac", "context"), value["scope"]
+                            self.sources.evidence(r, "mac", "context"), context_scope
                         )
                         for r in records
                     ],

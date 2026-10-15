@@ -7,7 +7,9 @@ from allday_asr.v3.adapters.chat_data.mac import MacChatData
 from allday_asr.v3.adapters.codex.recall_model import RecallModelAdapter
 
 
-def compose_history_recall(database, root, source=None, model=None, planner=None):
+def compose_history_recall(
+    database, root, source=None, model=None, planner=None, investigator=None
+):
     identities = SourceIdentities(database, root / "chat/cache.sqlite3")
     from allday_asr.v3.adapters.sqlite.recall_directory import RecallDirectory
     from allday_asr.v3.adapters.codex.recall_planner import RecallPlannerAdapter
@@ -22,6 +24,15 @@ def compose_history_recall(database, root, source=None, model=None, planner=None
         if planner is not None
         else (RecallPlannerAdapter(root) if model is None else None)
     )
+    from allday_asr.v3.adapters.codex.recall_investigator import (
+        RecallInvestigatorAdapter,
+    )
+
+    selected_investigator = (
+        investigator
+        if investigator is not None
+        else (RecallInvestigatorAdapter(root) if model is None else None)
+    )
     return HistoryRecall(
         identities,
         RecallSources(identities),
@@ -30,4 +41,5 @@ def compose_history_recall(database, root, source=None, model=None, planner=None
         root=root,
         directory=RecallDirectory(identities, selected_source, root),
         planner=selected_planner,
+        investigator=selected_investigator,
     )

@@ -82,7 +82,7 @@
     },
     "history_recall": {
       "path": "schemas/history-recall.schema.json",
-      "sha256": "9a9f7b14fc1d9a4089e486229c4c4b8068a7a4e2402c2684b3073959d8861001"
+      "sha256": "bbb3565c2678f297e7a3545699d8e23b7aa074c873d5459255277ce4998b246d"
     }
   },
   "apis": {

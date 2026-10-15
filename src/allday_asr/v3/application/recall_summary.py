@@ -6,6 +6,17 @@ from allday_asr.v3.domain.recall_language import select_evidence
 
 
 def summarize(service, result, question, cancel, deadline):
+    if (
+        result.get("_spent_ms") is not None
+        and result["metrics"]["model_calls"] >= result["limits"]["model_calls"]
+    ):
+        result.update(
+            model_status="insufficient",
+            summary_retry_available=False,
+            answer="本次调查的模型预算已用完，已按所选对象取回原文，尚未生成交流归纳。",
+            unknown=["身份选择不会重置本次查询预算；当前原文尚未归纳。"],
+        )
+        return
     # Exact quotes remain available on every model failure. One invocation, no retries.
     if (
         result["scope"].get("source_contacts")
@@ -100,7 +111,9 @@ def summarize(service, result, question, cancel, deadline):
             "无法生成归纳：" + reason + "。以下为符合本次联系人、时间与会话约束的原文。"
         )
         result["summary_retry_available"] = (
-            not cancel.is_set() and result.get("_summary_attempt", 0) == 0
+            not cancel.is_set()
+            and result.get("_summary_attempt", 0) == 0
+            and "_spent_ms" not in result
         )
     finally:
         result["metrics"]["model_elapsed_ms"] = round(

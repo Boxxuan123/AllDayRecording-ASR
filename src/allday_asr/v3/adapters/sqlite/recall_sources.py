@@ -3,6 +3,7 @@
 import json
 from datetime import datetime
 from .recall_state import RecallState, bounded_sql
+from .recall_relations import RecallRelations
 from .recall_conversations import conversation_records
 from allday_asr.v3.domain.recall_language import relevance
 from allday_asr.v3.domain.chat_projection import semantic_text
@@ -34,6 +35,17 @@ def chat_evidence(record, identities, people, manual, origin, role="match"):
         "source_account_id": record["source_account_id"],
         "conversation_id": record["conversation_id"],
         "conversation_type": record.get("conversation_type"),
+        "conversation_display_name": record.get("conversation_display_name"),
+        "reply": {
+            k: v
+            for k, v in (record.get("reply") or {}).items()
+            if k in {"record_id", "sender_account_id", "text", "resolution"}
+        },
+        "mentions": [
+            m
+            for m in (record.get("mentions") or [])[:20]
+            if isinstance(m, str) and len(m) <= 200
+        ],
         "reply_record_id": (record.get("reply") or {}).get("record_id"),
         "sender_account_id": record.get("sender_account_id"),
         "identity_key": identity_key(record) or "",
@@ -61,7 +73,7 @@ def chat_evidence(record, identities, people, manual, origin, role="match"):
     }
 
 
-class RecallSources(RecallState):
+class RecallSources(RecallState, RecallRelations):
     def __init__(self, identities):
         self.identities = identities
 
@@ -83,6 +95,11 @@ class RecallSources(RecallState):
         if scope["source"] in {"qq", "wechat"}:
             clauses.append("platform=?")
             params.append(scope["source"])
+        if scope.get("source_senders"):
+            clauses.append(
+                "sender IN (" + ",".join("?" for _ in scope["source_senders"]) + ")"
+            )
+            params.extend(scope["source_senders"])
         if scope.get("source_accounts"):
             choices = []
             for account in scope["source_accounts"]:

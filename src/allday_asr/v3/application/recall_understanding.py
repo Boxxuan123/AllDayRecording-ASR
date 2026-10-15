@@ -19,7 +19,9 @@ def apply_contact(plan, contact):
     plan["issue"] = ""
     plan["contact_candidates"] = []
     scope["target_label"] = contact["display_name"]
-    if contact["conversation_type"] == "group":
+    if contact["conversation_type"] == "group" and not contact.get(
+        "query_local_address"
+    ):
         scope["relationship"] = "group"
 
 
@@ -199,6 +201,50 @@ def interpret(
             )
         )
     )
+    simple = simple or (
+        not error
+        and not fast["issue"]
+        and not fast["terms"]
+        and fast["intent"] in {"quote", "conversation"}
+        and bool(scope.get("person_id") or scope.get("source_contacts"))
+    )
+    if (
+        service.investigator is not None
+        and payload.get("summarize", True)
+        and not keyword.strip()
+        and not selected
+    ):
+        # Preserve hard conflicts; only unsupported natural dates may be resolved semantically.
+        recoverable_time = error.startswith("时间描述尚不支持") or error.startswith(
+            "请使用明确日期或日期范围描述时间"
+        )
+        if error and not recoverable_time:
+            return fast
+        if recoverable_time:
+            # Date parsing happens before platform extraction in the fast path.
+            # Recovering time must not lose an explicit platform from the question.
+            named_sources = [
+                p
+                for p, label in (
+                    ("qq", "QQ"),
+                    ("wechat", "微信"),
+                    ("recording", "录音"),
+                )
+                if re.search(label, question, re.I)
+            ]
+            if len(named_sources) > 1 or (
+                named_sources and scope["source"] not in {"all", named_sources[0]}
+            ):
+                fast["issue"] = "问题来源与筛选范围不一致，请明确来源。"
+                return fast
+            if named_sources:
+                scope["source"] = named_sources[0]
+                directory = [r for r in directory if r["platform"] == scope["source"]]
+        if not (payload.get("person_id") and fast["issue"]) and (
+            not simple or fast["issue"]
+        ):
+            fast.update(agentic=True, _directory=directory, _parse_error=bool(error))
+            return fast
     if simple or service.planner is None:
         if (
             fast["issue"]
@@ -462,6 +508,13 @@ def choose(service, owner, payload):
         raise ValueError("联系人选择已过期，请重新查询")
     if not saved.get("contact_lookup_allowed"):
         raise ValueError("请先明确日期或已有的人物筛选；联系人选择不会改变这些约束")
+    prepared = deepcopy(saved["_plan"])
+    if saved.get("investigation_version"):
+        # A clarification is a continuation of the same query, not a budget reset.
+        prepared["_carried_metrics"] = deepcopy(saved["metrics"])
+        prepared["_remaining_seconds"] = max(
+            0, 60 - saved["metrics"]["elapsed_ms"] / 1000
+        )
     return service.query(
-        owner, saved["_request"], selected=candidate, prepared=saved["_plan"]
+        owner, saved["_request"], selected=candidate, prepared=prepared
     )
