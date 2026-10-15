@@ -71,6 +71,8 @@ def _restore_result(data: dict[str, Any]) -> Any:
 def _reported_tokens(usage: dict | None) -> int:
     if not usage:
         return 0
+    if isinstance(usage.get("total"), dict):
+        return _reported_tokens(usage["total"])
     total = usage.get("total_tokens", usage.get("totalTokens"))
     if isinstance(total, int) and total >= 0:
         return total
@@ -189,7 +191,8 @@ class ModelExecutionRunner:
             _atomic_json(state_path, state)
             receipt_path = self.receipt_dir / f"{job_id}.{attempt}.receipt.json"
             receipt = {"job_id": job_id, "attempt": attempt, "status": "started",
-                       "started_at": state["started_at"], "usage": None, "provenance": source}
+                       "started_at": state["started_at"], "usage": None, "provenance": source,
+                       "phase_ref": str(self.receipt_dir / f"{job_id}.{attempt}.phases.json")}
             _atomic_json(receipt_path, receipt)
             try:
                 if context is not None:
@@ -265,7 +268,10 @@ class ModelExecutionRunner:
         stem = self.receipt_dir / f"{job_id}.{attempt}"
         request_path = Path(f"{stem}.request.json")
         result_path = Path(f"{stem}.result.json")
-        _atomic_json(request_path, {**identity, "workdir": str(workdir)})
+        phase_path = Path(f"{stem}.phases.json")
+        _atomic_json(phase_path, {"events": [{"phase": "worker_launch", "elapsed_seconds": 0}]})
+        _atomic_json(request_path, {**identity, "workdir": str(workdir),
+                                    "phase_path": str(phase_path), "started_monotonic": time.monotonic()})
         owned = OwnedAttempt(
             [sys.executable, "-X", "utf8", "-m", __name__,
              str(request_path), str(result_path)],
@@ -274,7 +280,8 @@ class ModelExecutionRunner:
         exit_code = owned.wait(timeout_seconds, cancel_event)
         _atomic_json(Path(f"{stem}.process.json"), owned.identity)
         if exit_code == 124:
-            raise TimeoutError("model call exceeded its deadline")
+            events = json.loads(phase_path.read_text("utf-8"))["events"]
+            raise TimeoutError("model call exceeded its deadline during " + events[-1]["phase"])
         if exit_code == 125:
             raise ModelExecutionCancelled("model call cancelled")
         if exit_code != 0 or not result_path.exists():
@@ -286,38 +293,61 @@ class ModelExecutionRunner:
 
 
 def _direct_call(client: Any, prompt: str, instructions: str, schema: dict,
-                 model: str | None, effort: str, workdir: Path) -> Any:
+                 model: str | None, effort: str, workdir: Path, phase=None) -> Any:
     from openai_codex import ApprovalMode, Sandbox
     from openai_codex.types import ReasoningEffort
 
+    if phase:
+        phase("thread_start")
     thread = client.thread_start(
         approval_mode=ApprovalMode.deny_all, cwd=str(workdir),
         developer_instructions=instructions, ephemeral=True,
         model=model, sandbox=Sandbox.read_only,
     )
-    return thread.run(
+    if phase:
+        phase("turn_submit")
+    result = (thread.turn if phase else thread.run)(
         prompt, approval_mode=ApprovalMode.deny_all, cwd=str(workdir),
         effort=ReasoningEffort(effort), model=model,
         output_schema=schema, sandbox=Sandbox.read_only,
     )
+    if phase:
+        phase("turn_wait")
+        result = result.run()
+        phase("turn_completed")
+    return result
 
 
 def worker(request_path: Path, result_path: Path) -> None:
-    from openai_codex import Codex
-
     request = json.loads(request_path.read_text(encoding="utf-8"))
-    client = Codex()
+    events = [{"phase": "worker_launch", "elapsed_seconds": 0}]
+
+    def phase(name):
+        events.append({"phase": name, "elapsed_seconds": round(
+            time.monotonic() - request["started_monotonic"], 4)})
+        _atomic_json(Path(request["phase_path"]), {"events": events})
+
+    client = None
     try:
+        phase("sdk_import")
+        from openai_codex import Codex
+        phase("sdk_initialize")
+        client = Codex()
         raw = _direct_call(client, request["prompt"], request["instructions"],
                            request["schema"], request["model"],
-                           request["effort"], Path(request["workdir"]))
+                           request["effort"], Path(request["workdir"]), phase)
+        phase("result_validate")
         output = {"status": "completed", "result": _result_data(raw)}
     except BaseException as exc:
         output = {"status": "failed", "error": str(exc),
                   "error_type": type(exc).__name__}
     finally:
-        client.close()
+        if client is not None:
+            phase("sdk_close")
+            client.close()
+    phase("result_write")
     _atomic_json(result_path, output)
+    phase("worker_completed")
 
 
 if __name__ == "__main__":

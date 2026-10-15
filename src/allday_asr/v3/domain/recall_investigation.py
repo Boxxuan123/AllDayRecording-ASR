@@ -30,18 +30,28 @@ def arr(item, maximum):
 
 
 STRING = {"type": "string"}
-TIME = obj(
-    {
-        "basis": {
-            "enum": ["explicit", "relative", "inferred", "unknown"],
-            "type": "string",
-        },
-        "first": STRING,
-        "last": STRING,
-        "evidence_id": STRING,
-        "quote": STRING,
-    }
-)
+TIME = {
+    "anyOf": [
+        obj(
+            {
+                "basis": {"type": "string", "enum": ["unknown"]},
+                **{
+                    key: {"type": "string", "enum": [""]}
+                    for key in ("first", "last", "evidence_id", "quote")
+                },
+            }
+        ),
+        obj(
+            {
+                "basis": {
+                    "type": "string",
+                    "enum": ["explicit", "relative", "inferred"],
+                },
+                **{key: STRING for key in ("first", "last", "evidence_id", "quote")},
+            }
+        ),
+    ]
+}
 SCHEMA = obj(
     {
         "mode": {"type": "string", "enum": ["search", "answer", "clarify"]},
@@ -60,13 +70,19 @@ SCHEMA = obj(
                 {
                     "tool": {"type": "string", "enum": list(TOOLS)},
                     "purpose": STRING,
-                    "targets": arr(STRING, 4),
+                    "targets": {
+                        **arr(STRING, 4),
+                        "description": "Operands: supplied refs or $N. Context/source tools require evidence IDs here; related-conversation tool accepts evidence sender refs or account refs.",
+                    },
                     "terms": arr(STRING, 3),
                     "window": {
                         "type": "string",
                         "enum": ["target", "followup", "identity"],
                     },
-                    "evidence_ids": arr(STRING, 6),
+                    "evidence_ids": {
+                        **arr(STRING, 6),
+                        "description": "Supporting original evidence IDs, not tool operands. Related conversation searches require a cited literal event phrase.",
+                    },
                 }
             ),
             4,
@@ -111,9 +127,16 @@ then search a concrete event phrase. Up to four actions per round. The executor 
 search_messages supports supplied conversation/account refs or no targets with nonempty terms.
 get_group_members reports only EXISTING provenance: observed speech is NOT membership or role.
 Same names NEVER merge accounts; cross-platform people require existing confirmed links.
-get_related_conversations follows stable scoped account IDs. Searching them needs a concrete
+get_related_conversations targets accepts original evidence IDs (follows their sender) or stable
+account refs, not conversation refs. For subsequent developments, search beyond the seed group:
+get_related_conversations targets=[seed evidence ID] window=followup; search_messages targets=["$0"]
+terms=[literal event phrase from seed] evidence_ids=[seed evidence ID] window=followup.
+If another participant may hold the outcome, follow search results with get_related_conversations
+targets=["$1"] window=followup then search_messages targets=["$2"] using the same cited event anchor.
+Choose only necessary branches within four actions. A seed group is a starting point; explicit
+user scope filters remain hard limits. Do not assume later discussion stays in the original group. Searching them needs a concrete
 shared event phrase found in cited evidence; participation alone does not establish same event.
-get_message_context/get_source_evidence take actual evidence IDs. Existing memories are leads,
+get_message_context/get_source_evidence require actual evidence IDs in targets; evidence_ids alone is support. Existing memories are leads,
 not new primary evidence. find_contacts and find_conversations search native directory names.
 Unknown address names: search identity-window messages, expand replies, distinguish direct
 address from third-person discussion. Propose only source contacts supported by cited context;
@@ -123,7 +146,7 @@ calendar days). identity is an explicit bounded 30-day address search. Hard UI d
 Resolve unsupported dates from local_now using time; unchanged cannot repair unresolved time.
 Never equate sent_at with event date. Each claim has event_time: explicit quotes an actual date,
 relative quotes source relative wording anchored to the MESSAGE local date, inferred is explicitly
-uncertain, unknown leaves dates blank. Cite a supplied original text fragment for any dated claim.
+uncertain. For unknown ALL first, last, evidence_id and quote MUST be empty strings; citations still identify claim evidence. Cite a supplied original text fragment for any dated claim.
 source_fact is ONLY exact native metadata, not the truth of speech. Chat/audio content is a
 statement by someone, or an inference. Claims of wrongdoing, health, or identity never become
 established facts by repetition. A platform group owner is not a real-world organization leader.
@@ -133,6 +156,14 @@ Answer the question directly in Chinese with claims + unknown, not retrieval-sta
 
 
 def _validate(value, schema):
+    if "anyOf" in schema:
+        for branch in schema["anyOf"]:
+            try:
+                _validate(value, branch)
+                return
+            except ValueError:
+                pass
+        raise ValueError("invalid event time variant")
     if schema.get("type") == "object":
         if not isinstance(value, dict) or set(value) != set(schema["properties"]):
             raise ValueError("invalid investigation fields")
@@ -151,11 +182,36 @@ def _validate(value, schema):
 
 def checked(value):
     _validate(value, SCHEMA)
+    value = deepcopy(value)
     if value["mode"] == "search" and not value["actions"]:
         raise ValueError("empty search plan")
     if value["mode"] != "search" and value["actions"]:
         raise ValueError("actions require search mode")
     for action in value["actions"]:
+        tool = action["tool"]
+        if (
+            tool in {"get_message_context", "get_source_evidence"}
+            and not action["targets"]
+        ):
+            # Older model output used the support field for these unambiguous operands.
+            # Existence and authorization are still validated by the executor.
+            if 0 < len(action["evidence_ids"]) <= 4:
+                action["targets"] = list(action["evidence_ids"])
+        if (
+            tool
+            in {
+                "get_message_context",
+                "get_source_evidence",
+                "get_related_conversations",
+                "get_group_members",
+            }
+            and not action["targets"]
+        ):
+            raise ValueError("tool requires targets")
+        if tool in {"find_contacts", "find_conversations"} and not action["terms"]:
+            raise ValueError("directory lookup requires terms")
+        if tool == "search_messages" and not (action["terms"] or action["targets"]):
+            raise ValueError("unbounded message search")
         if not action["purpose"].strip() or any(
             not 1 <= len(t.strip()) <= 100 for t in action["terms"]
         ):

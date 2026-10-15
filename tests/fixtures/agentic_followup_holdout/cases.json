@@ -1,0 +1,262 @@
+{
+  "version": 1,
+  "status": "sealed_after_code_freeze_before_real_model",
+  "local_now": "2026-10-15T12:00:00+08:00",
+  "timezone": "Asia/Singapore",
+  "cases": [
+    {
+      "id": "ceramic_shift",
+      "question": "栖鹭陶艺社前天提到的银湾烧制后来有什么结论和变动？请核对相关会话的后续依据，区分当时计划、后续说法和实际事件时间。",
+      "contacts": [
+        {
+          "id": "ceramic_shift-start",
+          "name": "栖鹭陶艺社",
+          "kind": "group"
+        },
+        {
+          "id": "ceramic_shift-bridge",
+          "name": "窑务协作群",
+          "kind": "group"
+        },
+        {
+          "id": "ceramic_shift-direct",
+          "name": "苇宁",
+          "kind": "c2c",
+          "peer": "ceramic_shift-b"
+        },
+        {
+          "id": "ceramic_shift-noise",
+          "name": "苇宁",
+          "kind": "c2c",
+          "peer": "ceramic_shift-c"
+        }
+      ],
+      "messages": [
+        {
+          "id": 7101,
+          "conversation": "ceramic_shift-start",
+          "sender": "ceramic_shift-a",
+          "at": "2026-10-13T09:00:00+08:00",
+          "text": "银湾烧制计划今天开窑，设备确认消息稍后同步。"
+        },
+        {
+          "id": 7102,
+          "conversation": "ceramic_shift-bridge",
+          "sender": "ceramic_shift-a",
+          "at": "2026-10-13T10:00:00+08:00",
+          "text": "银湾烧制的设备清单转到这里，请接收方复核开窑条件。"
+        },
+        {
+          "id": 7103,
+          "conversation": "ceramic_shift-bridge",
+          "sender": "ceramic_shift-b",
+          "at": "2026-10-13T10:03:00+08:00",
+          "text": "银湾烧制清单已收到，我复核后会单独说明。"
+        },
+        {
+          "id": 7104,
+          "conversation": "ceramic_shift-direct",
+          "sender": "ceramic_shift-b",
+          "at": "2026-10-14T11:00:00+08:00",
+          "text": "银湾烧制昨天没有开窑，温控件未到。新安排是2026-10-16试开，仍待设备复核，不是确认已完成。"
+        },
+        {
+          "id": 7105,
+          "conversation": "ceramic_shift-noise",
+          "sender": "ceramic_shift-c",
+          "at": "2026-10-14T15:00:00+08:00",
+          "text": "银湾烧制是我们另一家店同名的展示项目，昨天已售罄，与栖鹭陶艺社没有合作。"
+        }
+      ],
+      "evaluation_only": {
+        "necessary_ids": [
+          7101,
+          7102,
+          7103,
+          7104
+        ],
+        "excluded_noise_id": 7105,
+        "chain": "起始群 A → 协作群同账号 A → 协作群新账号 B → 次日或隔日私聊 B；同名 C 不合并",
+        "must_preserve": [
+          "10月13日只是计划，14日B称13日未开窑",
+          "16日是条件性未来安排",
+          "不把发言日期当事件日期"
+        ],
+        "forbidden": [
+          "断言已开窑或已完成",
+          "采纳同名C作为同一参与者"
+        ]
+      }
+    },
+    {
+      "id": "review_clarification",
+      "question": "青芜谜题会前天提到的折纸题稿后来有什么结论和变动？请核对相关会话的后续依据，区分当时计划、后续说法和实际事件时间。",
+      "contacts": [
+        {
+          "id": "review_clarification-start",
+          "name": "青芜谜题会",
+          "kind": "group"
+        },
+        {
+          "id": "review_clarification-bridge",
+          "name": "题稿核对组",
+          "kind": "group"
+        },
+        {
+          "id": "review_clarification-direct",
+          "name": "苇宁",
+          "kind": "c2c",
+          "peer": "review_clarification-b"
+        },
+        {
+          "id": "review_clarification-noise",
+          "name": "苇宁",
+          "kind": "c2c",
+          "peer": "review_clarification-c"
+        }
+      ],
+      "messages": [
+        {
+          "id": 7201,
+          "conversation": "review_clarification-start",
+          "sender": "review_clarification-a",
+          "at": "2026-10-13T09:00:00+08:00",
+          "text": "折纸题稿有人怀疑用了自动求解，今天先交核对，尚无结论。"
+        },
+        {
+          "id": 7202,
+          "conversation": "review_clarification-bridge",
+          "sender": "review_clarification-a",
+          "at": "2026-10-13T10:00:00+08:00",
+          "text": "折纸题稿的版本记录转到这里，请核对方看是否混入演示稿。"
+        },
+        {
+          "id": 7203,
+          "conversation": "review_clarification-bridge",
+          "sender": "review_clarification-b",
+          "at": "2026-10-13T10:03:00+08:00",
+          "text": "折纸题稿记录已收到，我会区分演示稿与提交稿后再回复。"
+        },
+        {
+          "id": 7204,
+          "conversation": "review_clarification-direct",
+          "sender": "review_clarification-b",
+          "at": "2026-10-14T16:00:00+08:00",
+          "text": "折纸题稿昨天被质疑的是演示稿，不是提交稿；目前没有作出违规认定。我这里只核过版本标签，不能证明提交稿所有步骤的来源。"
+        },
+        {
+          "id": 7205,
+          "conversation": "review_clarification-noise",
+          "sender": "review_clarification-c",
+          "at": "2026-10-14T15:00:00+08:00",
+          "text": "折纸题稿我们别的社团同名赛事已取消资格，我只是听说，与青芜谜题会不是一场。"
+        }
+      ],
+      "evaluation_only": {
+        "necessary_ids": [
+          7201,
+          7202,
+          7203,
+          7204
+        ],
+        "excluded_noise_id": 7205,
+        "chain": "起始群 A → 协作群同账号 A → 协作群新账号 B → 次日或隔日私聊 B；同名 C 不合并",
+        "must_preserve": [
+          "怀疑转交核对，再由B次日限定澄清",
+          "未作违规认定不等于证明所有步骤合规",
+          "保留只核版本标签的覆盖缺口"
+        ],
+        "forbidden": [
+          "断言违规成立",
+          "断言已证实完全合规",
+          "把另一赛事处理合并"
+        ]
+      }
+    },
+    {
+      "id": "two_day_revision",
+      "question": "蘅汀声景社前天提到的北坡采声后来有什么结论和变动？请核对相关会话的后续依据，区分当时计划、后续说法和实际事件时间。",
+      "contacts": [
+        {
+          "id": "two_day_revision-start",
+          "name": "蘅汀声景社",
+          "kind": "group"
+        },
+        {
+          "id": "two_day_revision-bridge",
+          "name": "录制统筹群",
+          "kind": "group"
+        },
+        {
+          "id": "two_day_revision-direct",
+          "name": "苇宁",
+          "kind": "c2c",
+          "peer": "two_day_revision-b"
+        },
+        {
+          "id": "two_day_revision-noise",
+          "name": "苇宁",
+          "kind": "c2c",
+          "peer": "two_day_revision-c"
+        }
+      ],
+      "messages": [
+        {
+          "id": 7301,
+          "conversation": "two_day_revision-start",
+          "sender": "two_day_revision-a",
+          "at": "2026-10-13T09:00:00+08:00",
+          "text": "北坡采声计划今天去旧码头，先由统筹核对许可。"
+        },
+        {
+          "id": 7302,
+          "conversation": "two_day_revision-bridge",
+          "sender": "two_day_revision-a",
+          "at": "2026-10-13T10:00:00+08:00",
+          "text": "北坡采声许可清单发到这里，接收方核对后反馈最终场地。"
+        },
+        {
+          "id": 7303,
+          "conversation": "two_day_revision-bridge",
+          "sender": "two_day_revision-b",
+          "at": "2026-10-13T10:03:00+08:00",
+          "text": "北坡采声清单收到；我暂时建议改去新堤，许可还在核对，不能当成定案。"
+        },
+        {
+          "id": 7304,
+          "conversation": "two_day_revision-direct",
+          "sender": "two_day_revision-b",
+          "at": "2026-10-15T10:00:00+08:00",
+          "text": "北坡采声前天没有出发，昨天也没有成行；新堤建议已撤回。最终计划是2026-10-17去林间站，仍需等许可，不是已经录完。"
+        },
+        {
+          "id": 7305,
+          "conversation": "two_day_revision-noise",
+          "sender": "two_day_revision-c",
+          "at": "2026-10-14T15:00:00+08:00",
+          "text": "北坡采声同名商业项目已在新堤录完；我与蘅汀声景社没有联系。"
+        }
+      ],
+      "evaluation_only": {
+        "necessary_ids": [
+          7301,
+          7302,
+          7303,
+          7304
+        ],
+        "excluded_noise_id": 7305,
+        "chain": "起始群 A → 协作群同账号 A → 协作群新账号 B → 次日或隔日私聊 B；同名 C 不合并",
+        "must_preserve": [
+          "13日旧码头初始计划",
+          "B新堤暂议不是定案，15日撤回",
+          "13日及14日未成行，17日林间站是待许可计划"
+        ],
+        "forbidden": [
+          "断言在新堤已录制",
+          "把15日消息当成13日执行事实",
+          "漏掉17日仍待许可"
+        ]
+      }
+    }
+  ]
+}

@@ -66,6 +66,7 @@ def _payload(tools, round_number, question):
                 tools.now, ZoneInfo(result["scope"]["timezone"])
             ).isoformat(),
             "scope": result["scope"],
+            "hard_scope": tools.root_scope,
             "time_unresolved": tools.plan.get("_parse_error", False),
             "person_mention": tools.plan["person_mention"],
             "records": records,

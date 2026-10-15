@@ -186,6 +186,13 @@ class InvestigationTools:
         if self.calls >= 8:
             raise ChatDataError("INVESTIGATION_TOOL_BUDGET_REACHED", 429)
         targets = self.resolve(action, outputs)
+        allowed = {
+            "get_message_context": {"evidence"},
+            "get_source_evidence": {"evidence"},
+            "get_related_conversations": {"evidence", "account"},
+        }.get(action["tool"])
+        if allowed and any(r["type"] not in allowed for r in targets):
+            raise ValueError("invalid tool target type")
         if any(
             e not in self.refs or self.refs[e]["type"] != "evidence"
             for e in action["evidence_ids"]
@@ -463,6 +470,11 @@ class InvestigationTools:
         return list(dict.fromkeys(refs))
 
     def related(self, targets, scope):
+        # A directory-resolved seed must not become a conversation restriction
+        # on the account relationship scan. Explicit root filters remain binding.
+        scope = deepcopy(scope)
+        if self.plan.get("_contact_scope_is_seed"):
+            scope.pop("source_contacts", None)
         scope = self.bounded_scope(scope)
         if scope is None:
             return []

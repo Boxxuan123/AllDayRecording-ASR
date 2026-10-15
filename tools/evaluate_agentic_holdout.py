@@ -12,6 +12,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from pytest import MonkeyPatch
 from tests.test_agentic_recall import lab
 from tests.test_recall_query_loop import message
@@ -24,8 +25,9 @@ def main():
     parser.add_argument("--max-model-calls", type=int, default=0)
     parser.add_argument("--max-seconds", type=int, default=0)
     parser.add_argument("--output", type=Path, default=Path("outputs/agentic-holdout"))
+    parser.add_argument("--suite", type=Path)
     args = parser.parse_args()
-    path = (
+    path = args.suite or (
         Path(__file__).resolve().parents[1]
         / "tests/fixtures/agentic_holdout/cases.json"
     )
@@ -59,11 +61,13 @@ def main():
             try:
                 # All state under this fresh fictional sandbox, never the user's state directory.
                 root = Path(tempfile.mkdtemp(prefix="agentic-holdout-"))
+                real_time = time.time
                 env = lab.__wrapped__(root, patch)
+                patch.setattr(time, "time", real_time)
                 now = int(datetime.fromisoformat(suite["local_now"]).timestamp())
                 patch.setattr(
-                    "allday_asr.v3.application.history_recall.time.time",
-                    lambda now=now: now,
+                    "allday_asr.v3.application.history_recall.time",
+                    SimpleNamespace(time=lambda now=now: now, monotonic=time.monotonic),
                 )
                 env.contacts = [
                     {
