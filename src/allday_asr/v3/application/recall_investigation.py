@@ -8,6 +8,8 @@ import time
 from allday_asr.v3.domain.recall_investigation import checked, date_scope
 from allday_asr.v3.ports.chat_data import ChatDataError
 from .recall_investigation_tools import InvestigationTools
+from .recall_citation_handles import CitationHandles
+from .recall_investigation_budget import normalize_scope
 from allday_asr.v3.domain.recall_evidence_selection import select_evidence
 from allday_asr.v3.domain.memory_content import safe_memory
 
@@ -26,14 +28,19 @@ def _action(tool, terms=None, targets=None, window="target"):
 def _payload(tools, round_number, question):
     result = tools.result
     records, selection = select_evidence(
-        safe_memory(result["evidence"]),
+        [{k: v for k, v in row.items() if k in {
+            "id", "record_id", "revision", "dataset", "source", "source_account_id", "conversation_id",
+            "conversation_type", "conversation_display_name", "sender_account_id", "speaker",
+            "source_is_from_self", "effective_is_self", "quote", "sent_at", "role",
+            "retrieval_basis", "relation_ids", "evidence_type"
+        }} for row in safe_memory(result["evidence"])],
         result["investigation_steps"],
-        result.get("claims", []),
+        result.get("claims", []), limit=48, byte_limit=32000,
     )
     tools.flow.selected(records, round_number)
     if selection["omitted_count"]:
         tools.note(
-            "模型本轮最多读取 20 条/28KB 依据；已优先保留引用锚点及各来源时序边界，但未读取全部证据，可能遗漏中间变更、冲突或后续，不能确认完整经过。"
+            "模型本轮最多读取 48 条/32KB 依据；已优先保留引用锚点及各来源时序边界，但未读取全部证据，可能遗漏中间变更、冲突或后续，不能确认完整经过。"
         )
     refs = []
     reached = {ref for step in result["investigation_steps"] for ref in step["hits"]}
@@ -41,6 +48,7 @@ def _payload(tools, round_number, question):
         tools.refs.values(),
         key=lambda r: (
             r["type"] == "evidence",
+            r["type"] != "account",
             r["ref"] not in reached,
             r.get("basis") != "observed_sender",
             not any(
@@ -64,14 +72,27 @@ def _payload(tools, round_number, question):
             for k, v in item.items()
             if k not in {"source_account_id", "sender_account_id"}
         }
-        if len(json.dumps(refs + [item], ensure_ascii=False).encode()) > 12000:
+        if len(json.dumps(refs + [item], ensure_ascii=False).encode()) > 4000:
             break
         refs.append(item)
+    normalize_scope(result["scope"])
+    handles = CitationHandles(result)
+    encoded = handles.encode(records)
+    tools.model_handles = handles
+    receipt = handles.receipt(encoded)
+    result["metrics"].setdefault("model_inputs", []).append({"round": round_number, **receipt})
     return safe_memory(
         {
             "query_id": result["query_id"],
             "round": round_number,
-            "rounds_remaining": 2 - round_number,
+            "rounds_remaining": 4 - round_number,
+            "final_round": round_number == 4 or tools.remaining()["seconds"] < 30 or tools.remaining()["source_requests"] == 0,
+            "budget_remaining": tools.remaining(),
+            "exact_search": bool(tools.plan.get("exact")),
+            "terms_role": "literal_filter" if tools.plan.get("exact") else "semantic_exploration",
+            "requested_scope": result.get("requested_scope", result["scope"]),
+            "actual_message_dates": sorted({datetime.fromtimestamp(r["sent_at"], ZoneInfo(result["scope"]["timezone"])).date().isoformat() for r in records}),
+            "tool_costs": {"search_messages": "one request per target (max two); untargeted max two platforms", "get_related_conversations": "one request per actor", "get_message_context": "one request per anchor, up to 25 records"},
             "question": question,
             "local_now": datetime.fromtimestamp(
                 tools.now, ZoneInfo(result["scope"]["timezone"])
@@ -81,10 +102,10 @@ def _payload(tools, round_number, question):
             "time_notice": result.get("time_notice", ""),
             "time_unresolved": tools.plan.get("_parse_error", False),
             "person_mention": tools.plan["person_mention"],
-            "records": records,
+            "records": encoded,
             "evidence_selection": selection,
             "objects": refs,
-            "steps": result["investigation_steps"][-4:],
+            "steps": [{k: v for k, v in step.items() if k not in {"hits", "relations", "support"}} | {"hit_count": len(step.get("hits", [])), "hits": [h for h in step.get("hits", []) if h in handles.allowed.values()][:2]} for step in result["investigation_steps"][-4:]],
             "known_gaps": result["coverage"],
             "model_budget_seconds": max(
                 0, min(25, int(tools.deadline - time.monotonic()))
@@ -221,47 +242,17 @@ def investigate(service, result, plan, question, cancel, deadline, now):
         answer="现有证据不足以回答；本轮调查尚未形成可靠结论。",
     )
     result["coverage"].append(
-        "调查最多两轮模型决策、八项只读检索；推断仅本次有效。消息发送时间与事件时间分别核对。"
+        "调查最多四次模型调用、十八次来源请求（正文最多十二次/200条），保留最终归纳额度；推断仅本次有效。消息发送时间与事件时间分别核对。"
     )
     unresolved_person = bool(
         plan["issue"] and plan["person_mention"] and not result["scope"]["person_id"]
     )
     try:
-        if not plan.get("person_mention") and plan.get("terms"):
-            groups = [
-                c
-                for c in tools.directory
-                if c["conversation_type"] == "group"
-                and any(
-                    t.casefold() in n.casefold()
-                    for t in plan["terms"]
-                    for n in c["names"]
-                )
-            ]
-            if groups:
-                for window in ("target", "nearby"):
-                    scoped = tools.scope(window)
-                    if scoped is None:
-                        continue
-                    scoped = {
-                        **scoped,
-                        "source_contacts": groups[:20],
-                        "relationship": "group",
-                    }
-                    rows, _ = service.sources.chat(
-                        scoped, [], 20, cancel, min(deadline, time.monotonic() + 3)
-                    )
-                    tools.current_scope = scoped
-                    tools.add(rows)
-                    if rows:
-                        break
-        if not plan.get("_parse_error"):
+        from .recall_investigation_seed import seed_topic
+        seeded = seed_topic(tools, _action) if not plan.get("_parse_error") else False
+        if not plan.get("_parse_error") and not seeded:
             contacts = result["scope"].get("source_contacts", [])
-            identity_lookup = unresolved_person or bool(
-                plan.get("_contact_scope_is_seed")
-                and plan["person_mention"]
-                and any(c["conversation_type"] == "c2c" for c in contacts)
-            )
+            identity_lookup = unresolved_person
             if identity_lookup:
                 contacts = []
             terms = (
@@ -341,6 +332,7 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                         else:
                             result["scope"].update(requested)
                 if result["evidence"]:
+                    normalize_scope(result["scope"])
                     service._summarize(result, question, cancel, deadline)
                 else:
                     result.update(
@@ -349,23 +341,23 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                         answer=f"已根据私聊中的直接称呼与对方回复定位到{contact['display_name']}；本次指定日期未取回交流记录。称呼依据来自其他日期，未当作该日聊天。",
                     )
                 return result
-        for round_number in (1, 2):
+        for round_number in range(1, 5):
             tools.checkpoint()
-            if round_number == 2:
+            if round_number == 4:
                 from .recall_investigation_followup import complete_followup
 
                 complete_followup(tools)
             payload = _payload(tools, round_number, question)
             if (
                 payload["model_budget_seconds"] < 2
-                or result["metrics"]["model_calls"] >= 2
+                or result["metrics"]["model_calls"] >= 4
             ):
                 raise ChatDataError("MODEL_BUDGET_REACHED", 429)
             result["metrics"]["model_calls"] += 1
-            result["metrics"]["model_input_ids"] = [r["id"] for r in payload["records"]]
+            result["metrics"]["model_input_ids"] = list(tools.model_handles.allowed.values())
             start = time.monotonic()
             try:
-                value = checked(service.investigator(payload, cancel))
+                value = tools.model_handles.decode(checked(service.investigator(payload, cancel)))
             finally:
                 result["metrics"]["model_elapsed_ms"] += round(
                     (time.monotonic() - start) * 1000
@@ -381,7 +373,7 @@ def investigate(service, result, plan, question, cancel, deadline, now):
             plan["_parse_error"] = False
             result["_plan"]["scope"] = deepcopy(result["scope"])
             result["_plan"]["_parse_error"] = False
-            evidence = {r["id"]: r for r in payload["records"]}
+            evidence = {r["id"]: r for r in result["evidence"] if r["id"] in tools.model_handles.allowed.values()}
             invalid = service.sources.changed(list(evidence.values()))
             if invalid:
                 raise ValueError("evidence changed during model decision")
@@ -419,6 +411,13 @@ def investigate(service, result, plan, question, cancel, deadline, now):
             result["claims"] = claims
             result["unknown"] = value["unknown"]
             if claims:
+                cited = {cid for c in claims for cid in c["citations"]}
+                days = sorted({datetime.fromtimestamp(evidence[cid]["sent_at"], ZoneInfo(result["scope"]["timezone"])).date().isoformat() for cid in cited})
+                result["supported_message_dates"] = days
+                result["supported_event_dates"] = [c["event_time"] for c in claims if c["event_time"]["basis"] != "unknown"]
+                requested_day = datetime.fromtimestamp(result["scope"]["sent_from"], ZoneInfo(result["scope"]["timezone"])).date().isoformat()
+                if days and requested_day not in days:
+                    result["time_notice"] = f"原问题解释为 {requested_day}；以下引用消息实际日期为 {'、'.join(days)}，未把它们当作原时段已发生的事实。"
                 result["model_status"] = "available"
                 result["answer"] = "\n".join(
                     {
@@ -445,7 +444,9 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                     or "现有线索不足，请补充人物或具体事件信息。",
                 )
                 break
-            if value["mode"] == "answer":
+            if value["mode"] == "answer" or payload["final_round"]:
+                if payload["final_round"] and value["mode"] == "search":
+                    tools.note("本次模型/时间预算已用完；未执行最后的搜索计划。")
                 if not claims:
                     result["model_status"] = "insufficient"
                     result["answer"] = "证据不足，暂时无法确认。" + "；".join(
@@ -455,11 +456,13 @@ def investigate(service, result, plan, question, cancel, deadline, now):
             outputs = []
             for action in value["actions"]:
                 outputs.append(tools.run(action, outputs))
-            if round_number == 2:
+            if round_number == 4:
                 tools.note(
-                    "两次模型调用预算已用完；最后取回的线索尚未归纳，当前结论只覆盖已核对证据。"
+                    "四次模型调用预算已用完；最后取回的线索尚未归纳，当前结论只覆盖已核对证据。"
                 )
                 result["unknown"].append("仍需进一步核对，不能确认完整经过或最终结果。")
+        if result.get("claims") and result.get("time_notice"):
+            result["answer"] = result["time_notice"] + "\n" + result["answer"]
         if result.get("model_status") == "not_requested":
             result["model_status"] = "insufficient"
     except (ChatDataError, TimeoutError) as exc:

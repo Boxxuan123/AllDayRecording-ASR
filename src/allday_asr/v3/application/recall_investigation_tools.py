@@ -36,7 +36,10 @@ READ_TOOLS = frozenset(
 )
 
 
-class InvestigationTools(InvestigationContext, InvestigationRelevance):
+from .recall_investigation_budget import InvestigationBudget
+
+
+class InvestigationTools(InvestigationContext, InvestigationRelevance, InvestigationBudget):
     def __init__(self, service, result, plan, cancel, deadline, now):
         self.service, self.result, self.plan = service, result, plan
         self.cancel, self.deadline, self.now = cancel, deadline, now
@@ -70,6 +73,7 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
                 )
             ),
         )
+        self.current_window = "target"
         self.calls = 0
         self.flow = EvidenceFlow(result)
         self.anchors = event_anchors(
@@ -179,49 +183,6 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
         self.result["evidence"] = list(saved.values())
         return refs
 
-    def remote(self, route, body=None, **params):
-        self.checkpoint()
-        m = self.result["metrics"]
-        if (
-            m["retrieval_requests"] >= 6
-            or m["source_requests"] >= 12
-            or m["source_records_read"] >= 100
-        ):
-            self.flow.gap("source_request_budget")
-            raise ChatDataError("SOURCE_REQUEST_BUDGET_REACHED", 429)
-        m["retrieval_requests"] += 1
-        m["source_requests"] += 1
-        value = self.service.source.request(route, body, **params)
-        self.checkpoint()
-        for row in value.get("items", []):
-            if isinstance(row, dict) and row.get("record_id"):
-                self.flow.received([row], "remote", route)
-        return value
-
-    def verify_remote(self):
-        if not self.remote_checked:
-            status = self.remote("/v1/status")
-            if status.get("dataset_id") != self.service.sources.dataset():
-                raise ChatDataError("DATASET_MISMATCH", 409)
-            if status.get("status") != "ready":
-                raise ChatDataError("SOURCE_NOT_READY", 503)
-            self.remote_checked = True
-
-    def scope(self, window):
-        value = window_scope(
-            self.result["scope"], window, self.result["_request"], self.now
-        )
-        if window == "nearby" and value != self.result["scope"]:
-            from allday_asr.v3.domain.recall_temporal import time_notice
-
-            self.result["time_notice"] = time_notice(self.result["scope"], value)
-        if window != "target":
-            zone = self.result["scope"]["timezone"]
-            self.note(
-                f"{window} 线索窗口：{datetime.fromtimestamp(value['sent_from'], ZoneInfo(zone)).isoformat()} 至 {datetime.fromtimestamp(value['sent_to'], ZoneInfo(zone)).isoformat()}（Unix边界 {value['sent_from']}–{value['sent_to']}，用户时区 {zone}）；消息时间不等于事件发生时间。"
-            )
-        return self.bounded_scope(value)
-
     def resolve(self, action, outputs):
         targets = []
         for name in action["targets"]:
@@ -238,14 +199,14 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
         if any(r not in self.refs for r in targets):
             raise ValueError("unknown investigation target")
         if len(targets) > 4:
-            self.note("关系分支最多展开四个来源对象，其余分支尚未覆盖。")
-        return [self.refs[r] for r in dict.fromkeys(targets)][:4]
+            self.note("关系分支最多展开两个来源对象，其余分支尚未覆盖。")
+        return [self.refs[r] for r in dict.fromkeys(targets)][:2]
 
     def run(self, action, outputs):
         if action.get("tool") not in READ_TOOLS:
             raise ValueError("tool is not in the read capability allowlist")
         self.checkpoint()
-        if self.calls >= 8:
+        if self.calls >= 16:
             raise ChatDataError("INVESTIGATION_TOOL_BUDGET_REACHED", 429)
         targets = self.resolve(action, outputs)
         allowed = {
@@ -279,6 +240,7 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
         if scope is None:
             return []
         self.current_scope = scope
+        self.current_window = action["window"]
         tool = action["tool"]
         trace = {
             "purpose": action["purpose"],
@@ -375,10 +337,7 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
                             "cross-conversation search needs cited actor evidence"
                         )
                     selected["source_senders"] = [target["sender_account_id"]]
-            elif self.result["scope"].get("source_contacts") and not (
-                action["window"] == "identity"
-                and self.plan.get("_contact_scope_is_seed")
-            ):
+            elif self.result["scope"].get("source_contacts") and not self.plan.get("_contact_scope_is_seed"):
                 selected["source_contacts"] = self.result["scope"]["source_contacts"]
             selected = self.bounded_scope(selected)
             if selected is None:
@@ -399,6 +358,7 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
                     self.cancel,
                     min(self.deadline, time.monotonic() + 3),
                 )
+                rows = self.cache_rows(rows)
                 self.flow.received(rows, "cache", "topic_search")
                 found.extend(self.add(self.topic_rows(rows, action["terms"])))
                 if more:
@@ -450,8 +410,8 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
             if terms:
                 remote["keyword"] = self.candidate_terms(terms)[0]
             limit = min(
-                40 if scope.get("source_contacts") and not terms else 20,
-                100 - self.result["metrics"]["source_records_read"],
+                15 if self.current_window == "discovery" else 40 if scope.get("source_contacts") and not terms else 20,
+                200 - self.result["metrics"]["source_records_read"],
             )
             if limit <= 0:
                 break

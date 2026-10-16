@@ -1,6 +1,8 @@
 """Citation-checked single-call summaries, including honest partial-dialogue states."""
 
 import time
+from .recall_citation_handles import CitationHandles
+from .recall_investigation_budget import normalize_scope
 from allday_asr.v3.domain.recall_answer import verified_quote_text
 from allday_asr.v3.domain.recall_language import select_evidence
 
@@ -31,6 +33,10 @@ def summarize(service, result, question, cancel, deadline):
         result["coverage"].append(
             "归纳最多使用 20 条按相关性、时间跨度和状态变化选出的依据；其余原文仍可翻页"
         )
+    normalize_scope(result["scope"])
+    handles = CitationHandles(result)
+    encoded = handles.encode(rows)
+    result["metrics"].setdefault("model_inputs", []).append(handles.receipt(encoded))
     payload = {
         "question": question,
         "query_id": result["query_id"],
@@ -40,7 +46,7 @@ def summarize(service, result, question, cancel, deadline):
         "scope": result["scope"],
         "requested_scope": result.get("requested_scope", result["scope"]),
         "time_notice": result.get("time_notice", ""),
-        "records": rows,
+        "records": encoded,
         "evidence_complete": False,
         "known_gaps": result["coverage"],
     }
@@ -50,7 +56,7 @@ def summarize(service, result, question, cancel, deadline):
         if payload["model_budget_seconds"] < 2:
             raise TimeoutError()
         result["metrics"]["model_calls"] += 1
-        value = service.model(payload, cancel)
+        value = handles.decode(service.model(payload, cancel))
         service._checkpoint(cancel, deadline)
         evidence = {r["id"]: r for r in rows}
         if (

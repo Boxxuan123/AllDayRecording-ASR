@@ -5,7 +5,7 @@ from difflib import SequenceMatcher
 
 # Complete discourse phrases are separators, never substrings removed from names.
 DISCOURSE = re.compile(
-    r"发生了什么|发生什么|帮我回忆一下|帮我回忆|回忆一下|请帮我|当初|当时|之前|上次|来着|为什么|为何|哪些|是什么|什么|怎么样|如何|后来|最终|最后|分别在|讨论过|提到过|说过|关于|这个方向|这件事情|事情经过|的事情经过|是怎样的|[，。？！?；：、\s]+",
+    r"发了什么|发生了什么|发生什么|帮我回忆一下|帮我回忆|回忆一下|请帮我|当初|当时|之前|上次|来着|为什么|为何|哪些|是什么|什么|怎么样|如何|后来|最终|最后|分别在|讨论过|提到过|说过|关于|这个方向|这件事情|事情经过|的事情经过|是怎样的|[，。？！?；：、\s]+",
     re.I,
 )
 PIVOT = re.compile(r"换个话题|另外一件|另一个|另一项|另有|与此无关")
@@ -55,7 +55,9 @@ def intent(question):
         r"聊了什么|聊过什么|谈了什么|讨论了什么|对话回顾|聊天内容|交流了什么", question
     ):
         return "conversation"
-    return "quote"
+    if re.search(r"原话|原文|精确|逐字|包含|含有", question):
+        return "quote"
+    return "question"
 
 
 def plan(question, keyword=""):

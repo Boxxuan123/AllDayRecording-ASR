@@ -282,7 +282,7 @@ def test_real_query_marks_incomplete_selection_and_keeps_cross_source_conflict(l
     extra = [
         message(
             6000 + i,
-            "岬湾观测的补充讨论",
+            "岬湾观测的补充讨论" + "补充原文" * 200,
             "peer-r",
             conversation="grove" if i < 10 else "inlet",
             kind="group" if i < 10 else "c2c",
@@ -305,6 +305,6 @@ def test_real_query_marks_incomplete_selection_and_keeps_cross_source_conflict(l
         r["record_id"] for r in second["records"]
     }
     assert (
-        len(second["records"]) <= 20
+        len(second["records"]) <= 48
         and second["evidence_selection"]["omitted_count"] > 0
     )

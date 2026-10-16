@@ -4,7 +4,7 @@ import json
 from collections import deque
 
 
-def select_evidence(rows, steps, claims):
+def select_evidence(rows, steps, claims, *, limit=20, byte_limit=28000):
     ordered = sorted(rows, key=lambda r: (r.get("sent_at") or 0, r["id"]))
     by_id = {r["id"]: r for r in ordered}
     anchors = []
@@ -34,7 +34,18 @@ def select_evidence(rows, steps, claims):
         if ids:
             anchors.extend((ids[0], ids[-1]))
     required = list(dict.fromkeys(i for i in anchors if i in by_id))
-    priority = list(required)
+    # Retain complete recent read blocks before broad historical actor-discovery
+    # samples; questions/denials/short answers cannot be reduced to sender boundaries.
+    critical = [i for step in steps for i in step.get("support", []) + step.get("targets", []) if i in by_id]
+    critical += [i for step in steps for i in (step.get("hits", [])[:1] + step.get("hits", [])[-1:]) if i in by_id]
+    critical += [i for claim in claims for i in claim.get("citations", []) if i in by_id]
+    rooms = {}
+    for row in ordered:
+        rooms.setdefault((row.get("source"), row.get("source_account_id"), row.get("conversation_id")), []).append(row["id"])
+    critical += [i for ids in rooms.values() for i in (ids[0], ids[-1])]
+    priority = critical + [i for step in reversed(steps) if step.get("window") != "discovery"
+                for i in step.get("hits", []) if i in by_id] if limit > 20 else []
+    priority.extend(required)
     # Breadth-first temporal sampling across sources keeps intermediate changes
     # represented without guessing cancellation/conflict from a keyword dictionary.
     ranges = deque((ids, 1, len(ids) - 1) for ids in groups.values())
@@ -49,10 +60,10 @@ def select_evidence(rows, steps, claims):
     selected = []
     selected_ids = set()
     for identity in dict.fromkeys(priority):
-        if len(selected) == 20:
+        if len(selected) == limit:
             break
         candidate = selected + [by_id[identity]]
-        if len(json.dumps(candidate, ensure_ascii=False).encode("utf-8")) <= 28000:
+        if len(json.dumps(candidate, ensure_ascii=False).encode("utf-8")) <= byte_limit:
             selected = candidate
             selected_ids.add(identity)
     selected.sort(key=lambda r: (r.get("sent_at") or 0, r["id"]))

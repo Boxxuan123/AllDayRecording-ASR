@@ -37,15 +37,15 @@ class RecallInvestigatorAdapter:
             self.root / "chat/investigation-receipts",
             timeout_seconds=seconds,
             max_attempts=1,
-            max_batch_calls=2,
-            batch_deadline_seconds=60,
+            max_batch_calls=4,
+            batch_deadline_seconds=90,
             max_prompt_bytes=60000,
         )
         workdir = self.root / "chat/model-workspace"
         workdir.mkdir(parents=True, exist_ok=True)
         schema, instructions = (
             bounded_final_protocol(compact=True)
-            if payload.get("round") == 2
+            if payload.get("final_round", payload.get("round") == 2)
             else (SCHEMA, INSTRUCTIONS)
         )
         answer = runner.run(
@@ -62,6 +62,6 @@ class RecallInvestigatorAdapter:
         result = json.loads(answer.final_response)
         return (
             checked_final(result)
-            if payload.get("round") == 2
+            if payload.get("final_round", payload.get("round") == 2)
             else checked(result, schema)
         )

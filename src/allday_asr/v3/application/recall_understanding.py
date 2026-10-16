@@ -142,7 +142,7 @@ def interpret(
             contact, preference = remembered
             apply_contact(fast, contact, seed=True)
             fast["target_preference"] = deepcopy(preference)
-            return fast
+            exact = []
     unified = [
         pid
         for pid, p in people.items()
@@ -173,9 +173,7 @@ def interpret(
                 directory, scope["person_id"]
             )
     if exact and not payload.get("person_id"):
-        if len(exact) == 1 and all(
-            r.get("directory_complete", True) for r in directory
-        ):
+        if len(exact) == 1:
             apply_contact(fast, exact[0], seed=True)
         else:
             fast["contact_candidates"] = exact[:20]
@@ -222,7 +220,7 @@ def interpret(
         not error
         and not fast["issue"]
         and not fast["terms"]
-        and fast["intent"] in {"quote", "conversation"}
+        and fast["intent"] in {"quote", "conversation", "question"}
         and bool(scope.get("person_id") or scope.get("source_contacts"))
     )
     if (
@@ -339,7 +337,7 @@ def interpret(
         if (
             not isinstance(value, dict)
             or value.get("intent")
-            not in {"quote", "reason", "timeline", "latest", "conversation"}
+            not in {"quote", "reason", "timeline", "latest", "conversation", "question"}
             or value.get("relationship")
             not in {"speaker", "conversation", "group", "topic"}
         ):
@@ -436,7 +434,7 @@ def interpret(
             if (
                 len(proposed) == 1
                 and len(exact_model) == 1
-                and all(r.get("directory_complete", True) for r in directory)
+                and proposed[0].get("dataset")
             ):
                 apply_contact(fast, proposed[0])
             else:
@@ -535,7 +533,7 @@ def choose(service, owner, payload):
         # A clarification is a continuation of the same query, not a budget reset.
         prepared["_carried_metrics"] = deepcopy(saved["metrics"])
         prepared["_remaining_seconds"] = max(
-            0, 60 - saved["metrics"]["elapsed_ms"] / 1000
+            0, 90 - saved["metrics"]["elapsed_ms"] / 1000
         )
     mention = saved["_plan"]["person_mention"]
     if payload.get("remember") and (not service.preferences or not mention):

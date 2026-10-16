@@ -22,6 +22,7 @@ class InvestigationContext:
                 rows = self.service.sources.context(target, selected)
             except ChatDataError:
                 rows = []
+            rows = self.cache_rows(rows)
             self.flow.received(rows, "cache", "bounded_context")
             anchor = next(
                 (r for r in rows if r["record_id"] == target["record_id"]), None
@@ -31,14 +32,14 @@ class InvestigationContext:
             if self.result["_request"].get("expand", True):
                 try:
                     self.verify_remote()
-                    if self.result["metrics"]["source_records_read"] + 7 > 100:
+                    if self.result["metrics"]["source_records_read"] + 25 > 200:
                         raise ChatDataError("SOURCE_REQUEST_BUDGET_REACHED", 429)
                     part = self.remote(
                         "/v1/context",
-                        {"record_id": target["record_id"], "before": 2, "after": 4},
+                        {"record_id": target["record_id"], "before": 8, "after": 16},
                     )
                     records = part.get("items")
-                    if not isinstance(records, list) or len(records) > 7:
+                    if not isinstance(records, list) or len(records) > 25:
                         raise ChatDataError("INVALID_CHAT_CONTEXT", 502)
                     self.result["metrics"]["source_records_read"] += len(records)
                     for r in records:

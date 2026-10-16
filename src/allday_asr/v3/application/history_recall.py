@@ -21,13 +21,13 @@ LIMITS = {
     "records": 300,
     "page_size": 20,
     "pages": 15,
-    "source_requests": 12,
-    "retrieval_requests": 6,
-    "model_calls": 2,
+    "source_requests": 18,
+    "retrieval_requests": 12,
+    "model_calls": 4,
     "directory_requests": 6,
     "contact_lookup_refreshes": 2,
     "explicit_summary_retries": 1,
-    "seconds": 60,
+    "seconds": 90,
     "retention_seconds": 300,
 }
 NOTICE = "仅已授权缓存／有界取回；历史完整性未知，未找到不表示未发生。来源修订传播能力以 Mac 为准。"
@@ -208,7 +208,7 @@ class HistoryRecall:
             raise ValueError("查询选项无效")
         started = time.monotonic()
         deadline = started + (
-            prepared.get("_remaining_seconds", 60) if prepared else 60
+            prepared.get("_remaining_seconds", 90) if prepared else 90
         )
         cancel = Event()
         with self.lock:

@@ -317,7 +317,7 @@ def test_group_speech_never_produces_role_or_membership_fact(lab):
     assert r["claims"] == []
 
 
-def test_two_round_limit_partial_results_no_automatic_third_call(lab):
+def test_four_call_limit_partial_results_no_automatic_fifth_call(lab):
     def model(p, c):
         lab.model_inputs.append(p)
         return response(
@@ -332,7 +332,7 @@ def test_two_round_limit_partial_results_no_automatic_third_call(lab):
 
     lab.service.investigator = model
     r = ask(lab)
-    assert len(lab.model_inputs) == 2 and r["metrics"]["model_calls"] == 2
+    assert len(lab.model_inputs) == 4 and r["metrics"]["model_calls"] == 4
     assert r["status"] == "partial" and any("预算已用完" in n for n in r["coverage"])
 
 
@@ -732,9 +732,9 @@ def test_address_selection_preserves_exhausted_model_and_source_budgets(lab):
         contact_lookup_allowed=True,
         directory_requests=0,
         _carried_metrics={
-            "model_calls": 2,
-            "source_requests": 12,
-            "retrieval_requests": 6,
+            "model_calls": 4,
+            "source_requests": 18,
+            "retrieval_requests": 12,
             "directory_requests": 6,
             "source_records_read": 100,
             "elapsed_ms": 4000,
@@ -773,8 +773,8 @@ def test_address_selection_preserves_exhausted_model_and_source_budgets(lab):
         prepared=plan,
     )
     assert (
-        result["metrics"]["model_calls"] == 2
-        and result["metrics"]["source_requests"] == 12
+        result["metrics"]["model_calls"] == 4
+        and result["metrics"]["source_requests"] == 18
     )
     assert result["model_status"] == "insufficient" and "预算已用完" in result["answer"]
     assert result["summary_retry_available"] is False

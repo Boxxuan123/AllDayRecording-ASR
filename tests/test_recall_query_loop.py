@@ -434,7 +434,7 @@ def test_speaker_and_group_queries_retain_real_authorship(env):
     }
     speaker = ask(env, "昨天蓝老师说了什么")
     assert (
-        speaker["scope"]["relationship"] == "speaker" and speaker["intent"] == "quote"
+        speaker["scope"]["relationship"] == "speaker" and speaker["intent"] == "question"
     )
     assert all(
         r["person_id"] == "alice-person"

@@ -36,7 +36,7 @@ class InvestigationRelevance:
             k: target[k] for k in ("platform", "source_account_id", "sender_account_id")
         }
         remote.update(sent_from=scope["sent_from"], sent_to=scope["sent_to"])
-        limit = min(20, 100 - self.result["metrics"]["source_records_read"])
+        limit = min(20, 200 - self.result["metrics"]["source_records_read"])
         if limit <= 0:
             return []
         page = self.remote("/v1/messages", scope=remote, limit=limit)
@@ -70,9 +70,20 @@ class InvestigationRelevance:
                 and c["source_account_id"] == row["source_account_id"]
                 and c["conversation_id"] == row["conversation_id"]
             ]
-            if not matching:
-                continue
-            contact = deepcopy(matching[0])
+            if matching:
+                contact = deepcopy(matching[0])
+            else:
+                # A validated native message establishes its own authorized room even
+                # when the unrelated directory pagination has not reached that room.
+                import hashlib, json
+                stable = [row.get("dataset"), row["source"], row["source_account_id"], row["conversation_id"]]
+                contact = dict(key=hashlib.sha256(json.dumps(stable, ensure_ascii=False).encode()).hexdigest()[:32],
+                    platform=row["source"], source_account_id=row["source_account_id"],
+                    conversation_id=row["conversation_id"], conversation_type=row["conversation_type"],
+                    sender_account_id=None, dataset=row.get("dataset"), basis="native_message_conversation",
+                    display_name=row.get("conversation_display_name") or "来源会话",
+                    names=[row.get("conversation_display_name") or "来源会话"])
+
             contact["relation_account"] = {
                 k: target[k]
                 for k in ("platform", "source_account_id", "sender_account_id")
@@ -121,7 +132,7 @@ class InvestigationRelevance:
                 and not literal_anchor(row["quote"], candidates)
             ):
                 self.flow.record("soft_rejected", row, "different_literal_event")
-            elif all(t.casefold() in row["quote"].casefold() for t in terms):
+            elif not self.plan.get("exact") or all(t.casefold() in row["quote"].casefold() for t in terms):
                 kept.append(row)
             elif literal_anchor(row["quote"], self.anchors):
                 row = {
