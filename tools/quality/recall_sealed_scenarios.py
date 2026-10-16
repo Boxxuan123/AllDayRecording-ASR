@@ -158,6 +158,8 @@ def generate(destination):
             for row in rows[2:]:
                 row.update(conversation_id=direct, conversation_type="c2c")
                 row["source_locator"]["conversation_id"] = direct
+                if row["text"] == ask:
+                    row.update(sender_account_id="self-account", is_from_self=True)
             rows = rows[1:]
         elif index == 2:
             topology = "single_wechat_group"
@@ -228,6 +230,8 @@ def generate(destination):
             for r in rows
             if r.get("text") == ask or r.get("text") == reply.format(v=value)
         ]
+        if expected_unknown:
+            required = []
         secrets.SystemRandom().shuffle(contacts)
         scene = dict(
             question=q.format(n=name), contacts=contacts, records=rows, filters=filters
