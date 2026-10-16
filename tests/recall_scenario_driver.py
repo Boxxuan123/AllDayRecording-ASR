@@ -1,0 +1,89 @@
+"""Synthetic full product entry and exact outbound request capture; never a semantic oracle."""
+from copy import deepcopy
+from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
+from unittest.mock import patch
+import json,time,uuid
+from tests.chat_fixture import FixtureMac,record
+from allday_asr.v3.adapters.sqlite.database import V3Database
+from allday_asr.v3.adapters.sqlite.chat_cache import ChatCache
+from allday_asr.v3.bootstrap.history_recall import compose_history_recall
+from allday_asr.v3.adapters.codex.recall_investigator import RecallInvestigatorAdapter
+from allday_asr.v3.adapters.codex.recall_model import RecallModelAdapter
+from allday_asr.v3.adapters.codex.model_execution_runner import ModelExecutionRunner
+
+NOW=1792110900
+DAY=1791993600  # 2026-10-15 00:00 +08
+
+def contact(platform,room,label,peer=None,kind="c2c"):
+ return dict(platform=platform,source_account_id="source-"+platform,id=room,
+             conversation_type=kind,display_name=label,peer_account_id=peer)
+
+def message(i,text,sender,room,platform="qq",hour=13,minute=0,kind="group",day=DAY,label=None):
+ r=record(i,text,platform,room,day+hour*3600+minute*60,sender)
+ r.update(conversation_type=kind,is_from_self=sender=="self-account",
+          self_identity_basis="synthetic native direction",sender_display_name=label or sender,
+          conversation_display_name=room)
+ return r
+
+class ScenarioSource(FixtureMac):
+ def __init__(self,scenario):
+  super().__init__(scenario["records"]);self.contacts=deepcopy(scenario["contacts"])
+ def request(self,route,body=None,**kw):
+  if route!="/v1/conversations":return super().request(route,body,**kw)
+  self.calls.append((route,deepcopy(body),deepcopy(kw)))
+  if self.failure:
+   from allday_asr.v3.ports.chat_data import ChatDataError
+   raise ChatDataError(self.failure)
+  values=[c for c in self.contacts if all(c.get(k)==v for k,v in kw.get("scope",{}).items())]
+  start=int(kw.get("cursor") or 0);limit=kw.get("limit",500);items=values[start:start+limit]
+  return dict(items=items,has_more=start+len(items)<len(values),next_cursor=str(start+len(items)))
+
+def run_scenario(root,scenario,*,live=False,model_hook=None):
+ root=Path(root);root.mkdir(parents=True,exist_ok=True)
+ db=V3Database.open(root/"core.sqlite3");cache=ChatCache(root/"chat/cache.sqlite3")
+ source=ScenarioSource(scenario);cache.activate(source.dataset)
+ cached=set(scenario.get("cached_record_ids",[]))
+ if cached:
+  cache.receive(source.dataset,[r for r in source.records if r["record_id"] in cached]);cache.process(400)
+ inputs=[];wire=[];outputs=[];stages={}
+ from allday_asr.v3.application.recall_evidence_flow import EvidenceFlow
+ original_record=EvidenceFlow.record
+ def stage_record(self,stage,row,reason,relations=()):
+  stages.setdefault(stage,set()).add(row.get("record_id",row.get("id")))
+  return original_record(self,stage,row,reason,relations)
+ def no_sdk(self,**kw):
+  identity=self.prepare_request(**{k:kw[k] for k in ["task","prompt","instructions","schema","model","effort"]})
+  wire.append(identity)
+  value=dict(claims=[],unknown=["PROTOCOL_PROBE_ONLY_NOT_SEMANTIC_SUCCESS"])
+  if "candidates" in kw["schema"]["properties"]:value["candidates"]=[]
+  if "mode" in kw["schema"]["properties"]:
+   value.update(mode="answer",time=dict(kind="unchanged",first="",last=""),actions=[])
+   payload=json.loads(kw["prompt"])
+   refs=[o for o in payload.get("objects",[]) if o.get("relation_basis") and o.get("relation_evidence")]
+   if scenario.get("explore_related") and payload.get("round")==1 and refs:
+    value.update(mode="search",unknown=[],actions=[dict(tool="search_messages",purpose="Generic protocol exploration of observed rooms",targets=[o["ref"] for o in refs[:2]],terms=[],window="episode",evidence_ids=list(dict.fromkeys(e for o in refs[:2] for e in o["relation_evidence"]))[:6])])
+  return SimpleNamespace(final_response=json.dumps(value))
+ def wrap(adapter):
+  def call(payload,cancel):
+   inputs.append(deepcopy(payload))
+   if model_hook:model_hook(payload)
+   if live:value=adapter(payload,cancel)
+   else:
+    with patch.object(ModelExecutionRunner,"run",no_sdk):value=adapter(payload,cancel)
+   outputs.append(value);return value
+  return call
+ service=compose_history_recall(db,root,source,wrap(RecallModelAdapter(root)),
+                               investigator=wrap(RecallInvestigatorAdapter(root)))
+ request=dict(action="query",query_id="scenario_"+uuid.uuid4().hex,question=scenario["question"],timezone="Asia/Singapore",**scenario.get("filters",{}))
+ import allday_asr.v3.application.history_recall as history
+ started=time.monotonic()
+ with patch.object(history,"time",SimpleNamespace(time=lambda:NOW,monotonic=time.monotonic)), patch.object(EvidenceFlow,"record",stage_record):
+  result=service.execute("synthetic-owner",request)
+ saved=deepcopy(service.results[("synthetic-owner",request["query_id"])][1]);saved.get("_plan",{}).pop("_directory",None)
+ return dict(request=request,result=result,internal=saved,inputs=inputs,wire=wire,outputs=outputs,
+             stage_ids={k:sorted(v) for k,v in stages.items()},source_queries=source.calls,elapsed_ms=round((time.monotonic()-started)*1000),semantic_verified=False)
+
+def selected_ids(run):
+ return {r["record_id"] for p in run["inputs"] for r in p["records"]}
