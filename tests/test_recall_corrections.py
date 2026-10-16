@@ -85,7 +85,7 @@ def test_natural_questions_retrieve_and_enter_model_without_keyword(env, case):
         any(
             claim["text"] in r["quote"]
             for r in seen[0]["records"]
-            if r["id"] in claim["citations"]
+            if "chat:" + r["record_id"] in claim["citations"]
         )
         for claim in value["claims"]
     )

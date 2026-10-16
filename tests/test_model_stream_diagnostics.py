@@ -181,7 +181,7 @@ def test_adapter_adds_local_message_time_without_mutating_source(tmp_path, monke
         RecallInvestigatorAdapter,
     )
 
-    wire = {"claims": [claim("待核实", ["a"])], "candidates": [], "unknown": []}
+    wire = {"claims": [claim("待核实", ["E1"])], "candidates": [], "unknown": []}
     seen = {}
 
     def run(self, **kwargs):
@@ -190,8 +190,8 @@ def test_adapter_adds_local_message_time_without_mutating_source(tmp_path, monke
 
     monkeypatch.setattr(ModelExecutionRunner, "run", run)
     payload = {
-        "scope": {"timezone": "Asia/Singapore"},
-        "records": [{"id": "a", "sent_at": 0}],
+        "scope": {"timezone": "Asia/Singapore", "sent_from": 0, "sent_to": 100},
+        "records": [{"id": "E1", "sent_at": 0, "revision": 1, "quote": "无关虚构原文"}],
         "round": 2,
         "query_id": "q",
         "model_budget_seconds": 25,

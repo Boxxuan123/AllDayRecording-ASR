@@ -54,7 +54,8 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
             if not re.search(r"QQ|微信|录音", question, re.I):
                 self.root_scope["source"] = result["_request"].get("source", "all")
         self.root_scope["sent_from"] = result["_request"].get("sent_from", 0)
-        self.root_scope["sent_to"] = result["_request"].get("sent_to", now)
+        self.root_scope["sent_to"] = min(now, result["_request"].get("sent_to", now))
+        self.normalize_scopes()
         self.authorized_directory = deepcopy(plan.get("_directory", []))
         from allday_asr.v3.domain.recall_query import name_in_text
 
@@ -200,7 +201,15 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
             raise ValueError("unknown investigation target")
         if len(targets) > 4:
             self.note("关系分支最多展开两个来源对象，其余分支尚未覆盖。")
-        return [self.refs[r] for r in dict.fromkeys(targets)][:2]
+        values = [self.refs[r] for r in dict.fromkeys(targets)]
+        if action["tool"] == "get_related_conversations":
+            seen = getattr(self, "related_actors", set())
+            def actor(r):
+                return (r.get("source",r.get("platform")),r.get("source_account_id"),r.get("sender_account_id"))
+            values = [r for r in values if r.get("source_is_from_self") is not True]
+            values.sort(key=lambda r: actor(r) in seen)
+            values = list({actor(r):r for r in values}.values())
+        return values[:2]
 
     def run(self, action, outputs):
         if action.get("tool") not in READ_TOOLS:
@@ -242,6 +251,11 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
         self.current_scope = scope
         self.current_window = action["window"]
         tool = action["tool"]
+        before = {(r["id"], r.get("revision")) for r in self.result["evidence"]}
+        support = list(action["evidence_ids"])
+        for target in targets:
+            support.extend(target.get("citations", target.get("evidence_ids", [])))
+            if target["type"] == "evidence": support.append(target["ref"])
         trace = {
             "purpose": action["purpose"],
             "tool": tool,
@@ -249,7 +263,7 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
             "window": action["window"],
             "sent_from": scope["sent_from"],
             "sent_to": scope["sent_to"],
-            "support": action["evidence_ids"],
+            "support": list(dict.fromkeys(support)),
             "hits": [],
             "sufficient": False,
             "continue": True,
@@ -292,13 +306,8 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
         else:
             rows = [r for r in targets if r["type"] == "evidence"]
             refs = self.add(rows)
-        trace["hits"] = refs
-        trace["relations"] = [
-            {"ref": r, "type": self.refs[r]["type"]} for r in refs if r in self.refs
-        ]
-        trace["sufficient"] = (
-            False  # Retrieval hits alone do not establish sufficiency.
-        )
+        from allday_asr.v3.domain.recall_evidence_blocks import register_step
+        register_step(trace, refs, self.refs, before, self.result["evidence"])
         return refs
 
     def search(self, targets, action, scope):
@@ -351,13 +360,19 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
                 self.note("证据预算耗尽。")
                 break
             if selected["source"] != "recording":
-                rows, more = self.service.sources.chat(
-                    selected,
-                    self.candidate_terms(action["terms"]),
-                    remaining,
-                    self.cancel,
-                    min(self.deadline, time.monotonic() + 3),
-                )
+                try:
+                    rows, more = self.service.sources.chat(
+                        selected,
+                        self.candidate_terms(action["terms"]),
+                        remaining,
+                        self.cancel,
+                        min(self.deadline, time.monotonic() + 3),
+                    )
+                except ChatDataError as exc:
+                    if exc.code not in {"CACHE_BODY_BUDGET_REACHED", "CACHE_RECORD_BUDGET_REACHED"}:
+                        raise
+                    rows,more=[],True
+                    self.note("缓存正文额度已用完；仅在剩余来源额度内继续授权远端检索，不重置缓存计数。")
                 rows = self.cache_rows(rows)
                 self.flow.received(rows, "cache", "topic_search")
                 found.extend(self.add(self.topic_rows(rows, action["terms"])))
@@ -502,6 +517,8 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
                 target = {**target, "platform": target["source"], "type": "account"}
             if target["type"] != "account":
                 continue
+            if not hasattr(self,"related_actors"): self.related_actors = set()
+            self.related_actors.add((target["platform"],target["source_account_id"],target["sender_account_id"]))
             if scope["person_id"] and target.get("person_id") != scope["person_id"]:
                 raise ValueError("person constraint violation")
             rows, more = self.service.sources.related_conversations(

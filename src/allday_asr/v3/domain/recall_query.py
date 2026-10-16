@@ -236,7 +236,7 @@ def understand(question, keyword, people, payload, now):
     query["intent"] = plan(question, keyword)["intent"]
     if (
         scope["relationship"] == "conversation"
-        and query["intent"] == "quote"
+        and (query["intent"] == "quote" or (query["intent"] == "question" and not query["terms"]))
         and not re.search(r"原话|原文|逐字", question)
     ):
         query["intent"] = "conversation"

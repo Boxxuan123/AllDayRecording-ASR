@@ -57,7 +57,7 @@ def intent(question):
         return "conversation"
     if re.search(r"原话|原文|精确|逐字|包含|含有", question):
         return "quote"
-    return "question"
+    return "question" if re.search(r"什么|怎么|如何|哪个|何时|打算|安排|计划|准备", question) else "quote"
 
 
 def plan(question, keyword=""):

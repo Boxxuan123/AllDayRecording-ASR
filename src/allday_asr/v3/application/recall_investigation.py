@@ -1,9 +1,10 @@
-"""Two-decision evidence investigation, sharing HistoryRecall's lifecycle and limits."""
+"""Bounded evidence investigation, sharing HistoryRecall's lifecycle and limits."""
 
 from copy import deepcopy
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 import json
+import re
 import time
 from allday_asr.v3.domain.recall_investigation import checked, date_scope
 from allday_asr.v3.ports.chat_data import ChatDataError
@@ -25,94 +26,7 @@ def _action(tool, terms=None, targets=None, window="target"):
     }
 
 
-def _payload(tools, round_number, question):
-    result = tools.result
-    records, selection = select_evidence(
-        [{k: v for k, v in row.items() if k in {
-            "id", "record_id", "revision", "dataset", "source", "source_account_id", "conversation_id",
-            "conversation_type", "conversation_display_name", "sender_account_id", "speaker",
-            "source_is_from_self", "effective_is_self", "quote", "sent_at", "role",
-            "retrieval_basis", "relation_ids", "evidence_type"
-        }} for row in safe_memory(result["evidence"])],
-        result["investigation_steps"],
-        result.get("claims", []), limit=48, byte_limit=32000,
-    )
-    tools.flow.selected(records, round_number)
-    if selection["omitted_count"]:
-        tools.note(
-            "模型本轮最多读取 48 条/32KB 依据；已优先保留引用锚点及各来源时序边界，但未读取全部证据，可能遗漏中间变更、冲突或后续，不能确认完整经过。"
-        )
-    refs = []
-    reached = {ref for step in result["investigation_steps"] for ref in step["hits"]}
-    objects = sorted(
-        tools.refs.values(),
-        key=lambda r: (
-            r["type"] == "evidence",
-            r["type"] != "account",
-            r["ref"] not in reached,
-            r.get("basis") != "observed_sender",
-            not any(
-                n.casefold() in question.casefold()
-                or (
-                    r.get("conversation_type") == "group"
-                    and any(
-                        t.casefold() in n.casefold()
-                        for t in tools.plan.get("terms", [])
-                    )
-                )
-                for n in r.get("names", [])
-            ),
-        ),
-    )
-    for item in objects:
-        if item["type"] == "evidence":
-            continue
-        item = {
-            k: v
-            for k, v in item.items()
-            if k not in {"source_account_id", "sender_account_id"}
-        }
-        if len(json.dumps(refs + [item], ensure_ascii=False).encode()) > 4000:
-            break
-        refs.append(item)
-    normalize_scope(result["scope"])
-    handles = CitationHandles(result)
-    encoded = handles.encode(records)
-    tools.model_handles = handles
-    receipt = handles.receipt(encoded)
-    result["metrics"].setdefault("model_inputs", []).append({"round": round_number, **receipt})
-    return safe_memory(
-        {
-            "query_id": result["query_id"],
-            "round": round_number,
-            "rounds_remaining": 4 - round_number,
-            "final_round": round_number == 4 or tools.remaining()["seconds"] < 30 or tools.remaining()["source_requests"] == 0,
-            "budget_remaining": tools.remaining(),
-            "exact_search": bool(tools.plan.get("exact")),
-            "terms_role": "literal_filter" if tools.plan.get("exact") else "semantic_exploration",
-            "requested_scope": result.get("requested_scope", result["scope"]),
-            "actual_message_dates": sorted({datetime.fromtimestamp(r["sent_at"], ZoneInfo(result["scope"]["timezone"])).date().isoformat() for r in records}),
-            "tool_costs": {"search_messages": "one request per target (max two); untargeted max two platforms", "get_related_conversations": "one request per actor", "get_message_context": "one request per anchor, up to 25 records"},
-            "question": question,
-            "local_now": datetime.fromtimestamp(
-                tools.now, ZoneInfo(result["scope"]["timezone"])
-            ).isoformat(),
-            "scope": result["scope"],
-            "hard_scope": tools.root_scope,
-            "time_notice": result.get("time_notice", ""),
-            "time_unresolved": tools.plan.get("_parse_error", False),
-            "person_mention": tools.plan["person_mention"],
-            "records": encoded,
-            "evidence_selection": selection,
-            "objects": refs,
-            "steps": [{k: v for k, v in step.items() if k not in {"hits", "relations", "support"}} | {"hit_count": len(step.get("hits", [])), "hits": [h for h in step.get("hits", []) if h in handles.allowed.values()][:2]} for step in result["investigation_steps"][-4:]],
-            "known_gaps": result["coverage"],
-            "model_budget_seconds": max(
-                0, min(25, int(tools.deadline - time.monotonic()))
-            ),
-            "evidence_complete": False,
-        }
-    )
+from .recall_investigation_input import payload as _payload
 
 
 def _claims(value, evidence, scope):
@@ -132,6 +46,8 @@ def _claims(value, evidence, scope):
             raise ValueError("speech cannot be promoted to source fact")
         event = claim["event_time"]
         if event["basis"] == "unknown":
+            if re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}月\d{1,2}", claim["text"]):
+                raise ValueError("dated assertion cannot use unknown event time")
             if any(event[k] for k in ("first", "last", "evidence_id", "quote")):
                 raise ValueError("unknown time must remain unspecified")
         else:
@@ -147,6 +63,14 @@ def _claims(value, evidence, scope):
             )
             if first > last or (last - first).days > 366:
                 raise ValueError("invalid event time")
+            if event["basis"] == "message":
+                row = evidence[event["evidence_id"]]
+                day = datetime.fromtimestamp(row["sent_at"], ZoneInfo(scope["timezone"])).date()
+                hour = datetime.fromtimestamp(row["sent_at"], ZoneInfo(scope["timezone"])).hour
+                from allday_asr.v3.domain.recall_event_time import validate_message_dayparts
+                validate_message_dayparts(claim["text"],hour)
+                if (first,last) != (day,day):
+                    raise ValueError("message date disagrees with cited utterance")
             if event["basis"] == "explicit":
                 for stated in {first, last}:
                     if not any(
@@ -248,11 +172,11 @@ def investigate(service, result, plan, question, cancel, deadline, now):
         plan["issue"] and plan["person_mention"] and not result["scope"]["person_id"]
     )
     try:
-        from .recall_investigation_seed import seed_topic
-        seeded = seed_topic(tools, _action) if not plan.get("_parse_error") else False
+        from .recall_investigation_seed import seed_topic, seed_person
+        seeded = (seed_topic(tools, _action) or seed_person(tools, _action)) if not plan.get("_parse_error") else False
         if not plan.get("_parse_error") and not seeded:
             contacts = result["scope"].get("source_contacts", [])
-            identity_lookup = unresolved_person
+            identity_lookup = unresolved_person or bool(plan.get("_contact_scope_is_seed") and re.search(r"称呼|外号|对应.{0,8}账号|查清", question))
             if identity_lookup:
                 contacts = []
             terms = (
@@ -343,10 +267,12 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                 return result
         for round_number in range(1, 5):
             tools.checkpoint()
-            if round_number == 4:
+            if round_number == 2:
                 from .recall_investigation_followup import complete_followup
 
                 complete_followup(tools)
+            from .recall_investigation_context import complete_context
+            complete_context(tools)
             payload = _payload(tools, round_number, question)
             if (
                 payload["model_budget_seconds"] < 2
@@ -416,8 +342,10 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                 result["supported_message_dates"] = days
                 result["supported_event_dates"] = [c["event_time"] for c in claims if c["event_time"]["basis"] != "unknown"]
                 requested_day = datetime.fromtimestamp(result["scope"]["sent_from"], ZoneInfo(result["scope"]["timezone"])).date().isoformat()
-                if days and requested_day not in days:
-                    result["time_notice"] = f"原问题解释为 {requested_day}；以下引用消息实际日期为 {'、'.join(days)}，未把它们当作原时段已发生的事实。"
+                if days and any(day != requested_day for day in days):
+                    times = [datetime.fromtimestamp(evidence[cid]["sent_at"],ZoneInfo(result["scope"]["timezone"])) for cid in cited]
+                    spans = [f"{day} {min(t for t in times if t.date().isoformat()==day):%H:%M}–{max(t for t in times if t.date().isoformat()==day):%H:%M}" for day in days]
+                    result["time_notice"] = f"原问题解释为 {result['scope']['sent_from_local']} 至 {result['scope']['sent_to_local']}；引用消息实际时间为 {'；'.join(spans)}，不能把相邻时段的发言当作原时段发生的事；事件或计划时间另按原文核对。"
                 result["model_status"] = "available"
                 result["answer"] = "\n".join(
                     {

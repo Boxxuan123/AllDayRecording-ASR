@@ -151,6 +151,10 @@ class HistoryRecall:
         )
 
     def query(self, owner, payload, selected=None, prepared=None):
+        from .recall_cache_budget import query
+        return query(self, owner, payload, selected, prepared)
+
+    def _query(self, owner, payload, selected=None, prepared=None):
         allowed = {
             "action",
             "query_id",
@@ -326,7 +330,7 @@ class HistoryRecall:
                 "source_requests",
                 "retrieval_requests",
                 "directory_requests",
-                "source_records_read",
+                "source_records_read", "body_requests", "source_bytes", "cache_records_read", "cache_bytes",
             ):
                 result["metrics"][name] = carried.get(name, 0)
             result["_spent_ms"] = carried.get("elapsed_ms", 0)

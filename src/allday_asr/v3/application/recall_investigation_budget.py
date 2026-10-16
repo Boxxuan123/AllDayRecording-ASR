@@ -15,16 +15,21 @@ def normalize_scope(scope):
 
 
 class InvestigationBudget:
+    def normalize_scopes(self):
+        normalize_scope(self.root_scope)
+
     def remaining(self):
         m = self.result["metrics"]
+        from allday_asr.v3.domain.recall_read_budget import CURRENT
+        scan = CURRENT.get()
         return {"source_requests": max(0, 18-m["source_requests"]),
                 "body_requests": max(0, 12-m.get("body_requests", 0)),
                 "remote_records": max(0, 200-m["source_records_read"]),
                 "remote_bytes": max(0, 1048576-m.get("source_bytes", 0)),
                 "model_calls": max(0, 4-m.get("model_calls", 0)),
                 "seconds": max(0, round(self.deadline-time.monotonic(), 2)),
-                "cache_records": max(0, 400-m.get("cache_records_read", 0)),
-                "cache_bytes": max(0, 524288-m.get("cache_bytes", 0))}
+                "cache_records": max(0, min(400-m.get("cache_records_read", 0),400-scan.records if scan else 400)),
+                "cache_bytes": max(0, min(524288-m.get("cache_bytes", 0),524288-scan.bytes if scan else 524288))}
 
     def remote(self, route, body=None, **params):
         self.checkpoint()

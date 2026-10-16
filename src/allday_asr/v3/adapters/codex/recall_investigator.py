@@ -1,6 +1,7 @@
 """The existing model runner executes the bounded investigation protocol."""
 
 import json
+from copy import deepcopy
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from allday_asr.v3.domain.chat_data import packed
@@ -19,19 +20,8 @@ class RecallInvestigatorAdapter:
         self.root = root
 
     def __call__(self, payload, cancel):
-        zone = ZoneInfo(payload["scope"]["timezone"])
-        payload = {
-            **payload,
-            "records": [
-                {
-                    **row,
-                    "sent_at_local": datetime.fromtimestamp(
-                        row["sent_at"], zone
-                    ).isoformat(),
-                }
-                for row in payload["records"]
-            ],
-        }
+        from allday_asr.v3.domain.recall_input_validation import prepare_payload
+        payload = prepare_payload(payload)
         seconds = max(1, min(25, payload["model_budget_seconds"]))
         runner = ModelExecutionRunner(
             self.root / "chat/investigation-receipts",
@@ -48,6 +38,14 @@ class RecallInvestigatorAdapter:
             if payload.get("final_round", payload.get("round") == 2)
             else (SCHEMA, INSTRUCTIONS)
         )
+        schema = deepcopy(schema)
+        if "actions" in schema["properties"]:
+            action_schema=schema["properties"]["actions"]["items"]["properties"]
+            action_schema["targets"]["items"]={"type":"string","pattern":r"^(?:[ECA][1-9]\d*|\$\d+)$"}
+            action_schema["evidence_ids"]["items"]={"type":"string","pattern":r"^E[1-9]\d*$"}
+        schema["properties"]["candidates"]["items"]["properties"]["contact_key"]={"type":"string","pattern":r"^C[1-9]\d*$"}
+        runner.prepare_request(task="history-investigation-v1", prompt=packed(payload),
+            instructions=instructions, schema=schema, model=None, effort="low")
         answer = runner.run(
             task="history-investigation-v1",
             batch_id="history-investigation:" + payload["query_id"],

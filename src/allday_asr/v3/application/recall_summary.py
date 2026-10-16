@@ -36,6 +36,7 @@ def summarize(service, result, question, cancel, deadline):
     normalize_scope(result["scope"])
     handles = CitationHandles(result)
     encoded = handles.encode(rows)
+    handles.validate(encoded,{r["id"]:r for r in result["evidence"]})
     result["metrics"].setdefault("model_inputs", []).append(handles.receipt(encoded))
     payload = {
         "question": question,
@@ -44,7 +45,7 @@ def summarize(service, result, question, cancel, deadline):
         "model_budget_seconds": min(45, int(deadline - time.monotonic())),
         "summary_attempt": result.get("_summary_attempt", 0),
         "scope": result["scope"],
-        "requested_scope": result.get("requested_scope", result["scope"]),
+        "requested_scope": normalize_scope(result.get("requested_scope", result["scope"])),
         "time_notice": result.get("time_notice", ""),
         "records": encoded,
         "evidence_complete": False,

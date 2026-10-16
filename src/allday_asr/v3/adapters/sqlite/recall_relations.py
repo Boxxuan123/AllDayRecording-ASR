@@ -1,6 +1,7 @@
 """Read-only relationship leads from existing SQLite; no inferred graph writes."""
 
 import json
+from allday_asr.v3.domain.recall_read_budget import charge, scan_limit
 import time
 from .recall_state import bounded_sql
 from .recall_directory import entry
@@ -78,14 +79,15 @@ class RecallRelations:
                             scope["sent_from"],
                             scope["sent_to"],
                             *params,
-                            101 - len(rows),
+                            scan_limit(101 - len(rows)),
                         ),
                     ).fetchall()
                 )
+        bodies = [charge(row[0]) for row in rows]
         results = []
         seen = set()
-        for row in rows[:100]:
-            r = json.loads(row[0])
+        for body in bodies[:100]:
+            r = json.loads(body)
             key = (r["platform"], r["source_account_id"], r["conversation_id"])
             if key in seen:
                 continue

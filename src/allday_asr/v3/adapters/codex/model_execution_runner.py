@@ -101,20 +101,9 @@ class ModelExecutionRunner:
         self.max_job_tokens = max_job_tokens
         self._lock = RLock()
 
-    def run(self, *, task: str, batch_id: str, prompt: str,
-            instructions: str, schema: dict, model: str | None,
-            effort: str, workdir: Path, fake_client: Any | None = None,
-            cancel_event: Event | None = None) -> Any:
-        from allday_asr.v3.application.generation_context import current_generation
-        from allday_asr.build_info import runtime_build
-        context = current_generation.get()
-        if context is not None:
-            context.check()
-            batch_id = "explicit:" + context.execution_id
-            cancel_event = context.cancelled
+    def prepare_request(self, *, task, prompt, instructions, schema, model, effort):
+        """Offline-capable full request preflight shared with the actual execution path."""
         model = _configured_model(model)
-        if context is not None:
-            prompt = self._freeze_scoped_request(context.execution_id, task, prompt, instructions, schema, model, effort)
         identity = {"task": task, "prompt": prompt, "instructions": instructions,
                     "schema": schema, "model": model, "effort": effort}
         if task == "history-investigation-v1":
@@ -135,6 +124,26 @@ class ModelExecutionRunner:
             if catalog:
                 identity["model_catalog"] = catalog
                 identity["config_overrides"].append("model_catalog_json=" + json.dumps(catalog["path"]))
+        if len(json.dumps(identity, ensure_ascii=False).encode("utf-8")) > self.max_prompt_bytes:
+            raise ModelExecutionTerminal("model request budget exceeded")
+        return identity
+
+    def run(self, *, task: str, batch_id: str, prompt: str,
+            instructions: str, schema: dict, model: str | None,
+            effort: str, workdir: Path, fake_client: Any | None = None,
+            cancel_event: Event | None = None) -> Any:
+        from allday_asr.v3.application.generation_context import current_generation
+        from allday_asr.build_info import runtime_build
+        context = current_generation.get()
+        if context is not None:
+            context.check()
+            batch_id = "explicit:" + context.execution_id
+            cancel_event = context.cancelled
+        model = _configured_model(model)
+        if context is not None:
+            prompt = self._freeze_scoped_request(context.execution_id, task, prompt, instructions, schema, model, effort)
+        identity = self.prepare_request(task=task, prompt=prompt, instructions=instructions,
+            schema=schema, model=model, effort=effort)
         if context is not None:
             identity["execution_id"] = context.execution_id
         if len(json.dumps(identity, ensure_ascii=False).encode("utf-8")) > self.max_prompt_bytes:

@@ -437,7 +437,7 @@ def test_expired_context_does_not_block_independent_question(native):
     assert result["answer"] == SUMMARY
 
 
-def test_partial_directory_resumes_bounded_pages_and_does_not_assert_uniqueness(native):
+def test_partial_directory_resumes_bounded_pages_without_false_ambiguity(native):
     original = native.source.request
 
     def paged(route, body=None, **params):
@@ -454,10 +454,11 @@ def test_partial_directory_resumes_bounded_pages_and_does_not_assert_uniqueness(
     native.source.request = paged
     first = ask(native, "昨天我和青岚聊了什么", source="wechat", expand=True)
     assert (
-        first["status"] == "needs_clarification"
-        and len(first["contact_candidates"]) == 1
+        first["model_status"] == "available"
+        and first["contact_candidates"] == []
     )
-    assert first["metrics"]["directory_requests"] <= 6 and first["evidence"] == []
+    assert first["metrics"]["directory_requests"] <= 6 and first["evidence"]
+    assert {e["conversation_id"] for e in first["evidence"]} == {"native-wechat"}
     next_ = ask(native, "昨天我和青岚聊了什么", source="wechat", expand=True)
     assert next_["answer"] == SUMMARY
     assert any(

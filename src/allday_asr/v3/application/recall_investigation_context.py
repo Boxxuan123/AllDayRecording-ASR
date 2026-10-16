@@ -128,3 +128,31 @@ class InvestigationContext:
                 }
             )
         return kept
+
+
+
+def complete_context(tools):
+    """Supplement newly reached continuous actor speech with other participants."""
+    from allday_asr.v3.domain.recall_evidence_blocks import blocks, conversation
+    from allday_asr.v3.domain.recall_temporal import nearby_scope
+    requested = tools.result["scope"]
+    first = (nearby_scope(requested,tools.result["_request"]) or requested)["sent_from"]
+    done = tools.result.setdefault("_auto_context_rooms", [])
+    rows = [r for r in tools.result["evidence"] if first <= (r.get("sent_at") or -1) <= requested["sent_to"]]
+    groups = [(key,group) for key,group in blocks(rows)
+        if list(key) not in done and sum(bool(r.get("quote", "").strip()) for r in group)>=3]
+    groups.sort(key=lambda p:-sum(bool(r.get("quote", "").strip()) for r in p[1]))
+    for key,group in groups:
+        remaining = 2 - tools.result.get("_auto_context_calls",0)
+        if not remaining or tools.remaining()["source_requests"]<=1 or tools.remaining()["body_requests"]<1:
+            break
+        # Quantiles cover the beginning and later explanation of long fragments;
+        # no content word, sender name or source ID contributes a score.
+        text = [r for r in group if r.get("quote", "").strip()]
+        indices = [len(text)//4,3*len(text)//4] if len(text)>=10 and remaining>=2 else [len(text)//2]
+        for index in dict.fromkeys(indices):
+            target = text[min(index,len(text)-1)]
+            tools.run({"tool":"get_message_context","purpose":"补齐新发现连续片段中的其他参与者问答、否定和后续；相邻不等于同一事件",
+                "targets":[target["id"]],"terms":[],"window":"episode","evidence_ids":[target["id"]]},[])
+            tools.result["_auto_context_calls"] = tools.result.get("_auto_context_calls",0)+1
+        done.append(list(key))

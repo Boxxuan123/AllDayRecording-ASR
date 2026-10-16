@@ -3,6 +3,7 @@
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+import re
 
 TOOLS = (
     "search_messages",
@@ -30,6 +31,7 @@ def arr(item, maximum):
 
 
 STRING = {"type": "string"}
+CALENDAR_DATE = {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$", "maxLength": 10}
 TIME = {
     "anyOf": [
         obj(
@@ -45,9 +47,10 @@ TIME = {
             {
                 "basis": {
                     "type": "string",
-                    "enum": ["explicit", "relative", "inferred"],
+                    "enum": ["explicit", "relative", "inferred", "message"],
                 },
-                **{key: STRING for key in ("first", "last", "evidence_id", "quote")},
+                "first": CALENDAR_DATE, "last": CALENDAR_DATE,
+                "evidence_id": STRING, "quote": STRING,
             }
         ),
     ]
@@ -55,16 +58,13 @@ TIME = {
 SCHEMA = obj(
     {
         "mode": {"type": "string", "enum": ["search", "answer", "clarify"]},
-        "time": obj(
-            {
-                "kind": {
-                    "type": "string",
-                    "enum": ["unchanged", "date_range", "offset_days", "unresolved"],
-                },
-                "first": STRING,
-                "last": STRING,
-            }
-        ),
+        "time": {"anyOf": [
+            obj({"kind":{"type":"string","enum":["unchanged","unresolved"]},
+                 "first":{"type":"string","enum":[""]},"last":{"type":"string","enum":[""]}}),
+            obj({"kind":{"type":"string","enum":["date_range"]},"first":CALENDAR_DATE,"last":CALENDAR_DATE}),
+            obj({"kind":{"type":"string","enum":["offset_days"]},
+                 "first":{"type":"string","pattern":r"^-?\d{1,4}$"},
+                 "last":{"type":"string","pattern":r"^-?\d{1,4}$"}})]},
         "actions": arr(
             obj(
                 {
@@ -125,8 +125,8 @@ There are at most FOUR model calls TOTAL including the final answer. Use budget_
 physical request estimates: each target costs a real request, context also costs one. Preserve
 requests for context and a final model call. Do not scan all candidate rooms before following
 an observed actor. If records are discovery-window leads, they do not answer the event question.
-Each action has a purpose and allowed tool, targets are supplied opaque refs or $N for the outputs
-of earlier action N (zero based) IN THIS RESPONSE. Never invent IDs or account relations.
+Each action has a purpose and allowed tool, targets are supplied E-number evidence, C-number conversation or A-number account refs, or $N for the outputs
+of earlier action N (zero based) IN THIS RESPONSE. Never invent IDs or account relations. Native conversation_id/record_id values are provenance, never valid operands; use ONLY supplied E/C/A handles. candidates.contact_key also uses a C handle.
 A useful plan can find conversations, obtain observed speakers, find their related conversations,
 then search a concrete event phrase. Up to four actions per round. The executor caps fan-out.
 search_messages supports supplied conversation/account refs or no targets with nonempty terms.
@@ -148,11 +148,20 @@ ambiguous inferred aliases require a query-local selection; the executor may res
 For an organization/topic, native group names are leads even when the messages omit its name. Follow observed speakers to other authorized rooms and read contiguous questions, replies, denials and explanations. This is semantic exploration, not proof of membership or same event.
 window episode combines the target and eligible nearby window for bounded actor discovery; it never changes the requested date.
 window discovery is at most one year of group speech for actor leads, not event conclusions.
+For approximate relative wording, answer the content of a relevant nearby episode using its actual
+message date and daypart. Explain the date discrepancy once; do not replace an available content
+answer with repeated statements that the requested day is unknown.
 window nearby is one preceding natural day for approximate relative wording when the target episode is missing; explain the actual message date correction, never silently claim it happened on the requested date. Explicit UI/calendar dates cannot widen.
 window target is requested event date; followup is bounded later discussion (at most two local
 calendar days). identity is an explicit bounded 30-day address search. Hard UI dates win.
 Resolve unsupported dates from local_now using time; unchanged cannot repair unresolved time.
-Never equate sent_at with event date. Each claim has event_time: explicit quotes an actual date,
+Never equate sent_at with event date. Each claim has event_time. first/last are calendar dates YYYY-MM-DD ONLY, never timestamps.
+Use message ONLY for the date of the cited utterance/discussion from sent_at_local; it does
+not date the described event or plan. explicit requires the full year/month/day in the quote.
+A month/day without year is inferred using source context, never explicit. relative includes
+明晚/今天晚上 and source-relative clock expressions, anchored to the message timezone/date.
+Do not strip an invalid timestamp into a date or hide a definite event date under unknown.
+Explicit quotes an actual date,
 relative quotes source relative wording anchored to the MESSAGE local date, inferred is explicitly
 uncertain. For unknown ALL first, last, evidence_id and quote MUST be empty strings; citations still identify claim evidence. Cite a supplied original text fragment for any dated claim.
 source_fact is ONLY exact native metadata, not the truth of speech. Chat/audio content is a
@@ -184,6 +193,10 @@ def _validate(value, schema):
             _validate(item, schema["items"])
     elif not isinstance(value, str) or len(value) > schema.get("maxLength", 2000):
         raise ValueError("invalid investigation string")
+    if schema.get("pattern") and not re.fullmatch(schema["pattern"], value):
+        raise ValueError("invalid date/offset format")
+    if schema is CALENDAR_DATE or schema.get("pattern") == CALENDAR_DATE["pattern"]:
+        date.fromisoformat(value)
     if "enum" in schema and value not in schema["enum"]:
         raise ValueError("invalid investigation enum")
 
@@ -311,7 +324,10 @@ def bounded_final_protocol(*, compact=False):
         "without repeating the same chronology. Keep all necessary citations. Quote only "
         "the minimal source phrase needed to validate event_time (at most 64 characters). "
         "Do not omit uncertainty to fit: put unresolved facts in short unknown entries. "
-        "Do not repeat retrieval procedure in the answer. Prefer one compact claim when sufficient."
+        "Do not repeat retrieval procedure or coverage disclaimers in every claim. Use both claims "
+        "when needed to preserve concrete observations, why participants reached a view, and later "
+        "clarifications or uncertainty. A broad label alone is not a recap. Include the material "
+        "details actually read, without turning suspicion into a verified fact."
     )
     if compact:
         schema = obj(

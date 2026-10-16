@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from tests.test_agentic_recall import lab as lab_fixture, ask, response, action, claim
 from tests.test_recall_query_loop import message, DAY
+from tests.recall_protocol import model_handles
 from allday_asr.v3.domain.recall_investigation import checked
 from allday_asr.v3.adapters.codex.model_execution_runner import (
     _direct_call,
@@ -24,11 +25,11 @@ def test_context_support_operands_are_normalized_without_mutating_input(lab):
     normalized = checked(original)
     assert normalized["actions"][0]["targets"] == ["chat:rec:fixture-5001"]
     assert original["actions"][0]["targets"] == []
-    lab.service.investigator = lambda p, c: (
+    lab.service.investigator = lambda p, c: model_handles((
         original
         if p["round"] == 1
         else response("answer", claims=[claim("来源陈述", ["chat:rec:fixture-5001"])])
-    )
+    ), p)
     result = ask(lab)
     assert result["model_status"] == "available"
     context = next(
@@ -140,7 +141,7 @@ def test_four_actions_follow_second_speaker_to_next_day(lab):
                     action("search_messages", ["$2"], ["岬湾观测"], "followup", [seed]),
                 ]
             )
-        ids = {r["id"] for r in p["records"]}
+        ids = {"chat:"+r["record_id"] for r in p["records"]}
         assert {
             "chat:rec:fixture-5001",
             "chat:rec:fixture-5010",
@@ -164,7 +165,7 @@ def test_four_actions_follow_second_speaker_to_next_day(lab):
             ],
         )
 
-    lab.service.investigator = model
+    lab.service.investigator = lambda p,c: model_handles(model(p,c),p)
     result = ask(lab)
     assert result["model_status"] == "available", result
     assert result["metrics"]["model_calls"] == 2

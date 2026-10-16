@@ -12,6 +12,7 @@ from allday_asr.v3.adapters.sqlite.database import V3Database
 from allday_asr.v3.bootstrap.history_recall import compose_history_recall
 from tests.test_agentic_recall import response, action
 from tests.test_history_recall import dump
+from tests.recall_protocol import model_handles
 
 FIXTURES = Path(__file__).parent / "fixtures/agentic_reliability"
 CASES = json.loads((FIXTURES / "public_cases.json").read_text("utf-8"))["cases"]
@@ -32,7 +33,7 @@ def evaluate(case, root, monkeypatch, plan=None, setup=None, **options):
     def fake(payload, cancel):
         inputs.append(copy.deepcopy(payload))
         if payload["round"] == 1:
-            return copy.deepcopy(plan if plan is not None else PLANS[case["id"]])
+            return model_handles(plan if plan is not None else PLANS[case["id"]], payload)
         return response(
             "answer", unknown=["Offline protocol probe; real reasoning NOT_RUN."]
         )
@@ -87,8 +88,8 @@ def test_published_evidence_reaches_final_input(name, required, tmp_path, monkey
     assert {f"rec:fixture-{i}" for i in required} <= ids, (ids, result.get("coverage"))
     assert result["metrics"]["model_calls"] <= 2
     assert result["metrics"]["investigation_tools"] <= 8
-    assert result["metrics"]["source_requests"] <= 12
-    assert result["metrics"]["retrieval_requests"] <= 6
+    assert result["metrics"]["source_requests"] <= 18
+    assert result["metrics"].get("body_requests",0) <= 12
     assert result["claims"] == [] and not result["contact_candidates"]
     flow = result["evidence_flow"]
     assert flow["counts"]["model_selected"] >= len(required)
@@ -376,11 +377,11 @@ def test_followup_available_only_remotely_reaches_final_input(tmp_path, monkeypa
     final = {r["record_id"]: r for r in inputs[-1]["records"]}
     assert {"rec:fixture-91004", "rec:fixture-91005"} <= final.keys()
     assert final["rec:fixture-91004"]["origin"] == "mac"
-    assert result["metrics"]["source_requests"] <= 12
+    assert result["metrics"]["source_requests"] <= 18
     assert result["metrics"]["investigation_tools"] <= 8
 
 
-def test_directory_offline_stops_before_model_and_preserves_uncertainty(
+def test_directory_offline_uses_authorized_cache_and_preserves_uncertainty(
     tmp_path, monkeypatch
 ):
     def offline(source, root):
@@ -393,8 +394,9 @@ def test_directory_offline_stops_before_model_and_preserves_uncertainty(
         plan=response(actions=[action("find_conversations", terms=["组"])]),
         setup=offline,
     )
-    assert not inputs
-    assert result["status"] == "needs_clarification"
+    assert inputs
+    assert any(r["record_id"] == "rec:fixture-91001" for r in inputs[0]["records"])
+    assert not result["contact_candidates"]
     assert any("离线" in s for s in result["coverage"])
     assert not result["claims"]
 

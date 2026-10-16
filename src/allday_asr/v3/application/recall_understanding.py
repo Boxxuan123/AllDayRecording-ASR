@@ -175,14 +175,19 @@ def interpret(
     if exact and not payload.get("person_id"):
         if len(exact) == 1:
             apply_contact(fast, exact[0], seed=True)
+        elif fast["intent"] not in {"conversation", "quote"} and len({(c["platform"],c["source_account_id"]) for c in exact}) == len(exact):
+            # Independent same-label sources can be investigated without asserting
+            # they are the same person. Multiple accounts in one namespace remain
+            # genuine target ambiguity; query preferences still take precedence.
+            fast["_source_candidates"] = deepcopy(exact[:2])
+            fast["_contact_scope_is_seed"] = True
+            fast["scope"].update(person_id="", target_label=mention)
+            fast["issue"] = ""
+            fast["directory_notes"].append("同名来源分别取证，不据同名合并人物；结论保留平台出处。")
         else:
             fast["contact_candidates"] = exact[:20]
             fast["scope"]["person_id"] = ""
             fast["issue"] = f"你说的{mention}是？请选择联系人，本次选择只用于这次查询。"
-            if len(exact) == 1:
-                fast["issue"] = (
-                    f"已找到“{mention}”的来源联系人，但目录尚未完整覆盖。请确认本次查询对象。"
-                )
     elif scope["person_id"].startswith("native:"):
         apply_contact(fast, native[scope["person_id"][7:]], seed=True)
     if not fast["time_explicit"] and "sent_from" not in payload:

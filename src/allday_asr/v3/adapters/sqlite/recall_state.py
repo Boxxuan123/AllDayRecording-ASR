@@ -5,6 +5,7 @@ Only confirmed remote invalidation writes a derived cache marker, never source f
 import json
 import sqlite3
 from functools import wraps
+from allday_asr.v3.domain.recall_read_budget import charge, ReadBudgetExceeded
 from allday_asr.v3.ports.chat_data import ChatDataError
 from allday_asr.v3.domain.source_identity import resolve_chat
 
@@ -14,6 +15,8 @@ def bounded_sql(method):
     def call(*args, **kwargs):
         try:
             return method(*args, **kwargs)
+        except ReadBudgetExceeded as exc:
+            raise ChatDataError(str(exc),429) from exc
         except sqlite3.OperationalError as exc:
             raise ChatDataError("LOCAL_READ_TIMEOUT", 408) from exc
 
@@ -48,13 +51,14 @@ class RecallState:
             "dataset": self.dataset(),
         }
 
+    @bounded_sql
     def context(self, row, scope):
         if scope.get("relationship") == "conversation":
             return []  # Already selected the bilateral conversation; never add outsiders.
         part = self.identities.cache.context(row["record_id"], 2, 4)
         records = [
             r
-            for r in part["items"]
+            for r in [charge(value) for value in part["items"]]
             if scope["sent_from"] <= r.get("sent_at", -1) <= scope["sent_to"]
         ]
         return [self.evidence(r, "cache", "context") for r in records]

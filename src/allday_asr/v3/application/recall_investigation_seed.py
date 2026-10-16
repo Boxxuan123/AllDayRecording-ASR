@@ -49,3 +49,22 @@ def seed_topic(tools, action):
         if tools.remaining()["source_requests"] > 3:
             tools.run(action("get_related_conversations", targets=[ref], window="episode"), [])
     return True
+
+
+
+def seed_person(tools, action):
+    """A named native private room supplies an actor lead, never a person hard scope."""
+    contacts = [c for c in (tools.plan.get("_source_candidates") or tools.result["scope"].get("source_contacts", [])) if c["conversation_type"] == "c2c"]
+    if not tools.plan.get("person_mention") or not tools.plan.get("_contact_scope_is_seed") or not contacts:
+        return False
+    if re.search(r"称呼|外号|对应.{0,8}账号|查清",tools.result["_request"]["question"]):
+        return False
+    for c in contacts[:2]:
+        ref=tools.ref("contact",c,c["key"])
+        hits=tools.run(action("search_messages",targets=[ref]),[])
+        if not hits and tools.remaining()["source_requests"]>4:
+            hits=tools.run(action("search_messages",targets=[ref],window="discovery"),[])
+        peers=[h for h in hits if tools.refs[h].get("source_is_from_self") is False and tools.refs[h].get("sender_account_id")]
+        if peers and tools.remaining()["source_requests"]>2:
+            tools.run(action("get_related_conversations",targets=[peers[0]],window="episode"),[])
+    return True

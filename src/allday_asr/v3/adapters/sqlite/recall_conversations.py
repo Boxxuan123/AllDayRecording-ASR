@@ -1,6 +1,7 @@
 """Bounded conversation selection over existing source IDs and reply edges."""
 
 import json
+from allday_asr.v3.domain.recall_read_budget import charge, scan_limit
 import time
 from allday_asr.v3.domain.recall_conversation import participants
 from allday_asr.v3.ports.chat_data import ChatDataError
@@ -93,11 +94,11 @@ def conversation_records(ids, scope, terms, limit, cancel, deadline):
         rows = c.execute(
             "SELECT body FROM search_index WHERE dataset=? AND sent_at>=? AND sent_at<=? AND ("
             + " OR ".join(clauses)
-            + ") ORDER BY sent_at,id LIMIT 501",
-            params,
+            + ") ORDER BY sent_at,id LIMIT ?",
+            (*params,scan_limit()),
         ).fetchall()
     records = participants(
-        [json.loads(r[0]) for r in rows[:500]], ids.people(), ids.manual(), scope
+        [json.loads(charge(r[0])) for r in rows], ids.people(), ids.manual(), scope
     )
     if terms:
         # All genuine topic phrases are constraints. Context is added only after

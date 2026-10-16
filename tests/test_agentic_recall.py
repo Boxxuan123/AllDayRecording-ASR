@@ -420,7 +420,7 @@ def test_address_candidates_require_selection_and_never_write_identity(lab):
             "clarify",
             candidates=[
                 {
-                    "contact_key": target["key"],
+                    "contact_key": target["ref"],
                     "evidence_ids": ids,
                     "explanation": "有称呼及对方回复，但仍需本次选择确认。",
                 }

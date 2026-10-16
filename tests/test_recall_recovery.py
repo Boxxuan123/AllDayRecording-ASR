@@ -242,6 +242,9 @@ def test_adapter_retry_has_new_bounded_job_batch_without_live_model(
             assert limits["max_attempts"] == limits["max_batch_calls"] == 1
             assert limits["batch_deadline_seconds"] == 45
 
+        def prepare_request(self, **request):
+            assert request["task"] == "history-recall-v2"
+
         def run(self, **request):
             calls.append(request)
             return SimpleNamespace(
@@ -256,6 +259,7 @@ def test_adapter_retry_has_new_bounded_job_batch_without_live_model(
                 "query_id": "fixture-adapter-1",
                 "model_budget_seconds": 45,
                 "summary_attempt": attempt,
+                "scope": {"timezone":"Asia/Singapore", "sent_from":0, "sent_to":1000},
                 "records": [],
             },
             Event(),

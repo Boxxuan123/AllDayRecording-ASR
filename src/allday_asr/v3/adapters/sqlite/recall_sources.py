@@ -1,6 +1,7 @@
 """Bounded reads of the existing chat and canonical transcript indices."""
 
 import json
+from allday_asr.v3.domain.recall_read_budget import charge, scan_limit
 from datetime import datetime
 from .recall_state import RecallState, bounded_sql
 from .recall_relations import RecallRelations
@@ -120,6 +121,8 @@ class RecallSources(RecallState, RecallRelations):
             clauses.append("(" + " OR ".join(choices) + ")")
         if scope.get("relationship") == "group":
             clauses.append("json_extract(body,'$.conversation_type')='group'")
+        search_terms = terms
+        terms = []
         if terms:
             clauses.append(
                 "("
@@ -170,17 +173,20 @@ class RecallSources(RecallState, RecallRelations):
             rows = c.execute(
                 "SELECT body FROM search_index WHERE "
                 + " AND ".join(clauses)
-                + " ORDER BY recall_score(text) DESC,sent_at DESC,id DESC LIMIT ?",
-                (*params, limit + 1),
+                + " ORDER BY sent_at DESC,id DESC LIMIT ?",
+                (*params, scan_limit()),
             ).fetchall()
-        records = [json.loads(r[0]) for r in rows[:limit]]
+        candidates = [json.loads(charge(r[0])) for r in rows]
+        candidates = [r for r in candidates if all(t.casefold() in (r.get("text") or "").casefold() for t in search_terms)]
+        candidates.sort(key=lambda r:(relevance(r.get("text") or "",search_terms),r.get("sent_at") or 0,r["record_id"]),reverse=True)
+        records = candidates[:limit]
         if scope.get("source_contacts") and scope.get("relationship") == "speaker":
             from allday_asr.v3.domain.recall_conversation import source_target
 
             records = [r for r in records if source_target(r, scope["source_contacts"])]
         evidence = [chat_evidence(r, ids, people, manual, "cache") for r in records]
         invalid = self.changed(evidence)
-        return [r for r in evidence if r["id"] not in invalid], len(rows) > limit
+        return [r for r in evidence if r["id"] not in invalid], len(candidates) > limit or len(rows) == 400
 
     @bounded_sql
     def recordings(self, scope, terms, limit, cancel, deadline):
