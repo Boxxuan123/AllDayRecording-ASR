@@ -23,13 +23,9 @@ def summarize(service, result, question, cancel, deadline):
         and result["scope"].get("relationship") == "conversation"
         and {r.get("effective_is_self") for r in result["evidence"]} != {False, True}
     ):
-        result["model_status"] = "insufficient"
-        result["claims"] = []
-        result["unknown"] = ["本次尚未取回双方消息，无法确认完整交流。"]
-        result["answer"] = (
-            "尚未取回双方消息，暂时无法归纳完整交流；以下是本次联系人、时间与会话范围内的原文。"
+        result["coverage"].append(
+            "仅取得单方消息；可归纳该方明确说过的内容，不能补写另一方答复或确认完整交流。"
         )
-        return
     rows = select_evidence(result["evidence"], result["intent"], result["terms"], 20)
     if len(result["evidence"]) > 20:
         result["coverage"].append(
@@ -42,6 +38,8 @@ def summarize(service, result, question, cancel, deadline):
         "model_budget_seconds": min(45, int(deadline - time.monotonic())),
         "summary_attempt": result.get("_summary_attempt", 0),
         "scope": result["scope"],
+        "requested_scope": result.get("requested_scope", result["scope"]),
+        "time_notice": result.get("time_notice", ""),
         "records": rows,
         "evidence_complete": False,
         "known_gaps": result["coverage"],

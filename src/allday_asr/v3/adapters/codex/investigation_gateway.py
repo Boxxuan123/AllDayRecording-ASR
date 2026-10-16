@@ -118,7 +118,30 @@ class InvestigationGateway:
                                 continue
                             if data == b"[DONE]":
                                 break
-                            event = validate_event(json.loads(data))
+                            raw_event = json.loads(data)
+                            gateway.state["last_event_type"] = str(
+                                raw_event.get("type", "")
+                            )[:80]
+                            if raw_event.get("type") == "response.metadata":
+                                if any(
+                                    k in raw_event
+                                    for k in (
+                                        "item",
+                                        "part",
+                                        "delta",
+                                        "tools",
+                                        "response",
+                                        "output",
+                                    )
+                                ):
+                                    raise ValueError(
+                                        "metadata introduces executable or output content"
+                                    )
+                                gateway.state["ignored_metadata_events"] = (
+                                    gateway.state.get("ignored_metadata_events", 0) + 1
+                                )
+                                continue
+                            event = validate_event(raw_event)
                             gateway.state["validated_events"] += 1
                             if "first_event_seconds" not in gateway.state:
                                 gateway.state["first_event_seconds"] = round(
@@ -153,6 +176,8 @@ class InvestigationGateway:
                 except Exception as exc:
                     gateway.state["blocked_events"] += 1
                     gateway.state["error_type"] = type(exc).__name__
+                    if isinstance(exc, ValueError):
+                        gateway.state["error_reason"] = str(exc)[:160]
                     if isinstance(exc, urllib.error.HTTPError):
                         gateway.state["http_status"] = exc.code
                     self.close_connection = True

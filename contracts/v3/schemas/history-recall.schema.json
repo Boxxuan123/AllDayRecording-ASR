@@ -216,6 +216,11 @@
             "contact_key": {
               "type": "string",
               "pattern": "^[a-f0-9]{32}$"
+            },
+            "remember": {
+              "type": "boolean",
+              "default": false,
+              "description": "Explicit opt-in query target preference; never an identity link"
             }
           }
         },
@@ -255,6 +260,40 @@
           "properties": {
             "action": {
               "const": "retry_summary"
+            },
+            "query_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,80}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "query_id"
+          ],
+          "properties": {
+            "action": {
+              "const": "forget_target"
+            },
+            "query_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{8,80}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "query_id"
+          ],
+          "properties": {
+            "action": {
+              "const": "remember_target"
             },
             "query_id": {
               "type": "string",
@@ -457,6 +496,51 @@
         "investigation_steps": {
           "type": "array",
           "maxItems": 8,
+          "items": {
+            "type": "object"
+          }
+        },
+        "target_preference": {
+          "type": "object",
+          "required": [
+            "mention",
+            "display_name",
+            "platform"
+          ],
+          "properties": {
+            "mention": {
+              "type": "string"
+            },
+            "display_name": {
+              "type": "string"
+            },
+            "platform": {
+              "type": "string"
+            }
+          }
+        },
+        "target_remember_available": {
+          "type": "boolean"
+        },
+        "time_notice": {
+          "type": "string"
+        },
+        "requested_scope": {
+          "type": "object"
+        },
+        "identity_evidence": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object"
+          }
+        },
+        "target_resolution": {
+          "type": "object"
+        },
+        "diagnostics": {
+          "type": "array",
+          "maxItems": 20,
           "items": {
             "type": "object"
           }

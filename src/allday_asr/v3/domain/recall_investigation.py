@@ -77,7 +77,7 @@ SCHEMA = obj(
                     "terms": arr(STRING, 3),
                     "window": {
                         "type": "string",
-                        "enum": ["target", "followup", "identity"],
+                        "enum": ["target", "followup", "identity", "nearby"],
                     },
                     "evidence_ids": {
                         **arr(STRING, 6),
@@ -134,13 +134,14 @@ terms=[literal event phrase from seed] evidence_ids=[seed evidence ID] window=fo
 If another participant may hold the outcome, follow search results with get_related_conversations
 targets=["$1"] window=followup then search_messages targets=["$2"] using the same cited event anchor.
 Choose only necessary branches within four actions. A seed group is a starting point; explicit
-user scope filters remain hard limits. Do not assume later discussion stays in the original group. Searching them needs a concrete
-shared event phrase found in cited evidence; participation alone does not establish same event.
+user scope filters remain hard limits. Do not assume later discussion stays in the original group. Searching them needs cited original actor evidence. A literal shared event phrase is useful but not mandatory for exploratory retrieval; participation alone does not establish same event.
 get_message_context/get_source_evidence require actual evidence IDs in targets; evidence_ids alone is support. Existing memories are leads,
 not new primary evidence. find_contacts and find_conversations search native directory names.
 Unknown address names: search identity-window messages, expand replies, distinguish direct
 address from third-person discussion. Propose only source contacts supported by cited context;
-all inferred aliases require a query-local user selection, never writes or person merges.
+ambiguous inferred aliases require a query-local selection; the executor may resolve a unique direct outgoing private address with a coherent peer reply, never writes or person merges.
+For an organization/topic, native group names are leads even when the messages omit its name. Follow observed speakers to other authorized rooms and read contiguous questions, replies, denials and explanations. This is semantic exploration, not proof of membership or same event.
+window nearby is one preceding natural day for approximate relative wording when the target episode is missing; explain the actual message date correction, never silently claim it happened on the requested date. Explicit UI/calendar dates cannot widen.
 window target is requested event date; followup is bounded later discussion (at most two local
 calendar days). identity is an explicit bounded 30-day address search. Hard UI dates win.
 Resolve unsupported dates from local_now using time; unchanged cannot repair unresolved time.
@@ -264,6 +265,10 @@ def window_scope(scope, window, payload, now):
     zone = ZoneInfo(scope["timezone"])
     first = datetime.fromtimestamp(scope["sent_from"], zone)
     last = datetime.fromtimestamp(scope["sent_to"], zone)
+    if window == "nearby":
+        from .recall_temporal import nearby_scope
+
+        return nearby_scope(scope, payload) or value
     if window == "followup":
         value["sent_to"] = min(now, int((last + timedelta(days=2)).timestamp()))
     elif window == "identity":
@@ -294,7 +299,12 @@ def bounded_final_protocol(*, compact=False):
         "Do not repeat retrieval procedure in the answer. Prefer one compact claim when sufficient."
     )
     if compact:
-        schema = obj({key: schema["properties"][key] for key in ("claims", "candidates", "unknown")})
+        schema = obj(
+            {
+                key: schema["properties"][key]
+                for key in ("claims", "candidates", "unknown")
+            }
+        )
         instructions += (
             "\nFor this final response return ONLY claims, candidates and unknown, as the schema "
             "requires. The executor supplies the fixed answer envelope. Do not produce another "
@@ -309,6 +319,7 @@ def checked_final(value):
     expanded = {
         "mode": "clarify" if value["candidates"] and not value["claims"] else "answer",
         "time": {"kind": "unchanged", "first": "", "last": ""},
-        "actions": [], **value,
+        "actions": [],
+        **value,
     }
     return checked(expanded, bounded_final_protocol()[0])

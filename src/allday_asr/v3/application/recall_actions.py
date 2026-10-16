@@ -109,3 +109,26 @@ def retry_summary(service, owner, payload):
     finally:
         with service.lock:
             service.active.pop(key, None)
+
+
+def target_preference(service, owner, payload):
+    saved = service._saved(owner, payload.get("query_id"))
+    if set(payload) != {"action", "query_id"} or not service.preferences:
+        raise ValueError("查询偏好操作无效")
+    if payload["action"] == "remember_target":
+        contacts = saved["scope"].get("source_contacts", [])
+        mention = saved["_plan"]["person_mention"]
+        if not mention or len(contacts) != 1 or saved.get("status") == "stale":
+            raise ValueError("当前查询没有可记忆的唯一来源对象")
+        saved["target_preference"] = service.preferences.remember(
+            owner, mention, contacts[0]
+        )
+        saved["target_remember_available"] = False
+    else:
+        preference = saved.get("target_preference")
+        if preference:
+            service.preferences.forget(owner, preference["mention"])
+            saved.pop("target_preference", None)
+            saved["_plan"].pop("target_preference", None)
+            saved["target_remember_available"] = True
+    return service.page(owner, saved["query_id"])

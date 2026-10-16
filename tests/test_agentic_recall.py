@@ -235,7 +235,6 @@ def test_explicit_ui_date_boundary_is_never_extended(lab):
         "unknown_ref",
         "future_dependency",
         "empty_search",
-        "unrelated_anchor",
     ],
 )
 def test_invalid_tools_and_capabilities_fail_closed(lab, bad):
@@ -250,13 +249,6 @@ def test_invalid_tools_and_capabilities_fail_closed(lab, bad):
             a["targets"] = ["$0"]
         if bad == "empty_search":
             a = action("search_messages")
-        if bad == "unrelated_anchor":
-            return response(
-                actions=[
-                    action("get_related_conversations", [e]),
-                    action("search_messages", ["$0"], ["无关别的活动"], evidence=[e]),
-                ]
-            )
         return response(actions=[a])
 
     lab.service.investigator = model
@@ -787,3 +779,25 @@ def test_address_selection_preserves_exhausted_model_and_source_budgets(lab):
     assert result["model_status"] == "insufficient" and "预算已用完" in result["answer"]
     assert result["summary_retry_available"] is False
     assert result["metrics"]["elapsed_ms"] >= 4000
+
+
+def test_grounded_actor_semantic_exploration_is_a_lead_not_a_fact(lab):
+    def model(payload, cancel):
+        if payload["round"] == 2:
+            return response(
+                "answer", unknown=["语义探索没有找到足够原文，不能确认另一项活动。"]
+            )
+        seed = payload["records"][0]["id"]
+        return response(
+            actions=[
+                action("get_related_conversations", [seed]),
+                action("search_messages", ["$0"], ["另项复核安排"], evidence=[seed]),
+            ]
+        )
+
+    lab.service.investigator = model
+    result = ask(lab)
+    assert result["model_status"] == "insufficient" and not result["claims"]
+    assert any(
+        s["tool"] == "get_related_conversations" for s in result["investigation_steps"]
+    )

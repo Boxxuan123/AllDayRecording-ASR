@@ -187,20 +187,32 @@ def test_native_coverage_and_model_failure_do_not_fake_success(native, mode):
     if mode == "offline":
         native.source.failure = "SOURCE_OFFLINE"
     if mode == "one-sided":
+        native.service.model = lambda payload, cancel: {
+            "claims": [
+                {
+                    "kind": "summary",
+                    "text": "对方提出周五检查；另一方答复未知。",
+                    "citations": [payload["records"][0]["id"]],
+                }
+            ],
+            "unknown": ["仅单方消息"],
+        }
         native.source.records = [
             r for r in native.source.records if not r["is_from_self"]
         ]
     result = ask(native, "昨天我和青岚聊了什么", source="wechat", expand=True)
-    assert result["claims"] == [] and result["model_status"] != "available"
+    if mode != "one-sided":
+        assert result["claims"] == [] and result["model_status"] != "available"
     assert result["status"] in {
         "coverage_insufficient",
         "needs_clarification",
         "partial",
     }
     if mode == "one-sided":
-        assert result["model_status"] == "insufficient"
-        assert len(result["evidence"]) == 1 and result["metrics"]["model_calls"] == 0
-        assert "尚未取回双方" in result["answer"]
+        assert result["model_status"] == "available"
+        assert len(result["evidence"]) == 1 and result["metrics"]["model_calls"] == 1
+        assert "另一方答复未知" in result["answer"]
+        assert any("单方消息" in note for note in result["coverage"])
 
 
 def test_wrong_person_date_conversation_do_not_enter_answer(native):

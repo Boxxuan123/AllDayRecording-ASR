@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from threading import Event, Thread
@@ -100,7 +101,7 @@ def env(tmp_path):
 
 def decision(service, rec, action="link", person="alice-person", operation=None):
     request = {
-        "operation_id": operation or f"op-{time.monotonic_ns()}",
+        "operation_id": operation or "op-" + uuid.uuid4().hex,
         "key": identity_key(rec),
         "person_id": person,
         "action": action,

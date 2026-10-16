@@ -45,14 +45,27 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
         # Automatically resolved directory seeds are leads, not an explicit user filter.
         if plan.get("_contact_scope_is_seed"):
             self.root_scope.pop("source_contacts", None)
+            question = result["_request"]["question"]
+            import re
+
+            if not re.search(r"QQ|微信|录音", question, re.I):
+                self.root_scope["source"] = result["_request"].get("source", "all")
         self.root_scope["sent_from"] = result["_request"].get("sent_from", 0)
         self.root_scope["sent_to"] = result["_request"].get("sent_to", now)
         self.authorized_directory = deepcopy(plan.get("_directory", []))
+        from allday_asr.v3.domain.recall_query import name_in_text
+
         self.directory = sorted(
             [c for c in plan.get("_directory", []) if inside_root(c, self.root_scope)],
             key=lambda c: (
                 not any(
-                    n.casefold() in result["_request"]["question"].casefold()
+                    name_in_text(n, result["_request"]["question"])
+                    or (
+                        c["conversation_type"] == "group"
+                        and any(
+                            t.casefold() in n.casefold() for t in plan.get("terms", [])
+                        )
+                    )
                     for n in c["names"]
                 )
             ),
@@ -198,6 +211,10 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
         value = window_scope(
             self.result["scope"], window, self.result["_request"], self.now
         )
+        if window == "nearby" and value != self.result["scope"]:
+            from allday_asr.v3.domain.recall_temporal import time_notice
+
+            self.result["time_notice"] = time_notice(self.result["scope"], value)
         if window != "target":
             zone = self.result["scope"]["timezone"]
             self.note(
@@ -345,35 +362,17 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
                     {k: target[k] for k in ("platform", "source_account_id")}
                 ]
                 if target["type"] == "contact":
-                    if target.get("relation_basis") and (
-                        not action["terms"]
-                        or not action["evidence_ids"]
-                        or not all(
-                            any(
-                                t.casefold() in self.refs[e]["quote"].casefold()
-                                for e in action["evidence_ids"]
-                            )
-                            for t in action["terms"]
-                        )
+                    if target.get("relation_basis") and not self.branch_supported(
+                        target, action
                     ):
                         raise ValueError(
-                            "related conversation search needs cited event anchor"
+                            "related conversation search needs cited actor evidence"
                         )
                     selected["source_contacts"] = [target]
                 else:
-                    if (
-                        not action["terms"]
-                        or not action["evidence_ids"]
-                        or not all(
-                            any(
-                                t.casefold() in self.refs[e]["quote"].casefold()
-                                for e in action["evidence_ids"]
-                            )
-                            for t in action["terms"]
-                        )
-                    ):
+                    if not self.branch_supported(target, action):
                         raise ValueError(
-                            "cross-conversation account search needs a cited event anchor"
+                            "cross-conversation search needs cited actor evidence"
                         )
                     selected["source_senders"] = [target["sender_account_id"]]
             elif self.result["scope"].get("source_contacts") and not (
@@ -385,7 +384,10 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
             if selected is None:
                 continue
             self.current_scope = selected
-            remaining = min(20, 300 - len(self.result["evidence"]))
+            remaining = min(
+                40 if targets and not action["terms"] else 20,
+                300 - len(self.result["evidence"]),
+            )
             if remaining <= 0:
                 self.note("证据预算耗尽。")
                 break
@@ -400,7 +402,7 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
                 self.flow.received(rows, "cache", "topic_search")
                 found.extend(self.add(self.topic_rows(rows, action["terms"])))
                 if more:
-                    self.note("单次聊天检索只读取前 20 条；未覆盖其他页。")
+                    self.note("单次聊天检索只读取有限条记录；未覆盖其他页。")
                 # Existing source API, never a new network destination or arbitrary query.
                 if self.result["_request"].get("expand", True):
                     try:
@@ -447,7 +449,10 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
             }
             if terms:
                 remote["keyword"] = self.candidate_terms(terms)[0]
-            limit = min(20, 100 - self.result["metrics"]["source_records_read"])
+            limit = min(
+                40 if scope.get("source_contacts") and not terms else 20,
+                100 - self.result["metrics"]["source_records_read"],
+            )
             if limit <= 0:
                 break
             page = self.remote("/v1/messages", scope=remote, limit=limit)
@@ -564,11 +569,20 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance):
                         [target["ref"]],
                     )
                 c = item["contact"]
+                c["relation_account"] = {
+                    k: target[k]
+                    for k in ("platform", "source_account_id", "sender_account_id")
+                }
                 c["relation_evidence"] = [item["evidence"]["id"]]
                 c["relation_basis"] = item.get(
                     "relation_basis", "same_scoped_account_speech"
                 )
                 refs.append(self.ref("contact", c, c["key"]))
+            if self.result["_request"].get("expand", True) and not rows:
+                try:
+                    refs.extend(self.remote_related(target, scope))
+                except ChatDataError as exc:
+                    self.note("账号关系未完整取回：" + exc.code)
             for c in self.directory:
                 if c.get("sender_account_id") and all(
                     c.get(k) == target.get(k)

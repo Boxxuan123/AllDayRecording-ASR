@@ -37,6 +37,7 @@ def interpret(
     deadline,
     selected=None,
     previous=None,
+    owner=None,
 ):
     directory = []
     notes = []
@@ -127,6 +128,21 @@ def interpret(
     if selected:
         apply_contact(fast, selected)
         return fast
+    if (
+        service.preferences
+        and owner
+        and mention
+        and not error
+        and not payload.get("person_id")
+    ):
+        remembered = service.preferences.resolve(
+            owner, mention, scope["source"], directory
+        )
+        if remembered:
+            contact, preference = remembered
+            apply_contact(fast, contact, seed=True)
+            fast["target_preference"] = deepcopy(preference)
+            return fast
     unified = [
         pid
         for pid, p in people.items()
@@ -493,6 +509,11 @@ def interpret(
 
 
 def choose(service, owner, payload):
+    if (
+        set(payload) - {"action", "query_id", "contact_key", "remember"}
+        or type(payload.get("remember", False)) is not bool
+    ):
+        raise ValueError("联系人选择字段无效")
     saved = service._saved(owner, payload.get("query_id"))
     candidate = next(
         (
@@ -516,6 +537,16 @@ def choose(service, owner, payload):
         prepared["_remaining_seconds"] = max(
             0, 60 - saved["metrics"]["elapsed_ms"] / 1000
         )
-    return service.query(
+    mention = saved["_plan"]["person_mention"]
+    if payload.get("remember") and (not service.preferences or not mention):
+        raise ValueError("当前问题没有可记忆的明确称呼；可仅本次选择")
+    result = service.query(
         owner, saved["_request"], selected=candidate, prepared=prepared
     )
+    if payload.get("remember") and result.get("status") != "cancelled":
+        preference = service.preferences.remember(owner, mention, candidate)
+        current = service._saved(owner, saved["query_id"])
+        current["target_preference"] = deepcopy(preference)
+        current["_plan"]["target_preference"] = deepcopy(preference)
+        result["target_preference"] = deepcopy(preference)
+    return result

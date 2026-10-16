@@ -16,6 +16,17 @@ SPEAKER = re.compile(
 )
 
 
+def name_in_text(name, text):
+    """A native nickname must not capture part of a different identifier."""
+    if re.fullmatch(r"[A-Za-z0-9_]+", name):
+        return bool(
+            re.search(
+                r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", text, re.I
+            )
+        )
+    return len(name) > 1 and name.casefold() in text.casefold()
+
+
 def dates(question, timezone, now):
     try:
         zone = ZoneInfo(timezone)
@@ -192,7 +203,7 @@ def understand(question, keyword, people, payload, now):
                 names.setdefault(name.strip().casefold(), []).append(pid)
     multiple_people = False
     if not mention:
-        found = [n for n in names if n in remaining.casefold()]
+        found = [n for n in names if name_in_text(n, remaining)]
         multiple_people = (
             len({p for n in found for p in names[n]}) > 1 and len(found) > 1
         )

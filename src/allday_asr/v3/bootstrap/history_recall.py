@@ -33,6 +33,8 @@ def compose_history_recall(
         if investigator is not None
         else (RecallInvestigatorAdapter(root) if model is None else None)
     )
+    from allday_asr.v3.adapters.sqlite.recall_preferences import RecallPreferences
+
     return HistoryRecall(
         identities,
         RecallSources(identities),
@@ -42,4 +44,5 @@ def compose_history_recall(
         directory=RecallDirectory(identities, selected_source, root),
         planner=selected_planner,
         investigator=selected_investigator,
+        preferences=RecallPreferences(root),
     )

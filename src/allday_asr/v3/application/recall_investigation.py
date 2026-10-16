@@ -43,7 +43,17 @@ def _payload(tools, round_number, question):
             r["type"] == "evidence",
             r["ref"] not in reached,
             r.get("basis") != "observed_sender",
-            not any(n.casefold() in question.casefold() for n in r.get("names", [])),
+            not any(
+                n.casefold() in question.casefold()
+                or (
+                    r.get("conversation_type") == "group"
+                    and any(
+                        t.casefold() in n.casefold()
+                        for t in tools.plan.get("terms", [])
+                    )
+                )
+                for n in r.get("names", [])
+            ),
         ),
     )
     for item in objects:
@@ -68,6 +78,7 @@ def _payload(tools, round_number, question):
             ).isoformat(),
             "scope": result["scope"],
             "hard_scope": tools.root_scope,
+            "time_notice": result.get("time_notice", ""),
             "time_unresolved": tools.plan.get("_parse_error", False),
             "person_mention": tools.plan["person_mention"],
             "records": records,
@@ -216,6 +227,34 @@ def investigate(service, result, plan, question, cancel, deadline, now):
         plan["issue"] and plan["person_mention"] and not result["scope"]["person_id"]
     )
     try:
+        if not plan.get("person_mention") and plan.get("terms"):
+            groups = [
+                c
+                for c in tools.directory
+                if c["conversation_type"] == "group"
+                and any(
+                    t.casefold() in n.casefold()
+                    for t in plan["terms"]
+                    for n in c["names"]
+                )
+            ]
+            if groups:
+                for window in ("target", "nearby"):
+                    scoped = tools.scope(window)
+                    if scoped is None:
+                        continue
+                    scoped = {
+                        **scoped,
+                        "source_contacts": groups[:20],
+                        "relationship": "group",
+                    }
+                    rows, _ = service.sources.chat(
+                        scoped, [], 20, cancel, min(deadline, time.monotonic() + 3)
+                    )
+                    tools.current_scope = scoped
+                    tools.add(rows)
+                    if rows:
+                        break
         if not plan.get("_parse_error"):
             contacts = result["scope"].get("source_contacts", [])
             identity_lookup = unresolved_person or bool(
@@ -242,12 +281,74 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                     [],
                 )
                 if identity_lookup and hits:
+                    direct = [
+                        h
+                        for h in hits
+                        if tools.refs[h].get("conversation_type") == "c2c"
+                        and tools.refs[h].get("source_is_from_self") is True
+                    ]
+                    hits = direct or hits
                     tools.run(
                         _action(
                             "get_message_context", targets=hits[:2], window="identity"
                         ),
                         [],
                     )
+        if unresolved_person:
+            from allday_asr.v3.domain.recall_address import direct_address
+
+            resolved = direct_address(
+                result["evidence"], plan["person_mention"], tools.directory
+            )
+            if resolved:
+                from .recall_understanding import apply_contact
+
+                contact, basis = resolved
+                result["identity_evidence"] = deepcopy(basis)
+                result["target_resolution"] = {
+                    "basis": "direct_address_with_peer_reply",
+                    "mention": plan["person_mention"],
+                    "target": contact["display_name"],
+                    "citations": [r["id"] for r in basis],
+                }
+                apply_contact(plan, contact, seed=True)
+                result["scope"] = plan["scope"]
+                result["_plan"] = deepcopy(plan)
+                result["evidence"] = []
+                result["_evidence_scopes"] = {}
+                ref = tools.ref("contact", contact, contact["key"])
+                tools.run(_action("search_messages", targets=[ref]), [])
+                if not result["evidence"]:
+                    from allday_asr.v3.domain.recall_temporal import (
+                        nearby_scope,
+                        time_notice,
+                    )
+
+                    adjacent = nearby_scope(result["scope"], result["_request"])
+                    if adjacent:
+                        requested = deepcopy(result["scope"])
+                        tools.run(
+                            _action("search_messages", targets=[ref], window="nearby"),
+                            [],
+                        )
+                        if result["evidence"]:
+                            result["scope"].update(adjacent)
+                            result["requested_scope"] = requested
+                            result["time_notice"] = time_notice(
+                                requested, result["scope"]
+                            )
+                            result["coverage"].append(result["time_notice"])
+                        else:
+                            result["scope"].update(requested)
+                if result["evidence"]:
+                    service._summarize(result, question, cancel, deadline)
+                else:
+                    result.update(
+                        status="not_found",
+                        model_status="insufficient",
+                        answer=f"已根据私聊中的直接称呼与对方回复定位到{contact['display_name']}；本次指定日期未取回交流记录。称呼依据来自其他日期，未当作该日聊天。",
+                    )
+                return result
         for round_number in (1, 2):
             tools.checkpoint()
             if round_number == 2:
@@ -286,7 +387,22 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                 raise ValueError("evidence changed during model decision")
             if _candidates(tools, value, evidence):
                 break
-            claims = _claims(value, evidence, result["scope"])
+            claims = []
+            for proposed in value["claims"]:
+                try:
+                    claims.extend(
+                        _claims({"claims": [proposed]}, evidence, result["scope"])
+                    )
+                except ValueError as exc:
+                    result.setdefault("diagnostics", []).append(
+                        {
+                            "stage": "claim_validation",
+                            "code": "CLAIM_REJECTED",
+                            "detail": str(exc),
+                        }
+                    )
+            if value["claims"] and not claims:
+                raise ValueError("all proposed claims failed validation")
             if result["investigation_steps"]:
                 last_step = result["investigation_steps"][-1]
                 last_step["continue"] = value["mode"] == "search"
@@ -358,14 +474,28 @@ def investigate(service, result, plan, question, cancel, deadline, now):
         if not result["claims"]:
             result["model_status"] = "insufficient"
         result["status"] = "partial"
-    except Exception:
+    except Exception as exc:
+        validation = isinstance(exc, ValueError)
+        result.setdefault("diagnostics", []).append(
+            {
+                "stage": "investigation",
+                "code": "VALIDATION_FAILED" if validation else "MODEL_EXECUTION_FAILED",
+                "detail": str(exc)[:200],
+            }
+        )
         result.update(
             claims=[],
-            model_status="failed",
+            model_status="failed" if validation else "unavailable",
             status="partial",
-            answer="调查计划或证据校验未通过，未形成可靠结论；可查看本次取得的原文。",
+            answer="调查计划或证据校验未通过，未形成可靠结论；可查看本次取得的原文。"
+            if validation
+            else "调查模型执行中断，暂未形成内容结论；已取回原文保留，可查看技术详情。",
         )
-        result["unknown"] = ["计划、身份、事件时间或引用未能通过程序校验。"]
+        result["unknown"] = [
+            "计划、身份、事件时间或引用未能通过程序校验。"
+            if validation
+            else "模型执行失败，尚未完成内容核对。"
+        ]
     finally:
         invalid = service.sources.changed(result["evidence"])
         if invalid:

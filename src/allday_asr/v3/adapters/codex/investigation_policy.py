@@ -3,7 +3,7 @@
 import hashlib
 import json
 
-POLICY_VERSION = "investigation-no-native-tools-v1"
+POLICY_VERSION = "investigation-no-native-tools-v2"
 EVENTS = {
     "response.created",
     "response.in_progress",

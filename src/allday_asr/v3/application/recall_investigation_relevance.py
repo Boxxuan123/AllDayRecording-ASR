@@ -5,6 +5,87 @@ from allday_asr.v3.domain.recall_investigation_scope import inside_root
 
 
 class InvestigationRelevance:
+    def branch_supported(self, target, action):
+        actor = target.get("relation_account", target)
+        support = [
+            self.refs[e]
+            for e in (
+                action["evidence_ids"]
+                or target.get("relation_evidence", [])
+                or target.get("citations", [])
+            )
+            if e in self.refs
+        ]
+        return any(
+            r.get("type") == "evidence"
+            and r.get("source") == actor.get("platform")
+            and r.get("source_account_id") == actor.get("source_account_id")
+            and r.get("sender_account_id") == actor.get("sender_account_id")
+            and r.get("source_is_from_self") is False
+            for r in support
+        )
+
+    def remote_related(self, target, scope):
+        from .recall_investigation_tools import contact_record_allowed
+        from allday_asr.v3.ports.chat_data import ChatDataError
+        from allday_asr.v3.domain.recall_investigation_scope import inside_root
+        from copy import deepcopy
+
+        self.verify_remote()
+        remote = {
+            k: target[k] for k in ("platform", "source_account_id", "sender_account_id")
+        }
+        remote.update(sent_from=scope["sent_from"], sent_to=scope["sent_to"])
+        limit = min(20, 100 - self.result["metrics"]["source_records_read"])
+        if limit <= 0:
+            return []
+        page = self.remote("/v1/messages", scope=remote, limit=limit)
+        items = page.get("items")
+        if not isinstance(items, list) or len(items) > limit:
+            raise ChatDataError("INVALID_CHAT_PAGE", 502)
+        self.result["metrics"]["source_records_read"] += len(items)
+        contacts = {}
+        for record in items:
+            self.service.sources.validate_record(record)
+            if (
+                any(
+                    record.get(k) != remote[k]
+                    for k in ("platform", "source_account_id", "sender_account_id")
+                )
+                or not remote["sent_from"]
+                <= (record.get("sent_at") or -1)
+                <= remote["sent_to"]
+                or not contact_record_allowed(record, scope)
+            ):
+                raise ChatDataError("CONTEXT_IDENTITY_MISMATCH", 502)
+            row = self.service.sources.evidence(record, "mac", "context")
+            if not inside_root(
+                row, self.root_scope, evidence=True
+            ) or self.service.sources.changed([row]):
+                continue
+            matching = [
+                c
+                for c in self.directory
+                if c["platform"] == row["source"]
+                and c["source_account_id"] == row["source_account_id"]
+                and c["conversation_id"] == row["conversation_id"]
+            ]
+            if not matching:
+                continue
+            contact = deepcopy(matching[0])
+            contact["relation_account"] = {
+                k: target[k]
+                for k in ("platform", "source_account_id", "sender_account_id")
+            }
+            contact["relation_evidence"] = [row["id"]]
+            contact["relation_basis"] = "observed_same_source_account_speech"
+            self.current_scope = scope
+            self.add([row])
+            contacts[contact["key"]] = contact
+        if page.get("has_more"):
+            self.note("发言账号还有后续页；关系候选仅覆盖本次取回的原文。")
+        return [self.ref("contact", c, c["key"]) for c in contacts.values()]
+
     def candidate_terms(self, terms):
         # A literal event name/identifier must also be present in the search terms.
         anchor = next(

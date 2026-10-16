@@ -45,7 +45,9 @@ class HistoryRecall:
         directory=None,
         planner=None,
         investigator=None,
+        preferences=None,
     ):
+        self.preferences = preferences
         self.root = root
         self.investigator = investigator
         self.directory, self.planner = directory, planner
@@ -83,6 +85,10 @@ class HistoryRecall:
             return self.context(
                 owner, payload.get("query_id"), payload.get("evidence_id")
             )
+        if action in {"remember_target", "forget_target"}:
+            from .recall_actions import target_preference
+
+            return target_preference(self, owner, payload)
         if action == "choose":
             return choose(self, owner, payload)
         if action == "contacts":
@@ -240,6 +246,7 @@ class HistoryRecall:
                     deadline,
                     selected,
                     previous,
+                    owner=owner,
                 )
             )
             if cancel.is_set():
@@ -310,6 +317,8 @@ class HistoryRecall:
             },
             "limits": LIMITS,
         }
+        if query_plan.get("target_preference"):
+            result["target_preference"] = deepcopy(query_plan["target_preference"])
         if query_plan.get("_carried_metrics"):
             carried = query_plan["_carried_metrics"]
             for name in (
@@ -363,6 +372,10 @@ class HistoryRecall:
             self._checkpoint(cancel, deadline)
             if payload.get("expand", True) and scope["source"] != "recording":
                 expand(self, result, scope, query_plan, cancel, deadline)
+            if not result["evidence"] and scope.get("relationship") == "conversation":
+                from .recall_temporal import nearby_dialogue
+
+                nearby_dialogue(self, result, query_plan, cancel, deadline)
             # Prefer the highest observed revision; source order cannot replay an older answer.
             merged = {}
             for row in result["evidence"]:
@@ -421,6 +434,12 @@ class HistoryRecall:
         return self._finish(owner, qid, key, cancel, started, result)
 
     def _finish(self, owner, qid, key, cancel, started, result):
+        result["target_remember_available"] = bool(
+            self.preferences
+            and result["_plan"].get("person_mention")
+            and len(result["scope"].get("source_contacts", [])) == 1
+            and not result.get("target_preference")
+        )
         result["metrics"]["elapsed_ms"] = result.get("_spent_ms", 0) + round(
             (time.monotonic() - started) * 1000
         )
