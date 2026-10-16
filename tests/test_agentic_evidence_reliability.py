@@ -33,7 +33,9 @@ def evaluate(case, root, monkeypatch, plan=None, setup=None, **options):
     def fake(payload, cancel):
         inputs.append(copy.deepcopy(payload))
         if payload["round"] == 1:
-            return model_handles(plan if plan is not None else PLANS[case["id"]], payload)
+            return model_handles(
+                plan if plan is not None else PLANS[case["id"]], payload
+            )
         return response(
             "answer", unknown=["Offline protocol probe; real reasoning NOT_RUN."]
         )
@@ -87,9 +89,9 @@ def test_published_evidence_reaches_final_input(name, required, tmp_path, monkey
     ids = {r["record_id"] for r in inputs[-1]["records"]}
     assert {f"rec:fixture-{i}" for i in required} <= ids, (ids, result.get("coverage"))
     assert result["metrics"]["model_calls"] <= 2
-    assert result["metrics"]["investigation_tools"] <= 8
+    assert result["metrics"]["investigation_tools"] <= 16
     assert result["metrics"]["source_requests"] <= 18
-    assert result["metrics"].get("body_requests",0) <= 12
+    assert result["metrics"].get("body_requests", 0) <= 12
     assert result["claims"] == [] and not result["contact_candidates"]
     flow = result["evidence_flow"]
     assert flow["counts"]["model_selected"] >= len(required)
@@ -378,7 +380,7 @@ def test_followup_available_only_remotely_reaches_final_input(tmp_path, monkeypa
     assert {"rec:fixture-91004", "rec:fixture-91005"} <= final.keys()
     assert final["rec:fixture-91004"]["origin"] == "mac"
     assert result["metrics"]["source_requests"] <= 18
-    assert result["metrics"]["investigation_tools"] <= 8
+    assert result["metrics"]["investigation_tools"] <= 16
 
 
 def test_directory_offline_uses_authorized_cache_and_preserves_uncertainty(

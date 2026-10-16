@@ -18,7 +18,11 @@ def action(tool, targets, anchor, support):
 def complete_followup(tools):
     if not tools.anchors:
         return
-    if tools.calls > 5:
+    if (
+        tools.calls >= 13
+        or tools.remaining()["source_requests"] <= 2
+        or tools.remaining()["body_requests"] <= 1
+    ):
         tools.flow.gap("followup_action_budget")
         tools.note("剩余调查动作不足以完成账号、事件和上下文追踪；后续证据未完整取得。")
         return
@@ -47,7 +51,14 @@ def complete_followup(tools):
     seeds = []
     try:
         # Reserve one action for context; every hop still uses the shared counters.
-        while tools.calls <= 5:
+        hops = 0
+        while (
+            tools.calls < 13
+            and hops < 2
+            and tools.remaining()["source_requests"] > 2
+            and tools.remaining()["body_requests"] > 1
+        ):
+            hops += 1
             records = sorted(
                 tools.result["evidence"],
                 key=lambda r: r.get("sent_at") or 0,
@@ -123,7 +134,7 @@ def complete_followup(tools):
                 seen.add(key)
             if len(targets) == 4:
                 break
-        if targets and tools.calls < 8:
+        if targets and tools.calls < 16 and tools.remaining()["source_requests"] > 0:
             tools.run(action("get_message_context", targets, anchor, seeds), [])
         tools.flow.gap("followup_bounded_not_exhaustive")
     except (ChatDataError, TimeoutError) as exc:

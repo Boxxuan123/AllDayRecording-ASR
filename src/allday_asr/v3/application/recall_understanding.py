@@ -105,6 +105,7 @@ def interpret(
         if not error:
             fast = understand(question, keyword, filtered, payload, now)
     scope = fast["scope"]
+    hard_source = scope["source"]
     fast["contact_lookup_allowed"] = (
         not error and not payload.get("person_id") and scope["source"] != "recording"
     )
@@ -172,10 +173,41 @@ def interpret(
             scope["linked_contacts"] = service.directory.linked_many(
                 directory, scope["person_id"]
             )
+    if (
+        fast["intent"] not in {"conversation", "quote"}
+        and not error
+        and not payload.get("person_id")
+    ):
+        from allday_asr.v3.domain.recall_source_candidates import (
+            candidates,
+            subject,
+            diverse,
+            index,
+        )
+
+        inferred = mention or subject(question)
+        leads = candidates(directory, inferred, hard_source)
+        if leads:
+            fast.update(
+                person_mention=inferred,
+                issue="",
+                contact_candidates=[],
+                _source_candidates=diverse(leads),
+                _contact_scope_is_seed=True,
+                _candidate_index_fingerprint=index(directory)[0],
+            )
+            scope.update(person_id="", source=hard_source, target_label=inferred)
+            scope.pop("source_contacts", None)
+            exact = []
+            fast["directory_notes"].append(
+                "原生名称候选按账号命名空间分别取证，不据同名合并人物；自动候选不是平台或私聊硬筛选。"
+            )
     if exact and not payload.get("person_id"):
         if len(exact) == 1:
             apply_contact(fast, exact[0], seed=True)
-        elif fast["intent"] not in {"conversation", "quote"} and len({(c["platform"],c["source_account_id"]) for c in exact}) == len(exact):
+        elif fast["intent"] not in {"conversation", "quote"} and len(
+            {(c["platform"], c["source_account_id"]) for c in exact}
+        ) == len(exact):
             # Independent same-label sources can be investigated without asserting
             # they are the same person. Multiple accounts in one namespace remain
             # genuine target ambiguity; query preferences still take precedence.
@@ -183,7 +215,9 @@ def interpret(
             fast["_contact_scope_is_seed"] = True
             fast["scope"].update(person_id="", target_label=mention)
             fast["issue"] = ""
-            fast["directory_notes"].append("同名来源分别取证，不据同名合并人物；结论保留平台出处。")
+            fast["directory_notes"].append(
+                "同名来源分别取证，不据同名合并人物；结论保留平台出处。"
+            )
         else:
             fast["contact_candidates"] = exact[:20]
             fast["scope"]["person_id"] = ""

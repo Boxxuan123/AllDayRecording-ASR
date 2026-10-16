@@ -130,6 +130,8 @@ class RecallDirectory:
         pages = state.get("pages", {})
         sources = [platform] if platform in {"qq", "wechat"} else ["wechat", "qq"]
         if not live:
+            if getattr(self, "access_denied", False):
+                raise ChatDataError("SOURCE_AUTHORIZATION_REVOKED", 403)
             for r in rows:
                 r["directory_complete"] = bool(
                     pages.get(r["platform"], {}).get("complete")
@@ -151,6 +153,7 @@ class RecallDirectory:
         try:
             status = call("/v1/status")
             dataset = status["dataset_id"]
+            self.access_denied = False
             expected = (
                 self.ids.cache.get("dataset", "") if self.ids.chat_path.exists() else ""
             )
@@ -212,6 +215,13 @@ class RecallDirectory:
                         rows = rows[:5000]
                         raise ChatDataError("DIRECTORY_SIZE_LIMIT", 429)
         except (ChatDataError, ValueError, KeyError, OSError) as exc:
+            if getattr(exc, "status", 0) in {401, 403} or getattr(exc, "code", "") in {
+                "AUTHORIZATION_REVOKED",
+                "UNAUTHORIZED",
+                "FORBIDDEN",
+            }:
+                self.access_denied = True
+                raise ChatDataError("SOURCE_AUTHORIZATION_REVOKED", 403) from exc
             notes.append(
                 "联系人目录未完整取回；来源可能离线或尚未采集，不能判断联系人不存在。"
             )

@@ -4,9 +4,13 @@ import json
 from collections import deque
 
 
-def select_evidence(rows, steps, claims, *, limit=20, byte_limit=28000, focus_scope=None, seen_ids=()):
+def select_evidence(
+    rows, steps, claims, *, limit=20, byte_limit=28000, focus_scope=None, seen_ids=()
+):
     if focus_scope is not None:
-        return select_blocks(rows, steps, claims, focus_scope, seen_ids, limit, byte_limit)
+        return select_blocks(
+            rows, steps, claims, focus_scope, seen_ids, limit, byte_limit
+        )
     ordered = sorted(rows, key=lambda r: (r.get("sent_at") or 0, r["id"]))
     by_id = {r["id"]: r for r in ordered}
     anchors = []
@@ -38,15 +42,44 @@ def select_evidence(rows, steps, claims, *, limit=20, byte_limit=28000, focus_sc
     required = list(dict.fromkeys(i for i in anchors if i in by_id))
     # Retain complete recent read blocks before broad historical actor-discovery
     # samples; questions/denials/short answers cannot be reduced to sender boundaries.
-    critical = [i for step in steps for i in step.get("support", []) + step.get("targets", []) if i in by_id]
-    critical += [i for step in steps for i in (step.get("hits", [])[:1] + step.get("hits", [])[-1:]) if i in by_id]
-    critical += [i for claim in claims for i in claim.get("citations", []) if i in by_id]
+    critical = [
+        i
+        for step in steps
+        for i in step.get("support", []) + step.get("targets", [])
+        if i in by_id
+    ]
+    critical += [
+        i
+        for step in steps
+        for i in (step.get("hits", [])[:1] + step.get("hits", [])[-1:])
+        if i in by_id
+    ]
+    critical += [
+        i for claim in claims for i in claim.get("citations", []) if i in by_id
+    ]
     rooms = {}
     for row in ordered:
-        rooms.setdefault((row.get("source"), row.get("source_account_id"), row.get("conversation_id")), []).append(row["id"])
+        rooms.setdefault(
+            (
+                row.get("source"),
+                row.get("source_account_id"),
+                row.get("conversation_id"),
+            ),
+            [],
+        ).append(row["id"])
     critical += [i for ids in rooms.values() for i in (ids[0], ids[-1])]
-    priority = critical + [i for step in reversed(steps) if step.get("window") != "discovery"
-                for i in step.get("hits", []) if i in by_id] if limit > 20 else []
+    priority = (
+        critical
+        + [
+            i
+            for step in reversed(steps)
+            if step.get("window") != "discovery"
+            for i in step.get("hits", [])
+            if i in by_id
+        ]
+        if limit > 20
+        else []
+    )
     priority.extend(required)
     # Breadth-first temporal sampling across sources keeps intermediate changes
     # represented without guessing cancellation/conflict from a keyword dictionary.
@@ -82,34 +115,40 @@ def select_evidence(rows, steps, claims, *, limit=20, byte_limit=28000, focus_sc
     }
 
 
-
 def select_blocks(rows, steps, claims, scope, seen_ids, limit, byte_limit):
     """Keep episode text blocks and a minimal provenance bridge, not every old speaker."""
-    from .recall_evidence_blocks import blocks, conversation
+    from .recall_evidence_blocks import conversation
+
     by_id = {r["id"]: r for r in rows}
     seen = set(seen_ids)
     start, end = scope["sent_from"], scope["sent_to"]
     focus = [r for r in rows if start <= (r.get("sent_at") or -1) <= end]
-    mandatory = list(dict.fromkeys(i for c in claims for i in c.get("citations", []) if i in by_id))
+    mandatory = list(
+        dict.fromkeys(i for c in claims for i in c.get("citations", []) if i in by_id)
+    )
     if scope.get("identity_evidence"):
-        mandatory.extend(i for step in steps if step.get("window")=="identity" for i in step.get("record_refs",step.get("hits",[])) if i in by_id and by_id[i].get("quote", "").strip())
+        mandatory.extend(
+            i
+            for step in steps
+            if step.get("window") == "identity"
+            for i in step.get("record_refs", step.get("hits", []))
+            if i in by_id and by_id[i].get("quote", "").strip()
+        )
         mandatory = list(dict.fromkeys(mandatory))[:12]
-    candidates = blocks(focus)
-    candidates.sort(key=lambda pair: (
-        -sum(bool(r.get("quote", "").strip()) and r["id"] not in seen for r in pair[1]),
-        -sum(bool(r.get("quote", "").strip()) for r in pair[1]),
-        pair[1][0]["sent_at"], repr(pair[0])))
-    priority = list(mandatory)
-    selected_rooms = set()
-    for key, group in candidates:
-        selected_rooms.add(key)
-        priority.extend(r["id"] for r in group if r.get("quote", "").strip())
+    from .recall_episode_ranking import episode_order
+
+    priority, selected_rooms = episode_order(focus, scope, seen)
     # One actual supporting statement per reached actor/room. Discovery samples
     # remain in the backend; empty undecoded media never consume the text quota.
     bridges = []
     for step in reversed(steps):
-        if step.get("tool") == "get_message_context": continue
-        acquired = [by_id[i] for i in step.get("record_refs", step.get("hits", [])) if i in by_id]
+        if step.get("tool") == "get_message_context":
+            continue
+        acquired = [
+            by_id[i]
+            for i in step.get("record_refs", step.get("hits", []))
+            if i in by_id
+        ]
         if not any(conversation(r) in selected_rooms for r in acquired):
             continue
         for i in step.get("support", []):
@@ -119,23 +158,39 @@ def select_blocks(rows, steps, claims, scope, seen_ids, limit, byte_limit):
     # Bridges are mandatory for the selected relationship, with a small explicit cap.
     priority = mandatory + bridges[:4] + priority
     if not focus:
-        priority.extend(r["id"] for r in sorted(rows, key=lambda r:(r.get("sent_at") or 0,r["id"])) if r.get("quote", "").strip())
-    selected = []; identities = set()
+        priority.extend(
+            r["id"]
+            for r in sorted(rows, key=lambda r: (r.get("sent_at") or 0, r["id"]))
+            if r.get("quote", "").strip()
+        )
+    selected = []
+    identities = set()
     for identity in dict.fromkeys(priority):
         if len(selected) >= limit:
             break
         value = selected + [by_id[identity]]
         if len(json.dumps(value, ensure_ascii=False).encode()) <= byte_limit:
-            selected = value; identities.add(identity)
-    selected.sort(key=lambda r: (r.get("sent_at") or 0,r["id"]))
+            selected = value
+            identities.add(identity)
+    selected.sort(key=lambda r: (r.get("sent_at") or 0, r["id"]))
     required = list(dict.fromkeys(mandatory + bridges[:4]))
     missing = [i for i in required if i not in identities]
-    return selected, {"strategy": "contiguous_episode_blocks_minimal_provenance",
-        "available_count": len(rows), "selected_count": len(selected),
-        "omitted_count": len(rows)-len(selected), "required_omitted_count":len(missing),
-        "required_omitted_ids":missing, "semantic_changes_verified":False,
-        "complete_conclusion_allowed":len(selected)==len(rows),
-        "episode_available":len(focus), "episode_selected":sum(r["id"] in identities for r in focus),
-        "new_episode_selected":sum(r["id"] in identities and r["id"] not in seen for r in focus),
-        "undecoded_nontext_omitted":sum(not r.get("quote", "").strip() and r["id"] not in identities for r in rows),
-        "bridge_ids":bridges[:4]}
+    return selected, {
+        "strategy": "contiguous_episode_blocks_minimal_provenance",
+        "available_count": len(rows),
+        "selected_count": len(selected),
+        "omitted_count": len(rows) - len(selected),
+        "required_omitted_count": len(missing),
+        "required_omitted_ids": missing,
+        "semantic_changes_verified": False,
+        "complete_conclusion_allowed": len(selected) == len(rows),
+        "episode_available": len(focus),
+        "episode_selected": sum(r["id"] in identities for r in focus),
+        "new_episode_selected": sum(
+            r["id"] in identities and r["id"] not in seen for r in focus
+        ),
+        "undecoded_nontext_omitted": sum(
+            not r.get("quote", "").strip() and r["id"] not in identities for r in rows
+        ),
+        "bridge_ids": bridges[:4],
+    }

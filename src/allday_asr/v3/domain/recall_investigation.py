@@ -49,8 +49,10 @@ TIME = {
                     "type": "string",
                     "enum": ["explicit", "relative", "inferred", "message"],
                 },
-                "first": CALENDAR_DATE, "last": CALENDAR_DATE,
-                "evidence_id": STRING, "quote": STRING,
+                "first": CALENDAR_DATE,
+                "last": CALENDAR_DATE,
+                "evidence_id": STRING,
+                "quote": STRING,
             }
         ),
     ]
@@ -58,13 +60,31 @@ TIME = {
 SCHEMA = obj(
     {
         "mode": {"type": "string", "enum": ["search", "answer", "clarify"]},
-        "time": {"anyOf": [
-            obj({"kind":{"type":"string","enum":["unchanged","unresolved"]},
-                 "first":{"type":"string","enum":[""]},"last":{"type":"string","enum":[""]}}),
-            obj({"kind":{"type":"string","enum":["date_range"]},"first":CALENDAR_DATE,"last":CALENDAR_DATE}),
-            obj({"kind":{"type":"string","enum":["offset_days"]},
-                 "first":{"type":"string","pattern":r"^-?\d{1,4}$"},
-                 "last":{"type":"string","pattern":r"^-?\d{1,4}$"}})]},
+        "time": {
+            "anyOf": [
+                obj(
+                    {
+                        "kind": {"type": "string", "enum": ["unchanged", "unresolved"]},
+                        "first": {"type": "string", "enum": [""]},
+                        "last": {"type": "string", "enum": [""]},
+                    }
+                ),
+                obj(
+                    {
+                        "kind": {"type": "string", "enum": ["date_range"]},
+                        "first": CALENDAR_DATE,
+                        "last": CALENDAR_DATE,
+                    }
+                ),
+                obj(
+                    {
+                        "kind": {"type": "string", "enum": ["offset_days"]},
+                        "first": {"type": "string", "pattern": r"^-?\d{1,4}$"},
+                        "last": {"type": "string", "pattern": r"^-?\d{1,4}$"},
+                    }
+                ),
+            ]
+        },
         "actions": arr(
             obj(
                 {
@@ -77,7 +97,15 @@ SCHEMA = obj(
                     "terms": arr(STRING, 3),
                     "window": {
                         "type": "string",
-                        "enum": ["target", "followup", "identity", "nearby", "discovery", "episode"],
+                        "enum": [
+                            "target",
+                            "followup",
+                            "identity",
+                            "nearby",
+                            "discovery",
+                            "episode",
+                            "message_day",
+                        ],
                     },
                     "evidence_ids": {
                         **arr(STRING, 6),
@@ -146,15 +174,26 @@ Unknown address names: search identity-window messages, expand replies, distingu
 address from third-person discussion. Propose only source contacts supported by cited context;
 ambiguous inferred aliases require a query-local selection; the executor may resolve a unique direct outgoing private address with a coherent peer reply, never writes or person merges.
 For an organization/topic, native group names are leads even when the messages omit its name. Follow observed speakers to other authorized rooms and read contiguous questions, replies, denials and explanations. This is semantic exploration, not proof of membership or same event.
+window message_day reads earlier messages on the event calendar day for natural questions, bounded by explicit filters. It does not assert event occurrence.
 window episode combines the target and eligible nearby window for bounded actor discovery; it never changes the requested date.
 window discovery is at most one year of group speech for actor leads, not event conclusions.
-For approximate relative wording, answer the content of a relevant nearby episode using its actual
+episode_candidates groups ACTUALLY PRESENTED messages, not event assertions. Review their
+content and relation_support before deciding which answer the subject. Do not discard a relevant
+nearby discussion just because a different notice exists on the requested day. Explain both
+when supported; distinguish an unrelated notice from a substantive discussion using their text.
+Temporal proximity or account participation alone cannot establish a shared event. For an explicit
+hard date, do not answer outside it. For approximate relative wording, answer the content of a relevant nearby episode using its actual
 message date and daypart. Explain the date discrepancy once; do not replace an available content
 answer with repeated statements that the requested day is unknown.
-window nearby is one preceding natural day for approximate relative wording when the target episode is missing; explain the actual message date correction, never silently claim it happened on the requested date. Explicit UI/calendar dates cannot widen.
+window nearby is one preceding natural day for approximate relative wording; explain the actual message date correction, never silently claim it happened on the requested date. Explicit UI/calendar dates cannot widen.
 window target is requested event date; followup is bounded later discussion (at most two local
 calendar days). identity is an explicit bounded 30-day address search. Hard UI dates win.
 Resolve unsupported dates from local_now using time; unchanged cannot repair unresolved time.
+query_reference is the fixed query clock. requested_event_scope describes what the user asks
+about; message_search_windows describe bounded source reads, not event facts. A daytime message
+may discuss an evening plan. Interpret its relative wording using that message's local date;
+never require the plan to have been sent during the planned time. Distinguish an intention,
+conditional choice, cancellation, hearsay and verified completion.
 Never equate sent_at with event date. Each claim has event_time. first/last are calendar dates YYYY-MM-DD ONLY, never timestamps.
 Use message ONLY for the date of the cited utterance/discussion from sent_at_local; it does
 not date the described event or plan. explicit requires the full year/month/day in the quote.
@@ -285,8 +324,18 @@ def window_scope(scope, window, payload, now):
     zone = ZoneInfo(scope["timezone"])
     first = datetime.fromtimestamp(scope["sent_from"], zone)
     last = datetime.fromtimestamp(scope["sent_to"], zone)
+    if window == "message_day" and not any(
+        k in payload for k in ("sent_from", "sent_to", "keyword")
+    ):
+        # Natural event-time questions may be discussed earlier on the same day.
+        # Explicit date/time filters keep their original message bounds.
+        if not re.search(r"\d{4}[-/年]|\d{1,2}月\d", payload.get("question", "")):
+            value["sent_from"] = int(
+                datetime.combine(first.date(), datetime.min.time(), zone).timestamp()
+            )
     if window == "episode":
         from .recall_temporal import nearby_scope
+
         adjacent = nearby_scope(scope, payload)
         if adjacent:
             value["sent_from"] = adjacent["sent_from"]

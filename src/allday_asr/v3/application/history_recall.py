@@ -115,7 +115,6 @@ class HistoryRecall:
             self.results.pop(next(iter(self.results)))
         while len(self.cancelled) > 64:
             self.cancelled.pop(next(iter(self.cancelled)))
-
     def _saved(self, owner, qid):
         key = (owner, self._id(qid))
         with self.lock:
@@ -124,6 +123,8 @@ class HistoryRecall:
         if not value:
             raise ValueError("查询已过期或取消，请重新查询")
         result = value[1]
+        if result["scope"]["source"]!="recording" and self.directory and getattr(self.directory,"access_denied",False):
+            raise ChatDataError("SOURCE_AUTHORIZATION_REVOKED",403)
         if result["identity_version"] != self.identities.version():
             if self.sources.identity_changed(result["evidence"]):
                 with self.lock:
@@ -132,7 +133,6 @@ class HistoryRecall:
             result["identity_version"] = self.identities.version()
         self._invalidate(result, self.sources.changed(result["evidence"]))
         return result
-
     def page(self, owner, qid, page=0):
         if type(page) is not int or not 0 <= page < 15:
             raise ValueError("查询页码无效")

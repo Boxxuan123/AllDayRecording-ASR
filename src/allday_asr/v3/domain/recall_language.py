@@ -52,12 +52,19 @@ def intent(question):
     if re.search(r"经过|过程|进展|来龙去脉|发生了什么", question):
         return "timeline"
     if re.search(
-        r"聊了什么|聊过什么|谈了什么|讨论了什么|对话回顾|聊天内容|交流了什么", question
+        r"聊了什么|聊过什么|谈了什么|讨论了什么|对话回顾|聊天内容|交流了什么|(?<!发)发了什么",
+        question,
     ):
         return "conversation"
     if re.search(r"原话|原文|精确|逐字|包含|含有", question):
         return "quote"
-    return "question" if re.search(r"什么|怎么|如何|哪个|何时|打算|安排|计划|准备", question) else "quote"
+    return (
+        "question"
+        if re.search(
+            r"什么|啥|怎么|如何|哪个|何时|打算|安排|计划|准备|是否|[?？]|吗$", question
+        )
+        else "quote"
+    )
 
 
 def plan(question, keyword=""):
