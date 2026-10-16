@@ -255,6 +255,28 @@ def run_scenario(root, scenario, *, live=False, model_hook=None):
                     error=getattr(exc, "code", type(exc).__name__),
                     status=getattr(exc, "status", None),
                 )
+        restarted = compose_history_recall(
+            db,
+            root,
+            source,
+            wrap(RecallModelAdapter(root)),
+            investigator=wrap(RecallInvestigatorAdapter(root)),
+            planner=wrap(RecallPlannerAdapter(root)),
+        )
+        try:
+            revoked["cached_after_restart"] = restarted.execute(
+                "synthetic-owner",
+                {
+                    **request,
+                    "query_id": "cached_revoke_" + uuid.uuid4().hex,
+                    "expand": False,
+                },
+            )
+        except Exception as exc:
+            revoked["cached_after_restart"] = dict(
+                error=getattr(exc, "code", type(exc).__name__),
+                status=getattr(exc, "status", None),
+            )
         revoked["extra_model_calls"] = len(inputs) - before
     saved = deepcopy(service.results[("synthetic-owner", request["query_id"])][1])
     saved.get("_plan", {}).pop("_directory", None)

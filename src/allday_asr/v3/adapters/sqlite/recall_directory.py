@@ -65,6 +65,16 @@ class RecallDirectory:
     def __init__(self, identities, source, root):
         self.ids, self.source = identities, source
         self.path = Path(root) / "chat/recall-directory.json"
+        self.denied_path = Path(root) / "chat/recall-source-denied"
+        self.access_denied = self.denied_path.exists()
+
+    def set_access_denied(self, denied):
+        self.access_denied = denied
+        if denied:
+            self.denied_path.parent.mkdir(parents=True, exist_ok=True)
+            self.denied_path.touch()
+        else:
+            self.denied_path.unlink(missing_ok=True)
 
     def cached(self):
         rows = []
@@ -153,7 +163,7 @@ class RecallDirectory:
         try:
             status = call("/v1/status")
             dataset = status["dataset_id"]
-            self.access_denied = False
+            self.set_access_denied(False)
             expected = (
                 self.ids.cache.get("dataset", "") if self.ids.chat_path.exists() else ""
             )
@@ -220,7 +230,7 @@ class RecallDirectory:
                 "UNAUTHORIZED",
                 "FORBIDDEN",
             }:
-                self.access_denied = True
+                self.set_access_denied(True)
                 raise ChatDataError("SOURCE_AUTHORIZATION_REVOKED", 403) from exc
             notes.append(
                 "联系人目录未完整取回；来源可能离线或尚未采集，不能判断联系人不存在。"

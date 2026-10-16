@@ -304,6 +304,7 @@ def test_explicit_authorization_revoke_blocks_cached_body_and_saved_answer(tmp_p
     r = run_scenario(tmp_path, scene)
     assert r["revoked"]["query"].get("status") == 403
     assert r["revoked"]["page"].get("status") == 403
+    assert r["revoked"]["cached_after_restart"].get("status") == 403
     assert r["revoked"]["extra_model_calls"] == 0
 
 
@@ -435,4 +436,15 @@ def test_relation_enrichment_preserves_native_label_and_peer_namespace():
             "contact",
             {**c, "sender_account_id": "same-name-different-peer"},
             "stable-key",
+        )
+
+
+def test_known_native_competitors_do_not_offer_unknown_address_schema(tmp_path):
+    scene = plan_case()
+    r = run_scenario(tmp_path, scene)
+    for request in r["wire"]:
+        assert request["schema"]["properties"]["candidates"]["maxItems"] == 0
+        assert (
+            __import__("json").loads(request["prompt"])["address_resolution_required"]
+            is False
         )

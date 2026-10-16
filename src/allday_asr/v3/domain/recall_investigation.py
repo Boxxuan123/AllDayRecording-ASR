@@ -175,6 +175,9 @@ Choose only necessary branches within four actions. A seed group is a starting p
 user scope filters remain hard limits. Do not assume later discussion stays in the original group. Searching them needs cited original actor evidence. A literal shared event phrase is useful but not mandatory for exploratory retrieval; participation alone does not establish same event.
 get_message_context/get_source_evidence require actual evidence IDs in targets; evidence_ids alone is support. Existing memories are leads,
 not new primary evidence. find_contacts and find_conversations search native directory names.
+candidates are ONLY proposals to resolve an unknown address, not a list of already observed
+source accounts. When address_resolution_required is false, candidates MUST be empty; compare
+competing native accounts in qualified cited claims/unknown instead. Do not merge them.
 Unknown address names: search identity-window messages, expand replies, distinguish direct
 address from third-person discussion. Propose only source contacts supported by cited context;
 ambiguous inferred aliases require a query-local selection; the executor may resolve a unique direct outgoing private address with a coherent peer reply, never writes or person merges.

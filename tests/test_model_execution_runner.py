@@ -16,16 +16,27 @@ from allday_asr.v3.adapters.codex.model_execution_runner import (
 
 
 def call(runner, **overrides):
-    values = dict(task="synthetic", batch_id="one-batch", prompt="{}",
-                  instructions="local fixture", schema={"type": "object"},
-                  model="fake", effort="low", workdir=runner.receipt_dir.parent)
+    values = dict(
+        task="synthetic",
+        batch_id="one-batch",
+        prompt="{}",
+        instructions="local fixture",
+        schema={"type": "object"},
+        model="fake",
+        effort="low",
+        workdir=runner.receipt_dir.parent,
+    )
     values.update(overrides)
     return runner.run(**values)
 
 
 def successful_result():
-    return {"id": "synthetic-turn", "final_response": "{}",
-            "usage": {"input_tokens": 1, "output_tokens": 1}, "items": []}
+    return {
+        "id": "synthetic-turn",
+        "final_response": "{}",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+        "items": [],
+    }
 
 
 def test_timeouts_exhaust_persisted_job_budget(tmp_path):
@@ -40,7 +51,9 @@ def test_timeouts_exhaust_persisted_job_budget(tmp_path):
         call(restarted)
     receipts = sorted((tmp_path / "receipts").glob("*.receipt.json"))
     assert [json.loads(path.read_text())["status"] for path in receipts] == [
-        "timeout", "timeout"]
+        "timeout",
+        "timeout",
+    ]
 
 
 def test_cancelled_call_has_receipt_and_never_starts_remote(tmp_path):
@@ -98,7 +111,10 @@ def test_restart_can_retry_started_attempt_once(tmp_path):
         assert call(restarted).id == "synthetic-turn"
     recovered = json.loads(first_receipt.read_text())
     assert (recovered["status"], recovered["error_type"], recovered["retryable"]) == (
-        "failed", "ProcessRestart", True)
+        "failed",
+        "ProcessRestart",
+        True,
+    )
     assert json.loads(state_path.read_text())["attempts"] == 2
     assert call(ModelExecutionRunner(tmp_path / "receipts")).id == "synthetic-turn"
 
@@ -109,7 +125,8 @@ def test_owned_child_process_is_cancelled(tmp_path):
 
     owned = OwnedAttempt(
         [sys.executable, "-c", "import time; time.sleep(10)"],
-        tmp_path / "child.log", Path.cwd(),
+        tmp_path / "child.log",
+        Path.cwd(),
     )
     cancellation = Event()
     timer = Timer(0.1, cancellation.set)
@@ -118,3 +135,61 @@ def test_owned_child_process_is_cancelled(tmp_path):
         assert owned.wait(5, cancellation) == 125
     finally:
         timer.cancel()
+
+
+def test_atomic_receipt_retries_only_windows_sharing_violation(tmp_path, monkeypatch):
+    from allday_asr.v3.adapters.codex.model_execution_runner import _atomic_json
+    from pathlib import Path
+
+    original = Path.replace
+    calls = []
+
+    def replace(part, target):
+        calls.append(str(part))
+        if len(calls) == 1:
+            exc = PermissionError("sharing violation")
+            exc.winerror = 32
+            raise exc
+        return original(part, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    _atomic_json(tmp_path / "receipt.json", {"completed": True})
+    assert (
+        len(calls) == 2
+        and json.loads((tmp_path / "receipt.json").read_text())["completed"]
+    )
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_atomic_receipt_concurrent_writers_never_share_temporary_file(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from allday_asr.v3.adapters.codex.model_execution_runner import _atomic_json
+
+    path = tmp_path / "receipt.json"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(
+            pool.map(
+                lambda i: _atomic_json(path, {"sequence": i, "body": "x" * 1000}),
+                range(40),
+            )
+        )
+    assert json.loads(path.read_text())["sequence"] in range(40)
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_atomic_receipt_other_permission_failure_is_not_retried(tmp_path, monkeypatch):
+    from pathlib import Path
+    from allday_asr.v3.adapters.codex.model_execution_runner import _atomic_json
+
+    calls = []
+
+    def denied(*args):
+        calls.append(1)
+        exc = PermissionError("access denied")
+        exc.winerror = 5
+        raise exc
+
+    monkeypatch.setattr(Path, "replace", denied)
+    with pytest.raises(PermissionError):
+        _atomic_json(tmp_path / "receipt.json", {})
+    assert len(calls) == 1 and not list(tmp_path.glob("*.part"))

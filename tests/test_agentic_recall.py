@@ -807,3 +807,26 @@ def test_grounded_actor_semantic_exploration_is_a_lead_not_a_fact(lab):
     assert any(
         s["tool"] == "get_related_conversations" for s in result["investigation_steps"]
     )
+
+
+def test_unneeded_native_candidate_proposal_cannot_discard_independent_valid_claim(lab):
+    def model(p, c):
+        row = p["records"][0]
+        room = next(o for o in p["objects"] if o["type"] == "contact")
+        return response(
+            "answer",
+            claims=[claim("这里只能确认这段发言，未经独立核实", [row["id"]])],
+            candidates=[
+                dict(
+                    contact_key=room["ref"],
+                    evidence_ids=[row["id"]],
+                    explanation="已观察来源，不是新的直接称呼",
+                )
+            ],
+        )
+
+    lab.service.investigator = model
+    r = ask(lab)
+    assert r["model_status"] == "available" and r["claims"]
+    assert not r["contact_candidates"]
+    assert any(v["code"] == "CANDIDATE_REJECTED" for v in r["diagnostics"])

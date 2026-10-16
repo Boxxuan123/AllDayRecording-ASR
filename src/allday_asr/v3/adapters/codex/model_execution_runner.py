@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+import tempfile
 from pathlib import Path
 from threading import Event, RLock
 from types import SimpleNamespace
@@ -32,14 +33,33 @@ class ModelExecutionCancelled(RuntimeError):
     pass
 
 
-def _atomic_json(path: Path, value: dict) -> None:
-    part = path.with_suffix(path.suffix + ".part")
-    with part.open("w", encoding="utf-8") as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2)
-        stream.flush()
-        os.fsync(stream.fileno())
-    part.replace(path)
+_RECEIPT_WRITE_LOCK = RLock()
 
+
+def _atomic_json(path: Path, value: dict) -> None:
+    with _RECEIPT_WRITE_LOCK:
+        # Unique temporary files prevent concurrent receipt writers sharing .part.
+        # Windows readers can briefly deny replacement; retry only that local IO,
+        # never another model request, within a fixed 150ms maximum backoff.
+        descriptor, name = tempfile.mkstemp(
+            prefix=path.name + ".", suffix=".part", dir=path.parent
+        )
+        part = Path(name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(value, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            for attempt in range(6):
+                try:
+                    part.replace(path)
+                    break
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) not in {32, 33} or attempt == 5:
+                        raise
+                    time.sleep(0.01 * (attempt + 1))
+        finally:
+            part.unlink(missing_ok=True)
 
 def _result_data(result: Any) -> dict[str, Any]:
     items = []

@@ -303,6 +303,9 @@ def investigate(service, result, plan, question, cancel, deadline, now):
             invalid = service.sources.changed(list(evidence.values()))
             if invalid:
                 raise ValueError("evidence changed during model decision")
+            if value["candidates"] and payload["address_resolution_required"] is False:
+                result.setdefault("diagnostics",[]).append(dict(stage="candidate_validation",code="CANDIDATE_REJECTED",detail="already-observed native candidates are not unknown-address proposals"))
+                value["candidates"]=[]
             if _candidates(tools, value, evidence):
                 break
             claims = []

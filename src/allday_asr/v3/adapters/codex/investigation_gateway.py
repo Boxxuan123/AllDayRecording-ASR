@@ -192,7 +192,8 @@ class InvestigationGateway:
     def save(self):
         from .model_execution_runner import _atomic_json
 
-        _atomic_json(self.receipt_path, self.state)
+        with self.lock:
+            _atomic_json(self.receipt_path, self.state)
 
     def __enter__(self):
         self.save()
