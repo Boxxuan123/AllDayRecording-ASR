@@ -230,12 +230,23 @@ def test_renaming_every_native_identity_preserves_full_chain_structure(tmp_path)
 
     scene = bridge_case()
     mapping = {"HERA": "VEGA", "Mira": "木槿"}
+    group_names = {}
+    for c in scene["contacts"]:
+        if c.get("conversation_type") == "group":
+            old_name = c["display_name"]
+            group_names[old_name] = (
+                "VEGA研究队" if "HERA" in old_name else "新会话-" + uuid.uuid4().hex
+            )
+    mapping.update(group_names)
     for c in scene["contacts"]:
         for k in ["id", "source_account_id"]:
             mapping[c[k]] = "native-" + uuid.uuid4().hex
     for r in scene["records"]:
         mapping.setdefault(r["sender_account_id"], "sender-" + uuid.uuid4().hex)
         mapping[r["record_id"]] = "rec:" + uuid.uuid4().hex
+        native_id = r.get("source_locator", {}).get("native_message_id")
+        if native_id:
+            mapping[native_id] = "message-" + uuid.uuid4().hex
 
     def change(v):
         if isinstance(v, dict):
@@ -251,6 +262,16 @@ def test_renaming_every_native_identity_preserves_full_chain_structure(tmp_path)
         return v
 
     renamed = change(scene)
+    assert {c["display_name"] for c in renamed["contacts"]}.isdisjoint(group_names)
+    assert all(
+        a["record_id"] != b["record_id"]
+        and a["sender_account_id"] != b["sender_account_id"]
+        and a["source_account_id"] != b["source_account_id"]
+        and a["conversation_id"] != b["conversation_id"]
+        and a["source_locator"]["native_message_id"]
+        != b["source_locator"]["native_message_id"]
+        for a, b in zip(scene["records"], renamed["records"])
+    )
     random.Random(92).shuffle(renamed["contacts"])
     r = run_scenario(tmp_path, renamed)
     assert {mapping[f"rec:fixture-{210 + i}"] for i in range(5)} <= selected_ids(r)
