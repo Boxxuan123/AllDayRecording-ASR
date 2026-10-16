@@ -198,6 +198,12 @@ def interpret(
             )
             scope.update(person_id="", source=hard_source, target_label=inferred)
             scope.pop("source_contacts", None)
+            if all(c["conversation_type"] == "group" for c in leads):
+                # A native room label denotes a conversation/topic, not a person.
+                fast.update(
+                    person_mention="", terms=[inferred], remote_terms=[inferred]
+                )
+                scope["relationship"] = "topic"
             exact = []
             fast["directory_notes"].append(
                 "原生名称候选按账号命名空间分别取证，不据同名合并人物；自动候选不是平台或私聊硬筛选。"

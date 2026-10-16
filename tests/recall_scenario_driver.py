@@ -13,6 +13,7 @@ from allday_asr.v3.adapters.sqlite.chat_cache import ChatCache
 from allday_asr.v3.bootstrap.history_recall import compose_history_recall
 from allday_asr.v3.adapters.codex.recall_investigator import RecallInvestigatorAdapter
 from allday_asr.v3.adapters.codex.recall_model import RecallModelAdapter
+from allday_asr.v3.adapters.codex.recall_planner import RecallPlannerAdapter
 from allday_asr.v3.adapters.codex.model_execution_runner import ModelExecutionRunner
 
 NOW = 1792110900
@@ -166,6 +167,16 @@ def run_scenario(root, scenario, *, live=False, model_hook=None):
                         )
                     ],
                 )
+        if "contact_keys" in kw["schema"]["properties"]:
+            value = dict(
+                intent="quote",
+                relationship="topic",
+                person_mention="",
+                contact_keys=[],
+                topics=[],
+                time=dict(kind="unresolved", first="", last=""),
+                clarification="PROTOCOL_PROBE_ONLY_NOT_SEMANTIC_SUCCESS",
+            )
         return SimpleNamespace(final_response=json.dumps(value))
 
     original_run = ModelExecutionRunner.run
@@ -210,6 +221,7 @@ def run_scenario(root, scenario, *, live=False, model_hook=None):
         source,
         wrap(RecallModelAdapter(root)),
         investigator=wrap(RecallInvestigatorAdapter(root)),
+        planner=wrap(RecallPlannerAdapter(root)),
     )
     request = dict(
         action="query",
@@ -265,7 +277,7 @@ def selected_ids(run):
     handles = run["internal"].get("_citation_handles", {})
     selected = set()
     for request in run["wire"]:
-        for row in json.loads(request["prompt"])["records"]:
+        for row in json.loads(request["prompt"]).get("records", []):
             full = handles[row["id"]][0]
             selected.add(full.removeprefix("chat:"))
     return selected

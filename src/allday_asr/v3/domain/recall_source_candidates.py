@@ -89,3 +89,27 @@ def diverse(values, limit=4):
             if len(out) == limit:
                 break
     return out
+
+
+def enrich_contact(previous, value):
+    """Enrich same native conversation; cached labels never replace current metadata."""
+    if not previous or previous.get("basis") != "native conversation directory":
+        return value
+    namespace = ("platform", "source_account_id", "conversation_id")
+    conflicting_peer = (
+        previous.get("sender_account_id")
+        and value.get("sender_account_id")
+        and previous["sender_account_id"] != value["sender_account_id"]
+    )
+    if any(previous.get(k) != value.get(k) for k in namespace) or conflicting_peer:
+        raise ValueError("contact reference namespace changed")
+    return {
+        **value,
+        "display_name": previous["display_name"],
+        "sender_account_id": previous.get("sender_account_id")
+        or value.get("sender_account_id"),
+        "names": list(
+            dict.fromkeys(previous.get("names", []) + value.get("names", []))
+        )[:20],
+        "basis": previous["basis"],
+    }

@@ -385,3 +385,54 @@ def test_episode_window_or_reference_corruption_stops_before_executor(tmp_path):
         mutate(broken)
         with pytest.raises(ValueError):
             prepare_payload(broken)
+
+
+def test_exact_native_group_label_routes_as_topic_and_follows_observed_senders(
+    tmp_path,
+):
+    scene = bridge_case()
+    scene["question"] = "昨天晚上HERA评审组发生了什么"
+    r = run_scenario(tmp_path, scene)
+    assert {f"rec:fixture-{210 + i}" for i in range(5)} <= selected_ids(r)
+    assert r["internal"]["_plan"]["person_mention"] == ""
+    assert r["internal"]["scope"]["relationship"] == "topic"
+
+
+def test_relation_enrichment_preserves_native_label_and_peer_namespace():
+    import pytest
+    from allday_asr.v3.application.recall_investigation_tools import InvestigationTools
+
+    tools = InvestigationTools.__new__(InvestigationTools)
+    tools.refs = {}
+    c = dict(
+        platform="qq",
+        source_account_id="account-A",
+        conversation_id="native-room",
+        sender_account_id="peer-A",
+        display_name="当前目录名称",
+        names=["当前目录名称"],
+        basis="native conversation directory",
+    )
+    ref = tools.ref("contact", c, "stable-key")
+    tools.ref(
+        "contact",
+        {
+            **c,
+            "sender_account_id": None,
+            "display_name": "旧标签",
+            "names": ["旧标签"],
+            "relation_basis": "observed_same_source_account_speech",
+        },
+        "stable-key",
+    )
+    assert tools.refs[ref]["display_name"] == "当前目录名称"
+    assert tools.refs[ref]["sender_account_id"] == "peer-A"
+    assert tools.refs[ref]["names"] == ["当前目录名称", "旧标签"]
+    with pytest.raises(ValueError, match="namespace changed"):
+        tools.ref("contact", {**c, "source_account_id": "account-B"}, "stable-key")
+    with pytest.raises(ValueError, match="namespace changed"):
+        tools.ref(
+            "contact",
+            {**c, "sender_account_id": "same-name-different-peer"},
+            "stable-key",
+        )

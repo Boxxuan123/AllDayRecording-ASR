@@ -307,13 +307,19 @@ def test_group_speech_never_produces_role_or_membership_fact(lab):
             return response(actions=[action("get_group_members", [group["ref"]])])
         accounts = [o for o in p["objects"] if o["type"] == "account"]
         assert accounts and all(
-            o["basis"] == "observed_speech_only" and "role" not in o for o in accounts
+            o["basis"] in {"observed_speech_only", "observed_sender"}
+            and "role" not in o
+            for o in accounts
         )
+        assert any(o["basis"] == "observed_speech_only" for o in accounts)
         return response("answer", unknown=["现有来源没有可靠群角色元数据。"])
 
     lab.service.investigator = model
     r = ask(lab)
-    assert any("没有群成员名册" in n for n in r["coverage"])
+    assert any("没有群成员名册" in n for n in r["coverage"]), (
+        r.get("diagnostics"),
+        r["coverage"],
+    )
     assert r["claims"] == []
 
 

@@ -87,6 +87,9 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
 
     def ref(self, kind, value, key):
         ref = kind + ":" + key
+        from allday_asr.v3.domain.recall_source_candidates import enrich_contact
+        if kind=="contact":
+            value=enrich_contact(self.refs.get(ref),value)
         self.refs[ref] = {"ref": ref, "type": kind, **value}
         return ref
 
