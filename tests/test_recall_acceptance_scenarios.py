@@ -448,3 +448,169 @@ def test_known_native_competitors_do_not_offer_unknown_address_schema(tmp_path):
             __import__("json").loads(request["prompt"])["address_resolution_required"]
             is False
         )
+
+
+def test_narrative_context_reads_later_discovered_episode_not_earlier_short_chatter():
+    from types import SimpleNamespace
+    from allday_asr.v3.application.recall_investigation_context import complete_context
+
+    def e(i, minute, text):
+        return dict(
+            id=str(i),
+            record_id=str(i),
+            source="qq",
+            source_account_id="owner",
+            conversation_id="related-room",
+            sender_account_id="actor",
+            source_is_from_self=False,
+            sent_at=DAY + minute * 60,
+            quote=text,
+        )
+
+    rows = [
+        e(1, 9 * 60, "所以说你拿了什么？"),
+        e(2, 16 * 60, "感觉这次的排期有问题"),
+        e(3, 16 * 60 + 1, "还有一处解释需要核对"),
+        e(4, 16 * 60 + 2, "不是已经确认的结论"),
+    ]
+    calls = []
+    tools = SimpleNamespace(
+        result=dict(
+            scope=dict(
+                sent_from=DAY + 18 * 3600,
+                sent_to=DAY + 24 * 3600 - 1,
+                timezone="Asia/Singapore",
+            ),
+            _request=dict(question="昨天晚上NOVA发生了什么"),
+            evidence=rows,
+            investigation_steps=[
+                dict(
+                    tool="get_related_conversations",
+                    record_refs=[r["id"] for r in rows],
+                    window="episode",
+                )
+            ],
+        ),
+        plan=dict(intent="timeline", person_mention=""),
+        remaining=lambda: dict(source_requests=6, body_requests=4),
+        run=lambda a, _: calls.append(a),
+    )
+    complete_context(tools)
+    assert len(calls) == 1 and calls[0]["targets"] == ["2"]
+    tools.result["_auto_context_rooms"] = []
+    tools.result["_auto_context_calls"] = 0
+    calls.clear()
+    rows[0]["quote"] = "NOVA场地的安排是什么？"
+    complete_context(tools)
+    assert calls[0]["targets"] == ["1"]  # Content relevance overrides recency.
+
+
+def test_context_slots_cover_independent_actor_branches_before_prolific_actor_rooms():
+    from types import SimpleNamespace
+    from allday_asr.v3.application.recall_investigation_context import complete_context
+
+    rows = []
+    for i, (room, actor, hour) in enumerate(
+        [
+            ("room-A", "actor-A", 19),
+            ("room-B", "actor-A", 18),
+            ("room-C", "actor-B", 17),
+        ]
+    ):
+        rows.append(
+            dict(
+                id=str(i),
+                record_id=str(i),
+                source="qq",
+                source_account_id="owner",
+                conversation_id=room,
+                sender_account_id=actor,
+                source_is_from_self=False,
+                sent_at=DAY + hour * 3600,
+                quote="有一段发言需要前后文",
+            )
+        )
+    calls = []
+    tools = SimpleNamespace(
+        result=dict(
+            scope=dict(
+                sent_from=DAY + 18 * 3600,
+                sent_to=DAY + 24 * 3600 - 1,
+                timezone="Asia/Singapore",
+            ),
+            _request=dict(question="昨天晚上ORION发生了什么"),
+            evidence=rows,
+            investigation_steps=[
+                dict(
+                    tool="get_related_conversations",
+                    record_refs=[r["id"] for r in rows],
+                    window="episode",
+                )
+            ],
+        ),
+        plan=dict(intent="timeline", person_mention=""),
+        remaining=lambda: dict(source_requests=6, body_requests=4),
+        run=lambda a, _: calls.append(a),
+    )
+    complete_context(tools)
+    assert [c["targets"] for c in calls] == [["0"], ["2"]]
+
+
+def test_new_relation_episode_keeps_interleaved_reply_despite_large_keyword_notice():
+    def row(i, t, room, text, actor="target", basis=""):
+        return dict(
+            id=str(i),
+            record_id=str(i),
+            revision=1,
+            source="qq",
+            source_account_id="owner",
+            conversation_id=room,
+            sender_account_id=actor,
+            sent_at=t,
+            quote=text,
+            retrieval_basis=basis,
+        )
+
+    core = [
+        row(100 + i, 1100 + i * 10, "target-room", f"连续讨论步骤{i}")
+        for i in range(14)
+    ]
+    context = row(
+        999,
+        1165,
+        "target-room",
+        "这只是转述，还没有确认",
+        "other",
+        "bounded_conversation_context",
+    )
+    notice = [
+        row(i, 1500 + i, "notice-room", "NOVA通知" + "长背景材料" * 180, actor="other")
+        for i in range(20)
+    ]
+    contextual = [context] + [
+        row(
+            1000 + j,
+            1105 + j * 10,
+            "target-room",
+            f"后续否定与回复{j}",
+            "other",
+            "bounded_conversation_context",
+        )
+        for j in range(10)
+    ]
+    selected, stats = select_evidence(
+        core + contextual + notice,
+        [
+            dict(
+                tool="get_related_conversations",
+                window="episode",
+                record_refs=[r["id"] for r in core],
+            )
+        ],
+        [],
+        limit=48,
+        byte_limit=20000,
+        focus_scope=dict(sent_from=1000, sent_to=2000, question="NOVA发生了什么"),
+    )
+    assert {r["id"] for r in core + contextual} <= {r["id"] for r in selected}
+    assert stats["related_context_selected_count"] == 11

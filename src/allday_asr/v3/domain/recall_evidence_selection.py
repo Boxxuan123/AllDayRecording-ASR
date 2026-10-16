@@ -117,7 +117,7 @@ def select_evidence(
 
 def select_blocks(rows, steps, claims, scope, seen_ids, limit, byte_limit):
     """Keep episode text blocks and a minimal provenance bridge, not every old speaker."""
-    from .recall_evidence_blocks import conversation
+    from .recall_evidence_blocks import blocks, conversation
 
     by_id = {r["id"]: r for r in rows}
     seen = set(seen_ids)
@@ -156,7 +156,34 @@ def select_blocks(rows, steps, claims, scope, seen_ids, limit, byte_limit):
                 bridges.append(i)
                 break
     # Bridges are mandatory for the selected relationship, with a small explicit cap.
-    priority = mandatory + bridges[:4] + priority
+    from .recall_episode_ranking import related_episode_priority
+
+    relation_seats = related_episode_priority(focus, steps, scope, seen, limit)
+    context_seats = []
+    relation_set = set(relation_seats)
+    relation_order = {ident: index for index, ident in enumerate(relation_seats)}
+    context_blocks = sorted(
+        blocks([by_id[i] for i in relation_seats]),
+        key=lambda item: min(relation_order[r["id"]] for r in item[1]),
+    )
+    for room, part in context_blocks:
+        first, last = part[0]["sent_at"] - 120, part[-1]["sent_at"] + 120
+        adjacent = sorted(
+            [
+                r
+                for r in focus
+                if r["id"] not in relation_set
+                and conversation(r) == room
+                and first <= r["sent_at"] <= last
+                and r.get("retrieval_basis")
+                in {"bounded_conversation_context", "reply_reference"}
+                and r.get("quote", "").strip()
+            ],
+            key=lambda r: (r["sent_at"], r["id"]),
+        )
+        context_seats.extend(r["id"] for r in adjacent[:12])
+    context_seats = list(dict.fromkeys(context_seats))
+    priority = mandatory + bridges[:4] + relation_seats + context_seats + priority
     if not focus:
         priority.extend(
             r["id"]
@@ -193,4 +220,8 @@ def select_blocks(rows, steps, claims, scope, seen_ids, limit, byte_limit):
             not r.get("quote", "").strip() and r["id"] not in identities for r in rows
         ),
         "bridge_ids": bridges[:4],
+        "new_relation_candidate_count": len(relation_seats),
+        "new_relation_selected_count": sum(i in identities for i in relation_seats),
+        "related_context_candidate_count": len(context_seats),
+        "related_context_selected_count": sum(i in identities for i in context_seats),
     }

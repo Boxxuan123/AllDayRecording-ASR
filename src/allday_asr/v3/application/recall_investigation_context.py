@@ -158,16 +158,45 @@ def complete_context(tools):
             "person_mention": tools.plan.get("person_mention", ""),
         }
     )
+    related = {
+        i
+        for step in tools.result.get("investigation_steps", [])
+        if step.get("tool") == "get_related_conversations"
+        and step.get("window") != "discovery"
+        for i in step.get("record_refs", step.get("hits", []))
+    }
+    narrative = tools.plan.get("intent") in {"timeline", "latest"}
     groups.sort(
         key=lambda p: (
             -max(text_score(r.get("quote", ""), terms) for r in p[1]),
-            len(p[1]) >= 3,
+            not any(r["id"] in related for r in p[1]),
+            False if narrative else len(p[1]) >= 3,
+            -max(r["sent_at"] for r in p[1]),
             repr(p[0]),
         )
     )
+    # One prolific observed sender must not consume both context slots across
+    # different rooms while another independently reached branch is unread.
+    diverse, deferred, covered = [], [], set()
+    for pair in groups:
+        branches = {
+            tuple(
+                r.get(k) for k in ("source", "source_account_id", "sender_account_id")
+            )
+            for r in pair[1]
+            if r["id"] in related and r.get("sender_account_id")
+        }
+        if branches and branches <= covered:
+            deferred.append(pair)
+        else:
+            diverse.append(pair)
+            covered.update(branches)
+    groups = diverse + deferred
     # Cover distinct rooms first. A single short utterance may be the answer to
     # another participant's question and deserves context without a native reply.
     for key, group in groups:
+        if list(key) in done:
+            continue
         if (
             tools.result.get("_auto_context_calls", 0) >= 2
             or tools.remaining()["source_requests"] <= 1
@@ -175,9 +204,14 @@ def complete_context(tools):
         ):
             break
         text = [r for r in group if r.get("quote", "").strip()]
-        target = max(
-            text, key=lambda r: (text_score(r["quote"], terms), r["sent_at"], r["id"])
+        score = max(text_score(r["quote"], terms) for r in text)
+        anchors = sorted(
+            [r for r in text if text_score(r["quote"], terms) == score],
+            key=lambda r: (r["sent_at"], r["id"]),
         )
+        # The verified API returns 8 before / 16 after. For narrative episodes,
+        # anchor inside the fragment instead of repeatedly walking its tail.
+        target = anchors[(len(anchors) - 1) // 3] if narrative else anchors[-1]
         tools.run(
             {
                 "tool": "get_message_context",

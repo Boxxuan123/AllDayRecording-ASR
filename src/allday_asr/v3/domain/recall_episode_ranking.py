@@ -82,3 +82,66 @@ def episode_order(rows, scope, seen_ids=()):
             if not queues[key]:
                 del queues[key]
     return list(dict.fromkeys(priority)), set(rooms)
+
+
+def related_episode_priority(rows, steps, scope, seen_ids, limit):
+    """Bounded seats for newly reached actor episodes, separate from discovery proof.
+
+    These are exploration opportunities, not confirmed relevance or person facts.
+    At most two branches and sixteen text records per branch; other evidence still
+    competes through the ordinary relevance/context selection budget.
+    """
+    by_id = {r["id"]: r for r in rows}
+    seen = set(seen_ids)
+    branches = {}
+    for step in reversed(steps):
+        if (
+            step.get("tool") != "get_related_conversations"
+            or step.get("window") == "discovery"
+        ):
+            continue
+        for ident in step.get("record_refs", step.get("hits", [])):
+            row = by_id.get(ident)
+            if (
+                not row
+                or not row.get("quote", "").strip()
+                or not row.get("sender_account_id")
+            ):
+                continue
+            key = tuple(
+                row.get(k) for k in ("source", "source_account_id", "sender_account_id")
+            )
+            branches.setdefault(key, {})[ident] = row
+    ranked = []
+    terms = features(scope)
+    for _key, values in branches.items():
+        if all(i in seen for i in values):
+            continue
+        rooms = defaultdict(list)
+        for room, group in blocks(list(values.values())):
+            for at in range(0, len(group), 8):
+                part = group[at : at + 8]
+                score = (
+                    all(r["id"] in seen for r in part),
+                    -max(text_score(r["quote"], terms) for r in part),
+                    part[0]["sent_at"],
+                    part[0]["id"],
+                )
+                rooms[room].append((score, part))
+        for room in rooms:
+            rooms[room].sort(key=lambda p: p[0])
+        queues = {room: deque(parts) for room, parts in rooms.items()}
+        order = sorted(queues, key=lambda room: (queues[room][0][0], repr(room)))
+        ids = []
+        while queues:
+            for room in order:
+                if room not in queues:
+                    continue
+                _, part = queues[room].popleft()
+                ids.extend(r["id"] for r in part)
+                if not queues[room]:
+                    del queues[room]
+        ranked.append(ids[: min(16, max(0, limit - 8))])
+        if len(ranked) == 2:
+            break
+    return list(dict.fromkeys(i for branch in ranked for i in branch))
