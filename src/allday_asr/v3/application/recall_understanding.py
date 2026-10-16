@@ -177,6 +177,7 @@ def interpret(
         fast["intent"] not in {"conversation", "quote"}
         and not error
         and not payload.get("person_id")
+        and scope["person_id"] not in people
     ):
         from allday_asr.v3.domain.recall_source_candidates import (
             candidates,

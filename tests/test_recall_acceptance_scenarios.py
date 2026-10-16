@@ -614,3 +614,55 @@ def test_new_relation_episode_keeps_interleaved_reply_despite_large_keyword_noti
     )
     assert {r["id"] for r in core + contextual} <= {r["id"] for r in selected}
     assert stats["related_context_selected_count"] == 11
+
+
+def test_trusted_manual_person_scope_is_not_replaced_by_native_name_guesses():
+    from types import SimpleNamespace
+    from threading import Event
+    import time
+    from allday_asr.v3.application.recall_understanding import interpret
+
+    c = dict(
+        key="native-one",
+        platform="wechat",
+        source_account_id="owner",
+        conversation_id="room",
+        conversation_type="c2c",
+        sender_account_id="peer",
+        display_name="许沅",
+        names=["许沅"],
+        basis="native conversation directory",
+        dataset="fixture",
+    )
+
+    class Directory:
+        def load(self, *args):
+            return [c], [], 0
+
+        def linked_many(self, contacts, pid):
+            return [c] if pid == "trusted-person" else []
+
+    service = SimpleNamespace(
+        directory=Directory(), preferences=None, investigator=object(), planner=None
+    )
+    people = {
+        "trusted-person": dict(
+            person_id="trusted-person", display_name="许沅", aliases=[], kind="known"
+        )
+    }
+    r = interpret(
+        service,
+        "昨天晚上许沅打算去哪里",
+        "",
+        people,
+        dict(timezone="Asia/Singapore"),
+        1792110900,
+        Event(),
+        time.monotonic() + 5,
+    )
+    assert r["scope"]["person_id"] == "trusted-person"
+    assert (
+        r["scope"]["source"] == "all"
+    )  # Retain the existing recording/confirmed-source path.
+    assert r["scope"]["linked_contacts"] == [c]
+    assert not r.get("_source_candidates")
