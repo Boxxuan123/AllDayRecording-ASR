@@ -38,6 +38,19 @@ FIELDS = {
 }
 
 
+def finalization_reason(round_number, left):
+    """Keep two physical reads for final original-view verification, not six."""
+    return (
+        "model_limit"
+        if round_number == 4
+        else "wall_clock"
+        if left["seconds"] < 30
+        else "source_budget"
+        if left["source_requests"] <= 2 or left["body_requests"] <= 1
+        else ""
+    )
+
+
 def payload(tools, round_number, question):
     result = tools.result
     requested = normalize_scope(
@@ -246,15 +259,7 @@ def payload(tools, round_number, question):
     episodes = episodes[:16]
     seconds = max(0, min(25, int(tools.deadline - time.monotonic())))
     left = tools.remaining()
-    final_reason = (
-        "model_limit"
-        if round_number == 4
-        else "wall_clock"
-        if left["seconds"] < 30
-        else "source_budget"
-        if left["source_requests"] <= 6 or left["body_requests"] <= 1
-        else ""
-    )
+    final_reason = finalization_reason(round_number, left)
     result["metrics"].setdefault("model_inputs", []).append(
         {"round": round_number, **handles.receipt(encoded)}
     )

@@ -76,8 +76,9 @@ def plan(question, keyword=""):
             "exact": True,
         }
     # Strip grammatical operators as complete phrases; never generate n-grams.
+    recap = r"(?:(?:(?:这|那)(?:段|次)|的)?(?:私聊|聊天|对话))?(?:主要|大概|大致|都)?(?:说|聊|谈|讨论|交流)(?:了|过)?(?:些)?(?:什么|啥)"
     separators = re.compile(
-        DISCOURSE.pattern
+        recap + "|" + DISCOURSE.pattern
         + r"|聊了什么|聊过什么|谈了什么|讨论了什么|交流了什么|说了啥|说过啥|说了什么|说过什么|聊天内容|对话回顾|原话|原文|帮我找|请查找|整个|筹备|最终决定|决定|考虑因素|提到的|群聊|群里|群中|在|\bQQ\b|微信|录音",
         re.I,
     )

@@ -73,3 +73,15 @@ def test_unresolved_explicit_room_does_not_fall_back_to_same_label_private_peer(
     assert not run["wire"] and not selected_ids(run)
     assert run["result"]["status"]=="needs_clarification"
     assert not run["internal"]["scope"]["person_id"]
+
+@pytest.mark.parametrize("operator",["这段聊天主要说了些什么","这次对话大概聊了些什么","的私聊都谈过什么"])
+def test_plain_conversation_recap_operators_are_not_content_terms(operator):
+    p=parse("昨天我和微光摄影"+operator+"？",["微光摄影"])
+    assert p["person_mention"]=="微光摄影"
+    assert p["intent"]=="conversation" and p["terms"]==[]
+
+def test_plain_recap_uses_existing_single_summary_path(tmp_path):
+    s=dict(question="昨天我和微光摄影这段聊天主要说了些什么？",contacts=[contact("wechat","private-room","微光摄影","peer")],records=[message(70,"你准备参加哪场摄影练习？","self-account","private-room","wechat",kind="c2c"),message(71,"周日先看看天气，还没有确认。","peer","private-room","wechat",kind="c2c",minute=1)],protocol_citation_probe=True)
+    run=run_scenario(tmp_path,s)
+    assert len(run["wire"])==1 and run["wire"][0]["task"]=="history-recall-v2"
+    assert {"rec:fixture-70","rec:fixture-71"} <= selected_ids(run)

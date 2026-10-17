@@ -6,6 +6,29 @@ from allday_asr.v3.domain.recall_investigation_scope import inside_root
 
 
 class InvestigationContext:
+    def remote_context(self, target, scope):
+        try:
+            return self.remote("/v1/context", {
+                "record_id": target["record_id"], "before": 8, "after": 16,
+            }), None
+        except ChatDataError as exc:
+            left = self.remaining()
+            if (exc.code != "MAC_OFFLINE" or left["source_requests"] <= 2
+                    or left["body_requests"] <= 1 or left["remote_records"] < 25
+                    or left["seconds"] < 30):
+                raise
+            # A locator timeout is not evidence invalidation. Use the existing
+            # indexed message API once, in the observed native room and existing
+            # 30-minute context bound, intersected with immutable user limits.
+            window = {**scope,
+                      "sent_from": max(scope["sent_from"], target["sent_at"] - 1800),
+                      "sent_to": min(scope["sent_to"], target["sent_at"] + 1800)}
+            native = {"platform": target["source"],
+                      **{k: target[k] for k in ("source_account_id", "conversation_id")},
+                      **{k: window[k] for k in ("sent_from", "sent_to")}}
+            self.note("上下文定位超时，尝试同一授权会话的限量邻近消息；尚不表示已取得完整上下文。")
+            return self.remote("/v1/messages", scope=native, limit=25), window
+
     def context(self, targets, scope, terms=()):
         found = []
         for target in targets:
@@ -34,10 +57,7 @@ class InvestigationContext:
                     self.verify_remote()
                     if self.result["metrics"]["source_records_read"] + 25 > 200:
                         raise ChatDataError("SOURCE_REQUEST_BUDGET_REACHED", 429)
-                    part = self.remote(
-                        "/v1/context",
-                        {"record_id": target["record_id"], "before": 8, "after": 16},
-                    )
+                    part, fallback_window = self.remote_context(target, selected)
                     records = part.get("items")
                     if not isinstance(records, list) or len(records) > 25:
                         raise ChatDataError("INVALID_CHAT_CONTEXT", 502)
@@ -61,6 +81,8 @@ class InvestigationContext:
                         (r for r in records if r["record_id"] == target["record_id"]),
                         None,
                     )
+                    if not anchor and fallback_window is not None:
+                        raise ChatDataError("CONTEXT_ANCHOR_NOT_IN_BOUNDED_PAGE", 503)
                     if not anchor or anchor["record_revision"] > target["revision"]:
                         self.service.sources.mark_changed(target, "SOURCE_CHANGED")
                         raise ChatDataError("SOURCE_CHANGED", 409)
@@ -71,7 +93,7 @@ class InvestigationContext:
                         for r in records
                     ]
                     found.extend(
-                        self.add(self.context_rows(rows, target, scope, terms))
+                        self.add(self.context_rows(rows, target, fallback_window or scope, terms))
                     )
                 except ChatDataError as exc:
                     self.note("上下文未完整核对：" + exc.code)

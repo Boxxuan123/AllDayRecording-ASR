@@ -323,7 +323,8 @@ def test_continued_read_budget_keeps_prior_decoded_body_costs():
             charge("two")
 
 
-@pytest.mark.parametrize("left,final", [(2, True), (5, True), (7, False)])
+# Two reads remain reserved; five or six physical reads can still fund context.
+@pytest.mark.parametrize("left,final", [(2, True), (3, False), (5, False), (6, False), (7, False)])
 def test_model_objects_require_presented_relation_proof_and_budget_reserves_summary(
     left, final
 ):
