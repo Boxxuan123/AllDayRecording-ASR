@@ -84,7 +84,8 @@ def _result_data(result: Any) -> dict[str, Any]:
 def _restore_result(data: dict[str, Any]) -> Any:
     return SimpleNamespace(
         id=data["id"], provenance=data.get("provenance"), final_response=data["final_response"],
-        usage=data.get("usage"),
+        usage=data.get("usage"), worker_identity=data.get("worker_identity"),
+        worker_build=data.get("worker_build"),
         items=[SimpleNamespace(type=kind) for kind in data["items"]],
     )
 
@@ -101,6 +102,21 @@ def _reported_tokens(usage: dict | None) -> int:
     outbound = usage.get("output_tokens", usage.get("outputTokens", 0))
     return sum(value for value in (inbound, outbound)
                if isinstance(value, int) and value >= 0)
+
+
+def _worker_identity():
+    module = Path(__file__).resolve()
+    return {"module": str(module),
+            "module_sha256": hashlib.sha256(module.read_bytes()).hexdigest(),
+            "source_root": str(module.parents[4])}
+
+
+_WORKER_BOOTSTRAP = (
+    "import sys; sys.path.insert(0,sys.argv.pop(1)); "
+    "from pathlib import Path; "
+    "from allday_asr.v3.adapters.codex.model_execution_runner import worker; "
+    "worker(Path(sys.argv[1]),Path(sys.argv[2]))"
+)
 
 
 class ModelExecutionRunner:
@@ -125,7 +141,8 @@ class ModelExecutionRunner:
         """Offline-capable full request preflight shared with the actual execution path."""
         model = _configured_model(model)
         identity = {"task": task, "prompt": prompt, "instructions": instructions,
-                    "schema": schema, "model": model, "effort": effort}
+                    "schema": schema, "model": model, "effort": effort,
+                    "worker_identity": _worker_identity()}
         if task == "history-investigation-v1":
             from .investigation_policy import POLICY_VERSION
             identity["capability_policy"] = POLICY_VERSION
@@ -263,7 +280,8 @@ class ModelExecutionRunner:
                 if state["used_tokens"] > min(self.max_job_tokens, state["max_job_tokens"]):
                     raise ModelExecutionTerminal("model job token budget exceeded")
                 receipt.update(status="completed", completed_at=time.time(),
-                               turn_id=data["id"])
+                               turn_id=data["id"], worker_identity=data.get("worker_identity"),
+                               worker_build=data.get("worker_build"))
                 state.update(status="completed", completed_at=receipt["completed_at"],
                              result=data)
                 _atomic_json(receipt_path, receipt)
@@ -318,11 +336,13 @@ class ModelExecutionRunner:
         result_path = Path(f"{stem}.result.json")
         phase_path = Path(f"{stem}.phases.json")
         _atomic_json(phase_path, {"events": [{"phase": "worker_launch", "elapsed_seconds": 0}]})
-        _atomic_json(request_path, {**identity, "workdir": str(workdir),
+        from allday_asr.build_info import runtime_build
+        expected_build = dict(runtime_build())
+        _atomic_json(request_path, {**identity, "expected_worker_build": expected_build, "workdir": str(workdir),
                                     "phase_path": str(phase_path), "started_monotonic": time.monotonic()})
         owned = OwnedAttempt(
-            [sys.executable, "-X", "utf8", "-m", __name__,
-             str(request_path), str(result_path)],
+            [sys.executable, "-X", "utf8", "-c", _WORKER_BOOTSTRAP,
+             identity["worker_identity"]["source_root"], str(request_path), str(result_path)],
             Path(f"{stem}.log"), Path.cwd(),
         )
         exit_code = owned.wait(timeout_seconds, cancel_event)
@@ -335,9 +355,15 @@ class ModelExecutionRunner:
         if exit_code != 0 or not result_path.exists():
             raise RuntimeError("owned model worker failed")
         output = json.loads(result_path.read_text(encoding="utf-8"))
+        if output.get("worker_identity") != identity["worker_identity"] or any(
+            output.get("worker_build", {}).get(k) != expected_build.get(k)
+            for k in ("git_commit", "release_version")
+        ):
+            raise RuntimeError("WORKER_SOURCE_MISMATCH")
         if output["status"] != "completed":
             raise RuntimeError(output.get("error", "model worker failed"))
-        return output["result"]
+        return {**output["result"], "worker_identity": output["worker_identity"],
+                "worker_build": output["worker_build"]}
 
 
 def _direct_call(client: Any, prompt: str, instructions: str, schema: dict,
@@ -369,16 +395,27 @@ def _direct_call(client: Any, prompt: str, instructions: str, schema: dict,
 
 def worker(request_path: Path, result_path: Path) -> None:
     request = json.loads(request_path.read_text(encoding="utf-8"))
+    actual = _worker_identity()
+    from allday_asr.build_info import runtime_build
+    build = dict(runtime_build())
+    if actual != request.get("worker_identity") or any(
+        build.get(k) != request.get("expected_worker_build", {}).get(k)
+        for k in ("git_commit", "release_version")
+    ):
+        _atomic_json(result_path, {"status": "failed", "error": "WORKER_SOURCE_MISMATCH",
+                                  "worker_identity": actual, "worker_build": build})
+        return
     events = [{"phase": "worker_launch", "elapsed_seconds": 0}]
 
     def phase(name):
         events.append({"phase": name, "elapsed_seconds": round(
             time.monotonic() - request["started_monotonic"], 4)})
-        _atomic_json(Path(request["phase_path"]), {"events": events})
+        _atomic_json(Path(request["phase_path"]), {"events": events, "worker_identity": actual, "worker_build": build})
 
     client = None
     stack = ExitStack()
     try:
+        phase("worker_identity_verified")
         phase("sdk_import")
         from openai_codex import Codex, CodexConfig
         phase("sdk_initialize")
@@ -409,7 +446,7 @@ def worker(request_path: Path, result_path: Path) -> None:
             client.close()
         stack.close()
     phase("result_write")
-    _atomic_json(result_path, output)
+    _atomic_json(result_path, {**output, "worker_identity": actual, "worker_build": build})
     phase("worker_completed")
 
 
