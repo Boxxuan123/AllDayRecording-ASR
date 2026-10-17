@@ -257,9 +257,12 @@ def payload(tools, round_number, question):
             )
         )
     episodes = episodes[:16]
-    seconds = max(0, min(25, int(tools.deadline - time.monotonic())))
     left = tools.remaining()
     final_reason = finalization_reason(round_number, left)
+    # Reallocate the existing query deadline, reserving time for validation.
+    # Exploration stays at 25s; final synthesis shares the simple recap cap.
+    seconds = max(0, min(45 if final_reason else 25,
+                         int(tools.deadline - time.monotonic()) - 2))
     result["metrics"].setdefault("model_inputs", []).append(
         {"round": round_number, **handles.receipt(encoded)}
     )

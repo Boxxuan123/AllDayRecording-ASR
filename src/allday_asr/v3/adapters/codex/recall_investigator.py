@@ -22,7 +22,10 @@ class RecallInvestigatorAdapter:
         from allday_asr.v3.domain.recall_input_validation import prepare_payload
 
         payload = prepare_payload(payload)
-        seconds = max(1, min(25, payload["model_budget_seconds"]))
+        final = payload.get("final_round", payload.get("round") == 2)
+        seconds = min(45 if final else 25, payload["model_budget_seconds"])
+        if seconds < 1:
+            raise TimeoutError("query deadline leaves no model execution time")
         runner = ModelExecutionRunner(
             self.root / "chat/investigation-receipts",
             timeout_seconds=seconds,
@@ -35,7 +38,7 @@ class RecallInvestigatorAdapter:
         workdir.mkdir(parents=True, exist_ok=True)
         schema, instructions = (
             bounded_final_protocol(compact=True)
-            if payload.get("final_round", payload.get("round") == 2)
+            if final
             else (SCHEMA, INSTRUCTIONS)
         )
         schema = deepcopy(schema)
@@ -78,6 +81,6 @@ class RecallInvestigatorAdapter:
         result = json.loads(answer.final_response)
         return (
             checked_final(result)
-            if payload.get("final_round", payload.get("round") == 2)
+            if final
             else checked(result, schema)
         )

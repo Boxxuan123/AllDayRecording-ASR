@@ -88,6 +88,7 @@ def main():
             "tests/test_recall_explicit_date_contract.py",
             "tests/test_recall_platform_sets.py",
             "tests/test_recall_context_recovery.py",
+            "tests/test_recall_final_deadline.py",
             "tests/test_recall_episode_input.py",
             "tests/test_recall_bounded_exploration.py",
             "tests/test_recall_exploration_release.py",
