@@ -336,8 +336,8 @@ def window_scope(scope, window, payload, now):
     first = datetime.fromtimestamp(scope["sent_from"], zone)
     last = datetime.fromtimestamp(scope["sent_to"], zone)
     if window == "message_day" and not any(
-        k in payload for k in ("sent_from", "sent_to", "keyword")
-    ):
+        k in payload for k in ("sent_from", "sent_to")
+    ) and not payload.get("keyword", "").strip():
         # Natural event-time questions may be discussed earlier on the same day.
         # Explicit date/time filters keep their original message bounds.
         if not re.search(r"\d{4}[-/年]|\d{1,2}月\d", payload.get("question", "")):

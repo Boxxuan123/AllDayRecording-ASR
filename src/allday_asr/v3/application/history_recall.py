@@ -516,26 +516,9 @@ class HistoryRecall:
                 "notice": "使用现有播放引用片段或原转写入口",
             }
         try:
-            with self.lock:
-                if (
-                    value["metrics"].get(
-                        "retrieval_requests", value["metrics"]["source_requests"]
-                    )
-                    >= 6
-                    or value["metrics"]["source_records_read"] + 7 > 100
-                ):
-                    raise ChatDataError("SOURCE_REQUEST_BUDGET_REACHED", 429)
-                value["metrics"]["source_requests"] += 1
-                value["metrics"]["retrieval_requests"] = (
-                    value["metrics"].get("retrieval_requests", 0) + 1
-                )
-            part = self.source.request(
-                "/v1/context", {"record_id": row["record_id"], "before": 2, "after": 4}
-            )
-            records = part.get("items", [])
-            if not isinstance(records, list) or len(records) > 7:
-                raise ChatDataError("INVALID_CHAT_CONTEXT", 502)
-            value["metrics"]["source_records_read"] += len(records)
+            from .recall_original_context import read_context
+            part = read_context(self, value, row)
+            records = part["items"]
             for r in records:
                 self.sources.validate_record(r)
                 if (r["platform"], r["source_account_id"], r["conversation_id"]) != (
@@ -555,15 +538,13 @@ class HistoryRecall:
                 row["id"], value["scope"]
             )
             records = self.sources.filter_context(records, context_scope)
+            evidence = [native_present(self.sources.evidence(r, "mac", "context"), context_scope) for r in records]
+            with self.lock:
+                value.setdefault("_context_evidence", {}).update({r["id"]: r for r in evidence})
             return safe_memory(
                 {
                     "status": "available",
-                    "evidence": [
-                        native_present(
-                            self.sources.evidence(r, "mac", "context"), context_scope
-                        )
-                        for r in records
-                    ],
+                    "evidence": evidence,
                     "notice": "Mac 当前可用上下文；引用对象不是发送者",
                 }
             )
@@ -590,9 +571,11 @@ class HistoryRecall:
                     "evidence": [row],
                     "notice": "来源已确认修订／撤回，旧证据与归纳已失效，请重新查询",
                 }
+            from .recall_original_context import saved_context
             return {
                 "status": "unavailable",
-                "evidence": [row],
+                "query_id": qid,
+                "evidence": saved_context(self, value, row),
                 "notice": "来源未成功打开（"
                 + exc.code
                 + "）；缓存仅供核对，当前状态未知",

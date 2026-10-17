@@ -228,8 +228,8 @@ def run_scenario(root, scenario, *, live=False, model_hook=None):
         query_id="scenario_" + uuid.uuid4().hex,
         question=scenario["question"],
         timezone="Asia/Singapore",
-        **scenario.get("filters", {}),
     )
+    request.update(scenario.get("filters", {}))
     import allday_asr.v3.application.history_recall as history
 
     started = time.monotonic()

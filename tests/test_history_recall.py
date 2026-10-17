@@ -452,12 +452,12 @@ def test_context_cumulative_source_budget_and_rejection_survives_restart(env):
     service, cache, db, rows, source = env
     decision(service, rows[0], action="reject")
     value = query(service)
-    for _ in range(7):
+    for _ in range(13):
         context = service.context(
             "phone", value["query_id"], "chat:" + rows[0]["record_id"]
         )
     assert context["status"] == "unavailable" and "BUDGET" in context["notice"]
-    assert service.page("phone", value["query_id"])["metrics"]["source_requests"] == 6
+    assert service.page("phone", value["query_id"])["metrics"]["source_requests"] == 12
     restarted = HistoryRecall(db, service.root, source, unavailable)
     catalog = restarted.identities.catalog()
     identity = next(i for i in catalog["items"] if i["key"] == identity_key(rows[0]))
