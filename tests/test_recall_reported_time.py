@@ -7,6 +7,7 @@ from allday_asr.v3.domain.recall_event_time import validate_message_dayparts
 @pytest.mark.parametrize(
     "text,quotes",
     [
+        ("上午网络还正常，后来无法连接。", ["上午网络还正常"]),
         ("下午，周启说“转接失败”，上午还正常。", ["上午还能接通"]),
         ("他判断是会议室设备问题，建议等晚上再试。", ["等晚上再试试"]),
         ("他下午说准备晚上开会。", ["准备晚上开会"]),
@@ -21,6 +22,7 @@ def test_source_supported_reported_period_is_not_utterance_period(text, quotes):
     "text,quotes",
     [
         ("上午周启说转接失败。", ["我上午还正常"]),
+        ("上午聊了设备问题。", ["我上午还正常"]),
         ("发言在上午。", ["上午还正常"]),
         ("下午说了原因，上午同事又回复了。", ["上午还正常"]),
         ("他说上午还正常，但记录在晚上发出。", ["上午还正常", "等晚上再试"]),

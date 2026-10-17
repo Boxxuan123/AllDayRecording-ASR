@@ -65,10 +65,7 @@ def validate_message_dayparts(text, hour, source_quotes=()):
         "下午": (12, 18),
         "晚上": (18, 24),
     }
-    cursor = 0
     for clause in re.split(r"[，,；;。：:]|而是", text):
-        offset = text.find(clause, cursor)
-        cursor = max(0, offset) + len(clause)
         for match in re.finditer("|".join(spans), clause):
             before = clause[: match.start()]
             negated = re.search(
@@ -103,7 +100,7 @@ def validate_message_dayparts(text, hour, source_quotes=()):
                 before,
             )
             speech_after = re.search(
-                r"^[”’\"]?(?:是.{0,12})?(?:.{0,12}?)(?:说|问|发言|发送|发出|回复|写道|表示|提到|讨论)",
+                r"^[”’\"]?(?:是.{0,12})?(?:.{0,12}?)(?:说|问|发言|发送|发出|回复|写道|表示|提到|讨论|聊|谈|交流|沟通)",
                 after,
             )
             modal = re.search(
@@ -111,17 +108,10 @@ def validate_message_dayparts(text, hour, source_quotes=()):
                 before,
             )
             modal = modal or re.match(r"(?:再|会|准备|打算|计划)", after)
-            # Preserve attribution across a comma, but never across a sentence.
-            # The original full-text position avoids mistaking a clock ':' for a new sentence.
-            prefix = re.split(r"[。！!？?]", text[: max(0, offset)] + before)[-1]
-            reported = re.search(
-                r"说|问|写道|提到|表示|告诉|建议|解释|补充|声称", prefix
-            )
-            if (
-                supported
-                and not explicit_before
-                and (modal or (reported and not speech_after))
-            ):
+            # A cited temporal proposition may be paraphrased without repeating
+            # "said". Reject explicit utterance-time predicates; do not treat
+            # supported state/plan content as the sending time of that report.
+            if supported and not explicit_before and (modal or not speech_after):
                 continue
             a, b = spans[word]
             if not a <= hour < b:
