@@ -283,7 +283,17 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
                     any(t.casefold() in n.casefold() for n in r["names"])
                     for t in action["terms"]
                 )
-            ][:20]
+            ]
+            if tool == "find_conversations":
+                from difflib import SequenceMatcher
+                question = self.result["_request"]["question"].casefold()
+                def score(ref):
+                    return max((sum(b.size ** 2 for b in SequenceMatcher(
+                        None, n.casefold(), question, autojunk=False
+                    ).get_matching_blocks()) for n in self.refs[ref]["names"]), default=0)
+                refs.sort(key=lambda ref: (-score(ref), self.refs[ref]["platform"],
+                    self.refs[ref]["source_account_id"], ref))
+            refs = refs[:20]
         elif tool == "search_messages":
             refs = self.search(targets, action, scope)
         elif tool == "get_group_members":
@@ -524,9 +534,19 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
             self.related_actors.add((target["platform"],target["source_account_id"],target["sender_account_id"]))
             if scope["person_id"] and target.get("person_id") != scope["person_id"]:
                 raise ValueError("person constraint violation")
-            rows, more = self.service.sources.related_conversations(
-                target, scope, self.cancel, min(self.deadline, time.monotonic() + 3)
-            )
+            try:
+                rows, more = self.service.sources.related_conversations(
+                    target, scope, self.cancel, min(self.deadline, time.monotonic() + 3)
+                )
+            except ChatDataError as exc:
+                if exc.code not in {"CACHE_BODY_BUDGET_REACHED", "CACHE_RECORD_BUDGET_REACHED"}:
+                    raise
+                rows, more = [], True
+                self.note("缓存关系探索已达额度；保留已取得依据，后续仅使用剩余授权来源额度。")
+                self.result.setdefault("diagnostics", []).append({
+                    "stage": "relationship_cache", "code": exc.code,
+                    "detail": "Cache exploration truncated; existing evidence remains eligible for bounded synthesis.",
+                })
             for item in rows:
                 row = item["evidence"]
                 self.flow.received([row], "cache", "account_relationship")
