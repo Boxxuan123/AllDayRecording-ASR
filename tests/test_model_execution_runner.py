@@ -193,3 +193,46 @@ def test_atomic_receipt_other_permission_failure_is_not_retried(tmp_path, monkey
     with pytest.raises(PermissionError):
         _atomic_json(tmp_path / "receipt.json", {})
     assert len(calls) == 1 and not list(tmp_path.glob("*.part"))
+
+def test_atomic_existing_writable_receipt_retries_transient_access_denied(tmp_path, monkeypatch):
+    from pathlib import Path
+    from allday_asr.v3.adapters.codex.model_execution_runner import _atomic_json
+    path=tmp_path/'receipt.json';path.write_text('{"previous":true}','utf8')
+    original=Path.replace;calls=[]
+    def replace(part,target):
+        calls.append(str(part))
+        if len(calls)<3:
+            assert json.loads(path.read_text('utf8'))=={'previous':True}
+            exc=PermissionError('temporary replace denial');exc.winerror=5;raise exc
+        return original(part,target)
+    monkeypatch.setattr(Path,'replace',replace)
+    _atomic_json(path,{'completed':True})
+    assert len(calls)==3 and len(set(calls))==1
+    assert json.loads(path.read_text('utf8'))=={'completed':True}
+    assert not list(tmp_path.glob('*.part'))
+
+
+def test_atomic_persistent_denial_retains_original_and_stops_after_bounded_io(tmp_path, monkeypatch):
+    from pathlib import Path
+    from allday_asr.v3.adapters.codex import model_execution_runner as module
+    path=tmp_path/'receipt.json';original=b'{"previous":true}';path.write_bytes(original)
+    mode=path.stat().st_mode;calls=[];sleeps=[]
+    def denied(*args):
+        calls.append(1);exc=PermissionError('persistent denial');exc.winerror=5;raise exc
+    monkeypatch.setattr(Path,'replace',denied);monkeypatch.setattr(module.time,'sleep',sleeps.append)
+    with pytest.raises(PermissionError):module._atomic_json(path,{'completed':True})
+    assert len(calls)==6 and sum(sleeps)<=0.15+1e-9
+    assert path.read_bytes()==original and path.stat().st_mode==mode
+    assert not list(tmp_path.glob('*.part'))
+
+
+def test_atomic_nonwritable_existing_receipt_does_not_retry_or_change_permissions(tmp_path, monkeypatch):
+    from pathlib import Path
+    from allday_asr.v3.adapters.codex import model_execution_runner as module
+    path=tmp_path/'receipt.json';path.write_text('{"previous":true}','utf8');calls=[]
+    def denied(*args):
+        calls.append(1);exc=PermissionError('permission denied');exc.winerror=5;raise exc
+    monkeypatch.setattr(Path,'replace',denied);monkeypatch.setattr(module.os,'access',lambda *a:False)
+    with pytest.raises(PermissionError):module._atomic_json(path,{'completed':True})
+    assert len(calls)==1 and json.loads(path.read_text('utf8'))=={'previous':True}
+    assert not list(tmp_path.glob('*.part'))

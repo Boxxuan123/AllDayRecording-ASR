@@ -36,6 +36,20 @@ class ModelExecutionCancelled(RuntimeError):
 _RECEIPT_WRITE_LOCK = RLock()
 
 
+def _retryable_receipt_replace(path: Path, error: OSError) -> bool:
+    code = getattr(error, "winerror", None)
+    if code in {32, 33}:
+        return True
+    if code != 5:
+        return False
+    # Windows can report access denied for replacing an open, writable file.
+    # Never alter ACLs, chmod/delete the destination or retry a denied first write.
+    try:
+        return path.is_file() and not path.is_symlink() and os.access(path, os.W_OK)
+    except OSError:
+        return False
+
+
 def _atomic_json(path: Path, value: dict) -> None:
     with _RECEIPT_WRITE_LOCK:
         # Unique temporary files prevent concurrent receipt writers sharing .part.
@@ -55,7 +69,7 @@ def _atomic_json(path: Path, value: dict) -> None:
                     part.replace(path)
                     break
                 except OSError as exc:
-                    if getattr(exc, "winerror", None) not in {32, 33} or attempt == 5:
+                    if not _retryable_receipt_replace(path, exc) or attempt == 5:
                         raise
                     time.sleep(0.01 * (attempt + 1))
         finally:

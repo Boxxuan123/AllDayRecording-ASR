@@ -252,3 +252,40 @@ def test_mcp_overrides_disable_only_names_without_copying_config(tmp_path):
         'mcp_servers.custom_name.enabled=false'
     ]
     assert cfg.read_text("utf-8") == text
+
+
+def test_existing_stream_receipt_access_denied_does_not_restart_stream(tmp_path, monkeypatch):
+    from pathlib import Path
+    from allday_asr.v3.adapters.codex import model_execution_runner as runner
+
+    path = tmp_path / "stream.json"
+    secret = '{"private":"synthetic local-only stream"}'
+    original_replace = Path.replace
+    consumed = []
+    denied = []
+
+    def replace(part, target):
+        if Path(target) == path and path.exists() and len(denied) < 2:
+            denied.append(part)
+            exc = PermissionError("injected existing receipt lock")
+            exc.winerror = 5
+            raise exc
+        return original_replace(part, target)
+
+    def stream():
+        consumed.append("started")
+        yield SimpleNamespace(
+            method="item/agentMessage/delta", payload=SimpleNamespace(delta=secret)
+        )
+        yield SimpleNamespace(method="item/completed", payload=item(secret))
+        yield SimpleNamespace(method="turn/completed", payload=completed())
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(runner.time, "sleep", lambda _: None)
+    result = StreamDiagnostics(path).consume(SimpleNamespace(id="turn", stream=stream))
+    data = json.loads(path.read_text("utf-8"))
+    assert consumed == ["started"] and len(denied) == 2
+    assert result.final_response == secret and data["turn_completed"]
+    assert data["events"]["turn/completed"]["count"] == 1
+    assert "synthetic local-only stream" not in path.read_text("utf-8")
+    assert not list(tmp_path.glob("*.part"))
