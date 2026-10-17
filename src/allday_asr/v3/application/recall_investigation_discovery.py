@@ -42,9 +42,9 @@ def seed_observed_sender(tools, action):
     mention = tools.plan.get("person_mention")
     if not mention or tools.plan.get("exact") or tools.plan.get("_source_candidates"):
         return False
-    if tools.result["scope"].get("person_id") or tools.result["scope"].get(
+    if tools.result["scope"].get("person_id") or (tools.result["scope"].get(
         "source_contacts"
-    ):
+    ) and not tools.plan.get("room_mention")):
         return False
     scope = tools.scope("target")
     if scope is None:

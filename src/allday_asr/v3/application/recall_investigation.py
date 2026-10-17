@@ -72,18 +72,12 @@ def _claims(value, evidence, scope):
                 if (first,last) != (day,day):
                     raise ValueError("message date disagrees with cited utterance")
             if event["basis"] == "explicit":
-                for stated in {first, last}:
-                    if not any(
-                        form in event["quote"]
-                        for form in (
-                            stated.isoformat(),
-                            f"{stated.year}年{stated.month}月{stated.day}日",
-                            f"{stated.year}/{stated.month}/{stated.day}",
-                        )
-                    ):
-                        raise ValueError(
-                            "full explicit date absent from source; use inferred basis"
-                        )
+                from allday_asr.v3.domain.recall_event_time import full_explicit_dates
+                supported = full_explicit_dates(event["quote"])
+                if any(stated.isoformat() not in supported for stated in {first, last}):
+                    raise ValueError(
+                        "full explicit date absent from source; use inferred basis"
+                    )
             # Relative-day semantics use the message LOCAL date, never query/import time.
             if event["basis"] == "relative":
                 from allday_asr.v3.domain.recall_event_time import (

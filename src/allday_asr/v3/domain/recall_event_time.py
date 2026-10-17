@@ -1,9 +1,28 @@
 """Source-relative dates; query scope parsing remains deliberately stricter."""
 
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from .recall_query import DATE, RELATIVE, dates
+
+
+FULL_DATE = re.compile(
+    r"(?<!\d)(?:(\d{4})-(\d{1,2})-(\d{1,2})|"
+    r"(\d{4})/(\d{1,2})/(\d{1,2})|"
+    r"(\d{4})年(\d{1,2})月(\d{1,2})日)(?!\d)"
+)
+
+
+def full_explicit_dates(text):
+    """Calendar dates actually written with a year in original text, not metadata."""
+    result = set()
+    for match in FULL_DATE.finditer(text):
+        parts = [int(v) for v in match.groups() if v is not None]
+        try:
+            result.add(date(*parts).isoformat())
+        except ValueError:
+            continue
+    return sorted(result)
 
 
 def source_relative_period(quote, timezone, sent_at):

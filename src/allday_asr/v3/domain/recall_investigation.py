@@ -205,7 +205,7 @@ conditional choice, cancellation, hearsay and verified completion.
 Never equate sent_at with event date. Each claim has event_time. first/last are calendar dates YYYY-MM-DD ONLY, never timestamps.
 Use message ONLY for the date of the cited utterance/discussion from sent_at_local; it does
 not date the described event or plan. explicit requires the full year/month/day in the quote.
-A month/day without year is inferred using source context, never explicit. relative includes
+Both interval endpoints require their own full year/month/day for explicit. A year omitted from either endpoint requires inferred, even when the other endpoint includes a year. A month/day without year is inferred using source context, never explicit. Keep supported dates and the year inference visible; do not erase dated claims or turn them into unknown merely to bypass validation. relative includes
 明晚/今天晚上 with an explicit indexical day in the cited fragment, anchored to the message timezone/date.
 Bare dayparts/clock answers such as “晚上吧” or “三点吧” depend on the preceding question:
 use inferred basis with the contextual citations and uncertainty, not relative or explicit.

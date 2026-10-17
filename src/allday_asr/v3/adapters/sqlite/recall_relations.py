@@ -1,6 +1,7 @@
 """Read-only relationship leads from existing SQLite; no inferred graph writes."""
 
 import json
+from allday_asr.v3.domain.recall_investigation_scope import platform_allowed
 from allday_asr.v3.domain.recall_read_budget import charge, scan_limit
 import time
 from .recall_state import bounded_sql
@@ -33,7 +34,7 @@ class RecallRelations:
                     for k, v in manual.items()
                     if v == person
                     and json.loads(k) != stable
-                    and scope["source"] in {"all", json.loads(k)[0]}
+                    and platform_allowed(scope, json.loads(k)[0])
                 )
             rows = []
             for platform, source, sender in accounts[:20]:
@@ -62,7 +63,7 @@ class RecallRelations:
                                 "conversation_id",
                             )[: len(columns)]
                         )
-                if scope["source"] not in {"all", platform}:
+                if not platform_allowed(scope, platform):
                     continue
                 extra = " AND " + " AND ".join(restrictions) if restrictions else ""
                 rows.extend(
@@ -125,7 +126,7 @@ class RecallRelations:
     @bounded_sql
     def existing_memory(self, scope, terms, cancel, deadline):
         # Memory text is a lead, never a primary citation or an automatic fact.
-        if scope["source"] in {"qq", "wechat"}:
+        if not platform_allowed(scope, "recording"):
             return []
         with self.identities.database.read() as c:
             c.execute("PRAGMA busy_timeout=1000")

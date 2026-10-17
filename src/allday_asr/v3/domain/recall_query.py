@@ -4,17 +4,41 @@ import re
 from datetime import datetime, timedelta, time as clock_time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .recall_language import plan
+from .recall_investigation_scope import platform_allowed
 
 DATE = r"(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:\d{4}年)?\d{1,2}月\d{1,2}[日号])"
 RELATIVE = re.compile(r"昨天晚上|昨晚|大前天|前天|昨天|今天|上周|本周|这周")
 RELATION = re.compile(
-    r"(?:我们|我|本人)\s*(?:在\s*)?(?:跟|和|与)\s*(.+?)\s*(?=聊|谈|讨论|交流|沟通|说|的对话|后来|之后|后续)"
+    r"(?:我们|我|本人)\s*(?:在\s*)?(?:跟|和|与)\s*(.+?)\s*"
+    r"(?=(?:(?:这|那)(?:段|次)|的)?(?:私聊|聊天|对话)|聊|谈|讨论|交流|沟通|说|后来|之后|后续)"
     r"|(.+?)(?:跟|和|与)(?:我们|我|本人)(?=聊|谈|讨论|交流|沟通|说)"
 )
+RECAP = r"(?:说了|说过|发了|发过|聊了|聊过|谈了|谈过|讨论了|讨论过|交流了|交流过)(?:什么|啥)"
 SPEAKER = re.compile(
-    r"(.+?)(?=说了什么|说过什么|说了啥|说过啥|聊了什么|聊过什么|的发言|的原话|说的[“「\"‘]|在.{1,64}(?:说了|发了)什么)"
+    r"(.+?)(?=" + RECAP + r"|的发言|的原话|说的[“「\"‘]|在.{1,64}" + RECAP + r")"
+)
+ROOM_PREFIX = re.compile(
+    r"^(?:在\s*)?(?:[“「\"‘].{1,100}?[”」\"’]|[^，,；;:：]{1,100}?)"
+    r"\s*群(?:聊)?(?:里|中|内)\s*"
 )
 
+
+def speaker_span(value, people):
+    """Keep an explicit room heading as context, never an inferred person name."""
+    value = value.strip(" ，。？?")
+    labels = (
+        n.strip().casefold()
+        for person in people.values()
+        for n in [person["display_name"], *person.get("aliases", [])]
+        if isinstance(n, str)
+    )
+    # A supported full native label may itself contain grammatical room words.
+    if value.casefold() in labels:
+        return value, ""
+    prefix = ROOM_PREFIX.match(value)
+    if prefix and prefix.end() < len(value):
+        return value[prefix.end():].strip(" ，。？?"), value[:prefix.end()]
+    return value, ""
 
 def name_in_text(name, text):
     """A native nickname must not capture part of a different identifier."""
@@ -138,6 +162,10 @@ def dates(question, timezone, now):
     return (int(start.timestamp()), int(end.timestamp()) - 1), question
 
 
+def named_platforms(question):
+    return [p for p, label in (("qq", "QQ"), ("wechat", "微信"), ("recording", "录音")) if re.search(label, question, re.I)]
+
+
 def understand(question, keyword, people, payload, now):
     timezone = payload.get("timezone", "Asia/Singapore")
     # An explicit literal lookup may use question == keyword plus source/time.
@@ -168,21 +196,22 @@ def understand(question, keyword, people, payload, now):
         scope["sent_to"] = min(period[1], payload.get("sent_to", period[1]))
         if scope["sent_from"] > scope["sent_to"]:
             raise ValueError("问题日期与所选日期不相交，请明确范围")
-    platforms = [
-        p
-        for p, label in [("qq", r"QQ"), ("wechat", "微信"), ("recording", "录音")]
-        if re.search(label, remaining, re.I)
-    ]
+    platforms = named_platforms(remaining)
     if len(platforms) == 1:
         if scope["source"] not in {"all", platforms[0]}:
             raise ValueError("问题来源与所选来源冲突")
         scope["source"] = platforms[0]
     elif len(platforms) > 1:
-        raise ValueError("请每次指定一个平台，或选择全部来源")
+        if scope["source"] != "all":
+            raise ValueError("问题来源与所选来源冲突")
+        scope["source_platforms"] = platforms
     remaining = re.sub(r"QQ|微信|录音", " ", remaining, flags=re.I)
     relation = RELATION.search(remaining.strip())
-    speaker = SPEAKER.search(remaining.strip()) if not relation else None
+    speaker = SPEAKER.search(remaining.strip(" ，。？?")) if not relation else None
+    if speaker and re.fullmatch(r"(?:群聊|群(?:里|中|内))(?:的)?(?:大家|成员|消息)?", speaker.group().strip()):
+        speaker = None
     mention = ""
+    room_mention = ""
     if relation:
         mention = next(v for v in relation.groups() if v).strip(" ，。？?")
         scope["relationship"] = "conversation"
@@ -192,13 +221,17 @@ def understand(question, keyword, people, payload, now):
         if len(topics) > 1:
             remaining = topics[1] + " " + remaining
     elif speaker:
-        mention = speaker.group().strip(" ，。？?")
+        mention, room_context = speaker_span(speaker.group(), people)
+        if room_context:
+            room_mention = re.sub(r"^在\s*|\s*群(?:聊)?(?:里|中|内)\s*$", "", room_context).strip(" “」「\"‘’”")
         remaining = remaining.replace(speaker.group(), " ", 1)
     elif re.search(r"群聊|群里|群中", remaining):
         scope["relationship"] = "group"
     names = {}
     for pid, person in people.items():
         for name in [person["display_name"], *person.get("aliases", [])]:
+            if person.get("platform") and not platform_allowed(scope, person["platform"]):
+                continue
             if isinstance(name, str) and name.strip() and person["kind"] != "self":
                 names.setdefault(name.strip().casefold(), []).append(pid)
     multiple_people = False
@@ -252,6 +285,7 @@ def understand(question, keyword, people, payload, now):
         **query,
         "scope": scope,
         "person_mention": mention,
+        "room_mention": room_mention,
         "time_explicit": period is not None,
         "issue": issue,
         "person_candidates": [people[p] for p in candidates],

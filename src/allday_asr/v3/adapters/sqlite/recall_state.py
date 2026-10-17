@@ -3,6 +3,7 @@ Only confirmed remote invalidation writes a derived cache marker, never source f
 """
 
 import json
+from allday_asr.v3.domain.recall_investigation_scope import platform_allowed
 import sqlite3
 from functools import wraps
 from allday_asr.v3.domain.recall_read_budget import charge, ReadBudgetExceeded
@@ -131,6 +132,9 @@ class RecallState:
         ]
 
     def authorized_scopes(self, scope):
+        return [s for s in self._authorized_scopes(scope) if platform_allowed(scope, s.get("platform"))]
+
+    def _authorized_scopes(self, scope):
         ids = self.identities
         if scope.get("source_contacts"):
             return [
@@ -146,7 +150,7 @@ class RecallState:
                 r["scope"]
                 for r in ids.cache.scopes()
                 if r["enabled"]
-                and scope["source"] in {"all", r["scope"].get("platform")}
+                and platform_allowed(scope, r["scope"].get("platform"))
             ][:3]
         from threading import Event
         import time

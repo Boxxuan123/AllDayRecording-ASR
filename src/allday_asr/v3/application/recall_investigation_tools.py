@@ -51,7 +51,7 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
             question = result["_request"]["question"]
             import re
 
-            if not re.search(r"QQ|微信|录音", question, re.I):
+            if self.root_scope.get("source_platforms") or not re.search(r"QQ|微信|录音", question, re.I):
                 self.root_scope["source"] = result["_request"].get("source", "all")
         self.root_scope["sent_from"] = result["_request"].get("sent_from", 0)
         self.root_scope["sent_to"] = min(now, result["_request"].get("sent_to", now))
@@ -77,9 +77,9 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
         self.current_window = "target"
         self.calls = 0
         self.flow = EvidenceFlow(result)
-        self.anchors = event_anchors(
+        self.anchors = [a for a in event_anchors(
             result["_request"]["question"], plan.get("person_mention", "")
-        )
+        ) if a.casefold() != plan.get("room_mention", "").casefold()]
         self.current_scope = result["scope"]
         result["_evidence_scopes"] = {}
         for contact in self.directory[:500]:

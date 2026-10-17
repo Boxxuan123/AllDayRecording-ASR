@@ -1,6 +1,7 @@
 """Bounded conversation selection over existing source IDs and reply edges."""
 
 import json
+from allday_asr.v3.domain.recall_investigation_scope import platform_allowed
 from allday_asr.v3.domain.recall_read_budget import charge, scan_limit
 import time
 from allday_asr.v3.domain.recall_conversation import participants
@@ -11,7 +12,7 @@ def conversation_scopes(ids, scope, cancel, deadline):
     if scope.get("source_contacts"):
         return [
             {k: c[k] for k in ("platform", "source_account_id", "conversation_id")}
-            for c in scope["source_contacts"]
+            for c in scope["source_contacts"] if platform_allowed(scope, c["platform"])
         ]
     if not ids.chat_path.exists():
         return []
@@ -24,7 +25,7 @@ def conversation_scopes(ids, scope, cancel, deadline):
         for k, v in manual.items()
         if v == person or (v == "self" and people[person]["kind"] == "self")
     ]
-    keys = [k for k in keys if scope["source"] in {"all", k[0]}]
+    keys = [k for k in keys if platform_allowed(scope, k[0])]
     if not keys:
         return []
     if len(keys) > 20:
@@ -64,7 +65,7 @@ def conversation_scopes(ids, scope, cancel, deadline):
                     raise ChatDataError("IDENTITY_SCOPE_BUDGET_REACHED", 429)
     linked = [
         {k: c[k] for k in ("platform", "source_account_id", "conversation_id")}
-        for c in scope.get("linked_contacts", [])
+        for c in scope.get("linked_contacts", []) if platform_allowed(scope, c["platform"])
     ]
     return [s for s in linked if s not in result] + [
         s

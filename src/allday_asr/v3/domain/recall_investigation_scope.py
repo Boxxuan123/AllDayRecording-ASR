@@ -3,6 +3,11 @@
 KEYS = ("platform", "source_account_id", "conversation_id", "sender_account_id")
 
 
+def platform_allowed(scope, platform):
+    return (scope.get("source", "all") in {"all", platform}
+            and (not scope.get("source_platforms") or platform in scope["source_platforms"]))
+
+
 def _intersect(left, right):
     if any(left.get(k) and right.get(k) and left[k] != right[k] for k in KEYS):
         return None
@@ -13,7 +18,7 @@ def remote_grants(scope, grants, directory):
     # A person without a resolved grant must not fall back to account-wide reads.
     if not grants and not scope.get("person_id"):
         grants = [{k: c[k] for k in KEYS[:2]} for c in directory]
-    grants = [dict(g) for g in grants if scope["source"] in {"all", g.get("platform")}]
+    grants = [dict(g) for g in grants if platform_allowed(scope, g.get("platform"))]
     constraints = [
         (scope.get("source_accounts"), KEYS[:2]),
         (scope.get("source_contacts"), KEYS[:3]),
@@ -77,6 +82,11 @@ def intersect_root(root, dynamic):
             return None
         if hard != wildcard:
             scope[key] = hard
+    allowed = set(root.get("source_platforms", ["qq", "wechat", "recording"])) & set(scope.get("source_platforms", ["qq", "wechat", "recording"]))
+    if not allowed or (scope.get("source", "all") != "all" and scope["source"] not in allowed):
+        return None
+    if root.get("source_platforms") or scope.get("source_platforms"):
+        scope["source_platforms"] = sorted(allowed)
     scope["sent_from"] = max(scope["sent_from"], root["sent_from"])
     scope["sent_to"] = min(scope["sent_to"], root["sent_to"])
     if scope["sent_from"] > scope["sent_to"]:
@@ -97,7 +107,7 @@ def intersect_root(root, dynamic):
                 ):
                     continue
                 choices.append({**candidate, **wanted})
-        choices = [c for c in choices if scope["source"] in {"all", c["platform"]}]
+        choices = [c for c in choices if platform_allowed(scope, c["platform"])]
         if not choices:
             return None
         scope[field] = choices
@@ -116,7 +126,7 @@ def intersect_root(root, dynamic):
 
 def inside_root(value, root, *, evidence=False):
     platform = value.get("platform", value.get("source"))
-    if root.get("source", "all") not in {"all", platform}:
+    if not platform_allowed(root, platform):
         return False
     for field, keys in (("source_accounts", KEYS[:2]), ("source_contacts", KEYS[:3])):
         if root.get(field) and not any(

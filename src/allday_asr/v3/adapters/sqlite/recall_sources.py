@@ -1,6 +1,7 @@
 """Bounded reads of the existing chat and canonical transcript indices."""
 
 import json
+from allday_asr.v3.domain.recall_investigation_scope import platform_allowed
 from allday_asr.v3.domain.recall_read_budget import charge, scan_limit
 from datetime import datetime
 from .recall_state import RecallState, bounded_sql
@@ -83,6 +84,8 @@ class RecallSources(RecallState, RecallRelations):
 
     @bounded_sql
     def chat(self, scope, terms, limit, cancel, deadline):
+        if not any(platform_allowed(scope, p) for p in ("qq", "wechat")):
+            return [], False
         ids = self.identities
         if not ids.chat_path.exists():
             return [], False
@@ -96,9 +99,9 @@ class RecallSources(RecallState, RecallRelations):
             return [r for r in evidence if r["id"] not in invalid], more
         clauses = ["dataset=?", "sent_at>=?", "sent_at<=?"]
         params = [ids.cache.get("dataset", ""), scope["sent_from"], scope["sent_to"]]
-        if scope["source"] in {"qq", "wechat"}:
-            clauses.append("platform=?")
-            params.append(scope["source"])
+        allowed = [p for p in ("qq", "wechat") if platform_allowed(scope, p)]
+        clauses.append("platform IN (" + ",".join("?" for _ in allowed) + ")")
+        params.extend(allowed)
         if scope.get("source_senders"):
             clauses.append(
                 "sender IN (" + ",".join("?" for _ in scope["source_senders"]) + ")"
@@ -192,6 +195,8 @@ class RecallSources(RecallState, RecallRelations):
     def recordings(self, scope, terms, limit, cancel, deadline):
         import time
 
+        if not platform_allowed(scope, "recording"):
+            return [], False
         if scope.get("relationship") in {"conversation", "group"}:
             # Confirmed voices alone cannot establish user-to-person interaction.
             return [], False

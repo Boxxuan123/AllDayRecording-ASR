@@ -3,6 +3,7 @@
 import time
 from copy import deepcopy
 from threading import Event
+from allday_asr.v3.domain.recall_investigation_scope import platform_allowed
 
 
 def lookup_contacts(service, owner, payload):
@@ -37,7 +38,7 @@ def lookup_contacts(service, owner, payload):
             saved["scope"]["source"], live, cancel, time.monotonic() + 12
         )
         service._checkpoint(cancel, time.monotonic() + 1)
-        rows = [r for r in rows if saved["scope"]["source"] in {"all", r["platform"]}]
+        rows = [r for r in rows if platform_allowed(saved["scope"], r["platform"])]
         if text.strip():
             # Explicit user directory search, not speculative name matching.
             rows = [

@@ -6,7 +6,10 @@ import time
 from copy import deepcopy
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from allday_asr.v3.domain.recall_query import understand, dates
+from allday_asr.v3.domain.recall_query import understand, dates, named_platforms
+from allday_asr.v3.domain.recall_investigation_scope import platform_allowed
+
+from .recall_native_targets import native_people, explicit_room
 
 GENERIC = {"谁", "别人", "其他人", "大家", "有人"}
 
@@ -42,13 +45,21 @@ def interpret(
     directory = []
     notes = []
     requests = 0
+    directory_source = payload.get("source", "all")
+    if directory_source == "all" and keyword != question:
+        named = named_platforms(question)
+        chat_platforms = [p for p in named if p != "recording"]
+        if len(chat_platforms) == 1:
+            directory_source = chat_platforms[0]
+        elif named == ["recording"]:
+            directory_source = "recording"
     if (
         service.directory
-        and payload.get("source") != "recording"
+        and directory_source != "recording"
         and keyword != question
     ):
         directory, notes, requests = service.directory.load(
-            payload.get("source", "all"),
+            directory_source,
             payload.get("expand", True),
             cancel,
             min(deadline, time.monotonic() + 12),
@@ -56,15 +67,7 @@ def interpret(
     directory = [
         r for r in directory if payload.get("source", "all") in {"all", r["platform"]}
     ]
-    book = deepcopy(people)
-    for contact in directory:
-        key = "native:" + contact["key"]
-        book[key] = {
-            "person_id": key,
-            "display_name": contact["display_name"],
-            "aliases": contact["names"],
-            "kind": "contact",
-        }
+    book = native_people(people, directory)
     error = ""
     try:
         fast = understand(question, keyword, book, payload, now)
@@ -89,19 +92,11 @@ def interpret(
             "person_candidates": [],
         }
     if (
-        fast["scope"]["source"] in {"qq", "wechat", "recording"}
+        (fast["scope"]["source"] in {"qq", "wechat", "recording"} or fast["scope"].get("source_platforms"))
         and payload.get("source", "all") == "all"
     ):
-        directory = [r for r in directory if r["platform"] == fast["scope"]["source"]]
-        filtered = deepcopy(people)
-        for contact in directory:
-            key = "native:" + contact["key"]
-            filtered[key] = {
-                "person_id": key,
-                "display_name": contact["display_name"],
-                "aliases": contact["names"],
-                "kind": "contact",
-            }
+        directory = [r for r in directory if platform_allowed(fast["scope"], r["platform"])]
+        filtered = native_people(people, directory)
         if not error:
             fast = understand(question, keyword, filtered, payload, now)
     scope = fast["scope"]
@@ -128,6 +123,8 @@ def interpret(
     fast["understanding_calls"] = 0
     if selected:
         apply_contact(fast, selected)
+        return fast
+    if not error and not payload.get("person_id") and explicit_room(fast, directory):
         return fast
     if (
         service.preferences
@@ -284,23 +281,18 @@ def interpret(
         if recoverable_time:
             # Date parsing happens before platform extraction in the fast path.
             # Recovering time must not lose an explicit platform from the question.
-            named_sources = [
-                p
-                for p, label in (
-                    ("qq", "QQ"),
-                    ("wechat", "微信"),
-                    ("recording", "录音"),
-                )
-                if re.search(label, question, re.I)
-            ]
-            if len(named_sources) > 1 or (
-                named_sources and scope["source"] not in {"all", named_sources[0]}
+            named_sources = named_platforms(question)
+            if (len(named_sources) > 1 and scope["source"] != "all") or (
+                len(named_sources) == 1 and not platform_allowed(scope, named_sources[0])
             ):
                 fast["issue"] = "问题来源与筛选范围不一致，请明确来源。"
                 return fast
             if named_sources:
-                scope["source"] = named_sources[0]
-                directory = [r for r in directory if r["platform"] == scope["source"]]
+                if len(named_sources) == 1:
+                    scope["source"] = named_sources[0]
+                else:
+                    scope["source_platforms"] = named_sources
+                directory = [r for r in directory if platform_allowed(scope, r["platform"])]
         if not (payload.get("person_id") and fast["issue"]) and (
             not simple or fast["issue"]
         ):
