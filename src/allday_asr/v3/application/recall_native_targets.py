@@ -17,7 +17,7 @@ def native_people(people, directory):
 
 def explicit_room(plan, directory):
     mention = plan.get("room_mention")
-    if not mention or not plan.get("person_mention"):
+    if not mention:
         return False
     rooms = [c for c in directory if c["conversation_type"] == "group"
              and mention.casefold() in [n.casefold() for n in c["names"]]]
@@ -28,8 +28,9 @@ def explicit_room(plan, directory):
         return True
     # The user named a room and a speaker. A same-label private peer must not
     # replace either boundary. The speaker still needs observed source evidence.
-    plan["scope"].update(person_id="", source_contacts=deepcopy(rooms), relationship="speaker")
+    actor = bool(plan.get("person_mention"))
+    plan["scope"].update(person_id="", source_contacts=deepcopy(rooms), relationship="speaker" if actor else "group")
     plan.update(agentic=True, _directory=directory, _contact_scope_is_seed=False,
                 person_candidates=[], contact_candidates=[],
-                issue="尚待核对指定群内的来源发送者，昵称不等于现实人物绑定。")
+                issue="尚待核对指定群内的来源发送者，昵称不等于现实人物绑定。" if actor else "")
     return True

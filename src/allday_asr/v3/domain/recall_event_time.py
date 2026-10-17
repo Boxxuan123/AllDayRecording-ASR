@@ -6,6 +6,10 @@ from zoneinfo import ZoneInfo
 from .recall_query import DATE, RELATIVE, dates
 
 
+SOURCE_FUTURE = r"明天晚上|今天晚上|明晚|今晚|明天|后天"
+SOURCE_RELATIVE_WORDING = SOURCE_FUTURE + "|" + RELATIVE.pattern
+
+
 FULL_DATE = re.compile(
     r"(?<!\d)(?:(\d{4})-(\d{1,2})-(\d{1,2})|"
     r"(\d{4})/(\d{1,2})/(\d{1,2})|"
@@ -26,12 +30,14 @@ def full_explicit_dates(text):
 
 
 def source_relative_period(quote, timezone, sent_at):
-    future = re.findall(r"明天晚上|今天晚上|明晚|今晚|明天|后天", quote)
+    if not re.search(SOURCE_RELATIVE_WORDING, quote):
+        return None
+    future = re.findall(SOURCE_FUTURE, quote)
     if future:
         if (
             len(future) != 1
             or RELATIVE.search(
-                re.sub(r"明天晚上|今天晚上|明晚|今晚|明天|后天", "", quote)
+                re.sub(SOURCE_FUTURE, "", quote)
             )
             or re.search(DATE, quote)
             or re.search(r"或|还是", quote)

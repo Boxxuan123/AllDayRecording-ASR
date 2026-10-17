@@ -2,13 +2,14 @@
 
 from copy import deepcopy
 import json
-from allday_asr.v3.domain.recall_event_time import full_explicit_dates
+import re
+from allday_asr.v3.domain.recall_event_time import full_explicit_dates, SOURCE_RELATIVE_WORDING
 
 
 def event_time_schema(time, rows):
     """Explicit dates must be generated from full years actually present in text."""
     unknown, dated = deepcopy(time["anyOf"])
-    dated["properties"]["basis"]["enum"] = ["relative", "inferred", "message"]
+    dated["properties"]["basis"]["enum"] = ["inferred", "message"]
     groups = {}
     for row in rows:
         dates = tuple(full_explicit_dates(row.get("quote", "")))
@@ -22,6 +23,13 @@ def event_time_schema(time, rows):
             branch["properties"][key] = {"type": "string", "enum": list(dates)}
         return branch
     branches = []
+    relative_refs = [row["id"] for row in rows if re.search(SOURCE_RELATIVE_WORDING, row.get("quote", ""))]
+    if relative_refs:
+        branch = deepcopy(dated)
+        branch["properties"]["basis"]["enum"] = ["relative"]
+        branch["properties"]["evidence_id"] = {"type": "string", "enum": relative_refs}
+        branch["properties"]["quote"]["pattern"] = r"[\s\S]*(?:" + SOURCE_RELATIVE_WORDING + r")[\s\S]*"
+        branches.append(branch)
     for dates, refs in groups.items():
         branch = explicit(dates, refs)
         # A pathological quoted calendar must not exhaust the executor envelope.

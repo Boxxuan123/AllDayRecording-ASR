@@ -85,6 +85,8 @@ def main():
             "tests/test_recall_daypart_comparison.py",
             "tests/test_recall_reference_protocol.py",
             "tests/test_recall_subject_spans.py",
+            "tests/test_recall_subject_wrappers.py",
+            "tests/test_recall_relative_generation.py",
             "tests/test_recall_explicit_date_contract.py",
             "tests/test_recall_platform_sets.py",
             "tests/test_recall_context_recovery.py",

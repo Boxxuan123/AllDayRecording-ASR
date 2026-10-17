@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timedelta, time as clock_time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .recall_language import plan
+from .recall_subject_span import address_span, group_topic_span, known_label
 from .recall_investigation_scope import platform_allowed
 
 DATE = r"(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:\d{4}年)?\d{1,2}月\d{1,2}[日号])"
@@ -215,16 +216,24 @@ def understand(question, keyword, people, payload, now):
     if relation:
         mention = next(v for v in relation.groups() if v).strip(" ，。？?")
         scope["relationship"] = "conversation"
-        topics = re.split(r"关于|有关", mention, maxsplit=1)
-        mention = topics[0].strip()
+        normalized = address_span(mention, people)
+        topics = [normalized] if known_label(normalized, people) else re.split(r"关于|有关", mention, maxsplit=1)
+        mention = address_span(topics[0].strip(), people)
         remaining = remaining.replace(relation.group(), " ", 1)
         if len(topics) > 1:
             remaining = topics[1] + " " + remaining
     elif speaker:
-        mention, room_context = speaker_span(speaker.group(), people)
-        if room_context:
-            room_mention = re.sub(r"^在\s*|\s*群(?:聊)?(?:里|中|内)\s*$", "", room_context).strip(" “」「\"‘’”")
-        remaining = remaining.replace(speaker.group(), " ", 1)
+        group_topic = group_topic_span(speaker.group(), people)
+        if group_topic:
+            room_mention, topic = group_topic
+            scope["relationship"] = "group"
+            remaining = topic + " " + remaining.replace(speaker.group(), " ", 1)
+        else:
+            mention, room_context = speaker_span(speaker.group(), people)
+            mention = address_span(mention, people)
+            if room_context:
+                room_mention = re.sub(r"^在\s*|\s*群(?:聊)?(?:里|中|内)\s*$", "", room_context).strip(" “」「\"‘’”")
+            remaining = remaining.replace(speaker.group(), " ", 1)
     elif re.search(r"群聊|群里|群中", remaining):
         scope["relationship"] = "group"
     names = {}
@@ -235,7 +244,7 @@ def understand(question, keyword, people, payload, now):
             if isinstance(name, str) and name.strip() and person["kind"] != "self":
                 names.setdefault(name.strip().casefold(), []).append(pid)
     multiple_people = False
-    if not mention:
+    if not mention and not room_mention:
         found = [n for n in names if name_in_text(n, remaining)]
         multiple_people = (
             len({p for n in found for p in names[n]}) > 1 and len(found) > 1
