@@ -5,6 +5,7 @@ import json
 import time
 from pathlib import Path
 from allday_asr.v3.ports.chat_data import ChatDataError
+from allday_asr.v3.domain.recall_source_candidates import enrich_contact
 
 FIELDS = (
     "contact_remark",
@@ -59,6 +60,33 @@ def entry(row, dataset):
         "basis": "native conversation directory",
         "dataset": dataset,
     }
+
+
+def merge_entries(rows, incoming, *, current=False):
+    """Keep native labels within one conversation; fresh metadata stays canonical."""
+    by_key = {r["key"]: r for r in rows if isinstance(r, dict) and r.get("key")}
+    for value in incoming:
+        if not isinstance(value, dict) or not value.get("key"):
+            continue
+        previous = by_key.get(value["key"])
+        if previous and previous.get("dataset") == value.get("dataset"):
+            try:
+                enriched = (enrich_contact(value, previous) if current
+                            else enrich_contact(previous, value))
+                base = ({**previous, **value} if current else {**value, **previous})
+                value = {**base, "names": enriched["names"],
+                         "sender_account_id": enriched["sender_account_id"]}
+            except ValueError:
+                # A changed native peer must not inherit the old peer's aliases.
+                if not current:
+                    continue
+        # Alias order must not depend on paging or cache arrival order.
+        primary = value["display_name"]
+        value = {**value, "names": [primary] + sorted(
+            set(value.get("names", [])) - {primary}
+        )[:19]}
+        by_key[value["key"]] = value
+    return list(by_key.values())
 
 
 class RecallDirectory:
@@ -124,9 +152,7 @@ class RecallDirectory:
                     )
                     if value:
                         rows.append(value)
-        return list(
-            {r["key"]: r for r in rows if isinstance(r, dict) and r.get("key")}.values()
-        )[:5000]
+        return merge_entries([], rows)[:5000]
 
     def load(self, platform, live, cancel, deadline):
         rows = self.cached()
@@ -200,13 +226,14 @@ class RecallDirectory:
                     items = page.get("items")
                     if not isinstance(items, list) or len(items) > 100:
                         raise ChatDataError("INVALID_DIRECTORY_PAGE", 502)
+                    fresh = []
                     for item in items:
                         if not isinstance(item, dict) or item.get("platform") != source:
                             raise ChatDataError("DIRECTORY_NAMESPACE_MISMATCH", 502)
                         value = entry(item, dataset)
                         if value:
-                            rows.append(value)
-                    rows = list({r["key"]: r for r in rows}.values())
+                            fresh.append(value)
+                    rows = merge_entries(rows, fresh, current=True)
                     complete = not page.get("has_more")
                     next_cursor = page.get("next_cursor")
                     if not complete and (
