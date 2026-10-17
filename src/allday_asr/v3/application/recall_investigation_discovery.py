@@ -196,6 +196,7 @@ def seed_observed_sender(tools, action):
             source_account_id=k[1],
             sender_account_id=k[2],
             evidence_ids=v,
+            evidence_versions={ref: tools.refs[ref]["revision"] for ref in v},
             basis="observed_native_name_candidate",
             persistent_person_merge=False,
         )
@@ -213,4 +214,39 @@ def seed_observed_sender(tools, action):
             break
     if targets and tools.remaining()["source_requests"] > 2:
         tools.run(action("get_message_context", targets=targets), [])
+    return True
+
+
+def resolve_sender_subject(tools):
+    """Resolve a scoped speaker-label recap, without confirming a real-world person."""
+    if (tools.plan.get("intent") != "conversation"
+            or tools.plan["scope"].get("relationship") != "speaker"
+            or tools.plan.get("person_candidates")):
+        return False
+    candidates = tools.result.get("sender_candidate_relations", [])
+    if len(candidates) != 1:
+        return False
+    candidate = candidates[0]
+    refs = candidate["evidence_ids"]
+    rows = [tools.refs[r] for r in refs if r in tools.refs]
+    native_matches = {ref for d in tools.result.get("sender_discovery", [])
+                      for ref in d["matched_record_refs"]}
+    keys = ("source", "source_account_id", "sender_account_id")
+    actor = (candidate["platform"], candidate["source_account_id"],
+             candidate["sender_account_id"])
+    if (not rows or len(rows) != len(refs)
+            or candidate.get("basis") != "observed_native_name_candidate"
+            or not set(refs) <= native_matches
+            or tools.service.sources.changed(rows)
+            or any(tuple(r.get(k) for k in keys) != actor
+                   or r.get("revision") != candidate.get("evidence_versions", {}).get(r["id"])
+                   or r.get("source_is_from_self") is not False
+                   or not inside_root(r, tools.root_scope, evidence=True)
+                   for r in rows)):
+        return False
+    tools.result["subject_resolution"] = dict(
+        basis="single_observed_native_sender", evidence_ids=list(refs),
+        person_identity_confirmed=False, persistent_person_merge=False)
+    tools.result.update(contact_lookup_allowed=False, contact_candidates=[])
+    tools.note("本次按来源昵称与同一原生账号归纳已取回的发言，未确认或合并现实人物身份。")
     return True

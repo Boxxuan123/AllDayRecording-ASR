@@ -189,3 +189,47 @@ def test_question_context_keeps_two_separated_supported_periods():
     )
     assert "chat:rec:fixture-500" in ids
     assert "chat:rec:fixture-503" in ids
+
+
+def test_scoped_native_speaker_can_answer_without_creating_a_person(tmp_path):
+    scene = sender_case()
+    scene["protocol_citation_probe"] = True
+    run = run_scenario(tmp_path, scene)
+    assert run["result"]["claims"]
+    assert run["result"]["model_status"] == "available"
+    assert run["result"]["status"] != "needs_clarification"
+    assert not run["result"]["contact_lookup_allowed"]
+    assert not run["result"]["contact_candidates"]
+    assert run["internal"]["subject_resolution"]["person_identity_confirmed"] is False
+    assert run["internal"]["subject_resolution"]["persistent_person_merge"] is False
+    assert not run["internal"]["scope"]["person_id"]
+    assert all(not p["address_resolution_required"] for p in run["inputs"])
+    assert {"rec:fixture-1", "rec:fixture-3"} <= selected_ids(run)
+
+
+@pytest.mark.parametrize("namespace", ["sender", "owner", "platform"])
+def test_same_label_different_native_senders_cannot_bypass_person_guard(tmp_path, namespace):
+    scene = sender_case(separate=namespace == "sender")
+    if namespace != "sender":
+        other = scene["contacts"][1]
+        row = scene["records"][-1]
+        if namespace == "platform":
+            other["platform"] = row["platform"] = "qq"
+            other["source_account_id"] = row["source_account_id"] = "source-qq"
+        else:
+            other["source_account_id"] = row["source_account_id"] = "another-owner"
+        row["source_locator"]["platform"] = row["platform"]
+        row["source_locator"]["source_account_id"] = row["source_account_id"]
+    scene["protocol_citation_probe"] = True
+    run = run_scenario(tmp_path, scene)
+    assert not run["result"]["claims"]
+    assert not run["internal"].get("subject_resolution")
+    assert all(p["address_resolution_required"] for p in run["inputs"])
+
+
+def test_real_identity_question_is_not_resolved_by_a_speaker_label(tmp_path):
+    from types import SimpleNamespace
+    from allday_asr.v3.application.recall_investigation_discovery import resolve_sender_subject
+    tools = SimpleNamespace(plan={"intent": "question", "scope": {"relationship": "speaker"}},
+                            result={"sender_candidate_relations": [dict(evidence_ids=["one"])]})
+    assert not resolve_sender_subject(tools)

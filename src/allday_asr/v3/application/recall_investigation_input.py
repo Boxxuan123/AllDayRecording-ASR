@@ -287,7 +287,8 @@ def payload(tools, round_number, question):
         if tools.plan.get("exact")
         else "semantic_exploration",
         "person_mention": tools.plan.get("person_mention", ""),
-        "address_resolution_required": bool(tools.plan.get("issue") and tools.plan.get("person_mention")),
+        "address_resolution_required": bool(tools.plan.get("issue") and tools.plan.get("person_mention") and not result.get("subject_resolution")),
+        "subject_resolution": ({**result["subject_resolution"], "evidence_ids": short_refs(result["subject_resolution"]["evidence_ids"])} if result.get("subject_resolution") else None),
         "time_notice": result.get("time_notice", ""),
         "time_unresolved": tools.plan.get("_parse_error", False),
         "actual_message_dates": sorted(

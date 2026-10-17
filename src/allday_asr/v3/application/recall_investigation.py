@@ -211,6 +211,9 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                         ),
                         [],
                     )
+        from .recall_investigation_discovery import resolve_sender_subject
+        if unresolved_person and resolve_sender_subject(tools):
+            unresolved_person = False
         if unresolved_person:
             from allday_asr.v3.domain.recall_address import direct_address
 
