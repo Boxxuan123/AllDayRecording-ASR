@@ -9,14 +9,28 @@ from .recall_query import DATE, RELATIVE, dates
 def source_relative_period(quote, timezone, sent_at):
     future = re.findall(r"明天晚上|今天晚上|明晚|今晚|明天|后天", quote)
     if future:
-        if (len(future) != 1 or RELATIVE.search(re.sub(r"明天晚上|今天晚上|明晚|今晚|明天|后天", "", quote))
-                or re.search(DATE,quote) or re.search(r"或|还是",quote)):
+        if (
+            len(future) != 1
+            or RELATIVE.search(
+                re.sub(r"明天晚上|今天晚上|明晚|今晚|明天|后天", "", quote)
+            )
+            or re.search(DATE, quote)
+            or re.search(r"或|还是", quote)
+        ):
             raise ValueError("ambiguous source-relative dates")
         zone = ZoneInfo(timezone)
-        day = datetime.fromtimestamp(sent_at, zone).date() + timedelta(days={
-            "明晚":1,"明天":1,"明天晚上":1,"后天":2,"今晚":0,"今天晚上":0}[future[0]])
-        first = datetime.combine(day,datetime.min.time(),zone)
-        return int(first.timestamp()),int((first+timedelta(days=1)).timestamp())-1
+        day = datetime.fromtimestamp(sent_at, zone).date() + timedelta(
+            days={
+                "明晚": 1,
+                "明天": 1,
+                "明天晚上": 1,
+                "后天": 2,
+                "今晚": 0,
+                "今天晚上": 0,
+            }[future[0]]
+        )
+        first = datetime.combine(day, datetime.min.time(), zone)
+        return int(first.timestamp()), int((first + timedelta(days=1)).timestamp()) - 1
     labels = RELATIVE.findall(quote)
     if len(labels) <= 1:
         return dates(quote, timezone, sent_at)[0]
@@ -37,20 +51,31 @@ def source_relative_period(quote, timezone, sent_at):
     return min(p[0] for p in periods), max(p[1] for p in periods)
 
 
-def validate_message_dayparts(text, hour):
+def validate_message_dayparts(text, hour, source_quotes=()):
     """Check asserted utterance periods, allowing a narrowly negated comparison.
 
     Negating a daypart does not assert it. An affirmative correction after 而是
     starts a new clause and must still agree with the cited utterance.
     """
-    spans = {"凌晨": (0,6), "早上": (6,12), "上午": (0,12),
-             "中午": (11,14), "下午": (12,18), "晚上": (18,24)}
+    spans = {
+        "凌晨": (0, 6),
+        "早上": (6, 12),
+        "上午": (0, 12),
+        "中午": (11, 14),
+        "下午": (12, 18),
+        "晚上": (18, 24),
+    }
+    cursor = 0
     for clause in re.split(r"[，,；;。：:]|而是", text):
-        for match in re.finditer("|".join(spans),clause):
-            before = clause[:match.start()]
+        offset = text.find(clause, cursor)
+        cursor = max(0, offset) + len(clause)
+        for match in re.finditer("|".join(spans), clause):
+            before = clause[: match.start()]
             negated = re.search(
                 r"(?:并非|并不是|不是|而非|而不是|尚不能确认|不能确认|无法确认|没有证据表明)"
-                r"(?:在|发生于|发生在|前天|昨天|今天|昨|\d{1,2}月\d{1,2}[日号]?|\d{1,2}[日号]|[（）()\s])*$",before)
+                r"(?:在|发生于|发生在|前天|昨天|今天|昨|\d{1,2}月\d{1,2}[日号]?|\d{1,2}[日号]|[（）()\s])*$",
+                before,
+            )
             if negated:
                 continue
             # In a dated comparison, this period belongs to the comparison's
@@ -63,8 +88,41 @@ def validate_message_dayparts(text, hour):
                 r"\d{1,2}[日号]|前天|昨天|今天|明天|后天)的?$",
                 before,
             )
-            if comparison and re.match(r"(?:更)?[早晚]", clause[match.end():]):
+            if comparison and re.match(r"(?:更)?[早晚]", clause[match.end() :]):
                 continue
-            a,b=spans[match.group()]
-            if not a<=hour<b:
+            # A reported previous state or proposed later action is not the
+            # timestamp of the utterance reporting it. This exception requires
+            # the same period in a cited original and a grammatical attribution
+            # or modality; affirmative message-time assertions remain checked.
+            word = match.group()
+            supported = any(word in quote for quote in source_quotes)
+            after = clause[match.end() :]
+            explicit_before = re.search(
+                r"(?:消息|记录|发言|讨论)(?:实际)?(?:发生于|发生在|在|于)?"
+                r"(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]?|\d{1,2}[日号]|今天|昨天|前天|的|\s)*$",
+                before,
+            )
+            speech_after = re.search(
+                r"^[”’\"]?(?:是.{0,12})?(?:.{0,12}?)(?:说|问|发言|发送|发出|回复|写道|表示|提到|讨论)",
+                after,
+            )
+            modal = re.search(
+                r"(?:建议|打算|准备|计划|希望|约好|想|等待|等)[^，,；;。：:]{0,12}$",
+                before,
+            )
+            modal = modal or re.match(r"(?:再|会|准备|打算|计划)", after)
+            # Preserve attribution across a comma, but never across a sentence.
+            # The original full-text position avoids mistaking a clock ':' for a new sentence.
+            prefix = re.split(r"[。！!？?]", text[: max(0, offset)] + before)[-1]
+            reported = re.search(
+                r"说|问|写道|提到|表示|告诉|建议|解释|补充|声称", prefix
+            )
+            if (
+                supported
+                and not explicit_before
+                and (modal or (reported and not speech_after))
+            ):
+                continue
+            a, b = spans[word]
+            if not a <= hour < b:
                 raise ValueError("message daypart disagrees with cited utterance")

@@ -68,7 +68,7 @@ def _claims(value, evidence, scope):
                 day = datetime.fromtimestamp(row["sent_at"], ZoneInfo(scope["timezone"])).date()
                 hour = datetime.fromtimestamp(row["sent_at"], ZoneInfo(scope["timezone"])).hour
                 from allday_asr.v3.domain.recall_event_time import validate_message_dayparts
-                validate_message_dayparts(claim["text"],hour)
+                validate_message_dayparts(claim["text"], hour, [evidence[c]["quote"] for c in citations])
                 if (first,last) != (day,day):
                     raise ValueError("message date disagrees with cited utterance")
             if event["basis"] == "explicit":
