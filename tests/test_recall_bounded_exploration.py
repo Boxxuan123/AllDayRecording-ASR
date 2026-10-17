@@ -1,123 +1,74 @@
-"""Quota gaps must not discard acquired evidence; identity questions are semantic."""
-
+"""Deterministic fictional regressions for entry, semantic context, time and references."""
+import copy
+from datetime import datetime
 import pytest
-from tests.recall_scenario_driver import run_scenario, selected_ids
-from tests.test_recall_acceptance_scenarios import bridge_case, plan_case
-from allday_asr.v3.adapters.sqlite.recall_sources import RecallSources
-from allday_asr.v3.domain.recall_read_budget import CURRENT
-from allday_asr.v3.ports.chat_data import ChatDataError
-from allday_asr.v3.domain.recall_language import intent
+from tests.test_recall_real_improvements import env
+from tests.test_recall_query_loop import ask
+from tests.test_agentic_review_fixes import remote_tools, raw, SCOPE
+from allday_asr.v3.domain.recall_language import plan
+from allday_asr.v3.application.recall_citation_handles import CitationHandles
+from allday_asr.v3.application.recall_investigation_budget import normalize_scope
 
 
-def test_cache_exhaustion_still_presents_acquired_records_for_synthesis(
-    tmp_path, monkeypatch
-):
-    def exhausted(*args, **kw):
-        budget = CURRENT.get()
-        budget.records = 400
-        raise ChatDataError("CACHE_RECORD_BUDGET_REACHED", 429)
-
-    monkeypatch.setattr(RecallSources, "related_conversations", exhausted)
-    scene = bridge_case()
-    scene["protocol_citation_probe"] = True
-    run = run_scenario(tmp_path, scene)
-    assert run["wire"], (
-        "400 decoded records limits cache exploration, not the already funded model"
-    )
-    assert len(selected_ids(run)) > 0
-    assert run["result"]["metrics"]["cache_scan_records"] == 400
-    assert any(
-        d["code"] == "CACHE_RECORD_BUDGET_REACHED"
-        for d in run["internal"]["diagnostics"]
-    )
-    assert run["result"]["metrics"]["source_requests"] <= 18
-    assert run["result"]["metrics"]["source_records_read"] <= 200
+def test_unfinished_other_platform_is_coverage_not_an_identity_conflict(env):
+    directory, notes, _ = env.service.directory.load("all", True, __import__("threading").Event(), __import__("time").monotonic()+10)
+    rows = [r for r in directory if r["platform"] == "wechat"]
+    for r in rows: r["directory_complete"] = True
+    env.service.directory.load = lambda *a: (copy.deepcopy(rows), ["QQ directory incomplete"], 0)
+    result = ask(env, "昨天我和青岚聊了什么", expand=True)
+    assert not result["contact_candidates"]
+    assert result["model_status"] == "available"
+    assert {r["conversation_id"] for r in result["evidence"]} == {"native-wechat"}
+    assert "QQ directory incomplete" in result["coverage"]
 
 
-@pytest.mark.parametrize(
-    "question,expected",
-    [
-        ("那位同事说的青石是哪位同学", "question"),
-        ("请逐字找包含哪位老师的原话", "quote"),
-        ("昨天为什么取消会议", "reason"),
-        ("昨天活动发生了什么", "timeline"),
-        ("昨天聊了什么", "conversation"),
-        ("这件事最后怎么样了", "latest"),
-    ],
-)
-def test_reference_identity_question_does_not_become_literal_lookup(question, expected):
-    assert intent(question) == expected
+@pytest.mark.parametrize("question", ["昨天松杉准备怎么去机场", "前天海棠打算参加哪个会议", "昨天紫苑的出行安排是什么"])
+def test_attribute_questions_are_exploratory_not_exact_quotes(question):
+    value = plan(question)
+    assert value["intent"] == "question" and not value["exact"]
+    assert plan(question, "下午三点火车")["exact"]
+    assert plan("找出包含原话的消息")["intent"] == "quote"
 
 
-def test_conversation_lookup_uses_question_specificity_not_directory_order():
-    from allday_asr.v3.application.recall_investigation_tools import InvestigationTools
-
-    def row(i, name):
-        return dict(
-            ref="contact:" + str(i),
-            type="contact",
-            conversation_type="group",
-            names=[name],
-            platform="qq",
-            source_account_id="owner",
-            key=str(i),
-        )
-
-    values = [row(i, "NOVA游戏群" + str(i)) for i in range(25)] + [
-        row(99, "NOVA摄影群")
-    ]
-    t = InvestigationTools.__new__(InvestigationTools)
-    t.refs = {v["ref"]: v for v in values}
-    t.seen = set()
-    t.calls = 0
-    t.result = dict(
-        _request={"question": "昨天NOVA和VEGA摄影群聊了什么"},
-        evidence=[],
-        metrics={},
-        investigation_steps=[],
-    )
-    t.scope = lambda _: dict(sent_from=0, sent_to=10)
-    t.checkpoint = lambda: None
-    t.note = lambda _: None
-    action = dict(
-        tool="find_conversations",
-        terms=["NOVA"],
-        targets=[],
-        evidence_ids=[],
-        window="target",
-        purpose="synthetic directory ranking",
-    )
-    refs = t.run(action, [])
-    assert refs[0] == "contact:99"
-    # Metadata order changes do not change which native candidate gets the first bounded read.
-    t.seen = set()
-    t.refs = {v["ref"]: v for v in reversed(values)}
-    assert t.run(action, []) == refs
+def test_short_answer_keeps_other_speakers_question_denial_and_correction():
+    tools, _ = remote_tools([])
+    target = dict(id="chat:answer", record_id="answer", source="qq", source_account_id="owner-qq", conversation_id="chosen-c2c", sent_at=1000, quote="坐火车", revision=1)
+    rows = [dict(target, id=str(i), record_id=str(i), sent_at=990+i, quote=t, sender_account_id=str(i))
+            for i,t in enumerate(["你明天怎么去机场？", "坐火车", "不，刚才说错了", "改成下午三点的班车"])]
+    kept = tools.context_rows(rows, target, SCOPE, ["出行计划"])
+    assert len(kept) == 4
+    assert {r["retrieval_basis"] for r in kept} == {"bounded_conversation_context"}
 
 
-def test_identity_question_uses_cross_source_candidates_in_actual_request(tmp_path):
-    scene = plan_case()
-    scene["question"] = "昨天林岑提到的青石是哪位同学"
-    scene["records"][2]["text"] = "青石是谁，我们认识吗？"
-    scene["records"][3]["text"] = "我只知道这个外号，没确认真实姓名。"
-    scene["records"][4]["text"] = "先别当成正式身份结论。"
-    run = run_scenario(tmp_path, scene)
-    assert {"rec:fixture-3", "rec:fixture-4", "rec:fixture-5"} <= selected_ids(run)
-    assert not run["internal"]["scope"].get("person_id")
-    assert run["internal"]["_plan"]["intent"] == "question"
+def test_window_calculation_never_claims_it_found_an_earlier_event():
+    tools, _ = remote_tools([])
+    tools.result["_request"]["question"] = "前天晚上观测社发生了什么"
+    first = int(datetime.fromisoformat("2026-08-18T18:00:00+08:00").timestamp())
+    tools.result["scope"].update(sent_from=first, sent_to=first+21600-1)
+    tools.root_scope.update(sent_from=0, sent_to=first+86400)
+    tools.now = first+86400
+    value = tools.scope("nearby")
+    assert "time_notice" not in tools.result and not tools.result["evidence"]
+    assert "2026-08-17" in value["sent_from_local"]
+    value.update(sent_from=first)
+    normalize_scope(value)
+    assert datetime.fromisoformat(value["sent_from_local"]).timestamp() == first
 
 
-def test_cache_quota_handler_does_not_swallow_authorization_error(
-    tmp_path, monkeypatch
-):
-    def denied(*args, **kw):
-        raise ChatDataError("AUTHORIZATION_REVOKED", 403)
+def test_handles_never_reassign_or_accept_an_unseen_or_other_query_citation():
+    row = dict(id="chat:full-a", dataset="D", revision=1)
+    result = {}; first = CitationHandles(result); assert first.encode([row])[0]["id"] == "E1"
+    second = CitationHandles(result); assert second.encode([dict(row,id="chat:full-b")])[0]["id"] == "E2"
+    with pytest.raises(ValueError): second.decode({"claims":[{"citations":["E1"]}]})
+    with pytest.raises(ValueError): first.decode({"claims":[{"citations":["E9"]}]})
+    revised = CitationHandles(result); assert revised.encode([dict(row,revision=2)])[0]["id"] == "E3"
+    isolated = CitationHandles({}); assert isolated.encode([dict(row,id="other")])[0]["id"] == "E1"
+    assert first.decode({"claims":[{"citations":["E1"]}]})["claims"][0]["citations"] == ["chat:full-a"]
 
-    monkeypatch.setattr(RecallSources, "related_conversations", denied)
-    run = run_scenario(tmp_path, bridge_case())
-    assert not run["wire"]
-    assert not run["result"]["claims"]
-    assert not any(
-        d.get("stage") == "relationship_cache"
-        for d in run["internal"].get("diagnostics", [])
-    )
+
+def test_physical_fanout_and_record_budget_are_visible_and_enforced():
+    tools, requests = remote_tools([raw()]); tools.current_window = "target"
+    tools.result["metrics"]["body_requests"] = 12
+    from allday_asr.v3.ports.chat_data import ChatDataError
+    with pytest.raises(ChatDataError): tools.search_remote(SCOPE, [])
+    assert requests == [] and tools.remaining()["body_requests"] == 0

@@ -85,6 +85,7 @@ def main():
             "tests/test_recall_daypart_comparison.py",
             "tests/test_recall_reference_protocol.py",
             "tests/test_recall_bounded_exploration.py",
+            "tests/test_recall_exploration_release.py",
         ],
         cwd=ROOT,
         env=__import__("os").environ | {"PYTHONPATH": str(ROOT / "src")},
