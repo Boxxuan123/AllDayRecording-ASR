@@ -89,6 +89,7 @@ def main():
             "tests/test_recall_native_discovery.py",
             "tests/test_recall_reported_time.py",
             "tests/test_recall_directory_refresh.py",
+            "tests/test_recall_relation_support.py",
         ],
         cwd=ROOT,
         env=__import__("os").environ | {"PYTHONPATH": str(ROOT / "src")},

@@ -9,10 +9,10 @@ class InvestigationRelevance:
         actor = target.get("relation_account", target)
         support = [
             self.refs[e]
-            for e in (
+            for e in dict.fromkeys(
                 action["evidence_ids"]
-                or target.get("relation_evidence", [])
-                or target.get("citations", [])
+                + target.get("relation_evidence", [])
+                + target.get("citations", [])
             )
             if e in self.refs
         ]

@@ -87,7 +87,7 @@ class ScenarioSource(FixtureMac):
         )
 
 
-def run_scenario(root, scenario, *, live=False, model_hook=None):
+def run_scenario(root, scenario, *, live=False, model_hook=None, decision=None):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     db = V3Database.open(root / "core.sqlite3")
@@ -198,6 +198,8 @@ def run_scenario(root, scenario, *, live=False, model_hook=None):
                 time=dict(kind="unresolved", first="", last=""),
                 clarification="PROTOCOL_PROBE_ONLY_NOT_SEMANTIC_SUCCESS",
             )
+        if decision:
+            value = decision(json.loads(kw["prompt"]), value)
         return SimpleNamespace(final_response=json.dumps(value))
 
     original_run = ModelExecutionRunner.run
