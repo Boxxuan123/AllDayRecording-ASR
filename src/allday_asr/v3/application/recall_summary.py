@@ -40,6 +40,8 @@ def summarize(service, result, question, cancel, deadline):
     result["metrics"].setdefault("model_inputs", []).append(handles.receipt(encoded))
     payload = {
         "question": question,
+        "query_reference": result["_query_reference"],
+        "local_now": result["_query_reference"]["local"],
         "query_id": result["query_id"],
         "intent": result["intent"],
         "model_budget_seconds": min(45, int(deadline - time.monotonic())),

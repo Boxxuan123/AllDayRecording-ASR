@@ -4,6 +4,7 @@ import json
 from allday_asr.v3.domain.chat_data import packed
 from allday_asr.v3.domain.recall_answer import INSTRUCTIONS, SCHEMA
 from .model_execution_runner import ModelExecutionRunner
+from .recall_schema import evidence_schema
 
 
 class RecallModelAdapter:
@@ -13,6 +14,7 @@ class RecallModelAdapter:
     def __call__(self, payload, cancel):
         from allday_asr.v3.domain.recall_input_validation import prepare_payload
         payload = prepare_payload(payload)
+        schema = evidence_schema(SCHEMA, payload["records"])
         seconds = payload.get("model_budget_seconds", 45)
         runner = ModelExecutionRunner(
             self.root / "chat/model-receipts",
@@ -25,15 +27,15 @@ class RecallModelAdapter:
         workdir = self.root / "chat/model-workspace"
         workdir.mkdir(parents=True, exist_ok=True)
         instructions = (INSTRUCTIONS
-            + " For intent=conversation, summarize actual topics, important discussions, explicit decisions and unresolved points as separate cited claims. Never answer with a retrieval status. Use ONLY the supplied E-number handles for citations. All coverage is partial. Distinguish plans, decisions, reported completion and verified execution. Compare contradictory evidence explicitly.")
+            + " For intent=conversation, summarize actual topics, important discussions, explicit decisions and unresolved points as separate cited claims. Never answer with a retrieval status. Use ONLY the supplied E-number handles for citations. All coverage is partial. Query-relative dates MUST use query_reference, not the actual execution date or current-date metadata. Message-relative dates use that message timestamp and timezone. Distinguish plans, decisions, reported completion and verified execution. Compare contradictory evidence explicitly.")
         runner.prepare_request(task="history-recall-v2",prompt=packed(payload),
-            instructions=instructions,schema=SCHEMA,model=None,effort="low")
+            instructions=instructions,schema=schema,model=None,effort="low")
         answer = runner.run(
             task="history-recall-v2",
             batch_id=f"history-recall:{payload['query_id']}:{payload.get('summary_attempt', 0)}",
             prompt=packed(payload),
             instructions=instructions,
-            schema=SCHEMA,
+            schema=schema,
             model=None,
             effort="low",
             workdir=workdir,

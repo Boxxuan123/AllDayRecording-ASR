@@ -179,7 +179,8 @@ class HistoryRecall:
         keyword = payload.get("keyword", "")
         if not isinstance(keyword, str) or len(keyword) > 100:
             raise ValueError("关键词过长")
-        now = int(time.time())
+        now = (prepared["_reference_now"] if prepared and "_reference_now" in prepared
+               else int(time.time()))
         scope = {
             "person_id": payload.get("person_id", ""),
             "source": payload.get("source", "all"),
@@ -272,6 +273,7 @@ class HistoryRecall:
                 or scope["sent_to"] - scope["sent_from"] > 366 * 86400
             ):
                 raise ValueError("每次请选择最多 366 天")
+            query_plan["_reference_now"] = now
             terms = query_plan["terms"]
             identity_version = self.identities.version()
         except Exception:
@@ -293,6 +295,8 @@ class HistoryRecall:
             and bool(query_plan["issue"]),
             "summary_retry_available": False,
             "_request": deepcopy(payload),
+            "_query_reference": {"unix": now, "timezone": scope["timezone"],
+                "local": datetime.fromtimestamp(now, ZoneInfo(scope["timezone"])).isoformat()},
             "_plan": deepcopy(query_plan),
             "query_understanding": {
                 "person_mention": query_plan["person_mention"],

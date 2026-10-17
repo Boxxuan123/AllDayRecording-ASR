@@ -2,8 +2,6 @@
 
 import json
 from copy import deepcopy
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from allday_asr.v3.domain.chat_data import packed
 from allday_asr.v3.domain.recall_investigation import (
     SCHEMA,
@@ -13,6 +11,7 @@ from allday_asr.v3.domain.recall_investigation import (
     checked_final,
 )
 from .model_execution_runner import ModelExecutionRunner
+from .recall_schema import evidence_schema
 
 
 class RecallInvestigatorAdapter:
@@ -56,6 +55,7 @@ class RecallInvestigatorAdapter:
             "type": "string",
             "pattern": r"^C[1-9]\d*$",
         }
+        schema = evidence_schema(schema, payload["records"])
         runner.prepare_request(
             task="history-investigation-v1",
             prompt=packed(payload),

@@ -83,6 +83,7 @@ def main():
             "tests/test_recall_acceptance_scenarios.py",
             "tests/test_recall_mobile_parity.py",
             "tests/test_recall_daypart_comparison.py",
+            "tests/test_recall_reference_protocol.py",
         ],
         cwd=ROOT,
         env=__import__("os").environ | {"PYTHONPATH": str(ROOT / "src")},
