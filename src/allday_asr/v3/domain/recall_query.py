@@ -12,7 +12,7 @@ RELATION = re.compile(
     r"|(.+?)(?:跟|和|与)(?:我们|我|本人)(?=聊|谈|讨论|交流|沟通|说)"
 )
 SPEAKER = re.compile(
-    r"(.+?)(?=说了什么|说过什么|说了啥|说过啥|聊了什么|聊过什么|的发言|的原话)"
+    r"(.+?)(?=说了什么|说过什么|说了啥|说过啥|聊了什么|聊过什么|的发言|的原话|说的[“「\"‘]|在.{1,64}(?:说了|发了)什么)"
 )
 
 
@@ -24,7 +24,7 @@ def name_in_text(name, text):
                 r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", text, re.I
             )
         )
-    return len(name) > 1 and name.casefold() in text.casefold()
+    return len(name) > 1 and re.sub(r"\s+", "", name).casefold() in re.sub(r"\s+", "", text).casefold()
 
 
 def dates(question, timezone, now):
@@ -209,7 +209,7 @@ def understand(question, keyword, people, payload, now):
         )
         if found:
             mention = max(found, key=len)
-            remaining = re.sub(re.escape(mention), " ", remaining, flags=re.I)
+            remaining = re.sub(r"\s*".join(re.escape(p) for p in mention.split()), " ", remaining, flags=re.I)
     candidates = (
         list(dict.fromkeys(names.get(mention.casefold(), []))) if mention else []
     )

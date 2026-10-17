@@ -30,6 +30,13 @@ def source_remaining(metrics):
 
 
 class InvestigationBudget:
+    def validate_native_record(self, record):
+        try:
+            self.service.sources.validate_record(record)
+        except ChatDataError:
+            self.flow.record("hard_rejected", record, "invalid_native_record")
+            raise
+
     def normalize_scopes(self):
         normalize_scope(self.root_scope)
 
@@ -113,6 +120,12 @@ class InvestigationBudget:
         value = window_scope(
             self.result["scope"], window, self.result["_request"], self.now
         )
+        # An automatically selected private conversation must not leak into later
+        # discovery scopes as an implicit platform or conversation restriction.
+        if self.plan.get("_contact_scope_is_seed"):
+            value["source"] = self.root_scope["source"]
+            value.pop("source_contacts", None)
+            value.pop("source_accounts", None)
         normalize_scope(value)
         if window != "target":
             self.note(

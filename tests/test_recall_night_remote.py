@@ -266,6 +266,7 @@ def test_later_source_failure_retains_only_valid_bilateral_originals(cold):
 
     for row in cold.source.records:
         row["conversation_id"] = "private-second"
+        row["source_locator"]["conversation_id"] = "private-second"
     original = cold.source.request
     number = 0
 

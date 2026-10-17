@@ -43,7 +43,7 @@ class InvestigationContext:
                         raise ChatDataError("INVALID_CHAT_CONTEXT", 502)
                     self.result["metrics"]["source_records_read"] += len(records)
                     for r in records:
-                        self.service.sources.validate_record(r)
+                        self.validate_native_record(r)
                         if (
                             r["platform"],
                             r["source_account_id"],

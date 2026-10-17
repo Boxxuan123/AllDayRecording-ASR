@@ -35,6 +35,10 @@ class RecallState:
 
     def validate_record(self, record):
         self.identities.cache._record(record)
+        locator = record.get("source_locator", {})
+        if any(locator.get(k) is not None and locator[k] != record.get(k)
+               for k in ("platform", "source_account_id", "conversation_id")):
+            raise ChatDataError("SOURCE_LOCATOR_IDENTITY_MISMATCH", 502)
 
     def evidence(self, record, origin, role="match"):
         from .recall_sources import chat_evidence

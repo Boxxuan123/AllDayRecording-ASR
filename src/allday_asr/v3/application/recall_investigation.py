@@ -173,7 +173,9 @@ def investigate(service, result, plan, question, cancel, deadline, now):
     )
     try:
         from .recall_investigation_seed import seed_topic, seed_person
-        seeded = (seed_topic(tools, _action) or seed_person(tools, _action)) if not plan.get("_parse_error") else False
+        from .recall_investigation_discovery import seed_observed_sender, seed_quoted_topic
+        seeded = (seed_quoted_topic(tools, _action) or seed_observed_sender(tools, _action)
+                  or seed_topic(tools, _action) or seed_person(tools, _action)) if not plan.get("_parse_error") else False
         if not plan.get("_parse_error") and not seeded:
             contacts = result["scope"].get("source_contacts", [])
             identity_lookup = unresolved_person or bool(plan.get("_contact_scope_is_seed") and re.search(r"称呼|外号|对应.{0,8}账号|查清", question))

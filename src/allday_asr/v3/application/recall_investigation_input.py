@@ -73,6 +73,14 @@ def payload(tools, round_number, question):
             or re.search(r"称呼|外号|对应.{0,8}账号|查清", question)
         )
     )
+    body_question = result["_request"]["question"]
+    for term in tools.plan.get("_group_discovery_terms", []):
+        body_question = re.sub(re.escape(term), " ", body_question, flags=re.I)
+    focus["body_question"] = body_question
+    focus["observed_sender_refs"] = [
+        ref for discovery in result.get("sender_discovery", [])
+        for ref in discovery["matched_record_refs"]
+    ]
     seen = result.setdefault("_model_seen_ids", [])
     records, selection = select_evidence(
         [{k: v for k, v in row.items() if k in FIELDS} for row in result["evidence"]],

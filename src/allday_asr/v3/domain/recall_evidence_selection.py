@@ -126,6 +126,23 @@ def select_blocks(rows, steps, claims, scope, seen_ids, limit, byte_limit):
     mandatory = list(
         dict.fromkeys(i for c in claims for i in c.get("citations", []) if i in by_id)
     )
+    # Native-name discovery provides dated query candidates, not factual person
+    # merges. Give a small, room-diverse seat to their statements before dense
+    # unrelated context; the caller cannot supply these IDs in a user request.
+    observed = set(scope.get("observed_sender_refs", []))
+    rooms = {}
+    for row in sorted(focus, key=lambda r: (r.get("sent_at") or 0, r["id"])):
+        if row["id"] in observed and row.get("quote", "").strip():
+            rooms.setdefault(conversation(row), deque()).append(row["id"])
+    seats = []
+    while rooms and len(seats) < 12:
+        for room in list(rooms):
+            seats.append(rooms[room].popleft())
+            if not rooms[room]:
+                del rooms[room]
+            if len(seats) == 12:
+                break
+    mandatory.extend(seats)
     if scope.get("identity_evidence"):
         mandatory.extend(
             i
@@ -183,7 +200,12 @@ def select_blocks(rows, steps, claims, scope, seen_ids, limit, byte_limit):
         )
         context_seats.extend(r["id"] for r in adjacent[:12])
     context_seats = list(dict.fromkeys(context_seats))
-    priority = mandatory + bridges[:4] + relation_seats + context_seats + priority
+    # A source-name clue is not the property asked about. A small contextual
+    # window that matches the remaining question gets seats before exploratory
+    # actor branches; zero-overlap indirect episodes still use relationship seats.
+    from .recall_episode_ranking import question_episode_priority
+    body_seats = question_episode_priority(focus, scope, seen)
+    priority = mandatory + bridges[:4] + body_seats + relation_seats + context_seats + priority
     if not focus:
         priority.extend(
             r["id"]
@@ -220,6 +242,8 @@ def select_blocks(rows, steps, claims, scope, seen_ids, limit, byte_limit):
             not r.get("quote", "").strip() and r["id"] not in identities for r in rows
         ),
         "bridge_ids": bridges[:4],
+        "question_context_candidate_count": len(body_seats),
+        "question_context_selected_count": sum(i in identities for i in body_seats),
         "new_relation_candidate_count": len(relation_seats),
         "new_relation_selected_count": sum(i in identities for i in relation_seats),
         "related_context_candidate_count": len(context_seats),

@@ -30,6 +30,7 @@ def seed_topic(tools, action):
         )
     )
     groups = groups[:3]
+    tools.plan["_group_discovery_terms"] = list(terms)
     tools.result["candidate_schedule"] = [
         {
             "key": c["key"],

@@ -46,7 +46,7 @@ class InvestigationRelevance:
         self.result["metrics"]["source_records_read"] += len(items)
         contacts = {}
         for record in items:
-            self.service.sources.validate_record(record)
+            self.validate_native_record(record)
             if (
                 any(
                     record.get(k) != remote[k]

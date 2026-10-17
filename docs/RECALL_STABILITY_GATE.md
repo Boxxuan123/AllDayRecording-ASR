@@ -26,3 +26,11 @@ permissions/configuration, real phone original/context navigation and restart
 reuse. Keep the deployed baseline when those gates are not met. Never install
 native test modules over the user's signed App or clear its data to get a test
 result.
+
+The same gate also covers native sender metadata discovery across separately
+question-named rooms, independent same-name accounts, short quoted semantic
+leads, and two temporally separate topical contexts. Sender discovery reads
+only bounded authorised message pages through the existing API; it does not
+write person mappings or maintain another message store. Source locators must
+agree with the native platform/account/conversation fields. Replayed SDK
+outputs remain protocol checks, never new semantic successes.

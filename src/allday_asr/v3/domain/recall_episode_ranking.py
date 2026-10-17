@@ -145,3 +145,38 @@ def related_episode_priority(rows, steps, scope, seen_ids, limit):
         if len(ranked) == 2:
             break
     return list(dict.fromkeys(i for branch in ranked for i in branch))
+
+
+def question_episode_priority(rows, scope, seen_ids=()):
+    """Two separated relevant episodes keep earlier uncertainty beside later claims."""
+    body = {
+        **scope,
+        "question": scope.get("body_question", scope.get("question", "")),
+        "terms": [],
+    }
+    terms = features(body)
+    candidates = []
+    seen = set(seen_ids)
+    for room, part in blocks(rows):
+        text = [r for r in part if r.get("quote", "").strip()]
+        if not text:
+            continue
+        scores = [text_score(r["quote"], terms) for r in text]
+        score = max(scores)
+        if not score:
+            continue
+        center = scores.index(score)
+        window = text[max(0, center - 2) : center + 4]
+        candidates.append(
+            (
+                (
+                    -score,
+                    all(r["id"] in seen for r in window),
+                    window[0]["sent_at"],
+                    repr(room),
+                ),
+                window,
+            )
+        )
+    candidates.sort(key=lambda v: v[0])
+    return list(dict.fromkeys(r["id"] for _, window in candidates[:2] for r in window))
