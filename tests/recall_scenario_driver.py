@@ -58,11 +58,15 @@ class ScenarioSource(FixtureMac):
     def __init__(self, scenario):
         super().__init__(scenario["records"])
         self.contacts = deepcopy(scenario["contacts"])
+        self.scenario = scenario
         self.dataset = scenario.get("dataset", self.dataset)
 
     def request(self, route, body=None, **kw):
         if route != "/v1/conversations":
-            return super().request(route, body, **kw)
+            value = super().request(route, body, **kw)
+            if self.scenario.get("reverse_response_rows") and "items" in value:
+                value["items"].reverse()
+            return value
         self.calls.append((route, deepcopy(body), deepcopy(kw)))
         if self.failure:
             from allday_asr.v3.ports.chat_data import ChatDataError
@@ -74,7 +78,7 @@ class ScenarioSource(FixtureMac):
             if all(c.get(k) == v for k, v in kw.get("scope", {}).items())
         ]
         start = int(kw.get("cursor") or 0)
-        limit = kw.get("limit", 500)
+        limit = min(kw.get("limit", 500), self.scenario.get("directory_page_size", 500))
         items = values[start : start + limit]
         return dict(
             items=items,
@@ -167,6 +171,23 @@ def run_scenario(root, scenario, *, live=False, model_hook=None):
                         )
                     ],
                 )
+        if scenario.get("protocol_citation_probe") and value.get("mode") == "answer":
+            rows = json.loads(kw["prompt"]).get("records", [])
+            if rows:
+                value["claims"] = [
+                    dict(
+                        kind="statement",
+                        text="Protocol reference check only; not semantic grading.",
+                        citations=[
+                            "E999999"
+                            if scenario.get("invalid_probe_citation")
+                            else rows[0]["id"]
+                        ],
+                        event_time=dict(
+                            basis="unknown", first="", last="", evidence_id="", quote=""
+                        ),
+                    )
+                ]
         if "contact_keys" in kw["schema"]["properties"]:
             value = dict(
                 intent="quote",

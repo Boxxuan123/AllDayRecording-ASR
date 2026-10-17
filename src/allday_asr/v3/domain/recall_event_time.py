@@ -53,6 +53,18 @@ def validate_message_dayparts(text, hour):
                 r"(?:在|发生于|发生在|前天|昨天|今天|昨|\d{1,2}月\d{1,2}[日号]?|\d{1,2}[日号]|[（）()\s])*$",before)
             if negated:
                 continue
+            # In a dated comparison, this period belongs to the comparison's
+            # object, not to the cited utterance. Check each remaining period
+            # independently; a later affirmative correction is still checked.
+            comparison = re.search(
+                r"比(?:你(?:所)?说的|所问的|预期的|原问题中的)?"
+                r"(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|"
+                r"(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]?|"
+                r"\d{1,2}[日号]|前天|昨天|今天|明天|后天)的?$",
+                before,
+            )
+            if comparison and re.match(r"(?:更)?[早晚]", clause[match.end():]):
+                continue
             a,b=spans[match.group()]
             if not a<=hour<b:
                 raise ValueError("message daypart disagrees with cited utterance")
