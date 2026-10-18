@@ -484,8 +484,11 @@ def test_calendar_date_and_clock_interval_are_constraints(env):
         afternoon["evidence"] == []
         and afternoon["scope"]["sent_from"] == DAY + 12 * 3600
     )
-    with pytest.raises(ValueError, match="明确起止"):
-        ask(env, "昨天09:00我跟蓝老师聊了什么")
+    point = ask(env, "昨天09:00我跟蓝老师聊了什么")
+    assert point["scope"]["sent_from"] == DAY + 9 * 3600
+    assert point["scope"]["sent_to"] == DAY + 9 * 3600 + 59
+    assert all(DAY + 9 * 3600 <= r["sent_at"] <= DAY + 9 * 3600 + 59
+               for r in point["evidence"])
     with pytest.raises(ValueError, match="尚不支持"):
         ask(env, "去年10月13日我跟蓝老师聊了什么")
 

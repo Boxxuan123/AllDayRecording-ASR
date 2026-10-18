@@ -334,3 +334,40 @@ def test_comments_around_media_and_unparsed_suffix_are_preserved():
         and "未解析" in malformed
         and "SYNTHETIC_SECRET" not in malformed
     )
+
+
+@pytest.mark.parametrize("escape", [False, True])
+def test_transport_prefix_with_xml_prolog_keeps_current_and_quoted_text(escape):
+    import html
+    raw = ('transport_sender:\n<?xml version="1.0"?>\n'
+           '<msg><appmsg><title>看着像改过的花展海报</title>'
+           '<refermsg><displayname>小岚</displayname>'
+           '<content>周末花展照常开馆，预约系统需要更新。</content>'
+           '</refermsg><aeskey>SYNTHETIC_SECRET</aeskey></appmsg></msg>')
+    raw = html.escape(raw) if escape else raw
+    original = record(817, raw)
+    original["sender_account_id"] = "current-account"
+    original["sender_display_name"] = "当前发言者"
+    projected = semantic_record(original)
+    assert "看着像改过的花展海报" in projected["text"]
+    assert "周末花展照常开馆" in projected["text"]
+    assert "[引用开始]" in projected["text"] and "[引用结束]" in projected["text"]
+    assert projected["sender_account_id"] == "current-account"
+    assert projected["sender_display_name"] == "当前发言者"
+    assert projected["record_id"] == original["record_id"]
+    assert original["text"] == raw
+    assert "SYNTHETIC_SECRET" not in packed(projected)
+
+
+@pytest.mark.parametrize("prolog", [
+    '<?xml version="1.0"?><!DOCTYPE msg [<!ENTITY e SYSTEM "file:///secret">]>',
+    '<?xml version="1.0"?><!ENTITY e "secret">',
+    '<?xml broken?>',
+    '<?xml version="1.0"?><?xml version="1.0"?>',
+])
+def test_transport_xml_recovery_does_not_accept_declarations_or_malformed_prologs(prolog):
+    safe = semantic_text('transport:\n' + prolog +
+                         '<msg><appmsg><title>隐藏正文</title><aeskey>SYNTHETIC_SECRET</aeskey></appmsg></msg>')
+    assert "隐藏正文" not in safe
+    assert "SYNTHETIC_SECRET" not in safe and "file:///" not in safe
+    assert "未解析" in safe

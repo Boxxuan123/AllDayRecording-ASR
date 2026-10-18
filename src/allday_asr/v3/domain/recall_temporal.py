@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 
 
 def nearby_scope(scope, payload):
-    if any(k in payload for k in ("sent_from", "sent_to")) or payload.get("keyword"):
+    if (any(k in payload for k in ("sent_from", "sent_to")) or payload.get("keyword")
+            or re.search(r"\d{1,2}:\d{2}", payload.get("question", ""))):
         return None
     question = payload.get("question", "")
     if not re.search(r"昨天|前天|昨晚", question) or re.search(

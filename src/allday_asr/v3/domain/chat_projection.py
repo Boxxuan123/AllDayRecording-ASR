@@ -34,6 +34,26 @@ _SEMANTIC = {
 _MEDIA = re.compile(r"https?://\S*(?:cdn|qpic|qlogo|mmwx|wxapp)\S*", re.I)
 
 
+def transport_xml(value):
+    """Relocate one valid document prolog for a text+XML transport envelope.
+
+    Only the first markup may be a prolog; malformed/repeated declarations and
+    DTDs remain failures. Prefix text is content, never sender identity.
+    """
+    first = value.find("<")
+    if first < 0 or not value.startswith("<?xml ", first):
+        return value
+    end = value.find("?>", first)
+    if end < 0:
+        return value
+    declaration = value[first:end + 2]
+    try:
+        ET.fromstring(declaration + "<projection/>")
+    except (ET.ParseError, ValueError):
+        return value
+    return value[:first] + value[end + 2:]
+
+
 def semantic_text(value, depth=0):
     if not isinstance(value, str):
         return value
@@ -53,7 +73,7 @@ def semantic_text(value, depth=0):
             root = ET.fromstring(decoded)
         except (ET.ParseError, ValueError):
             try:
-                root = ET.fromstring("<projection>" + decoded + "</projection>")
+                root = ET.fromstring("<projection>" + transport_xml(decoded) + "</projection>")
             except (ET.ParseError, ValueError):
                 prefix = decoded.split("<", 1)[0].strip()
                 if image:

@@ -96,6 +96,10 @@ class InvestigationBudget:
         m = self.result["metrics"]
         is_body = route in {"/v1/messages", "/v1/context", "/v1/records"}
         left = self.remaining()
+        source = self.service.source
+        timeout = getattr(source, "timeout", getattr(getattr(source, "source", None), "timeout", 3))
+        if m.get("model_calls", 0) and left["seconds"] < 32 + min(15, max(1, timeout)):
+            raise ChatDataError("SOURCE_TIME_RESERVED_FOR_FINAL", 429)
         if not left["source_requests"] or (
             is_body
             and not all(

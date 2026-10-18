@@ -51,6 +51,20 @@ def finalization_reason(round_number, left):
     )
 
 
+
+def model_allocation(round_number, left, available_seconds, has_evidence):
+    """Review source text within the existing 45s cap and 90s query ceiling."""
+    remaining = max(0, min(left["seconds"], available_seconds))
+    reason = finalization_reason(round_number, {**left, "seconds": remaining})
+    if has_evidence and not reason and remaining < 42:
+        reason = "synthesis_reserve"
+    # Nonfinal reading leaves 30s for a later answer and 2s for validation.
+    # Empty planning retains its 25s cap. The final turn cannot request searches.
+    reserve = 32 if has_evidence and not reason else 2
+    cap = 45 if reason or has_evidence else 25
+    return reason, max(0, min(cap, int(remaining) - reserve))
+
+
 def payload(tools, round_number, question):
     result = tools.result
     requested = normalize_scope(
@@ -258,11 +272,9 @@ def payload(tools, round_number, question):
         )
     episodes = episodes[:16]
     left = tools.remaining()
-    final_reason = finalization_reason(round_number, left)
-    # Reallocate the existing query deadline, reserving time for validation.
-    # Exploration stays at 25s; final synthesis shares the simple recap cap.
-    seconds = max(0, min(45 if final_reason else 25,
-                         int(tools.deadline - time.monotonic()) - 2))
+    final_reason, seconds = model_allocation(
+        round_number, left, tools.deadline - time.monotonic(), bool(encoded)
+    )
     result["metrics"].setdefault("model_inputs", []).append(
         {"round": round_number, **handles.receipt(encoded)}
     )

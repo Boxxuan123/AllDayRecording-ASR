@@ -51,8 +51,12 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
 
             if self.root_scope.get("source_platforms") or not re.search(r"QQ|微信|录音", question, re.I):
                 self.root_scope["source"] = result["_request"].get("source", "all")
-        self.root_scope["sent_from"] = result["_request"].get("sent_from", 0)
-        self.root_scope["sent_to"] = min(now, result["_request"].get("sent_to", now))
+        # A parsed message clock is an explicit message constraint, unlike an
+        # approximate event day that can supply historical discovery leads.
+        first = self.root_scope["sent_from"] if plan.get("message_time_explicit") else 0
+        last = self.root_scope["sent_to"] if plan.get("message_time_explicit") else now
+        self.root_scope["sent_from"] = max(first, result["_request"].get("sent_from", 0))
+        self.root_scope["sent_to"] = min(last, now, result["_request"].get("sent_to", now))
         self.normalize_scopes()
         self.authorized_directory = deepcopy(plan.get("_directory", []))
         from allday_asr.v3.domain.recall_query import name_in_text

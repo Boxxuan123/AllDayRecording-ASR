@@ -308,7 +308,8 @@ class HistoryRecall:
             "claims": [],
             "unknown": [],
             "status": "partial",
-            "coverage": [NOTICE, *query_plan.get("directory_notes", [])],
+            "coverage": [NOTICE, *query_plan.get("directory_notes", []),
+                         *([scope["time_precision_note"]] if scope.get("time_precision_note") else [])],
             "model_status": "not_requested",
             "metrics": {
                 "hits": 0,
@@ -442,6 +443,9 @@ class HistoryRecall:
         return self._finish(owner, qid, key, cancel, started, result)
 
     def _finish(self, owner, qid, key, cancel, started, result):
+        note = result["scope"].get("time_precision_note", "")
+        if note and result.get("claims") and note not in result.get("answer", ""):
+            result["answer"] = note + "\n" + result.get("answer", "")
         result["target_remember_available"] = bool(
             self.preferences
             and result["_plan"].get("person_mention")

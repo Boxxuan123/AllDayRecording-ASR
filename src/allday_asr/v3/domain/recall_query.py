@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timedelta, time as clock_time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .recall_language import plan
-from .recall_subject_span import address_span, group_topic_span, known_label
+from .recall_subject_span import address_span, address_context, group_topic_span, known_label
 from .recall_investigation_scope import platform_allowed
 
 DATE = r"(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:\d{4}年)?\d{1,2}月\d{1,2}[日号])"
@@ -52,6 +52,31 @@ def name_in_text(name, text):
     return len(name) > 1 and re.sub(r"\s+", "", name).casefold() in re.sub(r"\s+", "", text).casefold()
 
 
+
+TIME_PRECISION_NOTE = (
+    "检索按日期端点覆盖，深夜侧从18:00起、刚过零点侧至06:00前作为候选窗口；"
+    "这是口语时段的宽检索边界，引用消息的实际时刻另行核对，"
+    "不能据此确认精确事件起止。"
+)
+
+
+def short_day_tail(question, first_date):
+    """Inherit only an explicitly written month/year, never guess a rollover."""
+    tail = question[first_date.end():]
+    match = re.match(
+        r"\s*(?P<before>深夜|午夜)?\s*(?:到|至|~|～|—|–|-)\s*"
+        r"(?P<day>\d{1,2})[日号](?P<after>\s*(?:刚过零点|刚过午夜|零点前后))?",
+        tail,
+    )
+    if match:
+        if re.match(r"\s*(?:凌晨|早上|上午|中午|下午|晚上|零点|\d{1,2}:)", tail[match.end():]):
+            raise ValueError("时间描述尚不支持该跨日时刻组合，请明确起止时间")
+        return match
+    if re.search(r"(?:到|至|~|～|—|–|-)\s*\d{1,2}[日号]", tail):
+        raise ValueError("时间描述尚不支持该短日端点的时段，请明确起止时间")
+    return None
+
+
 def dates(question, timezone, now):
     try:
         zone = ZoneInfo(timezone)
@@ -68,6 +93,7 @@ def dates(question, timezone, now):
     if (matches and relative) or len(relative) > 1 or len(matches) > 2:
         raise ValueError("时间描述有多个范围，请明确日期")
     labels = []
+    short_tail = short_day_tail(question, matches[0]) if len(matches) == 1 else None
     if matches:
         try:
 
@@ -78,6 +104,8 @@ def dates(question, timezone, now):
                 ).date()
 
             first, last = calendar_date(matches[0]), calendar_date(matches[-1])
+            if short_tail:
+                last = first.replace(day=int(short_tail["day"]))
         except ValueError:
             raise ValueError("日期无效") from None
         if len(matches) == 2 and not re.fullmatch(
@@ -85,6 +113,8 @@ def dates(question, timezone, now):
         ):
             raise ValueError("请明确日期范围的起止关系")
         labels = [m.group() for m in matches]
+        if short_tail:
+            labels.append(short_tail.group())
     elif relative:
         label = relative[0].group()
         labels = [label]
@@ -112,20 +142,38 @@ def dates(question, timezone, now):
         raise ValueError("结束日期早于开始日期")
     start = datetime.combine(first, datetime.min.time(), zone)
     end = datetime.combine(last + timedelta(days=1), datetime.min.time(), zone)
+    # Approximate night expressions use the existing broad 18:00--06:00
+    # retrieval envelope, not two complete days or an asserted event time.
+    if short_tail:
+        if short_tail["before"]:
+            start = datetime.combine(first, clock_time(18), zone)
+        if short_tail["after"]:
+            end = datetime.combine(last, clock_time(6), zone)
+    # An adjacent date+clock identifies a message minute/second. A clock in an
+    # event description later in the question is not silently a send-time filter.
+    anchored_point = any(re.search(re.escape(label) + r"\s*\d{1,2}:\d{2}", question)
+                         for label in labels)
     for label in labels:
         question = question.replace(label, " ")
     question = re.sub(r"^\s*(?:到|至|~|～|—|–)\s*", "", question)
-    if labels and labels[0] in {"昨晚", "昨天晚上"}:
+    if labels and labels[0] in {"昨晚", "昨天晚上"} and not re.search(r"\d{1,2}:\d{2}", question):
         start = datetime.combine(first, clock_time(18), zone)
         end = datetime.combine(today, clock_time(6), zone)
         # A night still in progress is bounded by the query's actual instant.
         return (int(start.timestamp()), min(int(end.timestamp()) - 1, now)), question
     hours = re.search(
-        r"(\d{1,2}):(\d{2})\s*(?:到|至|~|～|-)\s*(\d{1,2}):(\d{2})", question
+        r"(?<![\d:])(\d{1,2}):(\d{2})\s*(?:到|至|~|～|-)\s*(\d{1,2}):(\d{2})(?![\d:])", question
     )
+    points = list(re.finditer(r"(?<![\d:])(\d{1,2}):(\d{2})(?::(\d{2}))?(?![\d:])", question))
+    point = points[0] if not hours and anchored_point and len(points) == 1 else None
+    if points and not hours and not point:
+        raise ValueError("请明确起止时刻，不能忽略时间约束")
+    if point and (re.search(r"(?:到|至|~|～|—|–|-)\s*$", question[:point.start()])
+                  or re.match(r"\s*(?:到|至|~|～|—|–|-)", question[point.end():])):
+        raise ValueError("请明确起止时刻，不能忽略时间约束")
     daytime = re.search(r"凌晨|早上|上午|中午|下午|晚上", question)
-    if hours or daytime:
-        if first != last or (hours and daytime):
+    if hours or daytime or point:
+        if first != last or ((hours or point) and daytime):
             raise ValueError("请为时间段指定一个明确自然日")
         if hours:
             a, b, c, d = map(int, hours.groups())
@@ -135,6 +183,21 @@ def dates(question, timezone, now):
             except ValueError:
                 raise ValueError("时刻无效") from None
             question = question.replace(hours.group(), " ")
+        elif point:
+            hour, minute = int(point[1]), int(point[2])
+            try:
+                clock = clock_time(hour, minute, int(point[3] or 0))
+            except ValueError:
+                raise ValueError("时刻无效") from None
+            point_day = first
+            if labels[0] in {"昨晚", "昨天晚上"}:
+                if hour < 6:
+                    point_day += timedelta(days=1)
+                elif hour < 18:
+                    raise ValueError("指定时刻不在昨晚的时段内")
+            start = datetime.combine(point_day, clock, zone)
+            end = start + timedelta(seconds=1 if point[3] is not None else 60)
+            question = question.replace(point.group(), " ", 1)
         else:
             a, b = {
                 "凌晨": (0, 6),
@@ -193,6 +256,10 @@ def understand(question, keyword, people, payload, now):
             "person_candidates": [],
         }
     if period:
+        date_matches = list(re.finditer(DATE, question))
+        tail = short_day_tail(question, date_matches[0]) if len(date_matches) == 1 else None
+        if tail and (tail["before"] or tail["after"]):
+            scope["time_precision_note"] = TIME_PRECISION_NOTE
         scope["sent_from"] = max(period[0], payload.get("sent_from", period[0]))
         scope["sent_to"] = min(period[1], payload.get("sent_to", period[1]))
         if scope["sent_from"] > scope["sent_to"]:
@@ -218,8 +285,8 @@ def understand(question, keyword, people, payload, now):
         scope["relationship"] = "conversation"
         normalized = address_span(mention, people)
         topics = [normalized] if known_label(normalized, people) else re.split(r"关于|有关", mention, maxsplit=1)
-        mention = address_span(topics[0].strip(), people)
-        remaining = remaining.replace(relation.group(), " ", 1)
+        mention, modifier = address_context(topics[0].strip(), people)
+        remaining = modifier + " " + remaining.replace(relation.group(), " ", 1)
         if len(topics) > 1:
             remaining = topics[1] + " " + remaining
     elif speaker:
@@ -296,6 +363,7 @@ def understand(question, keyword, people, payload, now):
         "person_mention": mention,
         "room_mention": room_mention,
         "time_explicit": period is not None,
+        "message_time_explicit": bool(period and re.search(r"\d{1,2}:\d{2}", question)),
         "issue": issue,
         "person_candidates": [people[p] for p in candidates],
     }

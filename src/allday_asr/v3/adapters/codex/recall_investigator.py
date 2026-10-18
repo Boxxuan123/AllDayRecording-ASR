@@ -23,7 +23,9 @@ class RecallInvestigatorAdapter:
 
         payload = prepare_payload(payload)
         final = payload.get("final_round", payload.get("round") == 2)
-        seconds = min(45 if final else 25, payload["model_budget_seconds"])
+        # Reading already-validated evidence is not an empty planning turn.
+        cap = 45 if final or payload.get("records") else 25
+        seconds = min(cap, payload["model_budget_seconds"])
         if seconds < 1:
             raise TimeoutError("query deadline leaves no model execution time")
         runner = ModelExecutionRunner(
