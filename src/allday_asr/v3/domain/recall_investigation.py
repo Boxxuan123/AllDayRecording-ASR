@@ -194,6 +194,9 @@ hard date, do not answer outside it. For approximate relative wording, answer th
 message date and daypart. Explain the date discrepancy once; do not replace an available content
 answer with repeated statements that the requested day is unknown.
 window nearby is one preceding natural day for approximate relative wording; explain the actual message date correction, never silently claim it happened on the requested date. Explicit UI/calendar dates cannot widen.
+When source_windows is present, each entry jointly binds its native room and date.
+The enclosing sent_from/sent_to pair is only a bounding envelope, never permission
+to cross-combine rooms/dates or read intervening dates. Compare clauses separately.
 window target is requested event date; followup is bounded later discussion (at most two local
 calendar days). identity is an explicit bounded 30-day address search. Hard UI dates win.
 Resolve unsupported dates from local_now using time; unchanged cannot repair unresolved time.

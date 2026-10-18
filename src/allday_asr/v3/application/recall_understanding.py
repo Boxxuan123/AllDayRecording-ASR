@@ -91,6 +91,12 @@ def interpret(
             "issue": error,
             "person_candidates": [],
         }
+    if error == "请明确日期范围的起止关系" and service.investigator is not None and payload.get("summarize",True):
+        from allday_asr.v3.domain.recall_scope_clauses import paired_plan
+        paired=paired_plan(question,keyword,book,payload,now,directory)
+        if paired is not None:
+            paired.update(directory_notes=[*notes,"逐项保留明确日期与群的对应关系；外层起止仅是包络，不表示连续检索。"],directory_requests=requests,understanding_calls=0,contact_lookup_allowed=False)
+            return paired
     if (
         (fast["scope"]["source"] in {"qq", "wechat", "recording"} or fast["scope"].get("source_platforms"))
         and payload.get("source", "all") == "all"

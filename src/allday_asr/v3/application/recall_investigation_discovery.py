@@ -217,6 +217,61 @@ def seed_observed_sender(tools, action):
     return True
 
 
+def seed_scoped_windows(tools, action):
+    """Explicit paired rooms are read once each under the shared physical budget."""
+    if not tools.plan.get("_paired_windows"):
+        return False
+    mention = tools.plan.get("person_mention", "")
+    found = []
+    for c in tools.result["scope"].get("source_contacts", [])[:2]:
+        ref = tools.ref("contact", c, c["key"])
+        hits = tools.run(action("search_messages", targets=[ref]), [])
+        native = []
+        for ref in hits:
+            row = tools.refs[ref]
+            if (
+                mention
+                and _name(row.get("speaker")) == _name(mention)
+                and row.get("sender_account_id")
+                and row.get("source_is_from_self") is False
+            ):
+                native.append(ref)
+        found.extend(native)
+        tools.result.setdefault("sender_discovery", []).append(
+            dict(
+                namespace={
+                    k: c[k]
+                    for k in ("platform", "source_account_id", "conversation_id")
+                },
+                records_read=len(hits),
+                matched_record_refs=native,
+                has_more=False,
+                persistent_person_merge=False,
+            )
+        )
+    actors = {}
+    for ref in found:
+        row = tools.refs[ref]
+        key = (row["source"], row["source_account_id"], row["sender_account_id"])
+        actors.setdefault(key, []).append(ref)
+    tools.result["sender_candidate_relations"] = [
+        dict(
+            platform=k[0],
+            source_account_id=k[1],
+            sender_account_id=k[2],
+            evidence_ids=refs,
+            evidence_versions={ref: tools.refs[ref]["revision"] for ref in refs},
+            basis="observed_native_name_candidate",
+            persistent_person_merge=False,
+        )
+        for k, refs in actors.items()
+    ]
+    tools.note(
+        "按每个指定群及其各自日期取证；发送者昵称只作来源账号候选，不合并现实身份。"
+    )
+    return True
+
+
 def resolve_sender_subject(tools):
     """Resolve a scoped speaker-label recap, without confirming a real-world person."""
     if (tools.plan.get("intent") != "conversation"

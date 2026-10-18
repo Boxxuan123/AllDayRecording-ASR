@@ -1,17 +1,13 @@
 """Capability-limited reads used by the existing HistoryRecall lifecycle."""
 
 from copy import deepcopy
-from datetime import datetime
-from zoneinfo import ZoneInfo
 import json
 import hashlib
 import time
-from allday_asr.v3.domain.recall_investigation import window_scope
 from allday_asr.v3.ports.chat_data import ChatDataError
 from allday_asr.v3.domain.recall_investigation_scope import (
     remote_grants,
     contact_record_allowed,
-    intersect_root,
     inside_root,
 )
 
@@ -21,6 +17,9 @@ from .recall_evidence_flow import EvidenceFlow
 from allday_asr.v3.domain.recall_event_anchor import event_anchors, literal_anchor
 from .recall_investigation_relevance import InvestigationRelevance
 
+
+from .recall_investigation_budget import InvestigationBudget
+from allday_asr.v3.domain.recall_scope_windows import scope_parts
 
 READ_TOOLS = frozenset(
     {
@@ -36,7 +35,6 @@ READ_TOOLS = frozenset(
 )
 
 
-from .recall_investigation_budget import InvestigationBudget
 
 
 class InvestigationTools(InvestigationContext, InvestigationRelevance, InvestigationBudget):
@@ -100,12 +98,6 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
         if message not in self.result["coverage"]:
             self.result["coverage"].append(message)
 
-    def bounded_scope(self, scope):
-        bounded = intersect_root(self.root_scope, scope)
-        if bounded is None:
-            self.note("调查目标与原查询硬筛选不相交，未读取该范围；当前覆盖不足。")
-        return bounded
-
     def add(self, rows):
         self.checkpoint()
         allowed = []
@@ -147,12 +139,7 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
                 row.get("relation_ids", []),
             )
             saved[row["id"]] = row
-            context_scope = deepcopy(self.current_scope)
-            context_scope.pop("source_contacts", None)
-            context_scope.pop("source_accounts", None)
-            context_scope["relationship"] = "topic"
-            context_scope = self.bounded_scope(context_scope)
-            self.result["_evidence_scopes"][row["id"]] = context_scope
+            self.result["_evidence_scopes"][row["id"]] = self.evidence_context_scope(row)
             self.refs[row["id"]] = {"ref": row["id"], "type": "evidence", **row}
             refs.append(row["id"])
             if (
@@ -258,7 +245,8 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
         support = list(action["evidence_ids"])
         for target in targets:
             support.extend(target.get("citations", target.get("evidence_ids", [])))
-            if target["type"] == "evidence": support.append(target["ref"])
+            if target["type"] == "evidence":
+                support.append(target["ref"])
         trace = {
             "purpose": action["purpose"],
             "tool": tool,
@@ -266,6 +254,7 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
             "window": action["window"],
             "sent_from": scope["sent_from"],
             "sent_to": scope["sent_to"],
+            **({"source_windows": deepcopy(scope["source_windows"])} if scope.get("source_windows") else {}),
             "support": list(dict.fromkeys(support)),
             "hits": [],
             "sufficient": False,
@@ -364,53 +353,55 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
             selected = self.bounded_scope(selected)
             if selected is None:
                 continue
-            self.current_scope = selected
-            remaining = min(
-                40 if targets and not action["terms"] else 20,
-                300 - len(self.result["evidence"]),
-            )
-            if remaining <= 0:
-                self.note("证据预算耗尽。")
-                break
-            if selected["source"] != "recording":
-                try:
-                    rows, more = self.service.sources.chat(
+            partitions = scope_parts(selected)
+            for selected in partitions:
+                self.current_scope = selected
+                remaining = min(
+                    40 if targets and not action["terms"] else 20,
+                    300 - len(self.result["evidence"]),
+                )
+                if remaining <= 0:
+                    self.note("证据预算耗尽。")
+                    break
+                if selected["source"] != "recording":
+                    try:
+                        rows, more = self.service.sources.chat(
+                            selected,
+                            self.candidate_terms(action["terms"]),
+                            remaining,
+                            self.cancel,
+                            min(self.deadline, time.monotonic() + 3),
+                        )
+                    except ChatDataError as exc:
+                        if exc.code not in {"CACHE_BODY_BUDGET_REACHED", "CACHE_RECORD_BUDGET_REACHED"}:
+                            raise
+                        rows,more=[],True
+                        self.note("缓存正文额度已用完；仅在剩余来源额度内继续授权远端检索，不重置缓存计数。")
+                    rows = self.cache_rows(rows)
+                    self.flow.received(rows, "cache", "topic_search")
+                    found.extend(self.add(self.topic_rows(rows, action["terms"])))
+                    if more:
+                        self.note("单次聊天检索只读取有限条记录；未覆盖其他页。")
+                    # Existing source API, never a new network destination or arbitrary query.
+                    if self.result["_request"].get("expand", True):
+                        try:
+                            found.extend(self.search_remote(selected, action["terms"]))
+                        except ChatDataError as exc:
+                            self.note(
+                                "来源未完整取回：" + exc.code + "；保留部分缓存依据。"
+                            )
+                if selected["source"] not in {"qq", "wechat"} and target is None:
+                    rows, more = self.service.sources.recordings(
                         selected,
-                        self.candidate_terms(action["terms"]),
+                        action["terms"],
                         remaining,
                         self.cancel,
                         min(self.deadline, time.monotonic() + 3),
                     )
-                except ChatDataError as exc:
-                    if exc.code not in {"CACHE_BODY_BUDGET_REACHED", "CACHE_RECORD_BUDGET_REACHED"}:
-                        raise
-                    rows,more=[],True
-                    self.note("缓存正文额度已用完；仅在剩余来源额度内继续授权远端检索，不重置缓存计数。")
-                rows = self.cache_rows(rows)
-                self.flow.received(rows, "cache", "topic_search")
-                found.extend(self.add(self.topic_rows(rows, action["terms"])))
-                if more:
-                    self.note("单次聊天检索只读取有限条记录；未覆盖其他页。")
-                # Existing source API, never a new network destination or arbitrary query.
-                if self.result["_request"].get("expand", True):
-                    try:
-                        found.extend(self.search_remote(selected, action["terms"]))
-                    except ChatDataError as exc:
-                        self.note(
-                            "来源未完整取回：" + exc.code + "；保留部分缓存依据。"
-                        )
-            if selected["source"] not in {"qq", "wechat"} and target is None:
-                rows, more = self.service.sources.recordings(
-                    selected,
-                    action["terms"],
-                    remaining,
-                    self.cancel,
-                    min(self.deadline, time.monotonic() + 3),
-                )
-                self.flow.received(rows, "cache", "recording_search")
-                found.extend(self.add(rows))
-                if more:
-                    self.note("单次录音检索只读取前 20 条。")
+                    self.flow.received(rows, "cache", "recording_search")
+                    found.extend(self.add(rows))
+                    if more:
+                        self.note("单次录音检索只读取前 20 条。")
         return list(dict.fromkeys(found))
 
     def search_remote(self, scope, terms):
@@ -530,7 +521,8 @@ class InvestigationTools(InvestigationContext, InvestigationRelevance, Investiga
                 target = {**target, "platform": target["source"], "type": "account"}
             if target["type"] != "account":
                 continue
-            if not hasattr(self,"related_actors"): self.related_actors = set()
+            if not hasattr(self,"related_actors"):
+                self.related_actors = set()
             self.related_actors.add((target["platform"],target["source_account_id"],target["sender_account_id"]))
             if scope["person_id"] and target.get("person_id") != scope["person_id"]:
                 raise ValueError("person constraint violation")

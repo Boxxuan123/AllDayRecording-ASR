@@ -26,6 +26,19 @@ class InvestigationRelevance:
         )
 
     def remote_related(self, target, scope):
+        if not scope.get("source_windows"):
+            return self._remote_related_one(target, scope)
+        from allday_asr.v3.domain.recall_scope_windows import scope_parts
+
+        refs = []
+        for part in scope_parts(scope):
+            w = part["source_windows"][0]
+            if any(target.get(k) != w[k] for k in ("platform", "source_account_id")):
+                continue
+            refs.extend(self._remote_related_one(target, part))
+        return list(dict.fromkeys(refs))
+
+    def _remote_related_one(self, target, scope):
         from .recall_investigation_tools import contact_record_allowed
         from allday_asr.v3.ports.chat_data import ChatDataError
         from allday_asr.v3.domain.recall_investigation_scope import inside_root
@@ -35,6 +48,8 @@ class InvestigationRelevance:
         remote = {
             k: target[k] for k in ("platform", "source_account_id", "sender_account_id")
         }
+        if scope.get("source_windows"):
+            remote["conversation_id"]=scope["source_windows"][0]["conversation_id"]
         remote.update(sent_from=scope["sent_from"], sent_to=scope["sent_to"])
         limit = min(20, 200 - self.result["metrics"]["source_records_read"])
         if limit <= 0:
@@ -50,7 +65,7 @@ class InvestigationRelevance:
             if (
                 any(
                     record.get(k) != remote[k]
-                    for k in ("platform", "source_account_id", "sender_account_id")
+                    for k in ("platform", "source_account_id", "sender_account_id", "conversation_id") if k in remote
                 )
                 or not remote["sent_from"]
                 <= (record.get("sent_at") or -1)
@@ -75,7 +90,8 @@ class InvestigationRelevance:
             else:
                 # A validated native message establishes its own authorized room even
                 # when the unrelated directory pagination has not reached that room.
-                import hashlib, json
+                import hashlib
+                import json
                 stable = [row.get("dataset"), row["source"], row["source_account_id"], row["conversation_id"]]
                 contact = dict(key=hashlib.sha256(json.dumps(stable, ensure_ascii=False).encode()).hexdigest()[:32],
                     platform=row["source"], source_account_id=row["source_account_id"],

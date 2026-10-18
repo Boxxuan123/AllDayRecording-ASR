@@ -82,8 +82,12 @@ def intersect_root(root, dynamic):
             return None
         if hard != wildcard:
             scope[key] = hard
-    allowed = set(root.get("source_platforms", ["qq", "wechat", "recording"])) & set(scope.get("source_platforms", ["qq", "wechat", "recording"]))
-    if not allowed or (scope.get("source", "all") != "all" and scope["source"] not in allowed):
+    allowed = set(root.get("source_platforms", ["qq", "wechat", "recording"])) & set(
+        scope.get("source_platforms", ["qq", "wechat", "recording"])
+    )
+    if not allowed or (
+        scope.get("source", "all") != "all" and scope["source"] not in allowed
+    ):
         return None
     if root.get("source_platforms") or scope.get("source_platforms"):
         scope["source_platforms"] = sorted(allowed)
@@ -121,10 +125,38 @@ def intersect_root(root, dynamic):
         ]
         if not scope["source_contacts"]:
             return None
+    if root.get("source_windows"):
+        # Root pairs are immutable; a dynamic sub-window may only narrow them.
+        requested = scope.get("source_windows", root["source_windows"])
+        windows = []
+        for hard in root["source_windows"]:
+            if not platform_allowed(scope, hard["platform"]):
+                continue
+            if scope.get("source_contacts") and not any(
+                all(c.get(k) == hard[k] for k in KEYS[:3])
+                for c in scope["source_contacts"]
+            ):
+                continue
+            for choice in requested:
+                if any(choice.get(k) != hard[k] for k in KEYS[:3]):
+                    continue
+                a = max(hard["sent_from"], choice["sent_from"], scope["sent_from"])
+                b = min(hard["sent_to"], choice["sent_to"], scope["sent_to"])
+                if a <= b:
+                    windows.append({**hard, "sent_from": a, "sent_to": b})
+        if not windows:
+            return None
+        scope["source_windows"] = windows
+        scope["sent_from"] = min(w["sent_from"] for w in windows)
+        scope["sent_to"] = max(w["sent_to"] for w in windows)
     return scope
 
 
 def inside_root(value, root, *, evidence=False):
+    from .recall_scope_windows import window_allows
+
+    if not window_allows(value, root, evidence=evidence):
+        return False
     platform = value.get("platform", value.get("source"))
     if not platform_allowed(root, platform):
         return False

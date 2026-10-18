@@ -69,6 +69,8 @@ class RecallState:
         return [self.evidence(r, "cache", "context") for r in records]
 
     def filter_context(self, records, scope):
+        from allday_asr.v3.domain.recall_scope_windows import window_allows
+        records=[r for r in records if window_allows(r,scope,evidence=True)]
         records = [
             r
             for r in records

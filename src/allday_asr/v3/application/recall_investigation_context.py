@@ -37,7 +37,11 @@ class InvestigationContext:
             if not inside_root(target, self.root_scope, evidence=True):
                 self.note("上下文目标不属于原查询硬范围，未读取。")
                 continue
-            selected = self.bounded_scope({**scope, "relationship": "topic"})
+            selected = self.bounded_scope({**scope, "relationship": "group" if scope.get("source_windows") else "topic"})
+            if selected is None:
+                continue
+            from allday_asr.v3.domain.recall_scope_windows import record_scope
+            selected = record_scope(selected,target)
             if selected is None:
                 continue
             self.current_scope = selected
@@ -51,7 +55,7 @@ class InvestigationContext:
                 (r for r in rows if r["record_id"] == target["record_id"]), None
             )
             if anchor and anchor["revision"] == target["revision"]:
-                found.extend(self.add(self.context_rows(rows, target, scope, terms)))
+                found.extend(self.add(self.context_rows(rows, target, selected, terms)))
             if self.result["_request"].get("expand", True):
                 try:
                     self.verify_remote()
@@ -93,7 +97,7 @@ class InvestigationContext:
                         for r in records
                     ]
                     found.extend(
-                        self.add(self.context_rows(rows, target, fallback_window or scope, terms))
+                        self.add(self.context_rows(rows, target, fallback_window or selected, terms))
                     )
                 except ChatDataError as exc:
                     self.note("上下文未完整核对：" + exc.code)

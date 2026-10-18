@@ -3,16 +3,13 @@
 from copy import deepcopy
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
-import json
 import re
 import time
 from allday_asr.v3.domain.recall_investigation import checked, date_scope
 from allday_asr.v3.ports.chat_data import ChatDataError
 from .recall_investigation_tools import InvestigationTools
-from .recall_citation_handles import CitationHandles
+from .recall_investigation_input import payload as _payload
 from .recall_investigation_budget import normalize_scope
-from allday_asr.v3.domain.recall_evidence_selection import select_evidence
-from allday_asr.v3.domain.memory_content import safe_memory
 
 
 def _action(tool, terms=None, targets=None, window="target"):
@@ -26,7 +23,6 @@ def _action(tool, terms=None, targets=None, window="target"):
     }
 
 
-from .recall_investigation_input import payload as _payload
 
 
 def _claims(value, evidence, scope):
@@ -162,13 +158,15 @@ def investigate(service, result, plan, question, cancel, deadline, now):
     result["coverage"].append(
         "调查最多四次模型调用、十八次来源请求（正文最多十二次/200条），保留最终归纳额度；推断仅本次有效。消息发送时间与事件时间分别核对。"
     )
+    if plan.get("_paired_windows"):
+        result["requested_scope"]=deepcopy(result["scope"])
     unresolved_person = bool(
         plan["issue"] and plan["person_mention"] and not result["scope"]["person_id"]
     )
     try:
         from .recall_investigation_seed import seed_topic, seed_person
-        from .recall_investigation_discovery import seed_observed_sender, seed_quoted_topic
-        seeded = (seed_quoted_topic(tools, _action) or seed_observed_sender(tools, _action)
+        from .recall_investigation_discovery import seed_observed_sender, seed_quoted_topic, seed_scoped_windows
+        seeded = (seed_scoped_windows(tools, _action) or seed_quoted_topic(tools, _action) or seed_observed_sender(tools, _action)
                   or seed_topic(tools, _action) or seed_person(tools, _action)) if not plan.get("_parse_error") else False
         if not plan.get("_parse_error") and not seeded:
             contacts = result["scope"].get("source_contacts", [])
@@ -344,7 +342,7 @@ def investigate(service, result, plan, question, cancel, deadline, now):
                 result["supported_message_dates"] = days
                 result["supported_event_dates"] = [c["event_time"] for c in claims if c["event_time"]["basis"] != "unknown"]
                 requested_day = datetime.fromtimestamp(result["scope"]["sent_from"], ZoneInfo(result["scope"]["timezone"])).date().isoformat()
-                if days and any(day != requested_day for day in days):
+                if days and any(day != requested_day for day in days) and not result["scope"].get("source_windows"):
                     times = [datetime.fromtimestamp(evidence[cid]["sent_at"],ZoneInfo(result["scope"]["timezone"])) for cid in cited]
                     spans = [f"{day} {min(t for t in times if t.date().isoformat()==day):%H:%M}–{max(t for t in times if t.date().isoformat()==day):%H:%M}" for day in days]
                     result["time_notice"] = f"原问题解释为 {result['scope']['sent_from_local']} 至 {result['scope']['sent_to_local']}；引用消息实际时间为 {'；'.join(spans)}，不能把相邻时段的发言当作原时段发生的事；事件或计划时间另按原文核对。"

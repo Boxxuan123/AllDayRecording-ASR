@@ -14,6 +14,11 @@ def normalize_scope(scope):
         scope[key + "_local"] = datetime.fromtimestamp(
             scope[key], ZoneInfo(scope["timezone"])
         ).isoformat()
+    for window in scope.get("source_windows", []):
+        for key in ("sent_from", "sent_to"):
+            window[key + "_local"] = datetime.fromtimestamp(
+                window[key], ZoneInfo(scope["timezone"])
+            ).isoformat()
     return scope
 
 
@@ -38,7 +43,28 @@ class InvestigationBudget:
             raise
 
     def normalize_scopes(self):
+        if self.root_scope.get("source_windows"):
+            # The named actor is a semantic subject, not permission to drop the
+            # user's questions or other participants inside explicit group windows.
+            self.root_scope["relationship"] = "group"
         normalize_scope(self.root_scope)
+
+    def bounded_scope(self, scope):
+        from allday_asr.v3.domain.recall_investigation_scope import intersect_root
+        bounded = intersect_root(self.root_scope, scope)
+        if bounded is None:
+            self.note("调查目标与原查询硬筛选不相交，未读取该范围；当前覆盖不足。")
+        return normalize_scope(bounded) if bounded is not None else None
+
+    def evidence_context_scope(self, row):
+        from allday_asr.v3.domain.recall_scope_windows import record_scope
+        scope = deepcopy(self.current_scope)
+        scope.pop("source_contacts", None)
+        scope.pop("source_accounts", None)
+        scope["relationship"] = "group" if scope.get("source_windows") else "topic"
+        scope = self.bounded_scope(scope)
+        scope = record_scope(scope,row) if scope is not None else None
+        return normalize_scope(scope) if scope is not None else None
 
     def remaining(self):
         m = self.result["metrics"]
@@ -134,6 +160,7 @@ class InvestigationBudget:
         self.result.setdefault("attempted_windows", []).append(
             {
                 "window": window,
+                **({"source_windows": deepcopy(value["source_windows"])} if value.get("source_windows") else {}),
                 **{
                     k: value[k]
                     for k in (

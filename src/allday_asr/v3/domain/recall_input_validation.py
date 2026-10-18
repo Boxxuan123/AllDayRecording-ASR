@@ -37,6 +37,11 @@ def prepare_payload(payload):
         if local_now
         else value["scope"]["sent_to"]
     )
+    hard = value.get("hard_scope",value["scope"])
+    if hard.get("source_windows"):
+        from .recall_investigation_scope import inside_root
+        if any(not inside_root(r,hard,evidence=True) for r in rows):
+            raise ValueError("input evidence violates joint source/date scope")
     handles = {r["id"] for r in rows}
     for row in rows:
         if not re.fullmatch(r"E[1-9]\d*", row["id"]) or not row.get("revision", 0) > 0:
