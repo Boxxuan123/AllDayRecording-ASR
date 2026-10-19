@@ -63,7 +63,10 @@ def episode_text(ep):
 
 
 class HindsightBackend:
-    def __init__(self, root, models, model, bank="memory-core-v2"):
+    def __init__(
+        self, root, models, model, bank="memory-core-v2", *, extraction_limit=30
+    ):
+        self.extraction_limit = extraction_limit
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.models = Path(models).resolve()
@@ -283,9 +286,9 @@ class HindsightBackend:
                         r["phase"].startswith("retain:")
                         for r in self.model.ledger.export()["attempts"]
                     )
-                    >= 30
+                    >= self.extraction_limit
                 ):
-                    raise RuntimeError("EXTRACTION_STAGE_LIMIT_30")
+                    raise RuntimeError("EXTRACTION_STAGE_LIMIT")
                 output = await asyncio.to_thread(
                     self.model.call,
                     "retain:batch",

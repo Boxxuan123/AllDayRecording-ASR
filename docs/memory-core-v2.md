@@ -14,3 +14,15 @@ natural question -> bounded model planner -> retrieve (Hindsight + raw projectio
 overview -> same SourceStore / evidence / answer path; never writes generated summaries to memory.
 
 Final execution results and limitations are recorded in REPORT-memory-core-v2.md.
+
+Stage 2 execution:
+- `query.py` executes model-produced source windows and inherits validated focus anchors.
+- `selection.py` ranks continuous source fragments and packs bytes with shared actor headers.
+- `MemoryCore.query` bounds the full warm query to 180 seconds; model calls remain <=90 seconds and <=4 per query.
+- `answer` can request at most two grounded actions per round; repeated searches and invalid/stale anchors are rejected.
+- `continuation status|run` uses a distinct 24-attempt / 400,000-token ledger. Persisted policy cannot be relaxed by another entry point.
+- `raw` and `hybrid` component modes share planner output, source validation, fragment ranking and input limits.
+- A valid quotation establishes provenance, not logical entailment. See the explicit synthetic counterexample and the report.
+
+The final post-budget source changes have offline tests, not final-version semantic acceptance.
+Evaluation fixtures and source windows are local caller inputs; no case answers or required IDs are imported by production modules.

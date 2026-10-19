@@ -1,4 +1,4 @@
-param([ValidateSet('preflight','ingest','compare','overview','ask','demo','metamorphic','continue')][string]$Mode='preflight',[string]$Question='')
+param([ValidateSet('preflight','ingest','compare','overview','ask','demo','metamorphic','continue','stage2-status','stage2-continue')][string]$Mode='preflight',[string]$Question='')
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $taskRoot
@@ -8,7 +8,10 @@ if (-not (Test-Path -LiteralPath 'outputs/private/corpus/snapshot-multiwindow.js
 $env:PYTHONPATH=Join-Path $taskRoot 'src'
 $env:HF_HUB_DISABLE_TELEMETRY='1'
 $env:OTEL_SDK_DISABLED='true'
-if ($Mode -eq 'continue') {
+if ($Mode -in @('stage2-status','stage2-continue')) {
+    $taskCommand = if ($Mode -eq 'stage2-status') { 'status' } else { 'run' }
+    & $taskPython -X utf8 -m allday_asr.memory_v2.continuation $taskCommand
+} elseif ($Mode -eq 'continue') {
     foreach ($taskStage in @('ingest','compare','demo','metamorphic')) {
         & $taskPython -X utf8 -m allday_asr.memory_v2.cli $taskStage
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

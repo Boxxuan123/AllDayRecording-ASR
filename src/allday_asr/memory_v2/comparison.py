@@ -1,6 +1,7 @@
 """Fixed exposed development comparison, evaluation-only, never imported by ingestion."""
 
 import asyncio
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -11,7 +12,7 @@ from allday_asr.v3.adapters.codex.model_execution_runner import ModelExecutionRu
 import allday_asr.v3.application.history_recall as history
 
 
-def baseline(snapshot, case, root, shared_model):
+def baseline(snapshot, case, root, shared_model, *, dry_run=False):
     # Generic queryable source emulator: arbitrary scope/cursor/context queries
     # over all frozen native records. No question-to-answer lookup exists.
     from .frozen import FrozenSnapshot
@@ -35,6 +36,10 @@ def baseline(snapshot, case, root, shared_model):
     from allday_asr.v3.adapters.sqlite.chat_cache import ChatCache
 
     ChatCache(folder / "chat/cache.sqlite3")
+    if snapshot.get("replay_preferences"):
+        (folder / "chat/recall-preferences.json").write_text(
+            json.dumps(snapshot["replay_preferences"], ensure_ascii=False), "utf-8"
+        )
     service = composition.compose_history_recall(database, folder, source)
     original_run = ModelExecutionRunner.run
     calls = []
@@ -59,11 +64,35 @@ def baseline(snapshot, case, root, shared_model):
                 for k in ("task", "prompt", "instructions", "schema", "model", "effort")
             }
         )
-        if len(calls) >= 3:
-            raise RuntimeError("COMPARISON_QUERY_GENERATION_LIMIT_3")
+        if len(calls) >= 4:
+            raise RuntimeError("COMPARISON_QUERY_GENERATION_LIMIT_4")
         from .model import validate_schema_refs
 
         validate_schema_refs(prepared["schema"])
+        if dry_run:
+            calls.append({"preflight_request": prepared})
+            raise RuntimeError("ZERO_GENERATION_PREFLIGHT")
+        job_id = hashlib.sha256(
+            json.dumps(
+                prepared, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+        cached = runner.receipt_dir / (job_id + ".job.json")
+        if cached.exists():
+            prior = json.loads(cached.read_text("utf-8"))
+            if prior.get("status") == "completed":
+                from allday_asr.v3.adapters.codex.model_execution_runner import (
+                    _restore_result,
+                )
+
+                calls.append(
+                    {
+                        "request": prepared,
+                        "cache_replay": job_id,
+                        "raw_response": prior["result"]["final_response"],
+                    }
+                )
+                return _restore_result(prior["result"])
         n = shared_model.ledger.reserve(
             phase, len(json.dumps(prepared, ensure_ascii=False).encode()) + 32768
         )
@@ -129,7 +158,8 @@ def baseline(snapshot, case, root, shared_model):
     return {
         "result": result,
         "elapsed_seconds": time.monotonic() - started,
-        "model_attempts": len(calls),
+        "model_attempts": sum("number" in c for c in calls),
+        "cache_replays": sum("cache_replay" in c for c in calls),
         "audit": str(folder),
     }
 

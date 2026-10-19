@@ -2,12 +2,17 @@
 
 import asyncio
 import json
+import re
 import time
 import uuid
-from collections import Counter
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dataclasses import asdict
 from .contracts import digest
-from .raw import RawIndex, text
+from .raw import RawIndex
+from .selection import room_key, wire_record, catalogue, validate_task
+from .query import retrieve, valid_focus
+from .model import query_scope
 from .contracts import strict_schema
 
 PLAN_SCHEMA = strict_schema(
@@ -22,6 +27,24 @@ PLAN_SCHEMA = strict_schema(
                     "properties": {
                         "query": {"type": "string"},
                         "object_hint": {"type": "string"},
+                        "conversation_keys": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": 6,
+                        },
+                        "message_start": {"type": ["integer", "null"]},
+                        "message_end": {"type": ["integer", "null"]},
+                        "purpose": {
+                            "type": "string",
+                            "enum": [
+                                "direct",
+                                "identity",
+                                "followup",
+                                "date_check",
+                                "context",
+                            ],
+                        },
+                        "basis": {"type": "string"},
                         "event_start": {"type": ["integer", "null"]},
                         "event_end": {"type": ["integer", "null"]},
                     },
@@ -70,8 +93,13 @@ ANSWER_SCHEMA = strict_schema(
 )
 
 
+ANSWER_SCHEMA["properties"]["retrieval_actions"] = PLAN_SCHEMA["properties"]["tasks"]
+ANSWER_SCHEMA["required"].append("retrieval_actions")
+
+
 class MemoryCore:
-    def __init__(self, store, backend, model):
+    def __init__(self, store, backend, model, *, preferences=None):
+        self.preferences = preferences or []
         self.store = store
         self.backend = backend
         self.model = model
@@ -110,162 +138,68 @@ class MemoryCore:
             "pending": len(pending),
         }
 
-    async def retrieve(self, question, reference, grant, *, plan=True):
-        started = time.monotonic()
-        allowed = self.store.records(grant)
-        catalogue = sorted(
-            {(r.platform, r.conversation_name, r.speaker) for r in allowed}
-        )
-        if plan:
-            planned = await asyncio.to_thread(
-                self.model.call,
-                "plan",
-                {
-                    "question": question,
-                    "reference_unix": reference,
-                    "timezone": "Asia/Singapore",
-                    "available_native_labels": catalogue,
-                },
-                PLAN_SCHEMA,
-                "Interpret the original natural question. Produce at most 4 independent semantic searches, each with its own object and event window. Labels are exploration candidates, not confirmed identity. Do not narrow authorization. Include causes/follow-up/contradiction searches when useful. Query-relative dates use reference_unix. Event time is not message time.",
-            )
-        else:
-            planned = {
-                "tasks": [
-                    {
-                        "query": question,
-                        "object_hint": "",
-                        "event_start": None,
-                        "event_end": None,
-                    }
-                ],
-                "unknown": [],
-            }
-        tasks = planned.get("tasks", [])
-        if not 1 <= len(tasks) <= 4:
-            raise ValueError("INVALID_RETRIEVAL_PLAN")
-        candidates = {}
-        traces = []
-        for task in tasks:
-            query = task.get("query")
-            if not isinstance(query, str) or not 0 < len(query) <= 500:
-                raise ValueError("INVALID_SUBQUERY")
-            start, end = task.get("event_start"), task.get("event_end")
-            if start is not None or end is not None:
-                if (
-                    not isinstance(start, int)
-                    or not isinstance(end, int)
-                    or not start < end
-                ):
-                    raise ValueError("INVALID_EVENT_WINDOW")
-            window = {"start": start, "end": end} if start is not None else None
-            upstream = await self.backend.retrieve(query, reference, window)
-            traces.append({"task": task, "upstream": upstream})
+    retrieve = retrieve
+    valid_focus = valid_focus
 
-            # Only document IDs from engine output can bridge back into authoritative text.
-            def ids(value):
-                if isinstance(value, dict):
-                    if value.get("document_id"):
-                        yield value["document_id"]
-                    if value.get("episode_id"):
-                        yield value["episode_id"]
-                    for v in value.values():
-                        yield from ids(v)
-                elif isinstance(value, list):
-                    for v in value:
-                        yield from ids(v)
+    def visible(self, grant, reference):
+        return [r for r in self.store.records(grant) if r.sent_at <= reference]
 
-            found = []
-            for eid in set(ids(upstream)):
-                ep = self.store.episode(eid)
-                if ep and all(
-                    grant.allows(self.store.get(r["key"])) for r in ep["records"]
-                ):
-                    found.append(ep)
-            raw = await self.raw.search(query, grant)
-            combined = {e["id"]: e for e in found + raw}
-            if not combined:
-                continue
-            eps = list(combined.values())
-            rank_started = time.monotonic()
-            scores = await self.backend.reranker.predict(
-                [(query, text(e)) for e in eps]
-            )
-            self.backend.record("fusion_rerank", rank_started, {"candidates": len(eps)})
-            traces[-1]["hindsight_documents"] = [e["id"] for e in found]
-            traces[-1]["raw_documents"] = [e["id"] for e in raw]
-            ordered = sorted(
-                zip(eps, scores, strict=True), key=lambda v: (-float(v[1]), v[0]["id"])
-            )
-            rooms = Counter()
-            kept = 0
-            for ep, score in ordered:
-                room = self.store.get(ep["records"][0]["key"]).conversation_id
-                if rooms[room] >= 3:
-                    continue
-                rooms[room] += 1
-                kept += 1
-                entry = candidates.setdefault(
-                    ep["id"],
-                    {
-                        "episode": ep,
-                        "score": float(score),
-                        "tasks": [],
-                        "hindsight": False,
-                    },
+    def visible_preferences(self, rows):
+        rooms = {room_key(r) for r in rows}
+        return [p for p in self.preferences if p.get("conversation_key") in rooms]
+
+    async def query(
+        self,
+        question,
+        reference,
+        grant,
+        *,
+        focus=None,
+        deadline=None,
+        component="hybrid",
+    ):
+        with query_scope(deadline=deadline) as state:
+            async with asyncio.timeout(
+                max(0.001, state["deadline"] - time.monotonic())
+            ):
+                result = await self.answer(
+                    question, reference, grant, focus=focus, component=component
                 )
-                entry["score"] = max(entry["score"], float(score))
-                entry["tasks"].append(query)
-                entry["hindsight"] |= ep["id"] in {e["id"] for e in found}
-                if kept >= 6:
-                    break
-            if time.monotonic() - started > 150:
-                raise TimeoutError("RETRIEVAL_DEADLINE")
-        selected = sorted(
-            candidates.values(), key=lambda e: (-e["score"], e["episode"]["id"])
-        )
-        # Round-robin message inclusion prevents one busy group consuming the input budget.
-        pool = {}
-        lists = [list(e["episode"]["records"]) for e in selected]
-        for offset in range(max((len(x) for x in lists), default=0)):
-            for members in lists:
-                if offset < len(members):
-                    m = members[offset]
-                    r = self.store.get(m["key"])
-                    if r and grant.allows(r):
-                        pool[r.key] = r
-                    if len(pool) >= 140:
-                        break
-            if len(pool) >= 140:
-                break
-        # Adjacent utterances restore questions/negations across processing buckets.
-        for seed in list(pool.values()):
-            neighbours = [
-                r
-                for r in allowed
-                if (r.platform, r.source_account_id, r.conversation_id)
-                == (seed.platform, seed.source_account_id, seed.conversation_id)
-                and abs(r.sent_at - seed.sent_at) <= 180
-            ]
-            for r in sorted(
-                neighbours, key=lambda r: (abs(r.sent_at - seed.sent_at), r.key)
-            )[:4]:
-                if len(pool) < 160:
-                    pool[r.key] = r
-        return {
-            "records": list(pool.values()),
-            "plan": planned,
-            "traces": traces,
-            "candidates": [
-                {k: v for k, v in e.items() if k != "episode"}
-                | {"episode_id": e["episode"]["id"]}
-                for e in selected
-            ],
-            "elapsed_seconds": time.monotonic() - started,
-        }
+            result["query_budget"] = {
+                "generation_calls": state["calls"],
+                "limit": state["max_calls"],
+            }
+            (self.audit / result["query_id"] / "state.json").write_text(
+                json.dumps(
+                    {
+                        "reference": reference,
+                        "focus": self.valid_focus(focus, grant, reference),
+                        "available_evidence": result["focus"],
+                        "unresolved": result["unknown"],
+                        "budget": result["query_budget"],
+                        "component": component,
+                    },
+                    ensure_ascii=False,
+                ),
+                "utf-8",
+            )
+            return result
 
-    async def answer(self, question, reference, grant, *, retrieved=None):
-        retrieved = retrieved or await self.retrieve(question, reference, grant)
+    async def answer(
+        self,
+        question,
+        reference,
+        grant,
+        *,
+        retrieved=None,
+        focus=None,
+        component="hybrid",
+        round_number=0,
+        seen_actions=None,
+    ):
+        retrieved = retrieved or await self.retrieve(
+            question, reference, grant, focus=focus, component=component
+        )
         query_id = uuid.uuid4().hex
         mapping = {}
         wire = []
@@ -275,34 +209,110 @@ class MemoryCore:
                 not current
                 or current.fingerprint != r.fingerprint
                 or not grant.allows(current)
+                or current.sent_at > reference
             ):
                 continue
             handle = "E" + str(len(wire) + 1)
-            item = {
-                "handle": handle,
-                "speaker": r.speaker,
-                "actor": digest(r.actor)[:16],
-                "platform": r.platform,
-                "conversation": r.conversation_name,
-                "conversation_key": digest(
-                    [r.platform, r.source_account_id, r.conversation_id]
-                )[:16],
-                "self": r.is_from_self,
-                "sent_at": r.sent_at,
-                "timezone": r.timezone,
-                "text": r.text,
-            }
+            item = wire_record(r, handle)
             if len(json.dumps(wire + [item], ensure_ascii=False).encode()) > 42000:
                 continue
             wire.append(item)
             mapping[handle] = asdict(r) | {"key": r.key, "fingerprint": r.fingerprint}
         folder = self.audit / query_id
         folder.mkdir()
+        room_for_handle = {
+            h: digest([r["platform"], r["source_account_id"], r["conversation_id"]])[
+                :16
+            ]
+            for h, r in mapping.items()
+        }
         payload = {
             "question": question,
             "reference_unix": reference,
             "timezone": "Asia/Singapore",
             "records": wire,
+            "groups": [
+                {
+                    "conversation_key": k,
+                    "timezone": "Asia/Singapore",
+                    "start_local": datetime.fromtimestamp(
+                        min(
+                            x["sent_at"]
+                            for x in wire
+                            if room_for_handle[x["handle"]] == k
+                        ),
+                        ZoneInfo("Asia/Singapore"),
+                    ).isoformat(),
+                    "end_local": datetime.fromtimestamp(
+                        max(
+                            x["sent_at"]
+                            for x in wire
+                            if room_for_handle[x["handle"]] == k
+                        ),
+                        ZoneInfo("Asia/Singapore"),
+                    ).isoformat(),
+                    "actors": {
+                        digest(r.actor)[:16]: {
+                            "speaker": r.speaker,
+                            "self": r.is_from_self,
+                        }
+                        for r in retrieved["records"]
+                        if room_key(r) == k
+                        and r.key in {m["key"] for m in mapping.values()}
+                    },
+                    "name": next(
+                        r.conversation_name
+                        for r in retrieved["records"]
+                        if room_key(r) == k
+                    ),
+                    "platform": next(
+                        r.platform for r in retrieved["records"] if room_key(r) == k
+                    ),
+                    "handles": [
+                        x["handle"] for x in wire if room_for_handle[x["handle"]] == k
+                    ],
+                }
+                for k in dict.fromkeys(room_for_handle[x["handle"]] for x in wire)
+            ],
+            "fragments": [
+                {
+                    "id": f["id"],
+                    "purpose": f.get("purpose"),
+                    "start_local": datetime.fromtimestamp(
+                        min(
+                            mapping[h]["sent_at"]
+                            for h in mapping
+                            if mapping[h]["key"] in f["keys"]
+                        ),
+                        ZoneInfo("Asia/Singapore"),
+                    ).isoformat(),
+                    "end_local": datetime.fromtimestamp(
+                        max(
+                            mapping[h]["sent_at"]
+                            for h in mapping
+                            if mapping[h]["key"] in f["keys"]
+                        ),
+                        ZoneInfo("Asia/Singapore"),
+                    ).isoformat(),
+                    "handles": [h for h in mapping if mapping[h]["key"] in f["keys"]],
+                }
+                for f in retrieved.get("fragments", [])
+                if any(mapping[h]["key"] in f["keys"] for h in mapping)
+            ],
+            "confirmed_query_preferences": self.visible_preferences(
+                self.visible(grant, reference)
+            ),
+            "retrieval_plan": retrieved.get("plan", {}),
+            "native_directory_candidates_not_identity_proof": catalogue(
+                self.visible(grant, reference)
+            ),
+            "focus": self.valid_focus(focus, grant, reference),
+            "may_request_evidence": round_number < 2
+            and (
+                not hasattr(self.model, "ledger")
+                or len(self.model.ledger.export()["attempts"]) + 1
+                < self.model.ledger.max_calls
+            ),
             "coverage": "bounded partial snapshot; missing messages/media and unreported revisions remain unknown",
         }
         (folder / "input.json").write_text(
@@ -324,11 +334,87 @@ class MemoryCore:
             "answer",
             payload,
             ANSWER_SCHEMA,
-            "Answer in Chinese, with separate claims and exact short quotes copied from text. Use query-local E handles only. Explain causes and follow-ups where supported. Correct a mistaken date only with evidence. A chat report is not independent verification of execution. Do not treat a suggested identity relation as confirmed.",
+            "Answer in Chinese. Each factual claim needs exact short quotes and query-local E handles. Separate quoted facts, plans, and inference: explain conventional idioms and everyday allusions using general language knowledge as a clearly labelled likely inference supported by surrounding speech. Uncertainty about exact items or execution should not suppress the likely linguistic interpretation. Do not invent specific orders, private identity or execution. A name resemblance is only a candidate; a direct address and reply can support contextual attribution. Reference-date arithmetic is supplied system context, not a quotation. Explain date corrections using message times. If a specific unresolved gap can be resolved by bounded retrieval, return retrieval_actions (max 2) with executable conversation keys, message windows, purpose and basis citing an E handle. Otherwise return an empty action list and answer. Only use conversation keys visible in records. Do not repeat searches or infer causal/identity links merely because two valid quotations exist. No evidence of completion means unknown, not not-completed.",
         )
         (folder / "raw-answer.json").write_text(
             json.dumps(raw, ensure_ascii=False, indent=2), "utf-8"
         )
+        actions = raw.get("retrieval_actions", [])
+
+        def search_signature(task):
+            return digest(
+                {
+                    k: task.get(k)
+                    for k in (
+                        "query",
+                        "conversation_keys",
+                        "message_start",
+                        "message_end",
+                        "event_start",
+                        "event_end",
+                    )
+                }
+            )
+
+        seen_actions = set(seen_actions or []) | {
+            search_signature(t) for t in retrieved.get("plan", {}).get("tasks", [])
+        }
+        fresh, rejected_actions = [], []
+        rooms = {room_key(r) for r in self.visible(grant, reference)}
+        for task in actions[:2]:
+            try:
+                validate_task(task, rooms, reference)
+                signature = search_signature(task)
+                anchors = set(
+                    re.findall(r"\bE[1-9][0-9]*\b", task.get("basis", ""))
+                ) & set(mapping)
+                anchors = [
+                    h
+                    for h in anchors
+                    if (current := self.store.get(mapping[h]["key"]))
+                    and current.fingerprint == mapping[h]["fingerprint"]
+                    and grant.allows(current)
+                ]
+                if signature in seen_actions or not anchors:
+                    raise ValueError("REPEATED_OR_UNGROUNDED_ACTION")
+                seen_actions.add(signature)
+                fresh.append(task)
+            except (ValueError, TypeError) as exc:
+                rejected_actions.append({"task": task, "reason": str(exc)})
+        if fresh and payload["may_request_evidence"]:
+            extra = await self.retrieve(
+                question,
+                reference,
+                grant,
+                planned={"tasks": fresh, "unknown": raw.get("unknown", [])},
+                component=component,
+            )
+            old_keys = {r.key for r in retrieved["records"]}
+            if any(r.key not in old_keys for r in extra["records"]):
+                merged = {r.key: r for r in retrieved["records"] + extra["records"]}
+                extra["records"] = sorted(
+                    merged.values(), key=lambda r: (room_key(r), r.sent_at, r.key)
+                )
+                extra["traces"] = retrieved.get("traces", []) + extra["traces"]
+                extra["parent_query_id"] = query_id
+                result = await self.answer(
+                    question,
+                    reference,
+                    grant,
+                    retrieved=extra,
+                    focus=focus,
+                    component=component,
+                    round_number=round_number + 1,
+                    seen_actions=seen_actions,
+                )
+                (folder / "continued.json").write_text(
+                    json.dumps(
+                        {"child": result["query_id"], "actions": fresh},
+                        ensure_ascii=False,
+                    ),
+                    "utf-8",
+                )
+                return result
         claims = []
         rejected = []
         for claim in raw.get("claims", []):
@@ -384,6 +470,13 @@ class MemoryCore:
             "audit": str(folder.resolve()),
             "status": "partial",
             "bank": self.backend.bank,
+            "input_bytes": len(json.dumps(payload, ensure_ascii=False).encode()),
+            "focus": {
+                "source_keys": [v["key"] for v in mapping.values()],
+                "revisions": {v["key"]: v["revision"] for v in mapping.values()},
+            },
+            "unresolved_actions": actions,
+            "rejected_actions": rejected_actions,
         }
         if rejected:
             result["unknown"].append("部分结论未通过出处或当前修订验证，已单独剔除。")
@@ -395,7 +488,7 @@ class MemoryCore:
     async def overview(self, start, end, reference, grant):
         # Range enumeration, same authoritative store, grant, model and citation verifier.
         rows = [r for r in self.store.records(grant) if start <= r.sent_at < end]
-        rows.sort(key=lambda r: (r.sent_at, r.key))
+        rows.sort(key=lambda r: (room_key(r), r.sent_at, r.key))
         pages = []
         for offset in range(0, len(rows), 100):
             retrieved = {
@@ -418,4 +511,8 @@ class MemoryCore:
             "pages": pages,
             "source_count": len(rows),
             "writes_generated_memory": False,
+            "focus": {
+                "source_keys": [r.key for r in rows],
+                "revisions": {r.key: r.revision for r in rows},
+            },
         }

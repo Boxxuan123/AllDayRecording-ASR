@@ -45,7 +45,9 @@ async def execute(args):
         elif args.command == "ingest":
             result = await core.ingest(rows)
         elif args.command == "ask":
-            result = await core.answer(args.question, snapshot["reference"], grant)
+            result = await core.query(
+                args.question, snapshot["reference"], grant, deadline=started + 180
+            )
         elif args.command == "overview":
             result = await core.overview(
                 args.start, args.end, snapshot["reference"], grant

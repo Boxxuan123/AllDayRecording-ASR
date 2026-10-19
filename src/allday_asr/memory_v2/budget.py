@@ -26,6 +26,18 @@ class Ledger:
             c.execute(
                 "CREATE TABLE IF NOT EXISTS reconciliations(attempt_id INTEGER PRIMARY KEY, tokens INTEGER, evidence TEXT)"
             )
+            c.execute(
+                "CREATE TABLE IF NOT EXISTS stage_policy(id INTEGER PRIMARY KEY CHECK(id=1), max_calls INTEGER, max_tokens INTEGER)"
+            )
+            c.execute(
+                "INSERT OR IGNORE INTO stage_policy VALUES(1,?,?)",
+                (self.max_calls, self.max_tokens),
+            )
+            self.policy_calls, self.policy_tokens = c.execute(
+                "SELECT max_calls,max_tokens FROM stage_policy WHERE id=1"
+            ).fetchone()
+            self.max_calls = min(self.max_calls, self.policy_calls)
+            self.max_tokens = min(self.max_tokens, self.policy_tokens)
 
     def reconcile_not_dispatched(self, number, evidence):
         # Append proof without overwriting the original failed/unknown record.
@@ -49,7 +61,9 @@ class Ledger:
             count, committed = c.execute(
                 "SELECT count(*),coalesce(sum(coalesce(a.used,r.tokens,a.reserved)),0) FROM attempts a LEFT JOIN reconciliations r ON r.attempt_id=a.id"
             ).fetchone()
-            if count >= self.max_calls or committed + reserve > self.max_tokens:
+            if count >= min(
+                self.max_calls, self.policy_calls
+            ) or committed + reserve > min(self.max_tokens, self.policy_tokens):
                 raise BudgetExceeded("STAGE_BUDGET_EXHAUSTED")
             cur = c.execute(
                 "INSERT INTO attempts(phase,started,status,reserved) VALUES(?,?,'started',?)",
