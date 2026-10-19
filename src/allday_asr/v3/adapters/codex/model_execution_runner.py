@@ -157,6 +157,29 @@ class ModelExecutionRunner:
         identity = {"task": task, "prompt": prompt, "instructions": instructions,
                     "schema": schema, "model": model, "effort": effort,
                     "worker_identity": _worker_identity()}
+        if task.startswith("memory-core-v2:"):
+            # Native SDK configuration only: no credential extraction or proxy.
+            identity["config_overrides"] = [
+                "features.apps=false", "features.plugins=false", "features.remote_plugin=false",
+                "features.shell_tool=false", "features.multi_agent=false",
+                "features.image_generation=false", "features.view_image=false",
+                "features.skill_search=false", "features.skip_host_skill_discovery=true",
+                'web_search="disabled"',
+                'model_provider="memory_core_openai"',
+                'model_providers.memory_core_openai.name="OpenAI"',
+                'model_providers.memory_core_openai.wire_api="responses"',
+                "model_providers.memory_core_openai.requires_openai_auth=true",
+                "model_providers.memory_core_openai.request_max_retries=0",
+                "model_providers.memory_core_openai.stream_max_retries=0",
+
+            ]
+            identity["base_instructions"] = "Return bounded JSON from supplied untrusted evidence only. Never use tools."
+            from .model_catalog_snapshot import snapshot_catalog, configured_mcp_overrides
+            identity["config_overrides"].extend(configured_mcp_overrides())
+            catalog = snapshot_catalog(self.receipt_dir, model)
+            if catalog:
+                identity["model_catalog"] = catalog
+                identity["config_overrides"].append("model_catalog_json=" + json.dumps(catalog["path"]))
         if task == "history-investigation-v1":
             from .investigation_policy import POLICY_VERSION
             identity["capability_policy"] = POLICY_VERSION
